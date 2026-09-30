@@ -1,5 +1,7 @@
 > **PK private edition:** For a fresh deployment, follow the [PK deployment guide (Chinese)](deploy/PK_DEPLOYMENT_CN.md). For migration, updates, rollback, and recovery, see [PK_MAINTENANCE.md](PK_MAINTENANCE.md). This edition uses the private `pengkang0322/sub2api` repository and GHCR images; current releases support `linux/amd64`. The upstream project introduction and author attribution are retained below.
 
+Maintenance requirements: [Project constraints](PROJECT_CONSTRAINTS.md) · [PK feature register](PK_FEATURES.md). Preserve every registered feature when merging upstream; register new customizations in the same change.
+
 <div align="center">
 
 <img src="assets/logo.svg" alt="Sub2API Logo" width="128" />

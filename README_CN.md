@@ -1,5 +1,7 @@
 > **PK 私有版：** 全新部署请看 [PK 中文部署指南](deploy/PK_DEPLOYMENT_CN.md)；已有服务迁移、更新、回退与恢复请看 [PK_MAINTENANCE.md](PK_MAINTENANCE.md)。本版统一使用 `pengkang0322/sub2api` 私有仓库及其 GHCR 镜像，当前发行仅支持 `linux/amd64`。下方保留原项目介绍和作者归属。
 
+项目维护必读：[项目约束](PROJECT_CONSTRAINTS.md) · [二开功能清单](PK_FEATURES.md)。合并上游必须逐项保留；新增二开必须随同一变更登记。
+
 <div align="center">
 
 <img src="assets/logo.svg" alt="Sub2API Logo" width="128" />

@@ -1,5 +1,7 @@
 > **PK プライベート版:** 新規デプロイは [PK デプロイガイド（中国語）](deploy/PK_DEPLOYMENT_CN.md)、既存環境の移行・更新・ロールバック・復旧は [PK_MAINTENANCE.md](PK_MAINTENANCE.md) を参照してください。本版では `pengkang0322/sub2api` とそのプライベート GHCR イメージを使用し、現在のリリースは `linux/amd64` に対応しています。以下に元プロジェクトの紹介と作者表記を残しています。
 
+保守前に [プロジェクト制約](PROJECT_CONSTRAINTS.md) と [PK 機能一覧](PK_FEATURES.md) を確認してください。上流マージでは各機能を保持し、新しいカスタマイズは同じ変更で登録してください。
+
 <div align="center">
 
 <img src="assets/logo.svg" alt="Sub2API Logo" width="128" />

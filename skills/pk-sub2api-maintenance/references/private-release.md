@@ -1,5 +1,7 @@
 # 私库发布、网页更新与恢复
 
+先读取当前私库工作区根目录的 `AGENTS.md`、`PROJECT_CONSTRAINTS.md` 和 `PK_FEATURES.md`。发布、回退与恢复也要核对受影响 PK ID；新增/扩展二开必须在同一变更登记。以下运维流程不代替当前功能清单，不允许用旧版本或旧 skill 静默覆盖后续二开。
+
 ## 来源
 
 - 源码和 Release：`pengkang0322/sub2api`，私有。
