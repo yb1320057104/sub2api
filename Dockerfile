@@ -138,12 +138,18 @@ RUN addgroup -g 1000 sub2api && \
 # Set working directory
 WORKDIR /app
 
-# Copy binary/resources with ownership to avoid extra full-layer chown copy
-COPY --from=backend-builder --chown=sub2api:sub2api /app/sub2api /app/sub2api
+# Keep an immutable image seed. Opt-in web updates run a separate copy in the
+# existing data volume; the application never needs write access to /app.
+COPY --from=backend-builder --chmod=0555 /app/sub2api /app/sub2api
 COPY --from=backend-builder --chown=sub2api:sub2api /app/backend/resources /app/resources
 
 # Create data directory
 RUN mkdir -p /app/data && chown sub2api:sub2api /app/data
+
+# Set true only with a persistent /app/data volume and a container restart policy.
+# A changed image binary (including an older image) replaces the persisted copy;
+# restarting the same image preserves binaries installed from the admin page.
+ENV SUB2API_DOCKER_SELF_UPDATE=false
 
 # Copy entrypoint script (fixes volume permissions then drops to sub2api)
 COPY deploy/docker-entrypoint.sh /app/docker-entrypoint.sh

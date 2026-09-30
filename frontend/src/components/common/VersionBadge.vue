@@ -12,7 +12,7 @@
         ]"
         :title="hasUpdate ? t('version.updateAvailable') : t('version.upToDate')"
       >
-        <span v-if="currentVersion" class="font-medium">v{{ currentVersion }}</span>
+        <span v-if="currentVersion" class="font-medium">v{{ currentVersion }} PK出版</span>
         <span
           v-else
           class="h-3 w-12 animate-pulse rounded bg-gray-200 font-medium dark:bg-dark-600"
@@ -84,7 +84,7 @@
                   <span
                     v-if="currentVersion"
                     class="text-2xl font-bold text-gray-900 dark:text-white"
-                    >v{{ currentVersion }}</span
+                    >v{{ currentVersion }} PK出版</span
                   >
                   <span v-else class="text-2xl font-bold text-gray-400 dark:text-dark-500">--</span>
                   <!-- Show check mark when up to date -->
@@ -632,7 +632,7 @@
 
     <!-- Non-admin: Simple static version text -->
     <span v-else-if="version" class="text-xs text-gray-500 dark:text-dark-400">
-      v{{ version }}
+      v{{ version }} PK出版
     </span>
   </div>
 </template>
@@ -651,9 +651,9 @@ import {
 import { useClipboard } from '@/composables/useClipboard'
 import Icon from '@/components/icons/Icon.vue'
 
-const GITHUB_REPO = 'Wei-Shaw/sub2api'
-// Docker Hub image published by CI (tags carry no "v" prefix, e.g. weishaw/sub2api:0.1.146)
-const DOCKER_IMAGE = 'weishaw/sub2api'
+const GITHUB_REPO = 'pengkang0322/sub2api'
+// Private GHCR image published by CI; image tags carry no "v" prefix.
+const DOCKER_IMAGE = 'ghcr.io/pengkang0322/sub2api'
 
 const { t } = useI18n()
 
@@ -698,9 +698,8 @@ const rollbackError = ref('')
 
 const { copied, copyToClipboard } = useClipboard()
 
-// Manual rollback methods differ by deployment: script installs use install.sh,
-// docker deployments pin the image tag instead
-const manualTab = ref<'script' | 'docker'>('script')
+// Private release downloads require authentication; Docker deployments pin the image tag.
+const manualTab = ref<'script' | 'docker'>('docker')
 
 const manualTabs = computed(() => [
   { key: 'script' as const, label: t('version.deployScript') },
@@ -710,17 +709,24 @@ const manualTabs = computed(() => [
 const scriptRollbackCommand = computed(() => {
   if (!selectedRollbackVersion.value) return ''
   const tag = `v${selectedRollbackVersion.value}`
-  return `curl -sSL https://raw.githubusercontent.com/${GITHUB_REPO}/${tag}/deploy/install.sh | sudo bash -s -- rollback ${tag}`
+  return [
+    `# ${t('version.privateReleaseHint')}`,
+    `# https://github.com/${GITHUB_REPO}/releases/tag/${tag}`
+  ].join('\n')
 })
 
 const dockerRollbackCommand = computed(() => {
   if (!selectedRollbackVersion.value) return ''
   return [
+    `# ${t('version.dockerPrivateLogin')}`,
+    'docker login ghcr.io -u pengkang0322',
+    '',
     `# ${t('version.dockerEditCompose')}`,
     `image: ${DOCKER_IMAGE}:${selectedRollbackVersion.value}`,
     '',
     `# ${t('version.dockerRecreate')}`,
-    'docker compose up -d'
+    `docker pull ${DOCKER_IMAGE}:${selectedRollbackVersion.value}`,
+    'docker compose up -d --no-deps sub2api'
   ].join('\n')
 })
 
@@ -779,7 +785,7 @@ function resetRollbackState() {
   rollbackVersionsError.value = ''
   selectedRollbackVersion.value = ''
   rollbackError.value = ''
-  manualTab.value = 'script'
+  manualTab.value = 'docker'
 }
 
 async function toggleRollbackPanel() {

@@ -51,6 +51,7 @@ pnpm-debug.log*
 # ===================
 .env
 .env.local
+.env.pk
 .env.*.local
 *.env
 !.env.example

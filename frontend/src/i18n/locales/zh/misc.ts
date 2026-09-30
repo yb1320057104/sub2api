@@ -54,6 +54,10 @@ export default {
     rollbackSourceHint: '源码构建不支持在线回退',
     deployScript: '脚本部署',
     deployDocker: 'Docker',
+    privateReleaseHint:
+      '请先登录有权访问私有仓库的 GitHub 账号，再从以下发布页下载对应平台的程序及校验文件。',
+    dockerPrivateLogin:
+      '使用有权读取此私有镜像的 GitHub 令牌登录 GHCR，密码处输入令牌。',
     dockerEditCompose: '修改 docker-compose.yml 中的镜像版本',
     dockerRecreate: '重新创建容器'
   },

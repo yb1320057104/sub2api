@@ -30,11 +30,13 @@ var (
 const (
 	updateCacheKey = "update_check_cache"
 	updateCacheTTL = 1200 // 20 minutes
-	githubRepo     = "Wei-Shaw/sub2api"
+	githubRepo     = "pengkang0322/sub2api"
 
 	// Security: allowed download domains for updates
 	allowedDownloadHost = "github.com"
 	allowedAssetHost    = "objects.githubusercontent.com"
+	allowedAssetAPIHost = "api.github.com"
+	allowedReleaseHost  = "release-assets.githubusercontent.com"
 
 	// Security: max download size (500MB)
 	maxDownloadSize = 500 * 1024 * 1024
@@ -125,8 +127,16 @@ type RollbackVersion struct {
 
 type GitHubAsset struct {
 	Name               string `json:"name"`
+	APIURL             string `json:"url"`
 	BrowserDownloadURL string `json:"browser_download_url"`
 	Size               int64  `json:"size"`
+}
+
+func (a GitHubAsset) downloadURL() string {
+	if a.APIURL != "" {
+		return a.APIURL
+	}
+	return a.BrowserDownloadURL
 }
 
 // CheckUpdate checks for available updates
@@ -181,11 +191,13 @@ func (s *UpdateService) PerformUpdate(ctx context.Context) error {
 func (s *UpdateService) applyReleaseAssets(ctx context.Context, releaseAssets []Asset) error {
 	// Find matching archive and checksum for current platform
 	archiveName := s.getArchiveName()
+	var assetName string
 	var downloadURL string
 	var checksumURL string
 
 	for _, asset := range releaseAssets {
 		if strings.Contains(asset.Name, archiveName) && !strings.HasSuffix(asset.Name, ".txt") {
+			assetName = asset.Name
 			downloadURL = asset.DownloadURL
 		}
 		if asset.Name == "checksums.txt" {
@@ -196,15 +208,19 @@ func (s *UpdateService) applyReleaseAssets(ctx context.Context, releaseAssets []
 	if downloadURL == "" {
 		return fmt.Errorf("no compatible release found for %s/%s", runtime.GOOS, runtime.GOARCH)
 	}
+	if filepath.Base(assetName) != assetName || strings.ContainsAny(assetName, `/\`) {
+		return fmt.Errorf("invalid release asset filename")
+	}
+	if checksumURL == "" {
+		return fmt.Errorf("release is missing checksums.txt")
+	}
 
 	// SECURITY: Validate download URL is from trusted domain
 	if err := validateDownloadURL(downloadURL); err != nil {
 		return fmt.Errorf("invalid download URL: %w", err)
 	}
-	if checksumURL != "" {
-		if err := validateDownloadURL(checksumURL); err != nil {
-			return fmt.Errorf("invalid checksum URL: %w", err)
-		}
+	if err := validateDownloadURL(checksumURL); err != nil {
+		return fmt.Errorf("invalid checksum URL: %w", err)
 	}
 
 	// Get current executable path
@@ -228,16 +244,14 @@ func (s *UpdateService) applyReleaseAssets(ctx context.Context, releaseAssets []
 	defer func() { _ = os.RemoveAll(tempDir) }()
 
 	// Download archive
-	archivePath := filepath.Join(tempDir, filepath.Base(downloadURL))
+	// Asset API URLs end in a numeric ID; checksum entries use the asset's name.
+	archivePath := filepath.Join(tempDir, assetName)
 	if err := s.downloadFile(ctx, downloadURL, archivePath); err != nil {
 		return fmt.Errorf("download failed: %w", err)
 	}
 
-	// Verify checksum if available
-	if checksumURL != "" {
-		if err := s.verifyChecksum(ctx, archivePath, checksumURL); err != nil {
-			return fmt.Errorf("checksum verification failed: %w", err)
-		}
+	if err := s.verifyChecksum(ctx, archivePath, checksumURL); err != nil {
+		return fmt.Errorf("checksum verification failed: %w", err)
 	}
 
 	// Extract binary from archive
@@ -352,7 +366,7 @@ func (s *UpdateService) RollbackToVersion(ctx context.Context, version string) e
 	for i, a := range match.Assets {
 		assets[i] = Asset{
 			Name:        a.Name,
-			DownloadURL: a.BrowserDownloadURL,
+			DownloadURL: a.downloadURL(),
 			Size:        a.Size,
 		}
 	}
@@ -411,7 +425,7 @@ func (s *UpdateService) fetchLatestRelease(ctx context.Context) (*UpdateInfo, er
 	for i, a := range release.Assets {
 		assets[i] = Asset{
 			Name:        a.Name,
-			DownloadURL: a.BrowserDownloadURL,
+			DownloadURL: a.downloadURL(),
 			Size:        a.Size,
 		}
 	}
@@ -445,23 +459,40 @@ func (s *UpdateService) getArchiveName() string {
 // validateDownloadURL checks if the URL is from an allowed domain
 // SECURITY: This prevents SSRF and ensures downloads only come from trusted GitHub domains
 func validateDownloadURL(rawURL string) error {
+	return ValidateUpdateDownloadURL(rawURL)
+}
+
+// ValidateUpdateDownloadURL restricts initial URLs and redirects to the private
+// release source and the HTTPS hosts GitHub uses to deliver release assets.
+func ValidateUpdateDownloadURL(rawURL string) error {
 	parsedURL, err := url.Parse(rawURL)
 	if err != nil {
 		return fmt.Errorf("invalid URL: %w", err)
 	}
 
 	// Must be HTTPS
-	if parsedURL.Scheme != "https" {
-		return fmt.Errorf("only HTTPS URLs are allowed")
+	if parsedURL.Scheme != "https" || parsedURL.User != nil || parsedURL.Fragment != "" {
+		return fmt.Errorf("only HTTPS URLs without userinfo or fragments are allowed")
 	}
 
-	// Check against allowed hosts
-	host := parsedURL.Host
-	// GitHub release URLs can be from github.com or objects.githubusercontent.com
-	if host != allowedDownloadHost &&
-		!strings.HasSuffix(host, "."+allowedDownloadHost) &&
-		host != allowedAssetHost &&
-		!strings.HasSuffix(host, "."+allowedAssetHost) {
+	// Match the authority exactly: no arbitrary subdomains or alternate ports.
+	host := strings.ToLower(parsedURL.Host)
+	switch host {
+	case allowedAssetAPIHost:
+		prefix := "/repos/" + githubRepo + "/releases/assets/"
+		if !strings.HasPrefix(parsedURL.Path, prefix) || parsedURL.RawQuery != "" {
+			return fmt.Errorf("asset API URL does not belong to the configured release repository")
+		}
+		if id, err := strconv.ParseUint(strings.TrimPrefix(parsedURL.Path, prefix), 10, 64); err != nil || id == 0 {
+			return fmt.Errorf("invalid release asset ID")
+		}
+	case allowedDownloadHost:
+		if !strings.HasPrefix(parsedURL.Path, "/"+githubRepo+"/releases/download/") {
+			return fmt.Errorf("download URL does not belong to the configured release repository")
+		}
+	case allowedAssetHost, allowedReleaseHost:
+		// GitHub returns signed CDN URLs after authenticating the asset API call.
+	default:
 		return fmt.Errorf("download from untrusted host: %s", host)
 	}
 
@@ -600,12 +631,16 @@ func (s *UpdateService) getFromCache(ctx context.Context) (*UpdateInfo, error) {
 	}
 
 	var cached struct {
+		Repository  string       `json:"repository"`
 		Latest      string       `json:"latest"`
 		ReleaseInfo *ReleaseInfo `json:"release_info"`
 		Timestamp   int64        `json:"timestamp"`
 	}
 	if err := json.Unmarshal([]byte(data), &cached); err != nil {
 		return nil, err
+	}
+	if cached.Repository != githubRepo {
+		return nil, fmt.Errorf("cached release belongs to a different repository")
 	}
 
 	if time.Now().Unix()-cached.Timestamp > updateCacheTTL {
@@ -624,10 +659,12 @@ func (s *UpdateService) getFromCache(ctx context.Context) (*UpdateInfo, error) {
 
 func (s *UpdateService) saveToCache(ctx context.Context, info *UpdateInfo) {
 	cacheData := struct {
+		Repository  string       `json:"repository"`
 		Latest      string       `json:"latest"`
 		ReleaseInfo *ReleaseInfo `json:"release_info"`
 		Timestamp   int64        `json:"timestamp"`
 	}{
+		Repository:  githubRepo,
 		Latest:      info.LatestVersion,
 		ReleaseInfo: info.ReleaseInfo,
 		Timestamp:   time.Now().Unix(),
@@ -650,7 +687,29 @@ func compareVersions(current, latest string) int {
 			return 1
 		}
 	}
+	currentRevision := privateReleaseRevision(current)
+	latestRevision := privateReleaseRevision(latest)
+	if currentRevision < latestRevision {
+		return -1
+	}
+	if currentRevision > latestRevision {
+		return 1
+	}
 	return 0
+}
+
+// Private revisions share their upstream version, e.g. 0.2.10-pk.1. Preserve
+// the existing treatment of other suffixes while ordering our revisions.
+func privateReleaseRevision(version string) uint64 {
+	_, suffix, found := strings.Cut(version, "-")
+	if !found || !strings.HasPrefix(suffix, "pk.") {
+		return 0
+	}
+	revision, err := strconv.ParseUint(strings.TrimPrefix(suffix, "pk."), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return revision
 }
 
 func parseVersion(v string) [3]int {

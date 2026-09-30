@@ -61,6 +61,7 @@ func NewGitHubReleaseClient(proxyURL string, allowDirectOnProxyError bool) servi
 		downloadClient = &http.Client{Timeout: 10 * time.Minute}
 	}
 	downloadClient = cloneHTTPClient(downloadClient)
+	downloadClient.CheckRedirect = githubAssetCheckRedirect(downloadClient.CheckRedirect)
 
 	return &githubReleaseClient{
 		httpClient:         apiClient,
@@ -81,13 +82,29 @@ func isGitHubAPIURL(url *url.URL) bool {
 
 func githubAPICheckRedirect(previous func(*http.Request, []*http.Request) error) func(*http.Request, []*http.Request) error {
 	return func(req *http.Request, via []*http.Request) error {
+		// A custom CheckRedirect replaces net/http's default ten-hop limit.
+		if len(via) >= 10 {
+			return fmt.Errorf("stopped after 10 redirects")
+		}
+		if previous != nil {
+			if err := previous(req, via); err != nil {
+				return err
+			}
+		}
 		if !isGitHubAPIURL(req.URL) {
 			req.Header.Del("Authorization")
 		}
-		if previous != nil {
-			return previous(req, via)
-		}
 		return nil
+	}
+}
+
+func githubAssetCheckRedirect(previous func(*http.Request, []*http.Request) error) func(*http.Request, []*http.Request) error {
+	checkAPI := githubAPICheckRedirect(previous)
+	return func(req *http.Request, via []*http.Request) error {
+		if err := checkAPI(req, via); err != nil {
+			return err
+		}
+		return service.ValidateUpdateDownloadURL(req.URL.String())
 	}
 }
 
@@ -100,6 +117,24 @@ func (c *githubReleaseClient) newAPIRequest(ctx context.Context, url string) (*h
 	req.Header.Set("User-Agent", "Sub2API-Updater")
 	if c.updateGitHubToken != "" && isGitHubAPIURL(req.URL) {
 		req.Header.Set("Authorization", "Bearer "+c.updateGitHubToken)
+	}
+	return req, nil
+}
+
+func (c *githubReleaseClient) newAssetRequest(ctx context.Context, rawURL string) (*http.Request, error) {
+	if err := service.ValidateUpdateDownloadURL(rawURL); err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/octet-stream")
+	req.Header.Set("User-Agent", "Sub2API-Updater")
+	if isGitHubAPIURL(req.URL) {
+		if c.updateGitHubToken != "" {
+			req.Header.Set("Authorization", "Bearer "+c.updateGitHubToken)
+		}
 	}
 	return req, nil
 }
@@ -179,7 +214,7 @@ func (c *githubReleaseClient) FetchRecentReleases(ctx context.Context, repo stri
 }
 
 func (c *githubReleaseClient) DownloadFile(ctx context.Context, url, dest string, maxSize int64) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := c.newAssetRequest(ctx, url)
 	if err != nil {
 		return err
 	}
@@ -227,12 +262,14 @@ func (c *githubReleaseClient) DownloadFile(ctx context.Context, url, dest string
 }
 
 func (c *githubReleaseClient) FetchChecksumFile(ctx context.Context, url string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := c.newAssetRequest(ctx, url)
 	if err != nil {
 		return nil, err
 	}
 
-	resp, err := c.httpClient.Do(req)
+	checksumClient := cloneHTTPClient(c.httpClient)
+	checksumClient.CheckRedirect = githubAssetCheckRedirect(checksumClient.CheckRedirect)
+	resp, err := checksumClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -242,5 +279,13 @@ func (c *githubReleaseClient) FetchChecksumFile(ctx context.Context, url string)
 		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
-	return io.ReadAll(resp.Body)
+	const maxChecksumSize = 1024 * 1024
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxChecksumSize+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxChecksumSize {
+		return nil, fmt.Errorf("checksums file exceeds maximum size of %d bytes", maxChecksumSize)
+	}
+	return data, nil
 }

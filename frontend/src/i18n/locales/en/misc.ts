@@ -55,6 +55,10 @@ export default {
     rollbackSourceHint: 'Online rollback is not available for source builds',
     deployScript: 'Script',
     deployDocker: 'Docker',
+    privateReleaseHint:
+      'Sign in to GitHub with access to the private repository, then download the binary for your platform and its checksums from this release.',
+    dockerPrivateLogin:
+      'Sign in to GHCR with a GitHub token that can read this private image. Enter the token at the password prompt.',
     dockerEditCompose: 'Edit the image tag in docker-compose.yml',
     dockerRecreate: 'Recreate the container'
   },
