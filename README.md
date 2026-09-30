@@ -1,3 +1,5 @@
+> **PK private edition:** Installation, updates, rollback, and disaster recovery use only `pengkang0322/sub2api` and its private GHCR images. Follow [PK_MAINTENANCE.md](PK_MAINTENANCE.md) for this edition's deployment procedure. Current private releases support `linux/amd64`. The upstream project introduction and author attribution are retained below.
+
 <div align="center">
 
 <img src="assets/logo.svg" alt="Sub2API Logo" width="128" />

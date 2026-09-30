@@ -1,3 +1,5 @@
+> **PK 私有版：** 安装、更新、回滚和灾难恢复统一使用 `pengkang0322/sub2api` 私有仓库及其 GHCR 镜像，请按 [PK_MAINTENANCE.md](PK_MAINTENANCE.md) 操作。当前私有发行仅支持 `linux/amd64`。下方保留原项目介绍和作者归属。
+
 <div align="center">
 
 <img src="assets/logo.svg" alt="Sub2API Logo" width="128" />

@@ -29,7 +29,7 @@ for filename in (
         env = dict(
             os.environ, POSTGRES_PASSWORD="compose-test-password",
             DATABASE_HOST="postgres", DATABASE_PASSWORD="compose-test-password",
-            REDIS_HOST="redis",
+            REDIS_HOST="redis", UPDATE_GITHUB_TOKEN="compose-test-private-release-token",
         )
         env.pop(key, None)
         if value is not None:

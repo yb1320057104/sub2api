@@ -24,7 +24,7 @@ run_api_curl() {
     CURL_ARGS_LOG="$1" HOME="$TEMP_DIR/home" PATH="$TEMP_DIR:$PATH" UPDATE_GITHUB_TOKEN="${2:-}" \
         GITHUB_TOKEN="github-fallback" GH_TOKEN="gh-fallback" \
         bash -c 'source <(head -n -1 "$1"); github_api_curl -s "$2"' bash \
-        "$ROOT_DIR/deploy/install.sh" "https://api.github.com/repos/Wei-Shaw/sub2api/releases/latest"
+        "$ROOT_DIR/deploy/install.sh" "https://api.github.com/repos/pengkang0322/sub2api/releases/latest"
 }
 
 run_api_curl "$TEMP_DIR/authenticated" "update-secret"
@@ -41,29 +41,19 @@ if grep -Eq 'update-secret|github-fallback|gh-fallback' "$TEMP_DIR/authenticated
     echo "installer exposed a token in curl environment" >&2
     exit 1
 fi
-test "$(grep -Fxc 'https://api.github.com/repos/Wei-Shaw/sub2api/releases/latest' "$TEMP_DIR/authenticated")" -eq 1
+test "$(grep -Fxc 'https://api.github.com/repos/pengkang0322/sub2api/releases/latest' "$TEMP_DIR/authenticated")" -eq 1
 if grep -Fq 'example.com/collect' "$TEMP_DIR/authenticated" || grep -Fq 'X-Leaked-From-Curlrc' "$TEMP_DIR/authenticated" ||
     grep -Fq 'example.com/collect' "$TEMP_DIR/authenticated.stdin" || grep -Fq 'X-Leaked-From-Curlrc' "$TEMP_DIR/authenticated.stdin"; then
     echo "installer allowed hostile curl config into authenticated invocation" >&2
     exit 1
 fi
 
-run_api_curl "$TEMP_DIR/anonymous"
-test "$(head -n 1 "$TEMP_DIR/anonymous")" = '-q'
-if grep -Eq 'github-fallback|gh-fallback' "$TEMP_DIR/anonymous.env"; then
-    echo "installer exposed a fallback token in anonymous curl environment" >&2
+if run_api_curl "$TEMP_DIR/anonymous" 2>"$TEMP_DIR/missing-token-error"; then
+    echo "private release API unexpectedly allowed an anonymous request" >&2
     exit 1
 fi
-if grep -Fq 'Authorization:' "$TEMP_DIR/anonymous"; then
-    echo "installer unexpectedly used a fallback token" >&2
-    exit 1
-fi
-test ! -s "$TEMP_DIR/anonymous.stdin"
-test "$(grep -Fxc 'https://api.github.com/repos/Wei-Shaw/sub2api/releases/latest' "$TEMP_DIR/anonymous")" -eq 1
-if grep -Fq 'example.com/collect' "$TEMP_DIR/anonymous" || grep -Fq 'X-Leaked-From-Curlrc' "$TEMP_DIR/anonymous"; then
-    echo "installer allowed hostile curl config into anonymous invocation" >&2
-    exit 1
-fi
+test ! -e "$TEMP_DIR/anonymous"
+grep -Fq 'UPDATE_GITHUB_TOKEN' "$TEMP_DIR/missing-token-error"
 
 assert_unsafe_invocation_rejected() {
     local name=$1
@@ -82,22 +72,55 @@ assert_unsafe_invocation_rejected() {
 }
 
 assert_unsafe_invocation_rejected non-api -s \
-    "https://github.com/Wei-Shaw/sub2api/releases/download/v1/asset"
+    "https://github.com/pengkang0322/sub2api/releases/download/v1/asset"
 assert_unsafe_invocation_rejected mixed-host -s \
-    "https://api.github.com/repos/Wei-Shaw/sub2api/releases/latest" \
+    "https://api.github.com/repos/pengkang0322/sub2api/releases/latest" \
     "https://example.com/collect"
 assert_unsafe_invocation_rejected multiple-api -s \
-    "https://api.github.com/repos/Wei-Shaw/sub2api/releases/latest" \
-    "https://api.github.com/repos/Wei-Shaw/sub2api/releases"
+    "https://api.github.com/repos/pengkang0322/sub2api/releases/latest" \
+    "https://api.github.com/repos/pengkang0322/sub2api/releases"
 assert_unsafe_invocation_rejected url-option -s --url \
     "https://example.com/collect" \
+    "https://api.github.com/repos/pengkang0322/sub2api/releases/latest"
+
+assert_unsafe_invocation_rejected official-repository -s \
     "https://api.github.com/repos/Wei-Shaw/sub2api/releases/latest"
+assert_unsafe_invocation_rejected redirect-option -s -L \
+    "https://api.github.com/repos/pengkang0322/sub2api/releases/latest"
+assert_unsafe_invocation_rejected traversal -s \
+    "https://api.github.com/repos/pengkang0322/sub2api/../../Wei-Shaw/sub2api/releases/latest"
+assert_unsafe_invocation_rejected arbitrary-api -s \
+    "https://api.github.com/repos/pengkang0322/sub2api/contents/.env"
 
 # Every installer release API request must use the scoped helper.
 test "$(grep -c 'github_api_curl .*https://api.github.com/' "$ROOT_DIR/deploy/install.sh")" -eq 3
 
-# Asset and checksum downloads must continue to call curl directly.
-grep -Fq 'curl -sL "$download_url"' "$ROOT_DIR/deploy/install.sh"
-grep -Fq 'curl -sL "$checksum_url"' "$ROOT_DIR/deploy/install.sh"
+# Disabled legacy entrypoints must fail before any network request or file setup.
+mkdir "$TEMP_DIR/deployment"
+for script in install.sh docker-deploy.sh; do
+    if (
+        cd "$TEMP_DIR/deployment"
+        CURL_ARGS_LOG="$TEMP_DIR/blocked-$script-curl" PATH="$TEMP_DIR:$PATH" \
+            UPDATE_GITHUB_TOKEN="update-secret" bash "$ROOT_DIR/deploy/$script"
+    ) >"$TEMP_DIR/blocked-$script-output" 2>&1; then
+        echo "legacy deployment entrypoint unexpectedly succeeded: $script" >&2
+        exit 1
+    fi
+    test ! -e "$TEMP_DIR/blocked-$script-curl"
+    grep -Fq 'PK_MAINTENANCE.md' "$TEMP_DIR/blocked-$script-output"
+    grep -Fq 'pengkang0322/sub2api' "$TEMP_DIR/blocked-$script-output"
+done
+test ! -e "$TEMP_DIR/deployment/docker-compose.yml"
+test ! -e "$TEMP_DIR/deployment/.env"
 
-echo "install GitHub token checks passed"
+# Sourcing the old binary installer must not provide an anonymous asset fallback.
+if CURL_ARGS_LOG="$TEMP_DIR/blocked-asset-curl" PATH="$TEMP_DIR:$PATH" \
+    bash -c 'source <(head -n -1 "$1"); download_and_extract' bash \
+    "$ROOT_DIR/deploy/install.sh" >"$TEMP_DIR/blocked-asset-output" 2>&1; then
+    echo "legacy binary downloader unexpectedly succeeded" >&2
+    exit 1
+fi
+test ! -e "$TEMP_DIR/blocked-asset-curl"
+grep -Fq 'PK_MAINTENANCE.md' "$TEMP_DIR/blocked-asset-output"
+
+echo "private install entrypoint and GitHub token checks passed"

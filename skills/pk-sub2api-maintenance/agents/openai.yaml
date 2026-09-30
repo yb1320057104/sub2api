@@ -1,0 +1,6 @@
+interface:
+  display_name: "PK版 Sub2API 维护"
+  short_description: "合并原作者更新并保留二开功能，统一从个人私库发布、更新和恢复"
+  default_prompt: "使用 $pk-sub2api-maintenance 合并 Sub2API 上游更新，保留我的二开功能，从我的私有仓库发布，线上切换等我确认。"
+policy:
+  allow_implicit_invocation: true

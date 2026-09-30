@@ -59,6 +59,8 @@
 
 首次切换必须保留已有 Compose、端口、数据库、Redis 和所有数据卷。`deploy/docker-compose.pk.yml` 是附加配置，不能拿它替换线上完整 Compose。
 
+旧 `deploy/install.sh` 和 `deploy/docker-deploy.sh` 入口已停用：它们分别安装 systemd 程序、初始化整套数据库及密钥，不适用于当前已有数据的 PK Docker 部署。它们会明确退出并指向本文，不会退回官方下载安装。
+
 ### 私库凭据
 
 - 网页更新：`UPDATE_GITHUB_TOKEN` 使用仅允许 `pengkang0322/sub2api`、`Contents: read` 的 fine-grained token；通过服务器环境配置注入。

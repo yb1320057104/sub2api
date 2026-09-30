@@ -1,3 +1,5 @@
+> **PK プライベート版:** インストール、更新、ロールバック、災害復旧には `pengkang0322/sub2api` とそのプライベート GHCR イメージを使用してください。手順は [PK_MAINTENANCE.md](PK_MAINTENANCE.md) を参照してください。現在のプライベートリリースは `linux/amd64` のみ対応しています。以下に元プロジェクトの紹介と作者表記を残しています。
+
 <div align="center">
 
 <img src="assets/logo.svg" alt="Sub2API Logo" width="128" />

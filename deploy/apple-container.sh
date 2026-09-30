@@ -372,7 +372,7 @@ cmd_init() {
     mv "${temp_file}" "${ENV_FILE}"
 
     info "Created ${ENV_FILE} with generated secrets."
-    info "Review the file, then run: SUB2API_ENV_FILE='${ENV_FILE}' ${SCRIPT_DIR}/apple-container.sh up"
+    info "Private releases currently support linux/amd64 only. Apple startup requires an explicitly selected private linux/arm64 image. See APPLE_CONTAINER.md."
 }
 
 validate_port() {
@@ -414,7 +414,7 @@ validate_env_file_security() {
 prepare_environment() {
     validate_env_file_security
 
-    APP_IMAGE="$(read_env_value APPLE_CONTAINER_SUB2API_IMAGE weishaw/sub2api:latest)"
+    APP_IMAGE="$(read_env_value APPLE_CONTAINER_SUB2API_IMAGE ghcr.io/pengkang0322/sub2api:latest)"
     POSTGRES_IMAGE="$(read_env_value APPLE_CONTAINER_POSTGRES_IMAGE postgres:18-alpine)"
     REDIS_IMAGE="$(read_env_value APPLE_CONTAINER_REDIS_IMAGE redis:8-alpine)"
     BIND_HOST="$(read_env_value BIND_HOST 0.0.0.0)"
@@ -491,6 +491,21 @@ DATA_DIR=/app/storage/data
 APPLE_CONTAINER_SUB2API_IMAGE_ID=${APP_IMAGE_ID}
 EOF
     chmod 600 "${APP_ENV_FILE}"
+}
+
+validate_private_app_image() {
+    local configured_image
+    validate_env_file_security
+    configured_image="$(read_env_value APPLE_CONTAINER_SUB2API_IMAGE)"
+    if [[ -z "${configured_image}" || "${configured_image}" == "ghcr.io/pengkang0322/sub2api:latest" ]]; then
+        die "Private releases currently publish linux/amd64 only. Apple container requires an explicitly selected pengkang0322/sub2api tag or digest verified to support linux/arm64; no upstream image fallback is allowed."
+    fi
+    case "${configured_image}" in
+        ghcr.io/pengkang0322/sub2api:?*|ghcr.io/pengkang0322/sub2api@sha256:?*) ;;
+        *) die "APPLE_CONTAINER_SUB2API_IMAGE must belong to ghcr.io/pengkang0322/sub2api." ;;
+    esac
+    [[ -n "$(read_env_value UPDATE_GITHUB_TOKEN)" ]] || \
+        die "UPDATE_GITHUB_TOKEN is required for private release downloads."
 }
 
 create_postgres_container() {
@@ -722,6 +737,7 @@ cmd_up() {
         recreate=true
     fi
 
+    validate_private_app_image
     ensure_system
     prepare_environment
     preflight_stack_ownership
@@ -770,6 +786,8 @@ cmd_down() {
 }
 
 cmd_restart() {
+    # Refuse an unsupported/private-image configuration before stopping a stack.
+    validate_private_app_image
     cmd_down
     cmd_up
 }
@@ -866,6 +884,7 @@ cmd_logs() {
 }
 
 cmd_pull() {
+    validate_private_app_image
     ensure_system
     prepare_environment
     info "Pulling ${APP_IMAGE}..."

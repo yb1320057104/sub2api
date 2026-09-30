@@ -1,14 +1,14 @@
 # Sub2API Deployment Files
 
-This directory contains files for deploying Sub2API on Linux servers and Apple-silicon Macs.
+This private edition installs, updates, and restores from `pengkang0322/sub2api` only. Follow [PK_MAINTENANCE.md](../PK_MAINTENANCE.md) for the approved production procedure; preserve the existing database, Redis, ports, secrets, and data volumes. Current private releases support `linux/amd64`.
 
 ## Deployment Methods
 
 | Method | Best For | Setup Wizard |
 |--------|----------|--------------|
 | **Docker Compose** | Quick setup, all-in-one | Not needed (auto-setup) |
-| **Apple container** | Native local stack on macOS 26 | Not needed (auto-setup) |
-| **Binary Install** | Production servers, systemd | Web-based wizard |
+| **Apple container** | Requires a separately published private `linux/arm64` image; currently unavailable | Not needed (auto-setup) |
+| **Legacy binary installer** | Disabled for this private edition; use the PK maintenance procedure | — |
 
 ## Files
 
@@ -16,12 +16,12 @@ This directory contains files for deploying Sub2API on Linux servers and Apple-s
 |------|-------------|
 | `docker-compose.yml` | Docker Compose configuration (named volumes) |
 | `docker-compose.local.yml` | Docker Compose configuration (local directories, easy migration) |
-| `docker-deploy.sh` | **One-click Docker deployment script (recommended)** |
+| `docker-deploy.sh` | Legacy entry point; redirects private-edition operators to the PK maintenance guide |
 | `apple-container.sh` | Native Apple `container` lifecycle script |
 | `APPLE_CONTAINER.md` | Apple `container` deployment and operations guide |
 | `.env.example` | Container environment variables template |
-| `DOCKER.md` | Docker Hub documentation |
-| `install.sh` | One-click binary installation script |
+| `DOCKER.md` | Private GHCR deployment and recovery requirements |
+| `install.sh` | Legacy entry point disabled for private-edition installation |
 | `install-datamanagementd.sh` | datamanagementd 一键安装脚本 |
 | `sub2api.service` | Systemd service unit file |
 | `sub2api-datamanagementd.service` | datamanagementd systemd service unit file |
@@ -33,16 +33,7 @@ This directory contains files for deploying Sub2API on Linux servers and Apple-s
 
 ## Apple container Deployment
 
-Apple-silicon Macs running macOS 26 can run the complete Sub2API, PostgreSQL, and Redis stack with Apple `container` 1.1.0 or newer:
-
-```bash
-./apple-container.sh init
-./apple-container.sh up
-./apple-container.sh status
-./apple-container.sh logs app -f
-```
-
-The script uses Apple named volumes, starts dependencies in order, and performs live readiness checks. The application container supervises the Sub2API process so the Web UI's update-and-restart flow can relaunch an updated binary. It does not provide host-level automatic startup; run `./apple-container.sh up` after a host reboot. Docker Compose remains the recommended production deployment path.
+The current PK workflow publishes only `linux/amd64`, so Apple-silicon startup is unavailable by default. The script requires an explicitly selected image from `ghcr.io/pengkang0322/sub2api` that has been verified to support `linux/arm64`; it never substitutes an upstream image. Existing stacks can still be inspected or stopped.
 
 See [APPLE_CONTAINER.md](./APPLE_CONTAINER.md) for configuration, upgrades, persistence, networking behavior, and limitations.
 
@@ -50,55 +41,25 @@ See [APPLE_CONTAINER.md](./APPLE_CONTAINER.md) for configuration, upgrades, pers
 
 ## Docker Deployment (Recommended)
 
-### Method 1: One-Click Deployment (Recommended)
+### Existing Production Deployment and Recovery
 
-Use the automated preparation script for the easiest setup:
+Use the private repository's [PK maintenance procedure](../PK_MAINTENANCE.md) and `docker-compose.pk.yml` overlay. It changes the application source while retaining the existing database, Redis, ports, environment, and data volumes. The legacy installation scripts are disabled because replacing production configuration could lose those settings.
 
-```bash
-# Download and run the preparation script
-curl -sSL https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/deploy/docker-deploy.sh | bash
+Authenticate the host to GHCR with a classic PAT that has `read:packages`. Set `UPDATE_GITHUB_TOKEN` separately for the running application's private Release API and asset downloads. See [DOCKER.md](DOCKER.md) for the two credentials and persistence behavior.
 
-# Or download first, then run
-curl -sSL https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/deploy/docker-deploy.sh -o docker-deploy.sh
-chmod +x docker-deploy.sh
-./docker-deploy.sh
-```
+### New Deployment
 
-**What the script does:**
-- Downloads `docker-compose.local.yml` and `.env.example`
-- Automatically generates secure secrets (JWT_SECRET, TOTP_ENCRYPTION_KEY, POSTGRES_PASSWORD)
-- Creates `.env` file with generated secrets
-- Creates necessary data directories (data/, postgres_data/, redis_data/)
-- **Displays generated credentials** (POSTGRES_PASSWORD, JWT_SECRET, etc.)
-
-**After running the script:**
-```bash
-# Start services
-docker compose -f docker-compose.local.yml up -d
-
-# View logs
-docker compose -f docker-compose.local.yml logs -f sub2api
-
-# If admin password was auto-generated, find it in logs:
-docker compose -f docker-compose.local.yml logs sub2api | grep "admin password"
-
-# Access Web UI
-# http://localhost:8080
-```
-
-### Method 2: Manual Deployment
-
-If you prefer manual control:
+For a new, empty deployment only, after completing the credentials and version selection in the PK guide:
 
 ```bash
-# Clone repository
-git clone https://github.com/Wei-Shaw/sub2api.git
+# Clone the private repository with an authenticated GitHub CLI session
+gh repo clone pengkang0322/sub2api
 cd sub2api/deploy
 
 # Configure environment
 cp .env.example .env
 chmod 600 .env
-nano .env  # Set POSTGRES_PASSWORD and other required variables
+nano .env  # Set SUB2API_PK_VERSION, UPDATE_GITHUB_TOKEN, POSTGRES_PASSWORD, etc.
 
 # Generate secure secrets (recommended)
 JWT_SECRET=$(openssl rand -hex 32)
@@ -126,7 +87,7 @@ docker compose -f docker-compose.local.yml logs -f sub2api
 | **docker-compose.local.yml** | Local directories (./data, ./postgres_data, ./redis_data) | ✅ Easy (tar entire directory) | Production, need frequent backups/migration |
 | **docker-compose.yml** | Named volumes (/var/lib/docker/volumes/) | ⚠️ Requires docker commands | Simple setup, don't need migration |
 
-**Recommendation:** Use `docker-compose.local.yml` (deployed by `docker-deploy.sh`) for easier data management and migration.
+Use `docker-compose.local.yml` for a new deployment that should keep data in local directories. Keep an existing deployment's current volume layout when applying the PK overlay.
 
 ### How Auto-Setup Works
 
@@ -260,7 +221,8 @@ docker compose down -v
 | `ADMIN_EMAIL` | No | `admin@sub2api.local` | Admin email |
 | `ADMIN_PASSWORD` | No | *(auto-generated)* | Admin password |
 | `TZ` | No | `Asia/Shanghai` | Timezone |
-| `UPDATE_GITHUB_TOKEN` | No | *(empty)* | Token for `api.github.com` release checks only; asset downloads remain anonymous. |
+| `UPDATE_GITHUB_TOKEN` | Yes | *(empty)* | Token with Contents: read on `pengkang0322/sub2api`, used for private release checks and asset downloads. |
+| `SUB2API_PK_VERSION` | No | `latest` | Private GHCR tag; select the backup-compatible approved version for recovery. |
 | `GEMINI_OAUTH_CLIENT_ID` | No | *(builtin)* | Google OAuth client ID (Gemini OAuth). Leave empty to use the built-in Gemini CLI client. |
 | `GEMINI_OAUTH_CLIENT_SECRET` | No | *(builtin)* | Google OAuth client secret (Gemini OAuth). Leave empty to use the built-in Gemini CLI client. |
 | `GEMINI_OAUTH_SCOPES` | No | *(default)* | OAuth scopes (Gemini OAuth) |
@@ -268,7 +230,7 @@ docker compose down -v
 
 See `.env.example` for all available options.
 
-> **Note:** The `docker-deploy.sh` script automatically generates `JWT_SECRET`, `TOTP_ENCRYPTION_KEY`, and `POSTGRES_PASSWORD` for you.
+> For a new deployment, configure these secrets in the protected environment file. During migration or recovery, retain the original `JWT_SECRET`, `TOTP_ENCRYPTION_KEY`, and database credentials from the deployment backup.
 
 ### Easy Migration (Local Directory Version)
 
@@ -393,39 +355,9 @@ GEMINI_OAUTH_CLIENT_SECRET=GOCSPX-your-client-secret
 
 ## Binary Installation
 
-For production servers using systemd.
+The legacy binary installer is disabled for the PK private edition. Follow [PK_MAINTENANCE.md](../PK_MAINTENANCE.md) for installation, updates, and recovery; all program downloads come from the private repository.
 
-### One-Line Installation
-
-```bash
-curl -sSL https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/deploy/install.sh | sudo bash
-```
-
-### Manual Installation
-
-1. Download the latest release from [GitHub Releases](https://github.com/Wei-Shaw/sub2api/releases)
-2. Extract and copy the binary to `/opt/sub2api/`
-3. Copy `sub2api.service` to `/etc/systemd/system/`
-4. Run:
-   ```bash
-   sudo systemctl daemon-reload
-   sudo systemctl enable sub2api
-   sudo systemctl start sub2api
-   ```
-5. Open the Setup Wizard in your browser to complete configuration
-
-### Commands
-
-```bash
-# Install
-sudo ./install.sh
-
-# Upgrade
-sudo ./install.sh upgrade
-
-# Uninstall
-sudo ./install.sh uninstall
-```
+Private release artifacts are available through authenticated access to [pengkang0322/sub2api Releases](https://github.com/pengkang0322/sub2api/releases). Existing systemd installations require an explicit migration plan preserving their paths and configuration; do not replace them with a legacy template.
 
 ### Service Management
 

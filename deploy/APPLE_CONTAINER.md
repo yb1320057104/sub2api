@@ -1,16 +1,18 @@
 # Apple container Deployment
 
-Sub2API can run as a native three-service stack with Apple's `container` CLI. This workflow runs the published Sub2API, PostgreSQL, and Redis OCI images without Docker Desktop or a Docker-compatible daemon.
+The PK private release currently publishes only `linux/amd64`; native Apple-silicon startup is unavailable by default. The procedure below applies only after a verified `linux/arm64` image and update archive have been published in `pengkang0322/sub2api`. Installation and recovery must continue to use that private source.
 
 ## Support Level
 
-Apple `container` support is intended for local development and operator-managed deployments on a Mac. Docker Compose remains the recommended production deployment path.
+`apple-container.sh` refuses startup, restart, and image pulls until `APPLE_CONTAINER_SUB2API_IMAGE` explicitly selects a verified private arm64 tag or digest. Empty values, `latest`, and images outside `ghcr.io/pengkang0322/sub2api` are rejected. Status, logs, stop, and resource management remain available for existing stacks. Use the [PK maintenance guide](../PK_MAINTENANCE.md) for the currently supported Linux amd64 production deployment.
 
 Apple `container` 1.1 does not provide restart policies, automatic startup, workload health scheduling, a Docker API socket, or full Compose orchestration. `apple-container.sh` supplies ordered startup and readiness checks when you invoke it. Inside the application container, a small supervisor relaunches the Sub2API process after the Web UI requests a restart; it does not restart stopped containers or the stack itself.
 
 ## Requirements
 
 - A Mac with Apple silicon
+- A published private `linux/arm64` PK image and matching Release archive; these are not produced by the current release workflow
+- GHCR authentication in the Apple runtime, using a classic PAT with `read:packages`, plus `UPDATE_GITHUB_TOKEN` with private-repository Contents: read for the application
 - macOS 26 or newer
 - Apple `container` 1.1.0 or newer
 - `openssl` for generating initial secrets
@@ -25,13 +27,15 @@ container --version
 ## Quick Start
 
 ```bash
-git clone https://github.com/Wei-Shaw/sub2api.git
+# Requires an authenticated GitHub CLI session with private repository access.
+gh repo clone pengkang0322/sub2api
 cd sub2api/deploy
 
 # Creates .env with random PostgreSQL, JWT, and TOTP secrets.
 ./apple-container.sh init
 
-# Review optional settings before startup.
+# Set a verified private arm64 image and UPDATE_GITHUB_TOKEN before startup.
+# Current amd64-only releases cannot be used here.
 nano .env
 
 # Creates volumes/network/containers, waits for dependencies, and starts Sub2API.
@@ -100,7 +104,8 @@ export SUB2API_ENV_FILE=/absolute/path/to/sub2api.env
 Apple-specific image overrides are available:
 
 ```dotenv
-APPLE_CONTAINER_SUB2API_IMAGE=weishaw/sub2api:latest
+# Fill only after a private arm64 release exists; use its exact tag or digest.
+APPLE_CONTAINER_SUB2API_IMAGE=
 APPLE_CONTAINER_POSTGRES_IMAGE=postgres:18-alpine
 APPLE_CONTAINER_REDIS_IMAGE=redis:8-alpine
 ```
@@ -162,6 +167,8 @@ The script checks the published `/health` endpoint from macOS before reporting s
 
 The Web UI uses the same update flow as the Docker deployment: it downloads a release over GitHub, atomically replaces the active executable, and asks the application to restart. Docker supplies the restart policy in a Compose deployment; `apple-container.sh` supplies an equivalent process supervisor inside the Apple application container.
 
+Both checks and downloads use `UPDATE_GITHUB_TOKEN` against `pengkang0322/sub2api`. An arm64 deployment also requires private `linux_arm64` update archives; the current amd64-only release workflow cannot update it.
+
 The active executable lives in `sub2api-apple-data` so a later `up`, `restart`, or `up --recreate` does not discard an update downloaded from the Web UI. The script records the configured base image ID alongside it; when `APPLE_CONTAINER_SUB2API_IMAGE` resolves to a different image ID, the image's `/app/sub2api` becomes the new active executable. This keeps explicit image upgrades authoritative while preserving in-place updates across routine application-container recreation.
 
 If GitHub is not reachable directly, set `UPDATE_PROXY_URL` to a proxy address reachable from the Apple container VM. A proxy listening only on the Mac's `127.0.0.1` is not reachable as `127.0.0.1` from inside the VM; use an appropriately restricted host gateway listener instead.
@@ -199,7 +206,11 @@ To restore these backups into an existing stack, first ensure the image versions
 
 # Remove only the app container so a helper can mount its named volume.
 container delete sub2api-apple
-SUB2API_IMAGE=weishaw/sub2api:latest # Match APPLE_CONTAINER_SUB2API_IMAGE in .env.
+: "${SUB2API_IMAGE:?Set the same approved private arm64 image used by the backup}"
+case "$SUB2API_IMAGE" in
+  ghcr.io/pengkang0322/sub2api:*|ghcr.io/pengkang0322/sub2api@sha256:*) ;;
+  *) printf '%s\n' 'Recovery requires the private PK image.' >&2; exit 1 ;;
+esac
 container run --rm --name sub2api-apple-data-restore \
   --entrypoint /bin/sh \
   --volume sub2api-apple-data:/restore \
@@ -241,5 +252,5 @@ container system start
 - Health probes run during `up`, `restart`, and `status`; Apple `container` does not continuously schedule them.
 - Docker Compose, Testcontainers, Buildx, and tools requiring `/var/run/docker.sock` cannot use this runtime directly.
 - Named volume backup and restore must be tested before using this workflow for important data.
-- The script targets native `linux/arm64` images. The normal Sub2API release publishes an arm64 variant.
+- The script targets native `linux/arm64` images. Current PK releases publish only amd64, so this workflow remains unavailable until a private arm64 image and update archive are published.
 - Runtime environment values, including credentials, are retained in Apple container configuration and are visible to users who can inspect the local runtime.

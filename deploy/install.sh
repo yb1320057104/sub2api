@@ -2,7 +2,9 @@
 #
 # Sub2API Installation Script
 # Sub2API 安装脚本
-# Usage: curl -sSL https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/deploy/install.sh | bash
+# The legacy systemd installer is disabled for the private PK Docker deployment.
+# See https://github.com/pengkang0322/sub2api/blob/main/PK_MAINTENANCE.md
+# Open the private repository while signed in; anonymous curl downloads do not work.
 #
 
 set -e
@@ -31,7 +33,7 @@ CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 # Configuration
-GITHUB_REPO="Wei-Shaw/sub2api"
+GITHUB_REPO="pengkang0322/sub2api"
 INSTALL_DIR="/opt/sub2api"
 SERVICE_NAME="sub2api"
 SERVICE_USER="sub2api"
@@ -481,10 +483,25 @@ check_dependencies() {
 }
 
 # Authenticate only GitHub REST API requests. Release asset downloads must stay anonymous.
+private_deployment_required() {
+    cat >&2 <<'EOF'
+此旧安装/升级/回退脚本不适用于“小典专属”私库 Docker 部署，已停止执行。
+请登录 pengkang0322/sub2api，按 PK_MAINTENANCE.md 操作：
+https://github.com/pengkang0322/sub2api/blob/main/PK_MAINTENANCE.md
+
+部署或恢复使用 ghcr.io/pengkang0322/sub2api 的已确认 PK 版本。
+保留现有 Compose、数据库、数据卷和密钥，再合并 deploy/docker-compose.pk.yml。
+网页更新需 UPDATE_GITHUB_TOKEN（本私库 Contents: read）；私有镜像拉取需 GHCR 登录。
+本脚本不会下载匿名私库文件、回退到官方仓库或改动现有服务。
+EOF
+    return 1
+}
+
 github_api_curl() {
     local arg
     local expect_value=false
     local url
+    local api_path
 
     if [ "$#" -lt 1 ]; then
         echo "github_api_curl requires exactly one GitHub API URL" >&2
@@ -512,20 +529,26 @@ github_api_curl() {
         esac
     done
 
-    if [ "$expect_value" = true ] || [[ "$url" != https://api.github.com/* ]]; then
-        echo "github_api_curl requires exactly one GitHub API URL" >&2
+    if [ "$expect_value" = true ] || [[ "$url" != https://api.github.com/repos/pengkang0322/sub2api/* ]]; then
+        echo "github_api_curl only permits the pengkang0322/sub2api GitHub API" >&2
+        return 2
+    fi
+    api_path="${url#https://api.github.com/repos/pengkang0322/sub2api/}"
+    if [[ "$api_path" != releases && "$api_path" != releases/latest && ! "$api_path" =~ ^releases/tags/v[0-9]+\.[0-9]+\.[0-9]+(-pk\.[0-9]+)?$ ]]; then
+        echo "github_api_curl only permits private release metadata endpoints" >&2
         return 2
     fi
 
-    if [ -n "${UPDATE_GITHUB_TOKEN:-}" ]; then
-        if [[ "$UPDATE_GITHUB_TOKEN" == *$'\n'* || "$UPDATE_GITHUB_TOKEN" == *$'\r'* || "$UPDATE_GITHUB_TOKEN" == *'"'* || "$UPDATE_GITHUB_TOKEN" == *'\'* ]]; then
-            echo "UPDATE_GITHUB_TOKEN contains unsupported characters" >&2
-            return 2
-        fi
-        printf 'header = "Authorization: Bearer %s"\n' "$UPDATE_GITHUB_TOKEN" | UPDATE_GITHUB_TOKEN= GITHUB_TOKEN= GH_TOKEN= curl -q --globoff --config - "$@"
-    else
-        UPDATE_GITHUB_TOKEN= GITHUB_TOKEN= GH_TOKEN= curl -q --globoff "$@"
+    if [ -z "${UPDATE_GITHUB_TOKEN:-}" ]; then
+        echo "UPDATE_GITHUB_TOKEN with Contents: read for pengkang0322/sub2api is required" >&2
+        return 2
     fi
+
+    if [[ "$UPDATE_GITHUB_TOKEN" == *$'\n'* || "$UPDATE_GITHUB_TOKEN" == *$'\r'* || "$UPDATE_GITHUB_TOKEN" == *'"'* || "$UPDATE_GITHUB_TOKEN" == *'\'* ]]; then
+        echo "UPDATE_GITHUB_TOKEN contains unsupported characters" >&2
+        return 2
+    fi
+    printf 'header = "Authorization: Bearer %s"\n' "$UPDATE_GITHUB_TOKEN" | UPDATE_GITHUB_TOKEN= GITHUB_TOKEN= GH_TOKEN= curl -q --globoff --config - "$@"
 }
 
 # Get latest release version
@@ -613,59 +636,10 @@ get_current_version() {
     fi
 }
 
-# Download and extract
+# Private PK deployments are restored with their approved image/runtime workflow.
+# Reject even if a caller sources this file and invokes the legacy helper directly.
 download_and_extract() {
-    local version_num=${LATEST_VERSION#v}
-    local archive_name="sub2api_${version_num}_${OS}_${ARCH}.tar.gz"
-    local download_url="https://github.com/${GITHUB_REPO}/releases/download/${LATEST_VERSION}/${archive_name}"
-    local checksum_url="https://github.com/${GITHUB_REPO}/releases/download/${LATEST_VERSION}/checksums.txt"
-
-    print_info "$(msg 'downloading') ${archive_name}..."
-
-    # Create temp directory
-    TEMP_DIR=$(mktemp -d)
-    trap "rm -rf $TEMP_DIR" EXIT
-
-    # Download archive
-    if ! curl -sL "$download_url" -o "$TEMP_DIR/$archive_name"; then
-        print_error "$(msg 'download_failed')"
-        exit 1
-    fi
-
-    # Download and verify checksum
-    print_info "$(msg 'verifying_checksum')"
-    if curl -sL "$checksum_url" -o "$TEMP_DIR/checksums.txt" 2>/dev/null; then
-        local expected_checksum=$(grep "$archive_name" "$TEMP_DIR/checksums.txt" | awk '{print $1}')
-        local actual_checksum=$(sha256sum "$TEMP_DIR/$archive_name" | awk '{print $1}')
-
-        if [ "$expected_checksum" != "$actual_checksum" ]; then
-            print_error "$(msg 'checksum_failed')"
-            print_error "Expected: $expected_checksum"
-            print_error "Actual: $actual_checksum"
-            exit 1
-        fi
-        print_success "$(msg 'checksum_verified')"
-    else
-        print_warning "$(msg 'checksum_not_found')"
-    fi
-
-    # Extract
-    print_info "$(msg 'extracting')"
-    tar -xzf "$TEMP_DIR/$archive_name" -C "$TEMP_DIR"
-
-    # Create install directory
-    mkdir -p "$INSTALL_DIR"
-
-    # Copy binary
-    cp "$TEMP_DIR/sub2api" "$INSTALL_DIR/sub2api"
-    chmod +x "$INSTALL_DIR/sub2api"
-
-    # Copy deploy files if they exist in the archive
-    if [ -d "$TEMP_DIR/deploy" ]; then
-        cp -r "$TEMP_DIR/deploy/"* "$INSTALL_DIR/" 2>/dev/null || true
-    fi
-
-    print_success "$(msg 'binary_installed') $INSTALL_DIR/sub2api"
+    private_deployment_required
 }
 
 # Create system user
@@ -718,7 +692,7 @@ install_service() {
     cat > /etc/systemd/system/sub2api.service << EOF
 [Unit]
 Description=Sub2API - AI API Gateway Platform
-Documentation=https://github.com/Wei-Shaw/sub2api
+Documentation=https://github.com/pengkang0322/sub2api/blob/main/PK_MAINTENANCE.md
 After=network.target postgresql.service redis.service
 Wants=postgresql.service redis.service
 
@@ -1030,6 +1004,11 @@ uninstall() {
 
 # Main
 main() {
+    # Keep historical helpers for upstream comparison, but never run the old
+    # systemd lifecycle against the persistent PK Docker runtime.
+    private_deployment_required
+    return 1
+
     # Parse flags first
     local target_version=""
     local positional_args=()

@@ -43,6 +43,26 @@ if "${SCRIPT}" up >/dev/null 2>&1; then
 fi
 chmod 600 "${ENV_FILE}"
 
+if unsupported_output="$("${SCRIPT}" up 2>&1)"; then
+    fail "up accepted the default amd64-only private release on Apple arm64"
+fi
+[[ "${unsupported_output}" == *"linux/amd64 only"* ]] || \
+    fail "up did not explain the unavailable private arm64 release"
+assert_missing "${STATE_DIR}/containers/sub2api-apple"
+assert_missing "${STATE_DIR}/networks/sub2api-apple"
+
+printf '\nAPPLE_CONTAINER_SUB2API_IMAGE=weishaw/sub2api:latest\nUPDATE_GITHUB_TOKEN=fixture-private-release-token\n' >>"${ENV_FILE}"
+if upstream_output="$("${SCRIPT}" up 2>&1)"; then
+    fail "up accepted an application image outside the private repository"
+fi
+[[ "${upstream_output}" == *"must belong to ghcr.io/pengkang0322/sub2api"* ]] || \
+    fail "up did not explain the private image source requirement"
+assert_missing "${STATE_DIR}/containers/sub2api-apple"
+
+# The fake runtime models an explicitly published private arm64 image.
+# Real PK releases currently publish amd64 only and leave this setting empty.
+printf '\nAPPLE_CONTAINER_SUB2API_IMAGE=ghcr.io/pengkang0322/sub2api:fixture-arm64\nUPDATE_GITHUB_TOKEN=fixture-private-release-token\n' >>"${ENV_FILE}"
+
 "${SCRIPT}" up
 assert_exists "${STATE_DIR}/containers/sub2api-apple"
 assert_exists "${STATE_DIR}/containers/sub2api-apple-postgres"
@@ -61,6 +81,15 @@ grep -q '^APPLE_CONTAINER_SUB2API_IMAGE_ID=fake-image-id$' "${STATE_DIR}/env-fil
 [[ ! -s "${STATE_DIR}/network-subnets/sub2api-apple" ]] || \
     fail "up passed a subnet when APPLE_CONTAINER_NETWORK_SUBNET was unset"
 "${SCRIPT}" status >/dev/null
+
+printf '\nAPPLE_CONTAINER_SUB2API_IMAGE=weishaw/sub2api:latest\n' >>"${ENV_FILE}"
+if "${SCRIPT}" restart >/dev/null 2>&1; then
+    fail "restart accepted an application image outside the private repository"
+fi
+assert_exists "${STATE_DIR}/running/sub2api-apple"
+assert_exists "${STATE_DIR}/running/sub2api-apple-postgres"
+assert_exists "${STATE_DIR}/running/sub2api-apple-redis"
+printf '\nAPPLE_CONTAINER_SUB2API_IMAGE=ghcr.io/pengkang0322/sub2api:fixture-arm64\n' >>"${ENV_FILE}"
 
 "${SCRIPT}" up --recreate
 assert_exists "${STATE_DIR}/running/sub2api-apple"
