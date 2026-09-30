@@ -1166,8 +1166,8 @@ func rewriteOpenAICacheConversionHTTPBody(account *Account, body []byte) ([]byte
 				line = "data: " + string(converted)
 			}
 		}
-		rewritten.WriteString(line)
-		rewritten.WriteByte('\n')
+		_, _ = rewritten.WriteString(line)
+		_ = rewritten.WriteByte('\n')
 	}
 	if err := frames.Err(); err != nil {
 		return nil, err
