@@ -49,6 +49,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 }
 
 func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, startTime time.Time, originalModel, mappedModel, reasoningEffort string) (*openaiStreamingResult, error) {
+	cacheConversionEnabled := account.IsCacheConversionEnabled()
 	observer := upstreamResponseModelObserverFromContext(c)
 	if observer == nil {
 		observer = beginUpstreamResponseModelObservation(c)
@@ -83,6 +84,10 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no")
+	if cacheConversionEnabled {
+		c.Writer.Header().Del("Content-Length")
+		attemptResponseHeaders.Del("Content-Length")
+	}
 
 	// Pass through other headers
 	if !stageFirstOutput && resp.Header.Get("x-request-id") != "" {
@@ -168,7 +173,7 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 	if stageFirstOutput {
 		scanner.Split(openAIFirstOutputDynamicScanLines(&firstOutputScanGuard))
 	}
-	documentScanner := newOpenAISSEJSONDocumentScanner(scanner)
+	documentScanner := newOpenAICacheConversionSSEScanner(newOpenAISSEJSONDocumentScanner(scanner), cacheConversionEnabled)
 
 	streamInterval := time.Duration(0)
 	if s.cfg != nil && s.cfg.Gateway.StreamDataIntervalTimeout > 0 {
@@ -486,6 +491,10 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 		if data, ok := extractOpenAISSEDataLine(line); ok {
 			dataBytes := []byte(data)
 			eventType := effectiveOpenAISSEEventType(dataBytes, pendingSSEEventType)
+			if cacheConversionEnabled {
+				// Keep upstream usage for billing before any client-only mutation.
+				s.parseSSEUsageBytesWithType(dataBytes, eventType, usage)
+			}
 			if codexFailureTerminal && sawBareError && !sawResponseFailed &&
 				(eventType == "response.completed" || eventType == "response.done") {
 				// A later successful terminal is authoritative over a pending bare
@@ -697,6 +706,18 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 				return
 			}
 
+			if cacheConversionEnabled {
+				outputData, _ := extractOpenAISSEDataLine(line)
+				converted, err := RewriteOpenAICacheConversionJSON(account, []byte(outputData))
+				if err != nil {
+					streamEarlyErr = fmt.Errorf("rewrite OpenAI response cache usage: %w", err)
+					return
+				}
+				if !bytes.Equal(converted, []byte(outputData)) {
+					line = "data: " + string(converted)
+				}
+			}
+
 			// 写入客户端（客户端断开后继续 drain 上游）
 			if !clientDisconnected && !failureDelivered && !suppressCurrentEvent {
 				shouldFlush := queueDrained && (clientOutputStarted || startsClientOutput)
@@ -720,7 +741,9 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 				firstTokenMs = &ms
 				stopFirstOutputTimer()
 			}
-			s.parseSSEUsageBytesWithType(dataBytes, eventType, usage)
+			if !cacheConversionEnabled {
+				s.parseSSEUsageBytesWithType(dataBytes, eventType, usage)
+			}
 			return
 		}
 
@@ -1028,6 +1051,128 @@ func extractOpenAISSEEventLine(line string) (string, bool) {
 type openAICompatSSEFrame struct {
 	EventType string
 	Data      string
+}
+
+// Cache conversion needs complete JSON frames: a usage object may span several
+// data lines. Disabled accounts keep the existing scanner and wire behavior.
+type openAICacheConversionSSEScanner struct {
+	source  *openAISSEJSONDocumentScanner
+	enabled bool
+	pending []string
+	current string
+	err     error
+}
+
+func newOpenAICacheConversionSSEScanner(source *openAISSEJSONDocumentScanner, enabled bool) *openAICacheConversionSSEScanner {
+	return &openAICacheConversionSSEScanner{source: source, enabled: enabled}
+}
+
+func (s *openAICacheConversionSSEScanner) Scan() bool {
+	if !s.enabled {
+		if !s.source.Scan() {
+			return false
+		}
+		s.current = s.source.Text()
+		return true
+	}
+	if s.err != nil {
+		return false
+	}
+	if len(s.pending) == 0 {
+		var lines, dataLines []string
+		size := 0
+		for s.source.Scan() {
+			line := s.source.Text()
+			size += len(line) + 1
+			if size > maxOpenAIConcatenatedJSONBytes {
+				s.err = fmt.Errorf("OpenAI cache conversion SSE frame exceeds %d bytes", maxOpenAIConcatenatedJSONBytes)
+				return false
+			}
+			lines = append(lines, line)
+			if data, ok := extractOpenAISSEDataLine(line); ok {
+				dataLines = append(dataLines, data)
+			}
+			if line == "" {
+				break
+			}
+		}
+		if len(lines) == 0 {
+			return false
+		}
+		if len(dataLines) > 1 {
+			var compact bytes.Buffer
+			if err := json.Compact(&compact, []byte(strings.Join(dataLines, "\n"))); err != nil {
+				// Retain compatibility with upstreams that omit blank separators
+				// between complete JSON data lines. Each still passes the rewriter.
+				for _, data := range dataLines {
+					trimmed := strings.TrimSpace(data)
+					if trimmed != "" && trimmed != "[DONE]" && !json.Valid([]byte(trimmed)) {
+						s.err = fmt.Errorf("parse multiline OpenAI cache conversion SSE frame: %w", err)
+						return false
+					}
+				}
+				s.pending = lines
+			} else {
+				// Keep metadata ahead of the complete data payload so an event field
+				// between data lines still applies to that payload.
+				for _, line := range lines {
+					if _, isData := extractOpenAISSEDataLine(line); !isData && line != "" {
+						s.pending = append(s.pending, line)
+					}
+				}
+				s.pending = append(s.pending, "data: "+compact.String())
+				if lines[len(lines)-1] == "" {
+					s.pending = append(s.pending, "")
+				}
+			}
+		} else {
+			s.pending = lines
+		}
+	}
+	s.current = s.pending[0]
+	s.pending = s.pending[1:]
+	return true
+}
+
+func (s *openAICacheConversionSSEScanner) Text() string { return s.current }
+
+func (s *openAICacheConversionSSEScanner) Err() error {
+	if s.err != nil {
+		return s.err
+	}
+	return s.source.Err()
+}
+
+// Rewrite only the downstream body. Callers must extract billing usage first.
+func rewriteOpenAICacheConversionHTTPBody(account *Account, body []byte) ([]byte, error) {
+	if !account.IsCacheConversionEnabled() {
+		return body, nil
+	}
+	if !bodyHasSSEFraming(body) {
+		return RewriteOpenAICacheConversionJSON(account, body)
+	}
+	scanner := bufio.NewScanner(bytes.NewReader(body))
+	scanner.Buffer(make([]byte, 64*1024), maxOpenAIConcatenatedJSONBytes)
+	frames := newOpenAICacheConversionSSEScanner(newOpenAISSEJSONDocumentScanner(scanner), true)
+	var rewritten bytes.Buffer
+	for frames.Scan() {
+		line := frames.Text()
+		if data, ok := extractOpenAISSEDataLine(line); ok {
+			converted, err := RewriteOpenAICacheConversionJSON(account, []byte(data))
+			if err != nil {
+				return nil, err
+			}
+			if !bytes.Equal(converted, []byte(data)) {
+				line = "data: " + string(converted)
+			}
+		}
+		rewritten.WriteString(line)
+		rewritten.WriteByte('\n')
+	}
+	if err := frames.Err(); err != nil {
+		return nil, err
+	}
+	return rewritten.Bytes(), nil
 }
 
 type openAICompatSSEFrameParser struct {
@@ -1675,6 +1820,13 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 		}
 	}
 
+	body, err = rewriteOpenAICacheConversionHTTPBody(account, body)
+	if err != nil {
+		return nil, fmt.Errorf("rewrite OpenAI response cache usage: %w", err)
+	}
+	if account.IsCacheConversionEnabled() {
+		c.Writer.Header().Del("Content-Length")
+	}
 	if !writeOpenAICompactSSEBridge(c, resp.StatusCode, body) {
 		c.Data(resp.StatusCode, contentType, body)
 	}
@@ -1781,6 +1933,14 @@ func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Conte
 		if contentType == "" {
 			contentType = "text/event-stream"
 		}
+	}
+	convertedBody, conversionErr := rewriteOpenAICacheConversionHTTPBody(account, body)
+	if conversionErr != nil {
+		return nil, fmt.Errorf("rewrite OpenAI SSE response cache usage: %w", conversionErr)
+	}
+	body = convertedBody
+	if account.IsCacheConversionEnabled() {
+		c.Writer.Header().Del("Content-Length")
 	}
 	if !writeOpenAICompactSSEBridge(c, resp.StatusCode, body) {
 		c.Data(resp.StatusCode, contentType, body)

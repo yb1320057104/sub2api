@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/cacheconversion"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
@@ -664,13 +665,14 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 	// accumulated delta events so the client receives the full content.
 	acc.SupplementResponseOutput(finalResponse)
 
+	alignResponsesCacheUsageForConversion(account, finalResponse.Usage, usage)
 	anthropicResp := apicompat.ResponsesToAnthropic(finalResponse, originalModel)
 
 	if s.responseHeaderFilter != nil {
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	}
 	c.Header("Content-Type", "application/json; charset=utf-8")
-	c.JSON(http.StatusOK, anthropicResp)
+	writeErr := writeCacheConvertedJSON(c, account, anthropicResp, cacheconversion.Anthropic)
 
 	result := &OpenAIForwardResult{
 		RequestID:                     requestID,
@@ -694,7 +696,7 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 			}
 		}
 	}
-	return result, nil
+	return result, writeErr
 }
 
 func isOpenAICompatResponsesTerminalEvent(eventType string) bool {
@@ -1108,6 +1110,7 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 		}
 
 		// Convert to Anthropic events
+		alignResponsesEventCacheUsageForConversion(account, &event, usage)
 		events := apicompat.ResponsesEventToAnthropicEvents(&event, state)
 		if !clientDisconnected {
 			for _, evt := range events {
@@ -1118,6 +1121,11 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 						zap.String("request_id", requestID),
 					)
 					continue
+				}
+				sse, err = rewriteCacheConvertedSSE(account, sse, cacheconversion.Anthropic)
+				if err != nil {
+					streamNonFailoverErr = err
+					return true
 				}
 				writeStreamHeaders()
 				if _, err := fmt.Fprint(c.Writer, sse); err != nil {
@@ -1149,6 +1157,10 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 				sse, err := apicompat.ResponsesAnthropicEventToSSE(evt)
 				if err != nil {
 					continue
+				}
+				sse, err = rewriteCacheConvertedSSE(account, sse, cacheconversion.Anthropic)
+				if err != nil {
+					return resultWithUsage(), err
 				}
 				writeStreamHeaders()
 				if _, err := fmt.Fprint(c.Writer, sse); err != nil {
@@ -1386,4 +1398,33 @@ func copyOpenAIUsageFromResponsesUsage(usage *apicompat.ResponsesUsage) OpenAIUs
 		result.CacheReadInputTokens = usage.InputTokensDetails.CachedTokens
 	}
 	return result
+}
+
+// Compatibility structs can preserve conflicting aliases even after their
+// decoder has chosen a canonical creation count. Align the outgoing copy with
+// the usage selected for billing before omitempty can drop an explicit zero.
+func alignResponsesCacheUsageForConversion(account *Account, usage *apicompat.ResponsesUsage, raw OpenAIUsage) {
+	if !account.IsCacheConversionEnabled() || usage == nil {
+		return
+	}
+	usage.InputTokens = raw.InputTokens
+	usage.CacheCreationInputTokens = raw.CacheCreationInputTokens
+	details := apicompat.ResponsesInputTokensDetails{}
+	if usage.InputTokensDetails != nil {
+		details = *usage.InputTokensDetails
+	}
+	details.CachedTokens = raw.CacheReadInputTokens
+	details.CacheWriteTokens = raw.CacheCreationInputTokens
+	details.CacheCreationTokens = raw.CacheCreationInputTokens
+	usage.InputTokensDetails = &details
+}
+
+func alignResponsesEventCacheUsageForConversion(account *Account, event *apicompat.ResponsesStreamEvent, raw OpenAIUsage) {
+	if !account.IsCacheConversionEnabled() || event == nil {
+		return
+	}
+	alignResponsesCacheUsageForConversion(account, event.Usage, raw)
+	if event.Response != nil {
+		alignResponsesCacheUsageForConversion(account, event.Response.Usage, raw)
+	}
 }

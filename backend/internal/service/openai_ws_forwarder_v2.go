@@ -472,9 +472,14 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		pendingFlushEvents = 0
 		lastFlushAt = time.Now()
 	}
-	emitStreamMessage := func(message []byte, forceFlush bool) {
+	emitStreamMessage := func(message []byte, forceFlush bool) error {
 		if clientDisconnected {
-			return
+			return nil
+		}
+		// Usage has already been parsed from the original upstream event.
+		message, err := RewriteOpenAICacheConversionJSON(account, message)
+		if err != nil {
+			return fmt.Errorf("rewrite websocket SSE cache usage: %w", err)
 		}
 		frame := make([]byte, 0, len(message)+8)
 		frame = append(frame, "data: "...)
@@ -485,18 +490,21 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 			wroteDownstream = true
 			pendingFlushEvents++
 			flushStreamWriter(forceFlush)
-			return
+			return nil
 		}
 		markClientDisconnected("downstream_write_error")
 		logger.LegacyPrintf("service.openai_gateway", "[OpenAI WS Mode] client disconnected, continue draining upstream: account=%d", account.ID)
+		return nil
 	}
-	flushBufferedStreamEvents := func(reason string) {
+	flushBufferedStreamEvents := func(reason string) error {
 		if len(bufferedStreamEvents) == 0 {
-			return
+			return nil
 		}
 		flushed := len(bufferedStreamEvents)
 		for _, buffered := range bufferedStreamEvents {
-			emitStreamMessage(buffered, false)
+			if err := emitStreamMessage(buffered, false); err != nil {
+				return err
+			}
 		}
 		bufferedStreamEvents = bufferedStreamEvents[:0]
 		flushStreamWriter(true)
@@ -512,6 +520,7 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 				clientDisconnected,
 			)
 		}
+		return nil
 	}
 
 	// Keep per-read timeouts unchanged for connected clients. Once a client
@@ -725,8 +734,12 @@ readLoop:
 			statusCode := openAIWSErrorHTTPStatusFromRaw(errCodeRaw, errTypeRaw)
 			setOpsUpstreamError(c, statusCode, errMsg, "")
 			if reqStream && !clientDisconnected {
-				flushBufferedStreamEvents("error_event")
-				emitStreamMessage(message, true)
+				if err := flushBufferedStreamEvents("error_event"); err != nil {
+					return resultWithUsage(), err
+				}
+				if err := emitStreamMessage(message, true); err != nil {
+					return resultWithUsage(), err
+				}
 			}
 			if !reqStream {
 				c.JSON(statusCode, gin.H{
@@ -760,8 +773,12 @@ readLoop:
 					)
 				}
 			} else {
-				flushBufferedStreamEvents(eventType)
-				emitStreamMessage(message, isTerminalEvent)
+				if err := flushBufferedStreamEvents(eventType); err != nil {
+					return resultWithUsage(), err
+				}
+				if err := emitStreamMessage(message, isTerminalEvent); err != nil {
+					return resultWithUsage(), err
+				}
 			}
 		} else {
 			if responseField.Exists() && responseField.Type == gjson.JSON {
@@ -814,6 +831,10 @@ readLoop:
 			responseID = strings.TrimSpace(gjson.GetBytes(finalResponse, "id").String())
 		}
 
+		finalResponse, err = RewriteOpenAICacheConversionJSON(account, finalResponse)
+		if err != nil {
+			return resultWithUsage(), fmt.Errorf("rewrite websocket response cache usage: %w", err)
+		}
 		c.Data(http.StatusOK, "application/json", finalResponse)
 	} else {
 		flushStreamWriter(true)

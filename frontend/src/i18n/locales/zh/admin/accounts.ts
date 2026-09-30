@@ -741,6 +741,11 @@ export default {
         flattenNamespacesDesc:
           '默认关闭：/responses 上的 namespace 工具声明原样转发，这正是 ChatGPT Codex 后端期望的形态。仅当该 OAuth 账号指向不认识 namespace 的兼容上游时才开启——摊平会把工具改名为 namespace__tool，使按 functions.<命名空间>.<工具> 寻址的模型（如 gpt-5.6 多智能体）无法调用。压缩（compact）请求不受该开关影响，始终摊平。',
         longContextBilling: 'API 长上下文计费',
+        cacheConversion: '缓存转换',
+        cacheConversionDesc: '默认关闭。开启后，将缓存创建 tokens × 转换倍率向下取整后加入缓存读取，并清零缓存创建量；原有缓存读取量不变。计费、使用记录和下游 usage 同步转换，关闭后按原逻辑透传。',
+        cacheConversionMultiplier: '转换倍率',
+        cacheConversionMultiplierHint: '默认 1，允许 0 和小数。倍率为 0 时，缓存创建部分不计费。',
+        cacheConversionMultiplierInvalid: '请输入大于或等于 0 的有限数字，转换倍率不能为空。',
         longContextBillingDesc: '默认关闭。仅当该账号的上游会按模型阈值收取 OpenAI API 长上下文费率时开启。',
         responsesWebsocketsV2: 'Responses WebSocket v2',
         responsesWebsocketsV2Desc:

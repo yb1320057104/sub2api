@@ -29,6 +29,7 @@ type openAIWSClientFrameConn struct {
 	// model identifier they supplied for the current turn.
 	restoreResponseModel func([]byte) []byte
 	restoreToolNames     func([]byte) []byte
+	rewriteCacheUsage    func([]byte) ([]byte, error)
 }
 
 // openAIWSPolicyEnforcingFrameConn wraps a client-side FrameConn and runs
@@ -650,6 +651,15 @@ func (c *openAIWSClientFrameConn) WriteFrame(ctx context.Context, msgType coderw
 		if c.restoreToolNames != nil {
 			payload = c.restoreToolNames(payload)
 		}
+		// The relay has already captured the original usage for accounting.
+		// Transform only the payload being written to the downstream client.
+		if c.rewriteCacheUsage != nil {
+			var err error
+			payload, err = c.rewriteCacheUsage(payload)
+			if err != nil {
+				return fmt.Errorf("rewrite websocket cache usage: %w", err)
+			}
+		}
 	}
 	return c.conn.Write(ctx, msgType, payload)
 }
@@ -968,6 +978,9 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 		},
 		restoreToolNames: func(payload []byte) []byte {
 			return restoreCodexToolNamesFromContext(c, payload)
+		},
+		rewriteCacheUsage: func(payload []byte) ([]byte, error) {
+			return RewriteOpenAICacheConversionJSON(account, payload)
 		},
 	}
 	policyClientConn := &openAIWSPolicyEnforcingFrameConn{

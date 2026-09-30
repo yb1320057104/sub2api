@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/cacheconversion"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
@@ -296,7 +297,14 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 	}
 	requestID := resp.Header.Get("x-request-id")
 	writeStreamHeaders := s.newStreamHeaderWriter(c, resp.Header)
-	scanner := s.newUpstreamSSEScanner(resp.Body)
+	var scanner interface {
+		Scan() bool
+		Text() string
+		Err() error
+	} = s.newUpstreamSSEScanner(resp.Body)
+	if account.IsCacheConversionEnabled() {
+		scanner = newOpenAICacheConversionSSEScanner(newOpenAISSEJSONDocumentScanner(s.newUpstreamSSEScanner(resp.Body)), true)
+	}
 
 	var usage OpenAIUsage
 	var firstTokenMs *int
@@ -305,6 +313,7 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 	pendingLines := make([]string, 0, 8)
 	refusalDetector := newOpenAIChatSilentRefusalDetector(requestBodyLen)
 	var terminal openAIRawStreamTerminalState
+	var conversionErr error
 
 	writeLine := func(line string) {
 		if clientDisconnected {
@@ -360,6 +369,10 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 		line = stripEmptyChatToolCallIdentityFromSSELine(line)
 
 		line = s.replaceModelInSSELine(line, upstreamModel, originalModel)
+		line, conversionErr = rewriteCacheConvertedSSE(account, line, cacheconversion.OpenAI)
+		if conversionErr != nil {
+			break
+		}
 		writeLine(line)
 		if line == "" {
 			if !clientDisconnected && clientOutputStarted {
@@ -391,6 +404,9 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 		}
 	}
 
+	if conversionErr != nil {
+		return resultWithUsage(), conversionErr
+	}
 	scanErr := scanner.Err()
 	if scanErr != nil && !errors.Is(scanErr, context.Canceled) && !errors.Is(scanErr, context.DeadlineExceeded) {
 		logger.L().Warn("openai chat_completions raw: stream read error",
@@ -540,8 +556,14 @@ func (s *OpenAIGatewayService) bufferRawChatCompletions(
 	} else {
 		c.Writer.Header().Set("Content-Type", "application/json")
 	}
-	c.Writer.WriteHeader(http.StatusOK)
-	_, _ = c.Writer.Write(respBody)
+	respBody, conversionErr := RewriteOpenAICacheConversionJSON(account, respBody)
+	if conversionErr == nil {
+		if account.IsCacheConversionEnabled() {
+			c.Writer.Header().Del("Content-Length")
+		}
+		c.Writer.WriteHeader(http.StatusOK)
+		_, _ = c.Writer.Write(respBody)
+	}
 
 	return &OpenAIForwardResult{
 		RequestID:                     requestID,
@@ -557,7 +579,7 @@ func (s *OpenAIGatewayService) bufferRawChatCompletions(
 		ServiceTier:                   resolvedOpenAIUpstreamServiceTier(c, serviceTier),
 		Stream:                        false,
 		Duration:                      time.Since(startTime),
-	}, nil
+	}, conversionErr
 }
 
 // buildOpenAIChatCompletionsURL 拼接上游 Chat Completions 端点 URL。

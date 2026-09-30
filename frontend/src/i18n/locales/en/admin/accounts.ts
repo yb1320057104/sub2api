@@ -623,6 +623,11 @@ export default {
         flattenNamespacesDesc:
           'Disabled by default: Codex namespace tool declarations are forwarded as-is on /responses, which is what the ChatGPT Codex backend expects. Enable only when this OAuth account is routed to a relay that rejects namespace tools — flattening renames them to namespace__tool, which breaks models that address collaboration tools as functions.<namespace>.<tool>. Compaction requests always flatten regardless of this switch.',
         longContextBilling: 'API long-context pricing',
+        cacheConversion: 'Cache conversion',
+        cacheConversionDesc: 'Disabled by default. Multiply cache creation tokens by the conversion multiplier, round down, and add them to cache read tokens. Cache creation is then set to zero; existing cache read tokens stay unchanged. Billing, usage records, and downstream usage use the converted counts. Disabled accounts keep the original behavior.',
+        cacheConversionMultiplier: 'Conversion multiplier',
+        cacheConversionMultiplierHint: 'Defaults to 1. Zero and decimals are allowed. A multiplier of 0 makes cache creation free.',
+        cacheConversionMultiplierInvalid: 'Enter a finite number greater than or equal to 0. The conversion multiplier cannot be empty.',
         longContextBillingDesc:
           'Disabled by default. Enable only when this account\'s upstream charges OpenAI API long-context rates above the model threshold.',
         responsesWebsocketsV2: 'Responses WebSocket v2',

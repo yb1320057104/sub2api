@@ -969,7 +969,17 @@ func (s *OpenAIGatewayService) handleOpenAIImagesNonStreamingResponse(
 		return OpenAIUsage{}, 0, nil, err
 	}
 	body = s.backfillOpenAIImagesB64JSON(ctx, account, parsed, body)
+	usage, _ := extractOpenAIUsageFromJSONBytes(body)
+	if account.IsCacheConversionEnabled() {
+		body, err = RewriteOpenAICacheConversionJSON(account, body)
+		if err != nil {
+			return usage, 0, nil, fmt.Errorf("rewrite images cache usage: %w", err)
+		}
+	}
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+	if account.IsCacheConversionEnabled() {
+		c.Writer.Header().Del("Content-Length")
+	}
 	contentType := "application/json"
 	if s.cfg != nil && !s.cfg.Security.ResponseHeaders.Enabled {
 		if upstreamType := resp.Header.Get("Content-Type"); upstreamType != "" {
@@ -978,7 +988,6 @@ func (s *OpenAIGatewayService) handleOpenAIImagesNonStreamingResponse(
 	}
 	c.Data(resp.StatusCode, contentType, body)
 
-	usage, _ := extractOpenAIUsageFromJSONBytes(body)
 	return usage, extractOpenAIImageCountFromJSONBytes(body), collectOpenAIResponseImageOutputSizesFromJSONBytes(body), nil
 }
 
@@ -987,8 +996,13 @@ func (s *OpenAIGatewayService) handleOpenAIImagesStreamingResponse(
 	c *gin.Context,
 	startTime time.Time,
 	direct *OpenAIImagesRequest,
+	accounts ...*Account,
 ) (OpenAIUsage, int, []string, *int, error) {
+	account := firstCacheConversionAccount(accounts)
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+	if direct != nil && account.IsCacheConversionEnabled() {
+		c.Writer.Header().Del("Content-Length")
+	}
 	contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
 	if contentType == "" {
 		contentType = "text/event-stream"
@@ -1013,7 +1027,11 @@ func (s *OpenAIGatewayService) handleOpenAIImagesStreamingResponse(
 	fallbackTooLarge := false
 	var sseData openAISSEDataAccumulator
 	var streamErr error
+	var cacheConversionErr error
 	finish := func() error {
+		if cacheConversionErr != nil {
+			return cacheConversionErr
+		}
 		if direct == nil {
 			return nil
 		}
@@ -1081,6 +1099,17 @@ func (s *OpenAIGatewayService) handleOpenAIImagesStreamingResponse(
 			}
 		}
 		if !clientDisconnected {
+			if cacheConversionErr != nil {
+				return
+			}
+			if account.IsCacheConversionEnabled() {
+				converted, err := RewriteOpenAICacheConversionJSON(account, dataBytes)
+				if err != nil {
+					cacheConversionErr = fmt.Errorf("rewrite images stream cache usage: %w", err)
+					return
+				}
+				dataBytes = converted
+			}
 			if err := s.writeOpenAIImagesStreamEvent(c, flusher, eventType, dataBytes); err != nil {
 				clientDisconnected = true
 			} else {

@@ -3213,6 +3213,48 @@
         </div>
       </div>
 
+      <div
+        v-if="form.platform === 'openai'"
+        class="border-t border-gray-200 pt-4 dark:border-dark-600"
+      >
+        <div class="flex items-center justify-between gap-4">
+          <div>
+            <label class="input-label mb-0">{{ t('admin.accounts.openai.cacheConversion') }}</label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.openai.cacheConversionDesc') }}
+            </p>
+          </div>
+          <Toggle
+            v-model="cacheConversionEnabled"
+            data-testid="openai-cache-conversion-toggle"
+            :aria-label="t('admin.accounts.openai.cacheConversion')"
+          />
+        </div>
+        <div v-if="cacheConversionEnabled" class="mt-3">
+          <label for="create-cache-conversion-multiplier" class="input-label">
+            {{ t('admin.accounts.openai.cacheConversionMultiplier') }}
+          </label>
+          <input
+            id="create-cache-conversion-multiplier"
+            v-model.number="cacheConversionMultiplier"
+            type="number"
+            min="0"
+            step="any"
+            required
+            class="input"
+            data-testid="openai-cache-conversion-multiplier"
+            :aria-invalid="!cacheConversionMultiplierValid"
+            aria-describedby="create-cache-conversion-multiplier-hint"
+          />
+          <p id="create-cache-conversion-multiplier-hint" class="input-hint">
+            {{ t('admin.accounts.openai.cacheConversionMultiplierHint') }}
+          </p>
+          <p v-if="!cacheConversionMultiplierValid" class="mt-1 text-sm text-red-500" role="alert">
+            {{ t('admin.accounts.openai.cacheConversionMultiplierInvalid') }}
+          </p>
+        </div>
+      </div>
+
       <!-- OpenAI API 长上下文计费开关 -->
       <div
         v-if="form.platform === 'openai' && !hideAccountLongContextBilling && (accountCategory === 'oauth-based' || accountCategory === 'apikey')"
@@ -4432,6 +4474,20 @@ const openaiPassthroughEnabled = ref(false)
 const openaiFlattenNamespacesEnabled = ref(false)
 const openAILongContextBillingEnabled = ref(false)
 const openAILongContextBillingTouched = ref(false)
+const cacheConversionEnabled = ref(false)
+const cacheConversionMultiplier = ref<number | string>(1)
+const cacheConversionMultiplierValid = computed(() =>
+  typeof cacheConversionMultiplier.value === 'number'
+  && Number.isFinite(cacheConversionMultiplier.value)
+  && cacheConversionMultiplier.value >= 0
+)
+const validateCacheConversion = () => {
+  if (form.platform === 'openai' && cacheConversionEnabled.value && !cacheConversionMultiplierValid.value) {
+    appStore.showError(t('admin.accounts.openai.cacheConversionMultiplierInvalid'))
+    return false
+  }
+  return true
+}
 const openAICompactMode = ref<OpenAICompactMode>('auto')
 const openAIResponsesMode = ref<OpenAIResponsesMode>('auto')
 // Images 非流式响应缺 b64_json 时由网关下载 url 回填（仅 OpenAI API Key）。
@@ -5356,6 +5412,8 @@ const resetForm = () => {
   openaiFlattenNamespacesEnabled.value = false
   openAILongContextBillingEnabled.value = false
   openAILongContextBillingTouched.value = false
+  cacheConversionEnabled.value = false
+  cacheConversionMultiplier.value = 1
   openAICompactMode.value = 'auto'
   openAIResponsesMode.value = 'auto'
   openAIEndpointCapabilities.value = ['chat_completions', 'embeddings']
@@ -5424,6 +5482,8 @@ const buildOpenAIExtra = (base?: Record<string, unknown>): Record<string, unknow
   }
 
   const extra: Record<string, unknown> = { ...(base || {}) }
+  extra.cache_conversion_enabled = cacheConversionEnabled.value
+  extra.cache_conversion_multiplier = cacheConversionMultiplierValid.value ? cacheConversionMultiplier.value : 1
   if (accountCategory.value === 'oauth-based') {
     extra.openai_oauth_responses_websockets_v2_mode = openaiOAuthResponsesWebSocketV2Mode.value
     extra.openai_oauth_responses_websockets_v2_enabled = isOpenAIWSModeEnabled(openaiOAuthResponsesWebSocketV2Mode.value)
@@ -5622,6 +5682,8 @@ const handleVertexServiceAccountDrop = async (event: DragEvent) => {
 }
 
 const handleSubmit = async () => {
+  if (!validateCacheConversion()) return
+
   // For OAuth-based type, handle OAuth flow (goes to step 2)
   if (isOAuthFlow.value) {
     if (!isGrokSSOInputMethod.value && !form.name.trim()) {
@@ -6286,6 +6348,8 @@ const handleGrokAuthorizePassword = async (emailPasswordInput: string) => {
 
 // OpenAI OAuth 授权码兑换
 const handleOpenAIExchange = async (authCode: string) => {
+  if (!validateCacheConversion()) return
+
   const oauthClient = openaiOAuth
   if (!authCode.trim() || !oauthClient.sessionId.value) return
 
@@ -6420,6 +6484,8 @@ const isAgentIdentityImportContent = (content: string) => {
 }
 
 const handleOpenAIImportCodexSession = async (content: string) => {
+  if (!validateCacheConversion()) return
+
   const oauthClient = openaiOAuth
   const trimmed = content.trim()
   if (!trimmed) {
@@ -6502,6 +6568,8 @@ const handleOpenAIImportCodexSession = async (content: string) => {
 }
 
 const handleOpenAIImportCodexPAT = async (accessToken: string) => {
+  if (!validateCacheConversion()) return
+
   const oauthClient = openaiOAuth
   const trimmed = accessToken.trim()
   if (!trimmed) {
@@ -6552,6 +6620,8 @@ const handleOpenAIImportCodexPAT = async (accessToken: string) => {
 
 // OpenAI RT 批量验证和创建（共享逻辑）
 const handleOpenAIBatchRT = async (refreshTokenInput: string, clientId?: string) => {
+  if (!validateCacheConversion()) return
+
   const oauthClient = openaiOAuth
   if (!refreshTokenInput.trim()) return
 

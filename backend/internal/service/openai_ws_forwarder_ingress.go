@@ -486,6 +486,12 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	writeClientMessage := func(message []byte) error {
 		writeCtx, cancel := newOpenAIWSDownstreamWriteContext(ctx, hooks, s.openAIWSWriteTimeout())
 		defer cancel()
+		// Both the direct WS relay and HTTP bridge parse original usage before
+		// calling this writer. Rewrite only the downstream copy, once.
+		message, err := RewriteOpenAICacheConversionJSON(account, message)
+		if err != nil {
+			return fmt.Errorf("rewrite websocket cache usage: %w", err)
+		}
 		message = restoreCodexToolNamesFromContext(c, message)
 		return clientConn.Write(writeCtx, coderws.MessageText, message)
 	}

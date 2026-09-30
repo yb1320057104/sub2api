@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/cacheconversion"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
@@ -614,6 +615,7 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 	// accumulated delta events so the client receives the full content.
 	acc.SupplementResponseOutput(finalResponse)
 
+	alignResponsesCacheUsageForConversion(account, finalResponse.Usage, usage)
 	chatResp := apicompat.ResponsesToChatCompletions(finalResponse, originalModel)
 
 	if s.responseHeaderFilter != nil {
@@ -624,7 +626,7 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 	// writeContentType 仅在头不存在时才设置，无法覆盖。这里显式 Set 强制改回 JSON，
 	// 否则下游"看头判流式"的中间层（如 new-api）会把本应聚合的 JSON 当成 SSE 处理。
 	c.Writer.Header().Set("Content-Type", "application/json; charset=utf-8")
-	c.JSON(http.StatusOK, chatResp)
+	writeErr := writeCacheConvertedJSON(c, account, chatResp, cacheconversion.OpenAI)
 
 	result := &OpenAIForwardResult{
 		RequestID:                     requestID,
@@ -647,7 +649,7 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 			}
 		}
 	}
-	return result, nil
+	return result, writeErr
 }
 
 func (s *OpenAIGatewayService) newOpenAICompatBufferedReadFailoverError(
@@ -880,6 +882,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 			return true
 		}
 
+		alignResponsesEventCacheUsageForConversion(account, &event, usage)
 		chunks := apicompat.ResponsesEventToChatChunks(&event, state)
 		if !clientDisconnected {
 			for _, chunk := range chunks {
@@ -891,6 +894,11 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 						zap.String("request_id", requestID),
 					)
 					continue
+				}
+				sse, err = rewriteCacheConvertedSSE(account, sse, cacheconversion.OpenAI)
+				if err != nil {
+					streamNonFailoverErr = err
+					return true
 				}
 				if !clientOutputStarted && !refusalDetector.ShouldReleaseClientOutput() {
 					pendingSSE = append(pendingSSE, sse)
@@ -944,6 +952,10 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 				sse, err := apicompat.ChatChunkToSSE(chunk)
 				if err != nil {
 					continue
+				}
+				sse, err = rewriteCacheConvertedSSE(account, sse, cacheconversion.OpenAI)
+				if err != nil {
+					return resultWithUsage(), err
 				}
 				if !clientOutputStarted && !refusalDetector.ShouldReleaseClientOutput() {
 					pendingSSE = append(pendingSSE, sse)

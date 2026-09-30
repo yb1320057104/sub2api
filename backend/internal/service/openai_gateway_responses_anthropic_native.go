@@ -141,9 +141,9 @@ func (s *OpenAIGatewayService) forwardResponsesViaNativeAnthropic(
 	}
 
 	if clientStream {
-		return s.handleResponsesStreamingFromNativeAnthropic(resp, c, originalModel, billingModel, upstreamModel, reasoningEffort, startTime, clientToolMapping)
+		return s.handleResponsesStreamingFromNativeAnthropic(resp, c, originalModel, billingModel, upstreamModel, reasoningEffort, startTime, clientToolMapping, account)
 	}
-	return s.handleResponsesBufferedFromNativeAnthropic(resp, c, originalModel, billingModel, upstreamModel, reasoningEffort, startTime, clientToolMapping)
+	return s.handleResponsesBufferedFromNativeAnthropic(resp, c, originalModel, billingModel, upstreamModel, reasoningEffort, startTime, clientToolMapping, account)
 }
 
 // handleResponsesBufferedFromNativeAnthropic reads Anthropic SSE events, assembles
@@ -157,7 +157,9 @@ func (s *OpenAIGatewayService) handleResponsesBufferedFromNativeAnthropic(
 	reasoningEffort *string,
 	startTime time.Time,
 	clientToolMapping apicompat.ResponsesClientToolMapping,
+	accounts ...*Account,
 ) (*OpenAIForwardResult, error) {
+	account := firstCacheConversionAccount(accounts)
 	requestID := resp.Header.Get("x-request-id")
 
 	scanner := bufio.NewScanner(resp.Body)
@@ -276,24 +278,7 @@ func (s *OpenAIGatewayService) handleResponsesBufferedFromNativeAnthropic(
 	}
 	responsesResp := apicompat.AnthropicToResponsesResponse(finalResp)
 	responsesResp.Model = originalModel
-
-	if s.responseHeaderFilter != nil {
-		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
-	}
-	// 非流式响应必须是 application/json（上游被强制流式，透传头会污染）。
-	c.Writer.Header().Set("Content-Type", "application/json; charset=utf-8")
-	if respBytes, err := json.Marshal(responsesResp); err == nil {
-		respBytes = reverseToolNamesIfPresent(c, respBytes)
-		respBytes, _, err = apicompat.RestoreResponsesClientToolPayload(respBytes, clientToolMapping)
-		if err != nil {
-			return nil, fmt.Errorf("restore responses client tools: %w", err)
-		}
-		c.Data(http.StatusOK, "application/json; charset=utf-8", respBytes)
-	} else {
-		c.JSON(http.StatusOK, responsesResp)
-	}
-
-	return &OpenAIForwardResult{
+	result := &OpenAIForwardResult{
 		RequestID:        requestID,
 		UpstreamHeaders:  resp.Header,
 		Usage:            claudeUsageToOpenAIUsage(&usage),
@@ -304,7 +289,36 @@ func (s *OpenAIGatewayService) handleResponsesBufferedFromNativeAnthropic(
 		ReasoningEffort:  reasoningEffort,
 		Stream:           false,
 		Duration:         time.Since(startTime),
-	}, nil
+	}
+
+	if s.responseHeaderFilter != nil {
+		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+	}
+	// 非流式响应必须是 application/json（上游被强制流式，透传头会污染）。
+	c.Writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+	if account.IsCacheConversionEnabled() {
+		c.Writer.Header().Del("Content-Length")
+	}
+	if respBytes, err := json.Marshal(responsesResp); err == nil {
+		respBytes = reverseToolNamesIfPresent(c, respBytes)
+		respBytes, _, err = apicompat.RestoreResponsesClientToolPayload(respBytes, clientToolMapping)
+		if err != nil {
+			return nil, fmt.Errorf("restore responses client tools: %w", err)
+		}
+		respBytes, err = RewriteOpenAICacheConversionJSON(account, respBytes)
+		if err != nil {
+			return result, fmt.Errorf("rewrite native Anthropic Responses cache usage: %w", err)
+		}
+		c.Data(http.StatusOK, "application/json; charset=utf-8", respBytes)
+	} else {
+		if account.IsCacheConversionEnabled() {
+			return result, fmt.Errorf("marshal native Anthropic Responses for cache conversion: %w", err)
+		}
+		c.JSON(http.StatusOK, responsesResp)
+	}
+
+	result.Duration = time.Since(startTime)
+	return result, nil
 }
 
 // handleResponsesStreamingFromNativeAnthropic reads Anthropic SSE events, converts
@@ -318,7 +332,9 @@ func (s *OpenAIGatewayService) handleResponsesStreamingFromNativeAnthropic(
 	reasoningEffort *string,
 	startTime time.Time,
 	clientToolMapping apicompat.ResponsesClientToolMapping,
+	accounts ...*Account,
 ) (*OpenAIForwardResult, error) {
+	account := firstCacheConversionAccount(accounts)
 	requestID := resp.Header.Get("x-request-id")
 
 	if s.responseHeaderFilter != nil {
@@ -328,6 +344,9 @@ func (s *OpenAIGatewayService) handleResponsesStreamingFromNativeAnthropic(
 	c.Writer.Header().Set("Cache-Control", "no-cache")
 	c.Writer.Header().Set("Connection", "keep-alive")
 	c.Writer.Header().Set("X-Accel-Buffering", "no")
+	if account.IsCacheConversionEnabled() {
+		c.Writer.Header().Del("Content-Length")
+	}
 	c.Writer.WriteHeader(http.StatusOK)
 
 	state := apicompat.NewAnthropicEventToResponsesState()
@@ -339,6 +358,20 @@ func (s *OpenAIGatewayService) handleResponsesStreamingFromNativeAnthropic(
 	var firstTokenMs *int
 	firstChunk := true
 	clientDisconnected := false
+	var cacheConversionErr error
+	writeResponsePayload := func(payload []byte) bool {
+		converted, err := RewriteOpenAICacheConversionJSON(account, payload)
+		if err != nil {
+			cacheConversionErr = fmt.Errorf("rewrite native Anthropic Responses stream cache usage: %w", err)
+			return false
+		}
+		eventType := gjson.GetBytes(converted, "type").String()
+		if _, err := fmt.Fprintf(c.Writer, "event: %s\ndata: %s\n\n", eventType, converted); err != nil {
+			clientDisconnected = true
+			return false
+		}
+		return true
+	}
 
 	scanner := bufio.NewScanner(resp.Body)
 	maxLineSize := defaultMaxLineSize
@@ -413,7 +446,7 @@ func (s *OpenAIGatewayService) handleResponsesStreamingFromNativeAnthropic(
 		normalizeAnthropicEventUsageForResponses(event, usage)
 
 		events := apicompat.AnthropicEventToResponsesEvents(event, state)
-		if clientDisconnected {
+		if clientDisconnected || cacheConversionErr != nil {
 			return
 		}
 		for _, evt := range events {
@@ -427,9 +460,7 @@ func (s *OpenAIGatewayService) handleResponsesStreamingFromNativeAnthropic(
 				continue
 			}
 			for _, restored := range payloads {
-				eventType := gjson.GetBytes(restored, "type").String()
-				if _, err := fmt.Fprintf(c.Writer, "event: %s\ndata: %s\n\n", eventType, restored); err != nil {
-					clientDisconnected = true
+				if !writeResponsePayload(restored) {
 					return
 				}
 			}
@@ -476,7 +507,7 @@ func (s *OpenAIGatewayService) handleResponsesStreamingFromNativeAnthropic(
 	// Finalize state machine（客户端已断开时仍推进，保证 usage 汇总完整；仅在
 	// 客户端仍连接时写出）。终态帧与逐事件路径一致过工具名反转与客户端工具还原，
 	// 避免流截断时终态帧携带改写后的工具名。
-	if finalEvents := apicompat.FinalizeAnthropicResponsesStream(state); len(finalEvents) > 0 && !clientDisconnected {
+	if finalEvents := apicompat.FinalizeAnthropicResponsesStream(state); len(finalEvents) > 0 && !clientDisconnected && cacheConversionErr == nil {
 		wrote := false
 		for _, evt := range finalEvents {
 			payload, err := json.Marshal(evt)
@@ -489,14 +520,12 @@ func (s *OpenAIGatewayService) handleResponsesStreamingFromNativeAnthropic(
 				continue
 			}
 			for _, restored := range payloads {
-				eventType := gjson.GetBytes(restored, "type").String()
-				if _, err := fmt.Fprintf(c.Writer, "event: %s\ndata: %s\n\n", eventType, restored); err != nil {
-					clientDisconnected = true
+				if !writeResponsePayload(restored) {
 					break
 				}
 				wrote = true
 			}
-			if clientDisconnected {
+			if clientDisconnected || cacheConversionErr != nil {
 				break
 			}
 		}
@@ -505,5 +534,5 @@ func (s *OpenAIGatewayService) handleResponsesStreamingFromNativeAnthropic(
 		}
 	}
 
-	return resultWithUsage(), nil
+	return resultWithUsage(), cacheConversionErr
 }

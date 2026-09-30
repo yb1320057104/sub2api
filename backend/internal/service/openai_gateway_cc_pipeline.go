@@ -271,8 +271,10 @@ func (s *OpenAIGatewayService) scanCCStream(
 	requestID string,
 	startTime time.Time,
 	emit func(*apicompat.ChatCompletionsChunk),
+	accounts ...*Account,
 ) ccStreamScanState {
 	var st ccStreamScanState
+	account := firstCacheConversionAccount(accounts)
 
 	scanner := s.newUpstreamSSEScanner(resp.Body)
 	for scanner.Scan() {
@@ -296,8 +298,9 @@ func (s *OpenAIGatewayService) scanCCStream(
 			observer.ObserveOpenAI([]byte(payload), "")
 		}
 
-		if u := extractCCStreamUsage(payload); u != nil {
-			st.Usage = *u
+		rawUsage := extractCCStreamUsage(payload)
+		if rawUsage != nil {
+			st.Usage = *rawUsage
 		}
 
 		var chunk apicompat.ChatCompletionsChunk
@@ -307,6 +310,9 @@ func (s *OpenAIGatewayService) scanCCStream(
 				zap.String("request_id", requestID),
 			)
 			continue
+		}
+		if rawUsage != nil {
+			alignChatCacheUsageForConversion(account, chunk.Usage, *rawUsage)
 		}
 		if st.FirstTokenMs == nil && !isOpenAIChatUsageOnlyStreamChunk(payload) && chatChunkStartsResponsesOutput(&chunk) {
 			ms := int(time.Since(startTime).Milliseconds())
@@ -340,6 +346,7 @@ func (s *OpenAIGatewayService) readCCUpstreamJSONResponse(
 	c *gin.Context,
 	resp *http.Response,
 	writeError compatErrorWriter,
+	accounts ...*Account,
 ) (*apicompat.ChatCompletionsResponse, OpenAIUsage, error) {
 	respBody, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
 	if err != nil {
@@ -363,8 +370,25 @@ func (s *OpenAIGatewayService) readCCUpstreamJSONResponse(
 	usage := OpenAIUsage{}
 	if parsed, ok := extractOpenAIUsageFromJSONBytes(respBody); ok {
 		usage = parsed
+		alignChatCacheUsageForConversion(firstCacheConversionAccount(accounts), ccResp.Usage, usage)
 	}
 	return &ccResp, usage, nil
+}
+
+// The typed CC schema omits root cache aliases accepted by the billing parser.
+// Only enabled accounts align their client copy with the same original counts;
+// the conversion itself still runs once, after outgoing protocol serialization.
+func alignChatCacheUsageForConversion(account *Account, usage *apicompat.ChatUsage, raw OpenAIUsage) {
+	if !account.IsCacheConversionEnabled() || usage == nil {
+		return
+	}
+	usage.PromptTokens = raw.InputTokens
+	if usage.PromptTokensDetails == nil {
+		usage.PromptTokensDetails = &apicompat.ChatTokenDetails{}
+	}
+	usage.PromptTokensDetails.CachedTokens = raw.CacheReadInputTokens
+	usage.PromptTokensDetails.CacheWriteTokens = raw.CacheCreationInputTokens
+	usage.PromptTokensDetails.CacheCreationTokens = raw.CacheCreationInputTokens
 }
 
 // writeOpenAIResponsesFallbackError 以 /v1/responses 回退路径的既有错误格式回写

@@ -1854,6 +1854,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	originalModel string,
 	mappedModel string,
 ) (*openaiStreamingResultPassthrough, error) {
+	cacheConversionEnabled := account.IsCacheConversionEnabled()
 	observer := upstreamResponseModelObserverFromContext(c)
 	if observer == nil {
 		observer = beginUpstreamResponseModelObservation(c)
@@ -1865,6 +1866,9 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no")
+	if cacheConversionEnabled {
+		c.Writer.Header().Del("Content-Length")
+	}
 	if v := resp.Header.Get("x-request-id"); v != "" {
 		c.Header("x-request-id", v)
 	}
@@ -1989,7 +1993,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	scanBuf := getSSEScannerBuf64K()
 	scanner.Buffer(scanBuf[:0], maxLineSize)
 	defer putSSEScannerBuf64K(scanBuf)
-	documentScanner := newOpenAISSEJSONDocumentScanner(scanner)
+	documentScanner := newOpenAICacheConversionSSEScanner(newOpenAISSEJSONDocumentScanner(scanner), cacheConversionEnabled)
 
 	needModelReplace := strings.TrimSpace(originalModel) != "" && strings.TrimSpace(mappedModel) != "" && strings.TrimSpace(originalModel) != strings.TrimSpace(mappedModel)
 	resultWithUsage := func() *openaiStreamingResultPassthrough {
@@ -2015,6 +2019,10 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 			dataBytes := []byte(data)
 			trimmedData := strings.TrimSpace(data)
 			rawEventType := effectiveOpenAISSEEventType(dataBytes, pendingSSEEventType)
+			if cacheConversionEnabled {
+				// Save original usage before model/tool restoration and conversion.
+				s.parseSSEUsageBytesWithType(dataBytes, rawEventType, usage)
+			}
 			observer.ObserveOpenAI(dataBytes, rawEventType)
 			if needModelReplace {
 				line = s.replaceModelInSSELine(line, mappedModel, originalModel)
@@ -2179,7 +2187,18 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 				ms := int(time.Since(startTime).Milliseconds())
 				firstTokenMs = &ms
 			}
-			s.parseSSEUsageBytesWithType(dataBytes, eventType, usage)
+			if cacheConversionEnabled {
+				outputData, _ := extractOpenAISSEDataLine(line)
+				converted, err := RewriteOpenAICacheConversionJSON(account, []byte(outputData))
+				if err != nil {
+					return resultWithUsage(), fmt.Errorf("rewrite OpenAI passthrough cache usage: %w", err)
+				}
+				if !bytes.Equal(converted, []byte(outputData)) {
+					line = "data: " + string(converted)
+				}
+			} else {
+				s.parseSSEUsageBytesWithType(dataBytes, eventType, usage)
+			}
 		}
 		if line == "" {
 			pendingSSEEventType = ""
@@ -2351,6 +2370,13 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 	if err != nil {
 		return nil, fmt.Errorf("restore OpenAI Responses client tools: %w", err)
 	}
+	body, err = rewriteOpenAICacheConversionHTTPBody(account, body)
+	if err != nil {
+		return nil, fmt.Errorf("rewrite OpenAI passthrough cache usage: %w", err)
+	}
+	if account.IsCacheConversionEnabled() {
+		c.Writer.Header().Del("Content-Length")
+	}
 	if !writeOpenAICompactSSEBridge(c, resp.StatusCode, body) {
 		c.Data(resp.StatusCode, contentType, body)
 	}
@@ -2428,6 +2454,14 @@ func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(resp *http.Response, c
 		if contentType == "" {
 			contentType = "text/event-stream"
 		}
+	}
+	convertedBody, conversionErr := rewriteOpenAICacheConversionHTTPBody(account, body)
+	if conversionErr != nil {
+		return nil, fmt.Errorf("rewrite OpenAI passthrough SSE cache usage: %w", conversionErr)
+	}
+	body = convertedBody
+	if account.IsCacheConversionEnabled() {
+		c.Writer.Header().Del("Content-Length")
 	}
 	if !writeOpenAICompactSSEBridge(c, resp.StatusCode, body) {
 		c.Data(resp.StatusCode, contentType, body)

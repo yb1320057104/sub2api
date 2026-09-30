@@ -23,6 +23,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/cacheconversion"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
@@ -266,10 +267,7 @@ func (s *OpenAIGatewayService) handleNativeAnthropicBufferedResponse(
 	if contentType == "" {
 		contentType = "application/json"
 	}
-	body = reverseToolNamesIfPresent(c, body)
-	c.Data(resp.StatusCode, contentType, body)
-
-	return &OpenAIForwardResult{
+	result := &OpenAIForwardResult{
 		RequestID:        resp.Header.Get("x-request-id"),
 		UpstreamHeaders:  resp.Header,
 		Usage:            claudeUsageToOpenAIUsage(usage),
@@ -280,7 +278,17 @@ func (s *OpenAIGatewayService) handleNativeAnthropicBufferedResponse(
 		Stream:           false,
 		ReasoningEffort:  reasoningEffort,
 		Duration:         time.Since(startTime),
-	}, nil
+	}
+	body = reverseToolNamesIfPresent(c, body)
+	if account.IsCacheConversionEnabled() {
+		body, err = RewriteAnthropicCacheConversionJSON(account, body)
+		if err != nil {
+			return result, fmt.Errorf("rewrite native Anthropic cache usage: %w", err)
+		}
+		c.Writer.Header().Del("Content-Length")
+	}
+	c.Data(resp.StatusCode, contentType, body)
+	return result, nil
 }
 
 // handleNativeAnthropicStreamingResponse 处理流式原生 Anthropic 响应：
@@ -334,13 +342,25 @@ func (s *OpenAIGatewayService) handleNativeAnthropicStreamingResponse(
 	clientDisconnected := false
 	sawTerminalEvent := false
 
-	scanner := bufio.NewScanner(resp.Body)
+	lineScanner := bufio.NewScanner(resp.Body)
 	maxLineSize := defaultMaxLineSize
 	if s.cfg != nil && s.cfg.Gateway.MaxLineSize > 0 {
 		maxLineSize = s.cfg.Gateway.MaxLineSize
 	}
 	scanBuf := getSSEScannerBuf64K()
-	scanner.Buffer(scanBuf[:0], maxLineSize)
+	lineScanner.Buffer(scanBuf[:0], maxLineSize)
+	var scanner interface {
+		Scan() bool
+		Text() string
+		Err() error
+	} = lineScanner
+	cacheConversion := OpenAICacheConversionConfig(account)
+	if cacheConversion.Enabled {
+		// Normalize complete data frames before either observing upstream usage
+		// or rewriting a client copy. Disabled accounts retain the line relay.
+		scanner = newOpenAICacheConversionSSEScanner(newOpenAISSEJSONDocumentScanner(lineScanner), true)
+		c.Writer.Header().Del("Content-Length")
+	}
 
 	type scanEvent struct {
 		line string
@@ -468,7 +488,20 @@ func (s *OpenAIGatewayService) handleNativeAnthropicStreamingResponse(
 			}
 
 			if !clientDisconnected {
-				restored := string(reverseToolNamesIfPresent(c, []byte(line)))
+				clientLine := line
+				if cacheConversion.Enabled {
+					if data, ok := extractAnthropicSSEDataLine(line); ok {
+						rewritten, err := cacheconversion.RewriteJSON([]byte(data), cacheConversion, cacheconversion.Anthropic)
+						if err != nil {
+							return s.nativeAnthropicStreamResult(c, resp, usage, firstTokenMs, clientDisconnected, originalModel, billingModel, upstreamModel, reasoningEffort, startTime),
+								fmt.Errorf("rewrite native Anthropic stream cache usage: %w", err)
+						}
+						if string(rewritten) != data {
+							clientLine = "data: " + string(rewritten)
+						}
+					}
+				}
+				restored := string(reverseToolNamesIfPresent(c, []byte(clientLine)))
 				if _, err := io.WriteString(w, restored); err != nil {
 					clientDisconnected = true
 					logger.LegacyPrintf("service.gateway", "[CN Anthropic 直通] Client disconnected during streaming, continue draining upstream for usage: account=%d", account.ID)

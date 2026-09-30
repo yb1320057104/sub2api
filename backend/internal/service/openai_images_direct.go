@@ -204,7 +204,8 @@ func codexDirectImagesUsage(body []byte) (OpenAIUsage, bool) {
 	return usage, true
 }
 
-func (s *OpenAIGatewayService) handleCodexDirectImagesNonStreamingResponse(resp *http.Response, c *gin.Context, parsed *OpenAIImagesRequest) (OpenAIUsage, int, []string, error) {
+func (s *OpenAIGatewayService) handleCodexDirectImagesNonStreamingResponse(resp *http.Response, c *gin.Context, parsed *OpenAIImagesRequest, accounts ...*Account) (OpenAIUsage, int, []string, error) {
+	account := firstCacheConversionAccount(accounts)
 	body, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
 	if err != nil {
 		if shouldClassifyOpenAIUpstreamStreamReadError(err) {
@@ -249,7 +250,16 @@ func (s *OpenAIGatewayService) handleCodexDirectImagesNonStreamingResponse(resp 
 			body = codexDirectImageURL(body, fmt.Sprintf("data.%d.", i), format)
 		}
 	}
+	if account.IsCacheConversionEnabled() {
+		body, err = RewriteOpenAICacheConversionJSON(account, body)
+		if err != nil {
+			return usage, 0, nil, fmt.Errorf("rewrite direct images cache usage: %w", err)
+		}
+	}
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+	if account.IsCacheConversionEnabled() {
+		c.Writer.Header().Del("Content-Length")
+	}
 	contentType := "application/json"
 	if s.cfg != nil && !s.cfg.Security.ResponseHeaders.Enabled {
 		if upstreamType := strings.TrimSpace(resp.Header.Get("Content-Type")); upstreamType != "" {

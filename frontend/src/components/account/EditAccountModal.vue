@@ -2248,6 +2248,48 @@
         />
       </div>
 
+      <div
+        v-if="account?.platform === 'openai'"
+        class="border-t border-gray-200 pt-4 dark:border-dark-600"
+      >
+        <div class="flex items-center justify-between gap-4">
+          <div>
+            <label class="input-label mb-0">{{ t('admin.accounts.openai.cacheConversion') }}</label>
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {{ t('admin.accounts.openai.cacheConversionDesc') }}
+            </p>
+          </div>
+          <Toggle
+            v-model="cacheConversionEnabled"
+            data-testid="openai-cache-conversion-toggle"
+            :aria-label="t('admin.accounts.openai.cacheConversion')"
+          />
+        </div>
+        <div v-if="cacheConversionEnabled" class="mt-3">
+          <label for="edit-cache-conversion-multiplier" class="input-label">
+            {{ t('admin.accounts.openai.cacheConversionMultiplier') }}
+          </label>
+          <input
+            id="edit-cache-conversion-multiplier"
+            v-model.number="cacheConversionMultiplier"
+            type="number"
+            min="0"
+            step="any"
+            required
+            class="input"
+            data-testid="openai-cache-conversion-multiplier"
+            :aria-invalid="!cacheConversionMultiplierValid"
+            aria-describedby="edit-cache-conversion-multiplier-hint"
+          />
+          <p id="edit-cache-conversion-multiplier-hint" class="input-hint">
+            {{ t('admin.accounts.openai.cacheConversionMultiplierHint') }}
+          </p>
+          <p v-if="!cacheConversionMultiplierValid" class="mt-1 text-sm text-red-500" role="alert">
+            {{ t('admin.accounts.openai.cacheConversionMultiplierInvalid') }}
+          </p>
+        </div>
+      </div>
+
       <!-- OpenAI API 长上下文计费开关 -->
       <div
         v-if="account?.platform === 'openai' && !isSparkShadow && !hideAccountLongContextBilling && (account?.type === 'oauth' || account?.type === 'setup-token' || account?.type === 'apikey')"
@@ -3685,6 +3727,13 @@ const openaiPassthroughEnabled = ref(false)
 // OpenAI Codex namespace 工具摊平兼容开关（仅 OAuth），缺省关闭即原样保留
 const openaiFlattenNamespacesEnabled = ref(false)
 const openAILongContextBillingEnabled = ref(false)
+const cacheConversionEnabled = ref(false)
+const cacheConversionMultiplier = ref<number | string>(1)
+const cacheConversionMultiplierValid = computed(() =>
+  typeof cacheConversionMultiplier.value === 'number'
+  && Number.isFinite(cacheConversionMultiplier.value)
+  && cacheConversionMultiplier.value >= 0
+)
 // OpenAI 订阅档位（Plus / Pro 20x / Pro 5x / Business Standard / Business Premium / Free）手动覆盖值,
 // 存于 credentials.plan_type;'' 表示清空/自动识别
 const editPlanType = ref<string>('')
@@ -4172,6 +4221,15 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   openaiPassthroughEnabled.value = false
   openaiFlattenNamespacesEnabled.value = false
   openAILongContextBillingEnabled.value = false
+  cacheConversionEnabled.value = newAccount.platform === 'openai' && extra?.cache_conversion_enabled === true
+  const conversionMultiplier = extra?.cache_conversion_multiplier
+  cacheConversionMultiplier.value =
+    newAccount.platform === 'openai'
+    && typeof conversionMultiplier === 'number'
+    && Number.isFinite(conversionMultiplier)
+    && conversionMultiplier >= 0
+      ? conversionMultiplier
+      : 1
   editPlanType.value = ''
   openAICompactMode.value = 'auto'
   openAIResponsesMode.value = 'auto'
@@ -5128,6 +5186,11 @@ const handleSubmit = async () => {
   if (!props.account) return
   const accountID = props.account.id
 
+  if (props.account.platform === 'openai' && cacheConversionEnabled.value && !cacheConversionMultiplierValid.value) {
+    appStore.showError(t('admin.accounts.openai.cacheConversionMultiplierInvalid'))
+    return
+  }
+
   if (form.status !== 'active' && form.status !== 'inactive' && form.status !== 'error') {
     appStore.showError(t('admin.accounts.pleaseSelectStatus'))
     return
@@ -5838,6 +5901,15 @@ const handleSubmit = async () => {
       // Quota notify config
       writeQuotaNotifyToExtra(newExtra, 'update')
       updatePayload.extra = newExtra
+    }
+
+    if (props.account.platform === 'openai') {
+      const currentExtra = (updatePayload.extra as Record<string, unknown> | undefined) ?? props.account.extra ?? {}
+      updatePayload.extra = {
+        ...currentExtra,
+        cache_conversion_enabled: cacheConversionEnabled.value,
+        cache_conversion_multiplier: cacheConversionMultiplierValid.value ? cacheConversionMultiplier.value : 1
+      }
     }
 
     // 上游ID头名只在改动时写回 extra，避免用弹窗打开时的快照覆盖运行态键。

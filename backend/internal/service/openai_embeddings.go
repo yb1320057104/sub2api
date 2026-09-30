@@ -161,12 +161,19 @@ func (s *OpenAIGatewayService) ForwardEmbeddings(
 		return nil, fmt.Errorf("read upstream body: %w", err)
 	}
 
-	writeOpenAIEmbeddingsUpstreamResponse(c, resp, respBody, s.responseHeaderFilter)
+	usage := extractOpenAIEmbeddingsUsage(respBody)
+	if account.IsCacheConversionEnabled() {
+		respBody, err = RewriteOpenAICacheConversionJSON(account, respBody)
+		if err != nil {
+			return nil, fmt.Errorf("rewrite embeddings cache usage: %w", err)
+		}
+	}
+	writeOpenAIEmbeddingsUpstreamResponse(c, resp, respBody, s.responseHeaderFilter, account)
 
 	return &OpenAIForwardResult{
 		RequestID:       firstNonEmptyString(resp.Header.Get("x-request-id"), resp.Header.Get("request-id")),
 		UpstreamHeaders: resp.Header,
-		Usage:           extractOpenAIEmbeddingsUsage(respBody),
+		Usage:           usage,
 		Model:           originalModel,
 		BillingModel:    billingModel,
 		UpstreamModel:   upstreamModel,
@@ -175,7 +182,7 @@ func (s *OpenAIGatewayService) ForwardEmbeddings(
 	}, nil
 }
 
-func writeOpenAIEmbeddingsUpstreamResponse(c *gin.Context, resp *http.Response, body []byte, filter *responseheaders.CompiledHeaderFilter) {
+func writeOpenAIEmbeddingsUpstreamResponse(c *gin.Context, resp *http.Response, body []byte, filter *responseheaders.CompiledHeaderFilter, accounts ...*Account) {
 	if c == nil || resp == nil {
 		return
 	}
@@ -184,6 +191,9 @@ func writeOpenAIEmbeddingsUpstreamResponse(c *gin.Context, resp *http.Response, 
 	}
 	if resp.Header != nil {
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, filter)
+	}
+	if firstCacheConversionAccount(accounts).IsCacheConversionEnabled() {
+		c.Writer.Header().Del("Content-Length")
 	}
 	if ct := resp.Header.Get("Content-Type"); ct != "" {
 		c.Writer.Header().Set("Content-Type", ct)
