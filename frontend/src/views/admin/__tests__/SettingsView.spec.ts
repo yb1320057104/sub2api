@@ -547,8 +547,9 @@ const baseSettingsResponse = {
   },
 };
 
-function mountView() {
+function mountView(attachTo?: HTMLElement) {
   return mount(SettingsView, {
+    attachTo,
     global: {
       stubs: {
         AppLayout: AppLayoutStub,
@@ -1420,28 +1421,44 @@ describe("admin SettingsView payment visible method controls", () => {
   });
 
   it("keeps early SSE heartbeat disabled by default and saves seconds as milliseconds", async () => {
-    const wrapper = mountView();
-    await flushPromises();
-    expect(wrapper.get('[data-testid="stream-early-heartbeat-settings"]').isVisible()).toBe(false);
-    await openFirstTokenTab(wrapper);
-    expect(wrapper.get('[data-testid="stream-early-heartbeat-settings"]').isVisible()).toBe(true);
-    const toggle = wrapper.get('[data-testid="stream-early-heartbeat-enabled"]');
-    const minimum = wrapper.get('[data-testid="stream-early-heartbeat-min"]');
-    const maximum = wrapper.get('[data-testid="stream-early-heartbeat-max"]');
-    expect((toggle.element as HTMLInputElement).checked).toBe(false);
-    expect((minimum.element as HTMLInputElement).value).toBe("1");
-    expect((maximum.element as HTMLInputElement).value).toBe("2");
-    expect((minimum.element as HTMLInputElement).disabled).toBe(true);
-    await toggle.setValue(true);
-    await minimum.setValue("1.125");
-    await maximum.setValue("2.75");
-    await wrapper.find("form").trigger("submit.prevent");
-    await flushPromises();
-    const payload = updateSettings.mock.calls.at(-1)?.[0] as Record<string, unknown>;
-    expect(payload.stream_early_heartbeat_enabled).toBe(true);
-    expect(payload.stream_early_heartbeat_min_delay_ms).toBe(1125);
-    expect(payload.stream_early_heartbeat_max_delay_ms).toBe(2750);
-    expect((minimum.element as HTMLInputElement).value).toBe("1.125");
+    // jsdom only invalidates computed-style caches for attached elements.
+    // Keep the real visibility assertions while toggling v-show in both directions.
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const wrapper = mountView(host);
+    try {
+      await flushPromises();
+      const panel = wrapper.get('[data-testid="stream-early-heartbeat-settings"]');
+      const tab = wrapper.get("#settings-tab-first_token");
+      expect(tab.attributes("aria-selected")).toBe("false");
+      expect(panel.isVisible()).toBe(false);
+      await openFirstTokenTab(wrapper);
+      expect(tab.attributes("aria-selected")).toBe("true");
+      expect(panel.isVisible()).toBe(true);
+      const toggle = wrapper.get('[data-testid="stream-early-heartbeat-enabled"]');
+      const minimum = wrapper.get('[data-testid="stream-early-heartbeat-min"]');
+      const maximum = wrapper.get('[data-testid="stream-early-heartbeat-max"]');
+      expect((toggle.element as HTMLInputElement).checked).toBe(false);
+      expect((minimum.element as HTMLInputElement).value).toBe("1");
+      expect((maximum.element as HTMLInputElement).value).toBe("2");
+      expect((minimum.element as HTMLInputElement).disabled).toBe(true);
+      await toggle.setValue(true);
+      await minimum.setValue("1.125");
+      await maximum.setValue("2.75");
+      await wrapper.find("form").trigger("submit.prevent");
+      await flushPromises();
+      const payload = updateSettings.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+      expect(payload.stream_early_heartbeat_enabled).toBe(true);
+      expect(payload.stream_early_heartbeat_min_delay_ms).toBe(1125);
+      expect(payload.stream_early_heartbeat_max_delay_ms).toBe(2750);
+      expect((minimum.element as HTMLInputElement).value).toBe("1.125");
+      await wrapper.get("#settings-tab-general").trigger("click");
+      expect(tab.attributes("aria-selected")).toBe("false");
+      expect(panel.isVisible()).toBe(false);
+    } finally {
+      wrapper.unmount();
+      host.remove();
+    }
   });
 
   it("loads saved early SSE heartbeat milliseconds as seconds", async () => {

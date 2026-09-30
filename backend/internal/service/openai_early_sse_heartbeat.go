@@ -2,6 +2,7 @@ package service
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"math/rand/v2"
@@ -27,7 +28,10 @@ type firstResponseTiming struct {
 }
 
 func (t *firstResponseTiming) record() {
-	ms := max(int64(0), time.Since(t.started).Milliseconds())
+	ms := time.Since(t.started).Milliseconds()
+	if ms < 0 {
+		ms = 0
+	}
 	t.value.CompareAndSwap(0, ms+1)
 }
 
@@ -71,8 +75,18 @@ func (s *OpenAIGatewayService) StartEarlySSEHeartbeat(c *gin.Context, requestSta
 
 func earlySSEHeartbeatDelay(settings StreamEarlyHeartbeatSettings) time.Duration {
 	// Bound defensively even if a corrupt stored setting bypasses API validation.
-	low := min(max(settings.MinDelayMS, 0), 30000)
-	high := min(max(settings.MaxDelayMS, low), 30000)
+	low := settings.MinDelayMS
+	if low < 0 {
+		low = 0
+	} else if low > 30000 {
+		low = 30000
+	}
+	high := settings.MaxDelayMS
+	if high < low {
+		high = low
+	} else if high > 30000 {
+		high = 30000
+	}
 	return time.Duration(low+rand.IntN(high-low+1)) * time.Millisecond
 }
 
@@ -163,7 +177,11 @@ func (w *earlySSEHeartbeatWriter) run(requestDone <-chan struct{}) {
 		var timer *time.Timer
 		var tick <-chan time.Time
 		if !due.IsZero() {
-			timer = time.NewTimer(max(time.Duration(0), time.Until(due)))
+			delay := time.Until(due)
+			if delay < 0 {
+				delay = 0
+			}
+			timer = time.NewTimer(delay)
 			tick = timer.C
 		}
 		select {
@@ -327,7 +345,10 @@ func (w *earlySSEHeartbeatWriter) WriteHeader(code int) {
 func (w *earlySSEHeartbeatWriter) Write(data []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.stopLocked()
+	transportHeartbeat := isCompleteSSEHeartbeat(data)
+	if len(data) > 0 && !transportHeartbeat {
+		w.stopLocked()
+	}
 	if w.terminal {
 		return len(data), nil
 	}
@@ -353,8 +374,70 @@ func (w *earlySSEHeartbeatWriter) Write(data []byte) (int, error) {
 	n, err := w.ResponseWriter.Write(data)
 	if n > 0 {
 		w.timing.record()
+		if transportHeartbeat {
+			// Queue and stream readers already account for their own comments.
+			// Do not add them to bytes, which counts only this timer's writes.
+			// A queue heartbeat replaces the optional first beat, but must leave
+			// the controller available for passthrough's periodic keepalive.
+			w.committed = true
+			w.firstDue = time.Time{}
+			if w.interval > 0 {
+				w.repeatDue = time.Now().Add(w.interval)
+			}
+			w.notify()
+		}
+	}
+	if err != nil {
+		w.stopLocked()
 	}
 	return n, err
+}
+
+// Only complete transport frames are exempt from semantic takeover. Mixed,
+// partial, metadata and real data frames must still stop the timer, so a comment
+// can never be inserted into the middle of a business event.
+func isCompleteSSEHeartbeat(data []byte) bool {
+	if !bytes.HasSuffix(data, []byte("\n\n")) && !bytes.HasSuffix(data, []byte("\r\n\r\n")) {
+		return false
+	}
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return false
+	}
+	if trimmed[0] != ':' && !bytes.HasPrefix(trimmed, []byte("data:")) && !bytes.HasPrefix(trimmed, []byte("event: ping")) {
+		return false
+	}
+	var pingData []byte
+	hasPingEvent := false
+	for _, line := range bytes.Split(data, []byte("\n")) {
+		line = bytes.TrimSuffix(line, []byte("\r"))
+		if len(line) == 0 || line[0] == ':' {
+			continue
+		}
+		if bytes.Equal(line, []byte("event: ping")) {
+			hasPingEvent = true
+			continue
+		}
+		if !bytes.HasPrefix(line, []byte("data:")) || pingData != nil {
+			return false
+		}
+		pingData = bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
+	}
+	if pingData == nil {
+		// An event name without a data payload is not one of our ping frames.
+		return !hasPingEvent && trimmed[0] == ':'
+	}
+	// The supported queue ping is tiny. Avoid decoding ordinary model chunks
+	// merely to discover that they are not transport frames.
+	if len(pingData) > 64 || !bytes.Contains(pingData, []byte(`"ping"`)) {
+		return false
+	}
+	var payload map[string]json.RawMessage
+	if json.Unmarshal(pingData, &payload) != nil || len(payload) != 1 {
+		return false
+	}
+	var kind string
+	return json.Unmarshal(payload["type"], &kind) == nil && kind == "ping"
 }
 
 func (w *earlySSEHeartbeatWriter) WriteString(data string) (int, error) {

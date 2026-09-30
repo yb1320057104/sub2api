@@ -1620,7 +1620,7 @@ func (h *OpenAIGatewayHandler) ensureAnthropicErrorResponse(c *gin.Context, stre
 	if c == nil || c.Writer == nil {
 		return false
 	}
-	if c.Writer.Written() && service.EarlySSEAdjustedWrittenSize(c) >= 0 {
+	if c.Writer.Written() && service.OpenAICompactKeepaliveAdjustedWrittenSize(c) >= 0 {
 		return false
 	}
 	h.anthropicStreamingAwareError(c, http.StatusBadGateway, "api_error", "Upstream request failed", streamStarted)

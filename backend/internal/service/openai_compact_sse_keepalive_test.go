@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -488,6 +489,9 @@ func TestPKEarlyHeartbeat_AdjustmentCombinesStreamComments(t *testing.T) {
 	stop := startEarlySSEHeartbeat(c, time.Now(), "responses", StreamEarlyHeartbeatSettings{})
 	defer stop()
 	firePKEarlyHeartbeat(t, earlySSEWriterFromContext(c))
+	queueBytes, queueErr := c.Writer.WriteString(": queue\n\n")
+	require.NoError(t, queueErr)
+	c.Set(GatewayStreamHeartbeatBytesKey, queueBytes)
 	n, err := c.Writer.WriteString(":\n\n")
 	require.NoError(t, err)
 	recordOpenAIStreamKeepaliveBytes(c, n)
@@ -495,6 +499,95 @@ func TestPKEarlyHeartbeat_AdjustmentCombinesStreamComments(t *testing.T) {
 	_, err = c.Writer.WriteString("data: semantic\n\n")
 	require.NoError(t, err)
 	require.Equal(t, len("data: semantic\n\n"), OpenAICompactKeepaliveAdjustedWrittenSize(c))
+}
+
+func TestPKEarlyHeartbeat_ExternalHeartbeatAllowsLaterPeriodicKeepalive(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		for _, frame := range []string{":\n\n", "data: {\"type\": \"ping\"}\n\n"} {
+			for _, streamAccounting := range []bool{false, true} {
+				t.Run(fmt.Sprintf("enabled=%t/stream=%t/frame=%q", enabled, streamAccounting, frame), func(t *testing.T) {
+					c, rec := newCompactBridgeTestContext(t, false)
+					stop := startEarlySSEHeartbeat(c, time.Now(), "responses", StreamEarlyHeartbeatSettings{Enabled: enabled, MinDelayMS: 30000, MaxDelayMS: 30000})
+					defer stop()
+					w := earlySSEWriterFromContext(c)
+					c.Writer.Header().Set("Content-Type", "text/event-stream")
+					n, err := c.Writer.WriteString(frame)
+					require.NoError(t, err)
+					c.Writer.Flush()
+					if streamAccounting {
+						recordOpenAIStreamKeepaliveBytes(c, n)
+					} else {
+						c.Set(GatewayStreamHeartbeatBytesKey, n)
+					}
+					w.mu.Lock()
+					stopped, firstDue, internalBytes := w.stopped, w.firstDue, w.bytes
+					w.mu.Unlock()
+					require.False(t, stopped, "external heartbeat must not end the shared controller")
+					require.True(t, firstDue.IsZero(), "external heartbeat replaces the pending early first beat")
+					require.Zero(t, internalBytes, "external heartbeat must not be double-counted")
+					before := OpenAICompactKeepaliveAdjustedWrittenSize(c)
+					require.Equal(t, -1, before, "queue and stream comments are both nonsemantic")
+					stopPeriodic := startOpenAISSEKeepalive(c, time.Hour)
+					defer stopPeriodic()
+					require.Same(t, w, c.Writer)
+					w.mu.Lock()
+					w.repeatDue = time.Now()
+					w.mu.Unlock()
+					w.beat()
+					require.Equal(t, frame+": keepalive\n\n", rec.Body.String(), "periodic keepalive must still work after a queue/stream heartbeat")
+					require.Equal(t, before, OpenAICompactKeepaliveAdjustedWrittenSize(c))
+					_, err = c.Writer.WriteString("data: semantic\n\n")
+					require.NoError(t, err)
+					w.mu.Lock()
+					stopped = w.stopped
+					w.mu.Unlock()
+					require.True(t, stopped, "semantic output still permanently takes ownership")
+				})
+			}
+		}
+	}
+}
+
+func TestPKEarlyHeartbeat_OnlyCompleteTransportFramesPreserveController(t *testing.T) {
+	for _, frame := range []string{":\n\n", ": keepalive\r\n\r\n", ": first\n: second\n\n", "data: {\"type\":\"ping\"}\n\n", "event: ping\ndata: {\"type\":\"ping\"}\n\n"} {
+		require.True(t, isCompleteSSEHeartbeat([]byte(frame)), frame)
+	}
+	for _, frame := range []string{"", "\n\n", ": incomplete\n", "event: ping\n\n", ": comment\nevent: ping\n\n", ": comment\n\ndata: {\"delta\":\"hello\"}\n\n", "data: {\"type\":\"ping\",\"content\":\"hello\"}\n\n", "event: response.created\ndata: {}\n\n", "data: [DONE]\n\n"} {
+		require.False(t, isCompleteSSEHeartbeat([]byte(frame)), frame)
+	}
+}
+
+func TestPKEarlyHeartbeat_QueueOnlyLateJSONErrorUsesSSE(t *testing.T) {
+	c, rec := newCompactBridgeTestContext(t, false)
+	stop := startEarlySSEHeartbeat(c, time.Now(), "messages", StreamEarlyHeartbeatSettings{})
+	defer stop()
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	n, err := c.Writer.WriteString("data: {\"type\": \"ping\"}\n\n")
+	require.NoError(t, err)
+	c.Set(GatewayStreamHeartbeatBytesKey, n)
+	c.Writer.Flush()
+	require.Equal(t, -1, OpenAICompactKeepaliveAdjustedWrittenSize(c))
+	require.True(t, StopEarlySSEHeartbeatCommitted(c), "queue-only output has committed SSE even without a timer beat")
+	c.JSON(http.StatusServiceUnavailable, map[string]any{"error": map[string]any{"type": "api_error", "message": "no account"}})
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, rec.Body.String(), "event: error\ndata: ")
+	require.Contains(t, rec.Body.String(), `"message":"no account"`)
+	require.Contains(t, rec.Body.String(), `"type":"error"`)
+	require.Greater(t, OpenAICompactKeepaliveAdjustedWrittenSize(c), 0)
+	streamErr, ok := GetOpsStreamError(c)
+	require.True(t, ok)
+	require.Equal(t, http.StatusServiceUnavailable, streamErr.IntendedStatus)
+}
+
+func TestPKEarlyHeartbeat_QueueAccountingWithoutController(t *testing.T) {
+	c, _ := newCompactBridgeTestContext(t, false)
+	n, err := c.Writer.WriteString(":\n\n")
+	require.NoError(t, err)
+	c.Set(GatewayStreamHeartbeatBytesKey, n)
+	require.Equal(t, -1, OpenAICompactKeepaliveAdjustedWrittenSize(c))
+	_, err = c.Writer.WriteString("data: real\n\n")
+	require.NoError(t, err)
+	require.Equal(t, len("data: real\n\n"), OpenAICompactKeepaliveAdjustedWrittenSize(c))
 }
 
 func TestPKEarlyHeartbeat_CancellationStopsPendingTimer(t *testing.T) {
