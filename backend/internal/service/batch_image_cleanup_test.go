@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -141,6 +142,42 @@ func TestBatchImageCleanupService_InputOutputAndWorker(t *testing.T) {
 		require.Nil(t, repo.jobs["imgbatch_future"].OutputDeletedAt)
 		require.NotContains(t, strings.Join(repo.events["imgbatch_running"], ","), "cleanup")
 	})
+}
+
+func TestBatchImageCleanupLifecycle_StopWithoutStart(t *testing.T) {
+	svc := &BatchImageCleanupService{
+		Repo:   newFakeBatchImageRepository(),
+		Config: &config.Config{BatchImage: config.BatchImageConfig{Enabled: true}},
+	}
+	require.NotPanics(t, func() {
+		svc.Stop()
+		svc.Stop()
+	})
+}
+
+func TestBatchImageCleanupLifecycle_ImmediateStop(t *testing.T) {
+	// One runnable processor exercises Stop before the newly launched worker gets
+	// its first turn. Repeat to cover the alternative scheduling order as well.
+	previous := runtime.GOMAXPROCS(1)
+	defer runtime.GOMAXPROCS(previous)
+	for i := 0; i < 100; i++ {
+		svc := &BatchImageCleanupService{
+			Repo:   newFakeBatchImageRepository(),
+			Config: &config.Config{BatchImage: config.BatchImageConfig{Enabled: true}},
+		}
+		stopped := make(chan struct{})
+		go func() {
+			svc.Start()
+			svc.Stop()
+			svc.Stop()
+			close(stopped)
+		}()
+		select {
+		case <-stopped:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("immediate shutdown did not complete at iteration %d", i)
+		}
+	}
 }
 
 func TestBatchImageSettlementOutputExpiration(t *testing.T) {

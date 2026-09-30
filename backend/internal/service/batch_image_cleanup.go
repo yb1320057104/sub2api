@@ -145,9 +145,11 @@ func (s *BatchImageCleanupService) Start() {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	s.cancel = cancel
-	s.done = make(chan struct{})
+	done := make(chan struct{})
+	s.done = done
 	go func() {
-		defer close(s.done)
+		// Stop may clear s.done before this goroutine is first scheduled.
+		defer close(done)
 		ticker := time.NewTicker(s.cleanupInterval())
 		defer ticker.Stop()
 		for {

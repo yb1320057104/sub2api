@@ -93,7 +93,10 @@ jobs:
           cache-dependency-path: backend/go.sum
       - name: Check update and private download behavior in CI
         working-directory: backend
-        run: go test -tags unit ./internal/service ./internal/repository -run 'Test(CompareVersions|ParseVersion|ValidateDownloadURL|UpdateService|GitHub|Github|PrivateRelease)' -count=1
+        run: go test -tags unit ./internal/service ./internal/repository -run 'Test(CompareVersions|ParseVersion|ValidateDownloadURL|UpdateService|GitHub|Github|PrivateRelease|ProvideConcurrencyService_StartupCleanup|CleanupStaleProcessSlots|StartSlotCleanupWorker|BackgroundStartGate|BatchImageCleanupLifecycle|PKCacheConversion)' -count=1
+      - name: Check overlapping deployment lifecycle for data races
+        working-directory: backend
+        run: go test -race -tags unit ./internal/service -run 'Test(BackgroundStartGate|BatchImageCleanupLifecycle)' -count=1
       - name: Build the server and its update archive
         env:
           VERSION: ${{ steps.release.outputs.version }}

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/stretchr/testify/require"
 )
 
@@ -191,6 +192,43 @@ func TestCleanupStaleProcessSlots_DelegatesPrefix(t *testing.T) {
 	svc := NewConcurrencyService(cache)
 	require.NoError(t, svc.CleanupStaleProcessSlots(context.Background()))
 	require.Equal(t, RequestIDPrefix(), cache.cleanupPrefix)
+}
+
+func TestProvideConcurrencyService_StartupCleanupDefault(t *testing.T) {
+	for _, value := range []string{"", "false", "TRUE", "1", " true "} {
+		t.Run("value="+value, func(t *testing.T) {
+			t.Setenv("SUB2API_SKIP_STARTUP_SLOT_CLEANUP", value)
+			cache := &trackingConcurrencyCache{}
+
+			svc := ProvideConcurrencyService(cache, nil, nil)
+
+			require.NotNil(t, svc)
+			require.NotEmpty(t, RequestIDPrefix())
+			require.Equal(t, RequestIDPrefix(), cache.cleanupPrefix)
+		})
+	}
+}
+
+func TestProvideConcurrencyService_StartupCleanupExplicitSkip(t *testing.T) {
+	t.Setenv("SUB2API_SKIP_STARTUP_SLOT_CLEANUP", "true")
+	cache := &trackingConcurrencyCache{}
+
+	svc := ProvideConcurrencyService(cache, nil, nil)
+
+	require.NotNil(t, svc)
+	require.Empty(t, cache.cleanupPrefix)
+}
+
+func TestProvideConcurrencyService_StartupCleanupSkipKeepsExpiredSlotCleanup(t *testing.T) {
+	t.Setenv("SUB2API_SKIP_STARTUP_SLOT_CLEANUP", "true")
+	cache := &slotCleanupCache{}
+	cfg := &config.Config{}
+	cfg.Gateway.Scheduling.SlotCleanupInterval = time.Hour
+
+	svc := ProvideConcurrencyService(cache, nil, cfg)
+
+	require.NotNil(t, svc)
+	require.Eventually(t, func() bool { return cache.calls.Load() > 0 }, time.Second, 10*time.Millisecond)
 }
 
 func TestAcquireAccountSlot_Success(t *testing.T) {
