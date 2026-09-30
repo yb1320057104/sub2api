@@ -71,6 +71,11 @@ const messages: Record<string, string> = {
 	'usage.upstreamResponseModel': 'Upstream response',
 	'usage.modelVariant': 'Possible version variant',
 	'usage.modelMismatch': 'Different model',
+  'usage.latencyFirstToken': '首字',
+  'usage.latencyUpstreamFirstToken': '上游首字',
+  'usage.latencyDuration': '总耗时',
+  'usage.latencyFirstResponseHint': 'Measured downstream response',
+  'usage.latencyUpstreamFirstTokenHint': 'Original semantic/visible TTFT',
 }
 
 vi.mock('vue-i18n', async () => {
@@ -127,6 +132,50 @@ const baseImageRow = {
   image_size_source: null,
   image_size_breakdown: null,
 }
+
+describe('PK usage response timing', () => {
+  const mountLatency = (showUpstreamLatency: boolean, firstToken: number | null, firstResponse?: number | null) => mount(UsageTable, {
+    props: {
+      data: [{ ...baseImageRow, first_token_ms: firstToken, first_response_ms: firstResponse, duration_ms: 12000 }],
+      columns: [{ key: 'latency', label: 'Latency' }],
+      showUpstreamLatency,
+    },
+    global: {
+      stubs: {
+        DataTable: { props: ['data'], template: '<div><slot name="cell-latency" :row="data[0]" /></div>' },
+        EmptyState: true,
+        Icon: true,
+        Teleport: true,
+      },
+    },
+  })
+
+  it('keeps the user label and shows only the API-provided response time', () => {
+    const wrapper = mountLatency(false, 17)
+    expect(wrapper.text()).toContain('首字')
+    expect(wrapper.text()).not.toContain('上游首字')
+    expect(wrapper.text()).not.toContain('首包')
+    expect(wrapper.text()).toContain('17ms')
+  })
+
+  it('shows measured response and upstream TTFT separately for administrators', () => {
+    const wrapper = mountLatency(true, 9876, 17)
+    expect(wrapper.text()).toContain('首字')
+    expect(wrapper.text()).toContain('上游首字')
+    expect(wrapper.text()).toContain('17ms')
+    expect(wrapper.text()).toContain('9.88s')
+    const first = wrapper.findAll('span').find((node) => node.text() === '首字')
+    expect(first?.element.nextElementSibling?.textContent).toBe('17ms')
+    expect(wrapper.find('[title="Original semantic/visible TTFT"]').exists()).toBe(true)
+  })
+
+  it('does not substitute upstream TTFT when an old record has no response measurement', () => {
+    const wrapper = mountLatency(true, 9876, null)
+    const labels = wrapper.findAll('span').filter((node) => node.text() === '首字')
+    expect(labels).toHaveLength(1)
+    expect(labels[0].element.nextElementSibling?.textContent).toBe('-')
+  })
+})
 
 describe('admin UsageTable tooltip', () => {
   beforeEach(() => {

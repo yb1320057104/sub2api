@@ -909,7 +909,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			if wsErr == nil {
 				break
 			}
-			if c != nil && c.Writer != nil && c.Writer.Written() {
+			if c != nil && c.Writer != nil && c.Writer.Written() && EarlySSEAdjustedWrittenSize(c) >= 0 {
 				break
 			}
 			var taskRecoveredErr *agentIdentityTaskRecoveredError

@@ -238,6 +238,9 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		// 分组隔离（默认不允许未分组 Key 调度）
 		SettingKeyAllowUngroupedKeyScheduling:                        "false",
 		SettingKeyOpenAILowUpstreamRatePriorityEnabled:               "false",
+		SettingKeyStreamEarlyHeartbeatEnabled:                        "false",
+		SettingKeyStreamEarlyHeartbeatMinDelayMS:                     "1000",
+		SettingKeyStreamEarlyHeartbeatMaxDelayMS:                     "2000",
 		SettingKeyOpenAIOAuthSchedulingRateMultiplier:                "1",
 		SettingKeyEnableAnthropicCacheTTL1hInjection:                 "false",
 		SettingKeyRewriteMessageCacheControl:                         strconv.FormatBool(s.defaultRewriteMessageCacheControl()),
@@ -861,6 +864,10 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	// Gateway forwarding behavior (defaults: fingerprint=true, metadata_passthrough=false,
 	// cch_signing=false, claude_oauth_system_prompt_injection=true)
 	result.OpenAITTFTMode = normalizeOpenAITTFTMode(settings[SettingKeyOpenAITTFTMode])
+	earlyHeartbeat := parseStreamEarlyHeartbeatSettings(settings)
+	result.StreamEarlyHeartbeatEnabled = earlyHeartbeat.Enabled
+	result.StreamEarlyHeartbeatMinDelayMS = earlyHeartbeat.MinDelayMS
+	result.StreamEarlyHeartbeatMaxDelayMS = earlyHeartbeat.MaxDelayMS
 	if v, ok := settings[SettingKeyEnableFingerprintUnification]; ok && v != "" {
 		result.EnableFingerprintUnification = v == "true"
 	} else {
@@ -1007,6 +1014,27 @@ func normalizeOpenAITTFTMode(mode string) string {
 		return OpenAITTFTModeVisible
 	}
 	return OpenAITTFTModeSemantic
+}
+
+func parseStreamEarlyHeartbeatSettings(values map[string]string) StreamEarlyHeartbeatSettings {
+	settings := defaultStreamEarlyHeartbeatSettings()
+	settings.Enabled = values[SettingKeyStreamEarlyHeartbeatEnabled] == "true"
+	for key, dest := range map[string]*int{
+		SettingKeyStreamEarlyHeartbeatMinDelayMS: &settings.MinDelayMS,
+		SettingKeyStreamEarlyHeartbeatMaxDelayMS: &settings.MaxDelayMS,
+	} {
+		if raw, ok := values[key]; ok {
+			value, err := strconv.Atoi(strings.TrimSpace(raw))
+			if err != nil {
+				return defaultStreamEarlyHeartbeatSettings()
+			}
+			*dest = value
+		}
+	}
+	if settings.MinDelayMS < 0 || settings.MaxDelayMS < settings.MinDelayMS || settings.MaxDelayMS > 30000 {
+		return defaultStreamEarlyHeartbeatSettings()
+	}
+	return settings
 }
 
 func clampAffiliateRebateRate(value float64) float64 {

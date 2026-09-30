@@ -236,15 +236,20 @@
           <div class="flex items-stretch gap-2">
             <span
               class="w-1 shrink-0 rounded-full"
-              :class="row.first_token_ms != null
-                ? ['bg-gradient-to-b from-40% to-60%', LATENCY_BAR_FROM_CLASSES[firstTokenSeverity(row.first_token_ms)], LATENCY_BAR_TO_CLASSES[durationSeverity(row.duration_ms ?? 0)]]
+              :class="displayedFirstLatency(row) != null
+                ? ['bg-gradient-to-b from-40% to-60%', LATENCY_BAR_FROM_CLASSES[firstTokenSeverity(displayedFirstLatency(row) ?? 0)], LATENCY_BAR_TO_CLASSES[durationSeverity(row.duration_ms ?? 0)]]
                 : LATENCY_BAR_CLASSES[durationSeverity(row.duration_ms ?? 0)]"
               aria-hidden="true"
             ></span>
             <div class="grid grid-cols-[max-content_max-content] items-baseline gap-x-2 gap-y-0.5 text-xs">
-              <span class="text-gray-400 dark:text-gray-500">{{ t('usage.latencyFirstToken') }}</span>
-              <span v-if="row.first_token_ms != null" class="font-medium tabular-nums" :class="LATENCY_TEXT_CLASSES[firstTokenSeverity(row.first_token_ms)]">{{ formatDuration(row.first_token_ms) }}</span>
+              <span class="text-gray-400 dark:text-gray-500" :title="showUpstreamLatency ? t('usage.latencyFirstResponseHint') : undefined">{{ t('usage.latencyFirstToken') }}</span>
+              <span v-if="displayedFirstLatency(row) != null" class="font-medium tabular-nums" :class="LATENCY_TEXT_CLASSES[firstTokenSeverity(displayedFirstLatency(row) ?? 0)]">{{ formatDuration(displayedFirstLatency(row)) }}</span>
               <span v-else class="text-gray-400 dark:text-gray-500">-</span>
+              <template v-if="showUpstreamLatency">
+                <span class="text-gray-400 dark:text-gray-500" :title="t('usage.latencyUpstreamFirstTokenHint')">{{ t('usage.latencyUpstreamFirstToken') }}</span>
+                <span v-if="row.first_token_ms != null" class="font-medium tabular-nums" :class="LATENCY_TEXT_CLASSES[firstTokenSeverity(row.first_token_ms)]">{{ formatDuration(row.first_token_ms) }}</span>
+                <span v-else class="text-gray-400 dark:text-gray-500">-</span>
+              </template>
               <span class="text-gray-400 dark:text-gray-500">{{ t('usage.latencyDuration') }}</span>
               <span class="font-medium tabular-nums" :class="LATENCY_TEXT_CLASSES[durationSeverity(row.duration_ms ?? 0)]">{{ formatDuration(row.duration_ms) }}</span>
             </div>
@@ -595,6 +600,7 @@ interface Props {
   defaultSortOrder?: 'asc' | 'desc'
   showAccountBilling?: boolean
   showUpstreamEndpoint?: boolean
+  showUpstreamLatency?: boolean
   /** 嵌入统一卡片内使用：去掉自身卡片外观 */
   flat?: boolean
 }
@@ -606,6 +612,7 @@ const props = withDefaults(defineProps<Props>(), {
   defaultSortOrder: 'asc',
   showAccountBilling: true,
   showUpstreamEndpoint: true,
+  showUpstreamLatency: false,
   flat: false
 })
 const emit = defineEmits<{
@@ -618,6 +625,9 @@ const appStore = useAppStore()
 const copiedRequestId = ref<string | null>(null)
 const showAccountBilling = props.showAccountBilling
 const showUpstreamEndpoint = props.showUpstreamEndpoint
+const showUpstreamLatency = props.showUpstreamLatency
+const displayedFirstLatency = (row: AdminUsageLog): number | null | undefined =>
+  showUpstreamLatency ? row.first_response_ms : row.first_token_ms
 const ipGeoBatchLoading = ref(false)
 
 const showIpGeoToolbar = computed(() => props.columns.some((col) => col.key === 'ip_address'))

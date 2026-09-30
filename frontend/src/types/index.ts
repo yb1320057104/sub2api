@@ -1811,6 +1811,8 @@ export interface UsageLogAccountSummary {
 }
 
 export interface AdminUsageLog extends UsageLog {
+  // first_token_ms is upstream TTFT for admins; users receive downstream response time.
+  first_response_ms?: number | null
   upstream_model?: string | null
   upstream_reasoning_effort?: string | null
   upstream_response_model?: string | null

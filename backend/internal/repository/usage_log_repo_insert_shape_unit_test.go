@@ -129,7 +129,7 @@ func TestPrepareUsageLogInsert_UpstreamRequestIDArgWiring(t *testing.T) {
 	})
 	require.Len(t, prepared.args, len(usageLogInsertArgTypes))
 
-	idx := len(prepared.args) - 4
+	idx := len(prepared.args) - 5
 	arg, ok := prepared.args[idx].(sql.NullString)
 	require.True(t, ok, "upstream_request_id arg should be sql.NullString, got %T", prepared.args[idx])
 	require.True(t, arg.Valid)
@@ -142,4 +142,39 @@ func TestPrepareUsageLogInsert_UpstreamRequestIDArgWiring(t *testing.T) {
 	require.False(t, nullArg.Valid, "absent upstream request id must be NULL")
 
 	require.Contains(t, usageLogSelectColumns, "upstream_request_id")
+}
+
+func TestPKUsageFirstResponseInsertPaths(t *testing.T) {
+	firstToken, firstResponse := 9876, 17
+	log := &service.UsageLog{
+		UserID: 1, APIKeyID: 2, AccountID: 3, RequestID: "pk-first-response", Model: "gpt-5",
+		FirstTokenMs: &firstToken, FirstResponseMs: &firstResponse,
+		InputTokens: 100, OutputTokens: 20, CacheReadTokens: 80, CacheCreationTokens: 5,
+		TotalCost: 0.25, ActualCost: 0.5, CreatedAt: time.Now().UTC(),
+	}
+	prepared := prepareUsageLogInsert(log)
+	require.Len(t, prepared.args, len(usageLogInsertArgTypes))
+	require.Equal(t, "integer", usageLogInsertArgTypes[len(usageLogInsertArgTypes)-1])
+	require.Equal(t, sql.NullInt64{Int64: 17, Valid: true}, prepared.args[len(prepared.args)-1])
+	require.Equal(t, sql.NullInt64{Int64: 9876, Valid: true}, prepared.args[34], "upstream TTFT keeps its existing position")
+	require.Equal(t, 100, prepared.args[11])
+	require.Equal(t, 20, prepared.args[12])
+	require.Equal(t, 5, prepared.args[13])
+	require.Equal(t, 80, prepared.args[14])
+	require.Equal(t, 0.25, prepared.args[25])
+	require.Equal(t, 0.5, prepared.args[26])
+	key := usageLogBatchKey(log.RequestID, log.APIKeyID)
+	batch, batchArgs := buildUsageLogBatchInsertQuery([]string{key}, map[string]usageLogInsertPrepared{key: prepared})
+	bestEffort, bestEffortArgs := buildUsageLogBestEffortInsertQuery([]usageLogInsertPrepared{prepared})
+	for _, query := range []string{batch, bestEffort} {
+		require.Equal(t, 3, strings.Count(query, "first_response_ms"), "input CTE, INSERT and SELECT must agree")
+	}
+	require.Equal(t, prepared.args[len(prepared.args)-1], batchArgs[len(batchArgs)-1])
+	require.Equal(t, prepared.args[len(prepared.args)-1], bestEffortArgs[len(bestEffortArgs)-1])
+	for _, response := range []*int{nil, new(int)} {
+		log.FirstResponseMs = response
+		args := prepareUsageLogInsert(log).args
+		value := args[len(args)-1].(sql.NullInt64)
+		require.Equal(t, response != nil, value.Valid, "unrecorded and measured zero must remain distinct")
+	}
 }

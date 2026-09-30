@@ -3,11 +3,15 @@
 package admin
 
 import (
+	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
 
@@ -16,6 +20,65 @@ import (
 // `{"risk_control_enabled":true}` used to clear site_name, after which
 // getStringOrDefault rendered the empty value as the built-in default and the
 // login page silently changed name.
+
+func TestUpdateSettingsEarlyHeartbeatPartialPayloadAndResponse(t *testing.T) {
+	h, repo := newStepUpSwitchTestHandler(t, map[string]string{})
+	get := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(get)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/admin/settings", nil)
+	h.GetSettings(c)
+	require.Equal(t, http.StatusOK, get.Code)
+	var response struct {
+		Data dto.SystemSettings `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(get.Body.Bytes(), &response))
+	require.False(t, response.Data.StreamEarlyHeartbeatEnabled)
+	require.Equal(t, 1000, response.Data.StreamEarlyHeartbeatMinDelayMS)
+	require.Equal(t, 2000, response.Data.StreamEarlyHeartbeatMaxDelayMS)
+
+	updated := doUpdateSettings(t, h, map[string]any{
+		"stream_early_heartbeat_enabled":      true,
+		"stream_early_heartbeat_min_delay_ms": 0,
+		"stream_early_heartbeat_max_delay_ms": 30000,
+	}, nil)
+	require.Equal(t, http.StatusOK, updated.Code)
+	require.NoError(t, json.Unmarshal(updated.Body.Bytes(), &response))
+	require.True(t, response.Data.StreamEarlyHeartbeatEnabled)
+	require.Equal(t, 0, response.Data.StreamEarlyHeartbeatMinDelayMS)
+	require.Equal(t, 30000, response.Data.StreamEarlyHeartbeatMaxDelayMS)
+	require.Equal(t, "true", repo.values[service.SettingKeyStreamEarlyHeartbeatEnabled])
+	require.Equal(t, "0", repo.values[service.SettingKeyStreamEarlyHeartbeatMinDelayMS])
+
+	omitted := doUpdateSettings(t, h, map[string]any{"site_name": "Existing gateway"}, nil)
+	require.Equal(t, http.StatusOK, omitted.Code)
+	require.Equal(t, "true", repo.values[service.SettingKeyStreamEarlyHeartbeatEnabled])
+	require.Equal(t, "30000", repo.values[service.SettingKeyStreamEarlyHeartbeatMaxDelayMS])
+	disabled := doUpdateSettings(t, h, map[string]any{"stream_early_heartbeat_enabled": false}, nil)
+	require.Equal(t, http.StatusOK, disabled.Code)
+	require.Equal(t, "false", repo.values[service.SettingKeyStreamEarlyHeartbeatEnabled])
+	require.Equal(t, "30000", repo.values[service.SettingKeyStreamEarlyHeartbeatMaxDelayMS])
+}
+
+func TestUpdateSettingsEarlyHeartbeatRejectsInvalidRanges(t *testing.T) {
+	for _, body := range []map[string]any{
+		{"stream_early_heartbeat_min_delay_ms": -1},
+		{"stream_early_heartbeat_min_delay_ms": 2500},
+		{"stream_early_heartbeat_max_delay_ms": 30001},
+		{"stream_early_heartbeat_min_delay_ms": 0.5},
+	} {
+		h, repo := newStepUpSwitchTestHandler(t, map[string]string{})
+		rec := doUpdateSettings(t, h, body, nil)
+		require.Equal(t, http.StatusBadRequest, rec.Code)
+		require.NotContains(t, repo.values, service.SettingKeyStreamEarlyHeartbeatEnabled)
+	}
+}
+
+func TestUpdateSettingsEarlyHeartbeatAuditFields(t *testing.T) {
+	before := &service.SystemSettings{StreamEarlyHeartbeatMinDelayMS: 1000, StreamEarlyHeartbeatMaxDelayMS: 2000}
+	after := &service.SystemSettings{StreamEarlyHeartbeatEnabled: true, StreamEarlyHeartbeatMinDelayMS: 500, StreamEarlyHeartbeatMaxDelayMS: 2500}
+	changed := diffSettings(before, after, nil, nil, UpdateSettingsRequest{})
+	require.ElementsMatch(t, []string{service.SettingKeyStreamEarlyHeartbeatEnabled, service.SettingKeyStreamEarlyHeartbeatMinDelayMS, service.SettingKeyStreamEarlyHeartbeatMaxDelayMS}, changed)
+}
 
 func TestUpdateSettingsPartialPayloadKeepsUnsentKeys(t *testing.T) {
 	h, repo := newStepUpSwitchTestHandler(t, map[string]string{

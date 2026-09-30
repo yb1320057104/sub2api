@@ -44,6 +44,68 @@
           </nav>
         </div>
 
+        <div
+          v-show="activeTab === 'first_token'"
+          class="space-y-6"
+          data-testid="stream-early-heartbeat-settings"
+        >
+          <div class="card">
+            <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
+              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+                {{ t("admin.settings.tabs.first_token") }}
+              </h2>
+            </div>
+            <div class="space-y-4 p-6">
+              <div class="flex items-center justify-between gap-4">
+                <label for="stream-early-heartbeat-enabled" class="text-sm font-medium text-gray-700 dark:text-gray-300">
+                  {{ t("admin.settings.gatewayForwarding.earlyHeartbeat") }}
+                </label>
+                <Toggle
+                  id="stream-early-heartbeat-enabled"
+                  v-model="form.stream_early_heartbeat_enabled"
+                  data-testid="stream-early-heartbeat-enabled"
+                />
+              </div>
+              <p class="text-xs text-gray-500 dark:text-gray-400">
+                {{ t("admin.settings.gatewayForwarding.earlyHeartbeatHint") }}
+              </p>
+              <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div>
+                  <label for="stream-early-heartbeat-min" class="input-label">{{ t("admin.settings.gatewayForwarding.earlyHeartbeatMin") }}</label>
+                  <input
+                    id="stream-early-heartbeat-min"
+                    v-model.number="earlyHeartbeatMinDelaySeconds"
+                    type="number"
+                    min="0"
+                    max="30"
+                    step="0.001"
+                    :disabled="!form.stream_early_heartbeat_enabled"
+                    class="input w-full"
+                    data-testid="stream-early-heartbeat-min"
+                  />
+                </div>
+                <div>
+                  <label for="stream-early-heartbeat-max" class="input-label">{{ t("admin.settings.gatewayForwarding.earlyHeartbeatMax") }}</label>
+                  <input
+                    id="stream-early-heartbeat-max"
+                    v-model.number="earlyHeartbeatMaxDelaySeconds"
+                    type="number"
+                    min="0"
+                    max="30"
+                    step="0.001"
+                    :disabled="!form.stream_early_heartbeat_enabled"
+                    class="input w-full"
+                    data-testid="stream-early-heartbeat-max"
+                  />
+                </div>
+              </div>
+              <p class="text-xs text-gray-500 dark:text-gray-400">
+                {{ t("admin.settings.gatewayForwarding.earlyHeartbeatErrorHint") }}
+              </p>
+            </div>
+          </div>
+        </div>
+
         <!-- Tab: Security — Admin API Key -->
         <div v-show="activeTab === 'security'" class="space-y-6">
           <!-- Admin API Key Settings -->
@@ -9080,6 +9142,7 @@ type SettingsTab =
   | "security"
   | "users"
   | "gateway"
+  | "first_token"
   | "payment"
   | "email"
   | "backup";
@@ -9091,6 +9154,7 @@ const settingsTabs = [
   { key: "security" as SettingsTab, icon: "shield" as const },
   { key: "users" as SettingsTab, icon: "user" as const },
   { key: "gateway" as SettingsTab, icon: "server" as const },
+  { key: "first_token" as SettingsTab, icon: "bolt" as const },
   { key: "payment" as SettingsTab, icon: "creditCard" as const },
   { key: "email" as SettingsTab, icon: "mail" as const },
   { key: "backup" as SettingsTab, icon: "database" as const },
@@ -9985,6 +10049,9 @@ const form = reactive<SettingsForm>({
   openai_advanced_scheduler_weight_session_sticky: "",
   // Gateway forwarding behavior
   openai_ttft_mode: "semantic",
+  stream_early_heartbeat_enabled: false,
+  stream_early_heartbeat_min_delay_ms: 1000,
+  stream_early_heartbeat_max_delay_ms: 2000,
   enable_fingerprint_unification: true,
   enable_metadata_passthrough: false,
   enable_cch_signing: false,
@@ -11012,6 +11079,27 @@ const claudeSyncedVersionLabel = computed(() => {
   });
 });
 
+function heartbeatSecondsToMilliseconds(value: number | string): number {
+  const seconds = Number(value);
+  if (value === "" || !Number.isFinite(seconds) || seconds < 0 || seconds > 30) {
+    return Number.NaN;
+  }
+  return Math.round(seconds * 1000);
+}
+
+const earlyHeartbeatMinDelaySeconds = computed({
+  get: () => form.stream_early_heartbeat_min_delay_ms / 1000,
+  set: (seconds: number | string) => {
+    form.stream_early_heartbeat_min_delay_ms = heartbeatSecondsToMilliseconds(seconds);
+  },
+});
+const earlyHeartbeatMaxDelaySeconds = computed({
+  get: () => form.stream_early_heartbeat_max_delay_ms / 1000,
+  set: (seconds: number | string) => {
+    form.stream_early_heartbeat_max_delay_ms = heartbeatSecondsToMilliseconds(seconds);
+  },
+});
+
 async function loadSettings() {
   loading.value = true;
   loadFailed.value = false;
@@ -11282,6 +11370,18 @@ const siteBillingModeHint = computed(() =>
 async function saveSettings() {
   saving.value = true;
   try {
+    const minHeartbeatDelay = form.stream_early_heartbeat_min_delay_ms;
+    const maxHeartbeatDelay = form.stream_early_heartbeat_max_delay_ms;
+    if (
+      !Number.isInteger(minHeartbeatDelay) ||
+      !Number.isInteger(maxHeartbeatDelay) ||
+      minHeartbeatDelay < 0 ||
+      maxHeartbeatDelay < minHeartbeatDelay ||
+      maxHeartbeatDelay > 30000
+    ) {
+      appStore.showError(t("admin.settings.gatewayForwarding.earlyHeartbeatRangeError"));
+      return;
+    }
     const normalizedTableDefaultPageSize = Math.floor(
       Number(form.table_default_page_size),
     );
@@ -11623,6 +11723,9 @@ async function saveSettings() {
       allow_ungrouped_key_scheduling: form.allow_ungrouped_key_scheduling,
       openai_ttft_mode:
         form.openai_ttft_mode === "visible" ? "visible" : "semantic",
+      stream_early_heartbeat_enabled: form.stream_early_heartbeat_enabled,
+      stream_early_heartbeat_min_delay_ms: minHeartbeatDelay,
+      stream_early_heartbeat_max_delay_ms: maxHeartbeatDelay,
       enable_fingerprint_unification: form.enable_fingerprint_unification,
       enable_metadata_passthrough: form.enable_metadata_passthrough,
       enable_cch_signing: form.enable_cch_signing,

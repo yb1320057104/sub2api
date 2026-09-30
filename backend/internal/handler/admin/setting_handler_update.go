@@ -244,6 +244,9 @@ type UpdateSettingsRequest struct {
 
 	// Gateway forwarding behavior
 	OpenAITTFTMode                         *string `json:"openai_ttft_mode"`
+	StreamEarlyHeartbeatEnabled            *bool   `json:"stream_early_heartbeat_enabled"`
+	StreamEarlyHeartbeatMinDelayMS         *int    `json:"stream_early_heartbeat_min_delay_ms"`
+	StreamEarlyHeartbeatMaxDelayMS         *int    `json:"stream_early_heartbeat_max_delay_ms"`
 	EnableFingerprintUnification           *bool   `json:"enable_fingerprint_unification"`
 	EnableMetadataPassthrough              *bool   `json:"enable_metadata_passthrough"`
 	EnableCCHSigning                       *bool   `json:"enable_cch_signing"`
@@ -1713,6 +1716,24 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 			}
 			return previousSettings.OpenAITTFTMode
 		}(),
+		StreamEarlyHeartbeatEnabled: func() bool {
+			if req.StreamEarlyHeartbeatEnabled != nil {
+				return *req.StreamEarlyHeartbeatEnabled
+			}
+			return previousSettings.StreamEarlyHeartbeatEnabled
+		}(),
+		StreamEarlyHeartbeatMinDelayMS: func() int {
+			if req.StreamEarlyHeartbeatMinDelayMS != nil {
+				return *req.StreamEarlyHeartbeatMinDelayMS
+			}
+			return previousSettings.StreamEarlyHeartbeatMinDelayMS
+		}(),
+		StreamEarlyHeartbeatMaxDelayMS: func() int {
+			if req.StreamEarlyHeartbeatMaxDelayMS != nil {
+				return *req.StreamEarlyHeartbeatMaxDelayMS
+			}
+			return previousSettings.StreamEarlyHeartbeatMaxDelayMS
+		}(),
 		EnableMetadataPassthrough: func() bool {
 			if req.EnableMetadataPassthrough != nil {
 				return *req.EnableMetadataPassthrough
@@ -2336,6 +2357,9 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		MaxClaudeCodeVersion:                                   updatedSettings.MaxClaudeCodeVersion,
 		AllowUngroupedKeyScheduling:                            updatedSettings.AllowUngroupedKeyScheduling,
 		BackendModeEnabled:                                     updatedSettings.BackendModeEnabled,
+		StreamEarlyHeartbeatEnabled:                            updatedSettings.StreamEarlyHeartbeatEnabled,
+		StreamEarlyHeartbeatMinDelayMS:                         updatedSettings.StreamEarlyHeartbeatMinDelayMS,
+		StreamEarlyHeartbeatMaxDelayMS:                         updatedSettings.StreamEarlyHeartbeatMaxDelayMS,
 		EnableFingerprintUnification:                           updatedSettings.EnableFingerprintUnification,
 		EnableMetadataPassthrough:                              updatedSettings.EnableMetadataPassthrough,
 		EnableCCHSigning:                                       updatedSettings.EnableCCHSigning,

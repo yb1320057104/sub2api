@@ -93,3 +93,46 @@ jobs:
       - run: python -m pip install -r .github/release-tools/requirements-release.txt
       - run: python -m unittest discover -s .github/release-tools -p 'test_release_matrix.py'
       - run: bash -n .github/release-tools/release-images.sh
+
+  pk-candidate:
+    # Private feature branches provide an installable candidate for isolated
+    # acceptance checks. This job never creates a Release or updates a server.
+    if: github.repository == 'pengkang0322/sub2api' && github.event.repository.private == true && startsWith(github.ref, 'refs/heads/feat/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 9
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - name: Build candidate frontend
+        working-directory: frontend
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm run build
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - name: Check heartbeat concurrency and protected billing behavior
+        working-directory: backend
+        run: go test -race -tags unit ./internal/service ./internal/handler ./internal/handler/dto ./internal/handler/admin ./internal/repository ./internal/server/middleware -run 'Test(PKEarly|PKFirstResponse|PKUsage|PKCacheConversion|PKChannelMonitor|StreamEarlyHeartbeat|UpdateSettingsEarlyHeartbeat|ServerTiming)' -count=1
+      - name: Build candidate server
+        working-directory: backend
+        run: |
+          mkdir -p ../candidate
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags embed -trimpath \
+            -ldflags="-s -w -X main.Version=0.2.10-pk.candidate -X main.Commit=$GITHUB_SHA -X main.BuildType=candidate" \
+            -o ../candidate/sub2api ./cmd/server
+          cd ../candidate
+          sha256sum sub2api > checksums.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pk-candidate-linux-amd64
+          path: candidate/
+          retention-days: 3

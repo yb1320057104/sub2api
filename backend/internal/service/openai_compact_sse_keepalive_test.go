@@ -1,8 +1,10 @@
 package service
 
 import (
+	"context"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -322,4 +324,245 @@ func TestWriteOpenAIFastPolicyBlockedResponse_BeforeKeepaliveCommit(t *testing.T
 
 	require.Equal(t, http.StatusForbidden, rec.Code)
 	require.Equal(t, "permission_error", gjson.Get(rec.Body.String(), "error.type").String())
+}
+
+func firePKEarlyHeartbeat(t *testing.T, w *earlySSEHeartbeatWriter) {
+	t.Helper()
+	require.NotNil(t, w)
+	w.mu.Lock()
+	w.firstDue = time.Now()
+	w.mu.Unlock()
+	w.beat()
+}
+
+func TestPKEarlyHeartbeat_HeaderPreparationDoesNotCancelFirstComment(t *testing.T) {
+	c, rec := newCompactBridgeTestContext(t, false)
+	c.Writer.Header().Set("X-Request-ID", "gateway-request")
+	stop := startEarlySSEHeartbeat(c, time.Now(), "responses", StreamEarlyHeartbeatSettings{})
+	defer stop()
+	w := earlySSEWriterFromContext(c)
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.Header().Set("X-Codex-Turn-State", "account-private")
+	c.Writer.Header().Set("Content-Length", "100")
+	c.Writer.WriteHeader(http.StatusOK)
+	firePKEarlyHeartbeat(t, w)
+
+	require.True(t, EarlySSEHeartbeatCommitted(c))
+	require.True(t, c.Writer.Written(), "HTTP commit remains distinct from semantic output")
+	require.Equal(t, -1, OpenAICompactKeepaliveAdjustedWrittenSize(c))
+	require.NotNil(t, FirstResponseMsFromContext(c.Request.Context()))
+	require.Equal(t, "text/event-stream", rec.Result().Header.Get("Content-Type"))
+	require.Equal(t, "gateway-request", rec.Result().Header.Get("X-Request-ID"))
+	require.Empty(t, rec.Result().Header.Get("X-Codex-Turn-State"), "account headers cannot be sent before an account produces output")
+	require.Empty(t, rec.Result().Header.Get("Content-Length"))
+	require.Equal(t, ": keepalive\n\n", rec.Body.String())
+
+	output := "event: response.output_text.delta\ndata: {\"delta\":\"hello\"}\n\n"
+	_, err := c.Writer.WriteString(output)
+	require.NoError(t, err)
+	require.Equal(t, len(output), OpenAICompactKeepaliveAdjustedWrittenSize(c))
+	firePKEarlyHeartbeat(t, w)
+	require.Equal(t, ": keepalive\n\n"+output, rec.Body.String(), "real output permanently takes ownership")
+}
+
+func TestPKEarlyHeartbeat_FlushedHeadersStillAllowCommentBeforeBody(t *testing.T) {
+	c, rec := newCompactBridgeTestContext(t, false)
+	stop := startEarlySSEHeartbeat(c, time.Now(), "chat", StreamEarlyHeartbeatSettings{})
+	defer stop()
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.WriteHeader(http.StatusOK)
+	c.Writer.WriteHeaderNow()
+	c.Writer.Flush()
+	require.Nil(t, FirstResponseMsFromContext(c.Request.Context()), "header-only flush is not a body packet")
+	firePKEarlyHeartbeat(t, earlySSEWriterFromContext(c))
+	require.Equal(t, ": keepalive\n\n", rec.Body.String())
+}
+
+func TestPKEarlyHeartbeat_EnabledTimerUsesRequestStart(t *testing.T) {
+	c, rec := newCompactBridgeTestContext(t, false)
+	stop := startEarlySSEHeartbeat(c, time.Now().Add(-50*time.Millisecond), "responses", StreamEarlyHeartbeatSettings{Enabled: true, MinDelayMS: 20, MaxDelayMS: 20})
+	defer stop()
+	require.Eventually(t, func() bool { return EarlySSEHeartbeatCommitted(c) }, time.Second, time.Millisecond)
+	require.True(t, StopEarlySSEHeartbeatCommitted(c))
+	require.Equal(t, ": keepalive\n\n", rec.Body.String())
+	first := FirstResponseMsFromContext(c.Request.Context())
+	require.NotNil(t, first)
+	require.GreaterOrEqual(t, *first, 50)
+}
+
+func TestPKEarlyHeartbeat_FastErrorKeepsHTTPStatusAndJSON(t *testing.T) {
+	c, rec := newCompactBridgeTestContext(t, false)
+	stop := startEarlySSEHeartbeat(c, time.Now(), "responses", StreamEarlyHeartbeatSettings{})
+	defer stop()
+	c.JSON(http.StatusForbidden, map[string]any{"error": map[string]any{"type": "permission_error", "message": "denied"}})
+	firePKEarlyHeartbeat(t, earlySSEWriterFromContext(c))
+	require.Equal(t, http.StatusForbidden, rec.Code)
+	require.False(t, EarlySSEHeartbeatCommitted(c))
+	require.Equal(t, "denied", gjson.Get(rec.Body.String(), "error.message").String())
+	require.NotContains(t, rec.Body.String(), "keepalive")
+}
+
+func TestPKEarlyHeartbeat_LateJSONErrorUsesProtocolTerminal(t *testing.T) {
+	for _, protocol := range []string{"responses", "chat", "messages"} {
+		t.Run(protocol, func(t *testing.T) {
+			c, rec := newCompactBridgeTestContext(t, false)
+			stop := startEarlySSEHeartbeat(c, time.Now(), protocol, StreamEarlyHeartbeatSettings{})
+			defer stop()
+			firePKEarlyHeartbeat(t, earlySSEWriterFromContext(c))
+			c.JSON(http.StatusServiceUnavailable, map[string]any{"error": map[string]any{"type": "overloaded_error", "code": "capacity", "message": "try later"}})
+			require.Equal(t, http.StatusOK, rec.Code)
+			require.Greater(t, OpenAICompactKeepaliveAdjustedWrittenSize(c), 0)
+			events := parseCompactBridgeSSE(t, stripKeepaliveComments(rec.Body.String()))
+			require.Len(t, events, 1)
+			if protocol == "responses" {
+				require.Equal(t, "response.failed", events[0][0])
+				require.Equal(t, "capacity", gjson.Get(events[0][1], "response.error.code").String())
+				require.Equal(t, "try later", gjson.Get(events[0][1], "response.error.message").String())
+				require.NotEmpty(t, gjson.Get(events[0][1], "response.id").String())
+				require.Positive(t, gjson.Get(events[0][1], "response.created_at").Int())
+				require.True(t, gjson.Get(events[0][1], "sequence_number").Exists())
+			} else {
+				require.Equal(t, "error", events[0][0])
+				require.Equal(t, "try later", gjson.Get(events[0][1], "error.message").String())
+				if protocol == "messages" {
+					require.Equal(t, "error", gjson.Get(events[0][1], "type").String())
+				}
+			}
+			streamErr, ok := GetOpsStreamError(c)
+			require.True(t, ok)
+			require.Equal(t, http.StatusServiceUnavailable, streamErr.IntendedStatus)
+			require.True(t, IsResponseCommitted(c))
+			before := rec.Body.String()
+			_, err := c.Writer.WriteString("must not append a second terminal or raw JSON")
+			require.NoError(t, err)
+			require.Equal(t, before, rec.Body.String())
+		})
+	}
+}
+
+func TestPKEarlyHeartbeat_HeaderMutationDoesNotRaceTimer(t *testing.T) {
+	c, rec := newCompactBridgeTestContext(t, false)
+	stop := startEarlySSEHeartbeat(c, time.Now(), "responses", StreamEarlyHeartbeatSettings{})
+	defer stop()
+	w := earlySSEWriterFromContext(c)
+	w.mu.Lock()
+	w.firstDue = time.Now()
+	w.mu.Unlock()
+	var beat sync.WaitGroup
+	beat.Add(1)
+	go func() {
+		defer beat.Done()
+		w.beat()
+	}()
+	for i := 0; i < 1000; i++ {
+		c.Writer.Header().Set("X-Upstream-ID", "private")
+		c.Writer.Header().Del("X-Upstream-ID")
+		c.Writer.WriteHeader(http.StatusOK)
+		_ = c.Writer.Size()
+	}
+	beat.Wait()
+	require.True(t, StopEarlySSEHeartbeatCommitted(c))
+	require.Equal(t, ": keepalive\n\n", rec.Body.String())
+}
+
+func TestPKEarlyHeartbeat_ReusesExistingPassthroughKeepalive(t *testing.T) {
+	c, rec := newCompactBridgeTestContext(t, false)
+	stop := startEarlySSEHeartbeat(c, time.Now(), "responses", StreamEarlyHeartbeatSettings{})
+	defer stop()
+	w := earlySSEWriterFromContext(c)
+	stopPeriodic := startOpenAISSEKeepalive(c, time.Hour)
+	require.Same(t, w, c.Writer, "periodic keepalive must not add a second writer or timer")
+	w.mu.Lock()
+	w.repeatDue = time.Now()
+	w.mu.Unlock()
+	w.beat()
+	require.Equal(t, -1, OpenAICompactKeepaliveAdjustedWrittenSize(c))
+	stopPeriodic()
+	w.beat()
+	require.Equal(t, ": keepalive\n\n", rec.Body.String())
+	require.True(t, StopOpenAICompactSSEKeepaliveCommitted(c), "existing error paths must also observe early commit")
+}
+
+func TestPKEarlyHeartbeat_AdjustmentCombinesStreamComments(t *testing.T) {
+	c, _ := newCompactBridgeTestContext(t, false)
+	stop := startEarlySSEHeartbeat(c, time.Now(), "responses", StreamEarlyHeartbeatSettings{})
+	defer stop()
+	firePKEarlyHeartbeat(t, earlySSEWriterFromContext(c))
+	n, err := c.Writer.WriteString(":\n\n")
+	require.NoError(t, err)
+	recordOpenAIStreamKeepaliveBytes(c, n)
+	require.Equal(t, -1, OpenAICompactKeepaliveAdjustedWrittenSize(c))
+	_, err = c.Writer.WriteString("data: semantic\n\n")
+	require.NoError(t, err)
+	require.Equal(t, len("data: semantic\n\n"), OpenAICompactKeepaliveAdjustedWrittenSize(c))
+}
+
+func TestPKEarlyHeartbeat_CancellationStopsPendingTimer(t *testing.T) {
+	c, rec := newCompactBridgeTestContext(t, false)
+	ctx, cancel := context.WithCancel(c.Request.Context())
+	c.Request = c.Request.WithContext(ctx)
+	stop := startEarlySSEHeartbeat(c, time.Now(), "responses", StreamEarlyHeartbeatSettings{Enabled: true, MinDelayMS: 30000, MaxDelayMS: 30000})
+	defer stop()
+	w := earlySSEWriterFromContext(c)
+	cancel()
+	select {
+	case <-w.done:
+	case <-time.After(time.Second):
+		t.Fatal("request cancellation did not stop the pending heartbeat")
+	}
+	firePKEarlyHeartbeat(t, w)
+	require.Empty(t, rec.Body.String())
+	require.False(t, EarlySSEHeartbeatCommitted(c))
+}
+
+func TestPKEarlyHeartbeat_RandomDelayBounds(t *testing.T) {
+	settings := StreamEarlyHeartbeatSettings{MinDelayMS: 25, MaxDelayMS: 75}
+	for i := 0; i < 1000; i++ {
+		delay := earlySSEHeartbeatDelay(settings)
+		require.GreaterOrEqual(t, delay, 25*time.Millisecond)
+		require.LessOrEqual(t, delay, 75*time.Millisecond)
+	}
+	require.Equal(t, 42*time.Millisecond, earlySSEHeartbeatDelay(StreamEarlyHeartbeatSettings{MinDelayMS: 42, MaxDelayMS: 42}))
+	require.Equal(t, time.Duration(0), earlySSEHeartbeatDelay(StreamEarlyHeartbeatSettings{MinDelayMS: -10, MaxDelayMS: -1}))
+}
+
+func TestPKFirstResponse_DisabledHeartbeatStillRecordsBodyAndCopiesContext(t *testing.T) {
+	c, rec := newCompactBridgeTestContext(t, false)
+	var service *OpenAIGatewayService
+	stop := service.StartEarlySSEHeartbeat(c, time.Now().Add(-20*time.Millisecond), "chat")
+	defer stop()
+	require.Nil(t, FirstResponseMsFromContext(c.Request.Context()))
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.Header().Set("X-Upstream-ID", "preserved-before-commit")
+	_, err := c.Writer.WriteString("data: first\n\n")
+	require.NoError(t, err)
+	first := FirstResponseMsFromContext(c.Request.Context())
+	require.NotNil(t, first)
+	require.GreaterOrEqual(t, *first, 20)
+	_, err = c.Writer.WriteString("data: second\n\n")
+	require.NoError(t, err)
+	require.Equal(t, first, FirstResponseMsFromContext(c.Request.Context()))
+	require.NotContains(t, rec.Body.String(), "keepalive")
+	require.Equal(t, "preserved-before-commit", rec.Result().Header.Get("X-Upstream-ID"))
+	baseKey := struct{ name string }{"retained"}
+	base := context.WithValue(context.Background(), baseKey, "base value")
+	detached := CopyFirstResponseTiming(c.Request.Context(), base)
+	require.Equal(t, first, FirstResponseMsFromContext(detached))
+	require.Equal(t, "base value", detached.Value(baseKey))
+	require.Nil(t, FirstResponseMsFromContext(context.Background()))
+	require.Nil(t, FirstResponseMsFromContext(nil))
+}
+
+func TestPKEarlyHeartbeat_StopRestoresWriterAndPendingHeaders(t *testing.T) {
+	c, rec := newCompactBridgeTestContext(t, false)
+	original := c.Writer
+	stop := startEarlySSEHeartbeat(c, time.Now(), "responses", StreamEarlyHeartbeatSettings{})
+	w := earlySSEWriterFromContext(c)
+	c.Writer.Header().Set("X-Pending", "kept")
+	stop()
+	stop()
+	require.Same(t, original, c.Writer)
+	require.Equal(t, "kept", c.Writer.Header().Get("X-Pending"))
+	firePKEarlyHeartbeat(t, w)
+	require.Empty(t, rec.Body.String())
 }

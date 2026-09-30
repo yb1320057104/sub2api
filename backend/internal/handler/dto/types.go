@@ -673,6 +673,10 @@ type UsageLog struct {
 type AdminUsageLog struct {
 	UsageLog
 
+	// FirstResponseMs is the measured downstream response time. The embedded
+	// FirstTokenMs retains the upstream semantic/visible metric only for admins.
+	FirstResponseMs *int `json:"first_response_ms"`
+
 	// UpstreamModel is the actual model sent to the upstream provider after mapping.
 	// Omitted when no mapping was applied (requested model was used as-is).
 	UpstreamModel *string `json:"upstream_model,omitempty"`

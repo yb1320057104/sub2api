@@ -180,6 +180,7 @@ type UsageLog struct {
 	NativeCompactionV2 bool
 	DurationMs         *int
 	FirstTokenMs       *int
+	FirstResponseMs    *int // First response bytes sent downstream; independent of upstream TTFT.
 	UserAgent          *string
 	IPAddress          *string
 	// SessionID is the explicit client-provided request correlation identifier

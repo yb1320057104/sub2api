@@ -625,6 +625,9 @@ export interface SystemSettings {
 
   // Gateway forwarding behavior
   openai_ttft_mode: string;
+  stream_early_heartbeat_enabled: boolean;
+  stream_early_heartbeat_min_delay_ms: number;
+  stream_early_heartbeat_max_delay_ms: number;
   enable_fingerprint_unification: boolean;
   enable_metadata_passthrough: boolean;
   enable_cch_signing: boolean;
@@ -950,6 +953,9 @@ export interface UpdateSettingsRequest {
   max_claude_code_version?: string;
   allow_ungrouped_key_scheduling?: boolean;
   openai_ttft_mode?: string;
+  stream_early_heartbeat_enabled?: boolean;
+  stream_early_heartbeat_min_delay_ms?: number;
+  stream_early_heartbeat_max_delay_ms?: number;
   enable_fingerprint_unification?: boolean;
   enable_metadata_passthrough?: boolean;
   enable_cch_signing?: boolean;

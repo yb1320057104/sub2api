@@ -228,6 +228,64 @@ func (s *defaultSubGroupReaderStub) GetByID(ctx context.Context, id int64) (*Gro
 	return nil, ErrGroupNotFound
 }
 
+func TestStreamEarlyHeartbeatSettingsDefaultsAndMalformedValues(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		values map[string]string
+		want   StreamEarlyHeartbeatSettings
+	}{
+		{"missing", nil, StreamEarlyHeartbeatSettings{MinDelayMS: 1000, MaxDelayMS: 2000}},
+		{"enabled defaults", map[string]string{SettingKeyStreamEarlyHeartbeatEnabled: "true"}, StreamEarlyHeartbeatSettings{Enabled: true, MinDelayMS: 1000, MaxDelayMS: 2000}},
+		{"immediate", map[string]string{SettingKeyStreamEarlyHeartbeatEnabled: "true", SettingKeyStreamEarlyHeartbeatMinDelayMS: "0", SettingKeyStreamEarlyHeartbeatMaxDelayMS: "0"}, StreamEarlyHeartbeatSettings{Enabled: true}},
+		{"malformed", map[string]string{SettingKeyStreamEarlyHeartbeatEnabled: "true", SettingKeyStreamEarlyHeartbeatMinDelayMS: "invalid"}, StreamEarlyHeartbeatSettings{MinDelayMS: 1000, MaxDelayMS: 2000}},
+		{"reversed", map[string]string{SettingKeyStreamEarlyHeartbeatEnabled: "true", SettingKeyStreamEarlyHeartbeatMinDelayMS: "3000", SettingKeyStreamEarlyHeartbeatMaxDelayMS: "1000"}, StreamEarlyHeartbeatSettings{MinDelayMS: 1000, MaxDelayMS: 2000}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resetGatewayForwardingSettingsCacheForTest(t)
+			svc := NewSettingService(&forwardedIPMigrationRepoStub{values: tc.values}, &config.Config{})
+			got := svc.GetStreamEarlyHeartbeatSettings(context.Background())
+			require.Equal(t, tc.want, got)
+			parsed := svc.parseSettings(tc.values)
+			require.Equal(t, got.Enabled, parsed.StreamEarlyHeartbeatEnabled)
+			require.Equal(t, got.MinDelayMS, parsed.StreamEarlyHeartbeatMinDelayMS)
+			require.Equal(t, got.MaxDelayMS, parsed.StreamEarlyHeartbeatMaxDelayMS)
+		})
+	}
+}
+
+func TestStreamEarlyHeartbeatSettingsCacheRefreshAndWriteFailure(t *testing.T) {
+	resetGatewayForwardingSettingsCacheForTest(t)
+	ctx := context.Background()
+	repo := &forwardedIPMigrationRepoStub{values: map[string]string{}}
+	svc := NewSettingService(repo, &config.Config{})
+	require.False(t, svc.GetStreamEarlyHeartbeatSettings(ctx).Enabled)
+	repo.values[SettingKeyStreamEarlyHeartbeatEnabled] = "true"
+	require.False(t, svc.GetStreamEarlyHeartbeatSettings(ctx).Enabled, "the hot path must use the cached snapshot")
+	require.NoError(t, svc.UpdateSettings(ctx, &SystemSettings{StreamEarlyHeartbeatEnabled: true, StreamEarlyHeartbeatMinDelayMS: 1250, StreamEarlyHeartbeatMaxDelayMS: 2750}))
+	require.Equal(t, "1250", repo.updates[SettingKeyStreamEarlyHeartbeatMinDelayMS])
+	require.Equal(t, "2750", repo.updates[SettingKeyStreamEarlyHeartbeatMaxDelayMS])
+	require.Equal(t, StreamEarlyHeartbeatSettings{Enabled: true, MinDelayMS: 1250, MaxDelayMS: 2750}, svc.GetStreamEarlyHeartbeatSettings(ctx))
+	repo.setMultipleErr = errors.New("write failed")
+	require.Error(t, svc.UpdateSettings(ctx, &SystemSettings{}))
+	require.True(t, svc.GetStreamEarlyHeartbeatSettings(ctx).Enabled, "a rejected write must not replace the runtime snapshot")
+}
+
+func TestStreamEarlyHeartbeatSettingsDatabaseFailureDisablesHeartbeat(t *testing.T) {
+	resetGatewayForwardingSettingsCacheForTest(t)
+	svc := NewSettingService(&forwardedIPMigrationRepoStub{getMultipleErr: errors.New("database unavailable")}, &config.Config{})
+	require.Equal(t, StreamEarlyHeartbeatSettings{MinDelayMS: 1000, MaxDelayMS: 2000}, svc.GetStreamEarlyHeartbeatSettings(context.Background()))
+}
+
+func TestStreamEarlyHeartbeatSettingsRejectInvalidRangeBeforeWrite(t *testing.T) {
+	for _, bounds := range [][2]int{{-1, 1000}, {2000, 1000}, {0, 30001}} {
+		repo := &settingUpdateRepoStub{}
+		svc := NewSettingService(repo, &config.Config{})
+		err := svc.UpdateSettings(context.Background(), &SystemSettings{StreamEarlyHeartbeatEnabled: true, StreamEarlyHeartbeatMinDelayMS: bounds[0], StreamEarlyHeartbeatMaxDelayMS: bounds[1]})
+		require.Error(t, err)
+		require.Nil(t, repo.updates)
+	}
+}
+
 func TestSettingService_UpdateSettings_PersistsCompactHomeEnabled(t *testing.T) {
 	repo := &settingUpdateRepoStub{}
 	svc := NewSettingService(repo, &config.Config{})

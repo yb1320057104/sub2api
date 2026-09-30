@@ -689,6 +689,8 @@ func usageLogFromServiceUser(l *service.UsageLog) UsageLog {
 	if requestedModel == "" {
 		requestedModel = l.Model
 	}
+	// Keep the user timing key stable without exposing upstream TTFT. Historical
+	// rows without a measured downstream response time must remain null.
 	return UsageLog{
 		ID:                        l.ID,
 		UserID:                    l.UserID,
@@ -721,7 +723,7 @@ func usageLogFromServiceUser(l *service.UsageLog) UsageLog {
 		OpenAIWSMode:              openAIWSMode,
 		NativeCompactionV2:        l.NativeCompactionV2,
 		DurationMs:                l.DurationMs,
-		FirstTokenMs:              l.FirstTokenMs,
+		FirstTokenMs:              l.FirstResponseMs,
 		ImageCount:                l.ImageCount,
 		ImageSize:                 l.ImageSize,
 		ImageInputSize:            l.ImageInputSize,
@@ -764,8 +766,10 @@ func UsageLogFromServiceAdmin(l *service.UsageLog) *AdminUsageLog {
 	}
 	usageLog := usageLogFromServiceUser(l)
 	usageLog.UpstreamEndpoint = l.UpstreamEndpoint
+	usageLog.FirstTokenMs = l.FirstTokenMs
 	return &AdminUsageLog{
 		UsageLog:                usageLog,
+		FirstResponseMs:         l.FirstResponseMs,
 		UpstreamModel:           l.UpstreamModel,
 		UpstreamReasoningEffort: adminUpstreamReasoningEffort(l),
 		UpstreamResponseModel:   l.UpstreamResponseModel,

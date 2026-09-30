@@ -52,8 +52,21 @@ const backendModeCacheTTL = 60 * time.Second
 const backendModeErrorTTL = 5 * time.Second
 const backendModeDBTimeout = 5 * time.Second
 
+// StreamEarlyHeartbeatSettings controls the optional first bodyless SSE heartbeat.
+// It applies only to OpenAI-compatible Responses, Chat and Messages SSE requests.
+type StreamEarlyHeartbeatSettings struct {
+	Enabled    bool
+	MinDelayMS int
+	MaxDelayMS int
+}
+
+func defaultStreamEarlyHeartbeatSettings() StreamEarlyHeartbeatSettings {
+	return StreamEarlyHeartbeatSettings{MinDelayMS: 1000, MaxDelayMS: 2000}
+}
+
 // cachedGatewayForwardingSettings 缓存网关转发行为设置（进程内缓存，60s TTL）
 type cachedGatewayForwardingSettings struct {
+	streamEarlyHeartbeat             StreamEarlyHeartbeatSettings
 	openAITTFTMode                   string
 	fingerprintUnification           bool
 	metadataPassthrough              bool
@@ -857,6 +870,7 @@ func (s *SettingService) IsBackendModeEnabled(ctx context.Context) bool {
 }
 
 type gatewayForwardingSettingsResult struct {
+	streamEarlyHeartbeat                                                                  StreamEarlyHeartbeatSettings
 	openAITTFTMode                                                                        string
 	fp, mp, cch, claudeOAuthSystemPromptInjection, cacheTTL1h, rewriteMessageCacheControl bool
 	clientDatelineNormalization                                                           bool
@@ -867,6 +881,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 	if cached, ok := gatewayForwardingCache.Load().(*cachedGatewayForwardingSettings); ok && cached != nil {
 		if time.Now().UnixNano() < cached.expiresAt {
 			return gatewayForwardingSettingsResult{
+				streamEarlyHeartbeat:             cached.streamEarlyHeartbeat,
 				openAITTFTMode:                   cached.openAITTFTMode,
 				fp:                               cached.fingerprintUnification,
 				mp:                               cached.metadataPassthrough,
@@ -884,6 +899,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 		if cached, ok := gatewayForwardingCache.Load().(*cachedGatewayForwardingSettings); ok && cached != nil {
 			if time.Now().UnixNano() < cached.expiresAt {
 				return gatewayForwardingSettingsResult{
+					streamEarlyHeartbeat:             cached.streamEarlyHeartbeat,
 					openAITTFTMode:                   cached.openAITTFTMode,
 					fp:                               cached.fingerprintUnification,
 					mp:                               cached.metadataPassthrough,
@@ -900,6 +916,9 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 		dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), gatewayForwardingDBTimeout)
 		defer cancel()
 		values, err := s.settingRepo.GetMultiple(dbCtx, []string{
+			SettingKeyStreamEarlyHeartbeatEnabled,
+			SettingKeyStreamEarlyHeartbeatMinDelayMS,
+			SettingKeyStreamEarlyHeartbeatMaxDelayMS,
 			SettingKeyOpenAITTFTMode,
 			SettingKeyEnableFingerprintUnification,
 			SettingKeyEnableMetadataPassthrough,
@@ -914,6 +933,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 		if err != nil {
 			slog.Warn("failed to get gateway forwarding settings", "error", err)
 			gatewayForwardingCache.Store(&cachedGatewayForwardingSettings{
+				streamEarlyHeartbeat:             defaultStreamEarlyHeartbeatSettings(),
 				openAITTFTMode:                   OpenAITTFTModeSemantic,
 				fingerprintUnification:           true,
 				metadataPassthrough:              false,
@@ -924,9 +944,10 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 				clientDatelineNormalization:      true,
 				expiresAt:                        time.Now().Add(gatewayForwardingErrorTTL).UnixNano(),
 			})
-			return gatewayForwardingSettingsResult{openAITTFTMode: OpenAITTFTModeSemantic, fp: true, claudeOAuthSystemPromptInjection: true, rewriteMessageCacheControl: s.defaultRewriteMessageCacheControl(), clientDatelineNormalization: true}, nil
+			return gatewayForwardingSettingsResult{streamEarlyHeartbeat: defaultStreamEarlyHeartbeatSettings(), openAITTFTMode: OpenAITTFTModeSemantic, fp: true, claudeOAuthSystemPromptInjection: true, rewriteMessageCacheControl: s.defaultRewriteMessageCacheControl(), clientDatelineNormalization: true}, nil
 		}
 		ttftMode := normalizeOpenAITTFTMode(values[SettingKeyOpenAITTFTMode])
+		earlyHeartbeat := parseStreamEarlyHeartbeatSettings(values)
 		fp := true
 		if v, ok := values[SettingKeyEnableFingerprintUnification]; ok && v != "" {
 			fp = v == "true"
@@ -949,6 +970,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 			clientDatelineNormalization = v == "true"
 		}
 		gatewayForwardingCache.Store(&cachedGatewayForwardingSettings{
+			streamEarlyHeartbeat:             earlyHeartbeat,
 			openAITTFTMode:                   ttftMode,
 			fingerprintUnification:           fp,
 			metadataPassthrough:              mp,
@@ -962,6 +984,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 			expiresAt:                        time.Now().Add(gatewayForwardingCacheTTL).UnixNano(),
 		})
 		return gatewayForwardingSettingsResult{
+			streamEarlyHeartbeat:             earlyHeartbeat,
 			openAITTFTMode:                   ttftMode,
 			fp:                               fp,
 			mp:                               mp,
@@ -977,7 +1000,15 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 	if r, ok := val.(gatewayForwardingSettingsResult); ok {
 		return r
 	}
-	return gatewayForwardingSettingsResult{fp: true, claudeOAuthSystemPromptInjection: true, clientDatelineNormalization: true}
+	return gatewayForwardingSettingsResult{streamEarlyHeartbeat: defaultStreamEarlyHeartbeatSettings(), fp: true, claudeOAuthSystemPromptInjection: true, clientDatelineNormalization: true}
+}
+
+// GetStreamEarlyHeartbeatSettings returns the cached configuration for new SSE requests.
+func (s *SettingService) GetStreamEarlyHeartbeatSettings(ctx context.Context) StreamEarlyHeartbeatSettings {
+	if s == nil {
+		return defaultStreamEarlyHeartbeatSettings()
+	}
+	return s.getGatewayForwardingSettingsCached(ctx).streamEarlyHeartbeat
 }
 
 // GetOpenAITTFTMode 返回 Responses first_token_ms 的统计口径。

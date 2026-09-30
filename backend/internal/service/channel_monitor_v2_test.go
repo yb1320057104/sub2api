@@ -486,8 +486,7 @@ func TestRedactChannelMonitorV2MetricKeepsRates(t *testing.T) {
 	require.InDelta(t, 0.1, m.ErrorRate, 0.0001)
 	require.InDelta(t, 12.0, m.RPM, 0.0001)
 	require.InDelta(t, 34.0, m.TPM, 0.0001)
-	require.NotNil(t, m.TTFT.P50Ms)
-	require.Equal(t, int64(100), *m.TTFT.P50Ms)
+	require.Nil(t, m.TTFT.P50Ms)
 
 	redactChannelMonitorV2Metric(&m, true)
 	require.Zero(t, m.RPM)
@@ -506,4 +505,24 @@ func TestChannelMonitorV2HealthTTFTAtTargetIsHealthy(t *testing.T) {
 	require.Equal(t, "healthy", h.TTFT)
 	require.NotNil(t, h.TTFTScore)
 	require.InDelta(t, 100.0, *h.TTFTScore, 0.01)
+}
+
+func TestPKChannelMonitorPublicLatencyDoesNotExposeUpstreamTTFT(t *testing.T) {
+	firstToken := int64(9876)
+	metrics := ChannelMonitorV2Metric{
+		RequestCount: 100, SuccessRequests: 100, SuccessRate: 1,
+		TTFT: ChannelMonitorV2Latency{SampleCount: 100, P50Ms: &firstToken, P95Ms: &firstToken},
+	}
+	health := ChannelMonitorV2HealthFor(metrics)
+	require.NotNil(t, health.TTFTScore)
+	redactChannelMonitorV2MetricAndHealth(&metrics, &health, false)
+	require.Nil(t, metrics.TTFT.P50Ms)
+	require.Nil(t, metrics.TTFT.P95Ms)
+	require.Nil(t, metrics.TTFT.AvgMs)
+	require.Nil(t, health.TTFTScore)
+	require.Equal(t, "unknown", health.TTFT)
+	// The public score is recomputed from public components, rather than
+	// retaining an aggregate from which the private TTFT score can be recovered.
+	require.NotNil(t, health.Score)
+	require.InDelta(t, 100.0, *health.Score, 0.001)
 }

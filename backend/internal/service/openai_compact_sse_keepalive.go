@@ -59,6 +59,9 @@ func startOpenAISSEKeepalive(c *gin.Context, interval time.Duration) func() {
 	if c == nil || c.Writer == nil || interval <= 0 {
 		return func() {}
 	}
+	if early := earlySSEWriterFromContext(c); early != nil {
+		return early.periodic(interval)
+	}
 	originalWriter := c.Writer
 	k := &openAICompactSSEKeepalive{
 		writer: originalWriter,
@@ -149,19 +152,20 @@ func StopOpenAICompactSSEKeepaliveCommitted(c *gin.Context) bool {
 	if c == nil {
 		return false
 	}
+	earlyCommitted := StopEarlySSEHeartbeatCommitted(c)
 	value, ok := c.Get(openAICompactSSEKeepaliveKey)
 	if !ok {
-		return false
+		return earlyCommitted
 	}
 	k, ok := value.(*openAICompactSSEKeepalive)
 	if !ok || k == nil {
-		return false
+		return earlyCommitted
 	}
 	k.mu.Lock()
 	k.markStoppedLocked()
 	committed := k.started
 	k.mu.Unlock()
-	return committed
+	return committed || earlyCommitted
 }
 
 // OpenAICompactKeepaliveAdjustedWrittenSize 返回排除 compact 心跳注释字节后
@@ -178,7 +182,7 @@ func OpenAICompactKeepaliveAdjustedWrittenSize(c *gin.Context) int {
 	if value, ok := c.Get(openAIStreamKeepaliveBytesKey); ok {
 		streamKeepaliveBytes, _ = value.(int)
 	}
-	size := c.Writer.Size()
+	size := EarlySSEAdjustedWrittenSize(c)
 	compactKeepaliveBytes := 0
 	if value, ok := c.Get(openAICompactSSEKeepaliveKey); ok {
 		if k, valid := value.(*openAICompactSSEKeepalive); valid && k != nil {

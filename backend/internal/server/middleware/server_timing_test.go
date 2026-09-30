@@ -70,6 +70,8 @@ func TestServerTimingScopesAndRoleGate(t *testing.T) {
 		{name: "payment public excluded", enabled: true, path: "/api/v1/payment/public/orders/verify", userMarker: "1", role: "user"},
 		{name: "payment webhook excluded", enabled: true, path: "/api/v1/payment/webhook/stripe", userMarker: "1", role: "user"},
 		{name: "channel monitors path", enabled: true, path: "/api/v1/channel-monitors/1/status", role: "user", wantHeader: true},
+		{name: "gateway cannot opt into UI timing", enabled: true, path: "/v1/responses", adminMarker: "1", role: "admin"},
+		{name: "gateway alias cannot opt into UI timing", enabled: true, path: "/openai/v1/chat/completions", userMarker: "1", role: "admin"},
 	}
 
 	for _, tt := range tests {

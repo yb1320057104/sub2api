@@ -466,6 +466,9 @@ const baseSettingsResponse = {
   max_claude_code_version: "",
   allow_ungrouped_key_scheduling: false,
   openai_ttft_mode: "semantic",
+  stream_early_heartbeat_enabled: false,
+  stream_early_heartbeat_min_delay_ms: 1000,
+  stream_early_heartbeat_max_delay_ms: 2000,
   enable_fingerprint_unification: true,
   enable_metadata_passthrough: false,
   enable_cch_signing: false,
@@ -602,6 +605,11 @@ async function openUsersTab(wrapper: ReturnType<typeof mountView>) {
 
   expect(usersTabButton).toBeDefined();
   await usersTabButton?.trigger("click");
+  await flushPromises();
+}
+
+async function openFirstTokenTab(wrapper: ReturnType<typeof mountView>) {
+  await wrapper.get('#settings-tab-first_token').trigger("click");
   await flushPromises();
 }
 
@@ -1409,6 +1417,53 @@ describe("admin SettingsView payment visible method controls", () => {
 
     const payload = updateSettings.mock.calls.at(-1)?.[0] as Record<string, unknown>;
     expect(payload.openai_ttft_mode).toBe("semantic");
+  });
+
+  it("keeps early SSE heartbeat disabled by default and saves seconds as milliseconds", async () => {
+    const wrapper = mountView();
+    await flushPromises();
+    expect(wrapper.get('[data-testid="stream-early-heartbeat-settings"]').isVisible()).toBe(false);
+    await openFirstTokenTab(wrapper);
+    expect(wrapper.get('[data-testid="stream-early-heartbeat-settings"]').isVisible()).toBe(true);
+    const toggle = wrapper.get('[data-testid="stream-early-heartbeat-enabled"]');
+    const minimum = wrapper.get('[data-testid="stream-early-heartbeat-min"]');
+    const maximum = wrapper.get('[data-testid="stream-early-heartbeat-max"]');
+    expect((toggle.element as HTMLInputElement).checked).toBe(false);
+    expect((minimum.element as HTMLInputElement).value).toBe("1");
+    expect((maximum.element as HTMLInputElement).value).toBe("2");
+    expect((minimum.element as HTMLInputElement).disabled).toBe(true);
+    await toggle.setValue(true);
+    await minimum.setValue("1.125");
+    await maximum.setValue("2.75");
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+    const payload = updateSettings.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(payload.stream_early_heartbeat_enabled).toBe(true);
+    expect(payload.stream_early_heartbeat_min_delay_ms).toBe(1125);
+    expect(payload.stream_early_heartbeat_max_delay_ms).toBe(2750);
+    expect((minimum.element as HTMLInputElement).value).toBe("1.125");
+  });
+
+  it("loads saved early SSE heartbeat milliseconds as seconds", async () => {
+    getSettings.mockResolvedValueOnce({ ...baseSettingsResponse, stream_early_heartbeat_enabled: true, stream_early_heartbeat_min_delay_ms: 500, stream_early_heartbeat_max_delay_ms: 1250 });
+    const wrapper = mountView();
+    await flushPromises();
+    await openFirstTokenTab(wrapper);
+    expect((wrapper.get('[data-testid="stream-early-heartbeat-min"]').element as HTMLInputElement).value).toBe("0.5");
+    expect((wrapper.get('[data-testid="stream-early-heartbeat-max"]').element as HTMLInputElement).value).toBe("1.25");
+  });
+
+  it.each([["-1", "2"], ["-0.0001", "2"], ["3", "2"], ["1", "31"], ["1", "30.0001"], ["", "2"]])("rejects invalid early SSE heartbeat seconds %s to %s", async (minimum, maximum) => {
+    const wrapper = mountView();
+    await flushPromises();
+    await openFirstTokenTab(wrapper);
+    await wrapper.get('[data-testid="stream-early-heartbeat-enabled"]').setValue(true);
+    await wrapper.get('[data-testid="stream-early-heartbeat-min"]').setValue(minimum);
+    await wrapper.get('[data-testid="stream-early-heartbeat-max"]').setValue(maximum);
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+    expect(updateSettings).not.toHaveBeenCalled();
+    expect(showError).toHaveBeenCalled();
   });
 
   it("loads fail-safe-off Ollama Cloud usage refresh settings and saves an explicit opt-in", async () => {

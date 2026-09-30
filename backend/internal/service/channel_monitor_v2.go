@@ -511,7 +511,7 @@ func (s *ChannelMonitorV2Service) Models(ctx context.Context, filter ChannelMoni
 	if !admin && list != nil {
 		hideTP := s.hideThroughputForViewer(ctx, admin)
 		for i := range list.Items {
-			redactChannelMonitorV2Metric(&list.Items[i].Metrics, hideTP)
+			redactChannelMonitorV2MetricAndHealth(&list.Items[i].Metrics, &list.Items[i].Health, hideTP)
 		}
 	}
 	return list, nil
@@ -532,9 +532,9 @@ func (s *ChannelMonitorV2Service) Matrix(ctx context.Context, filter ChannelMoni
 	if !admin && matrix != nil {
 		hideTP := s.hideThroughputForViewer(ctx, admin)
 		for i := range matrix.Items {
-			redactChannelMonitorV2Metric(&matrix.Items[i].Metrics, hideTP)
+			redactChannelMonitorV2MetricAndHealth(&matrix.Items[i].Metrics, &matrix.Items[i].Health, hideTP)
 			for j := range matrix.Items[i].Buckets {
-				redactChannelMonitorV2Metric(&matrix.Items[i].Buckets[j].Metrics, hideTP)
+				redactChannelMonitorV2MetricAndHealth(&matrix.Items[i].Buckets[j].Metrics, &matrix.Items[i].Buckets[j].Health, hideTP)
 			}
 		}
 	}
@@ -607,9 +607,9 @@ func redactChannelMonitorV2Snapshot(snap *ChannelMonitorV2Snapshot, hideThroughp
 	if snap == nil {
 		return
 	}
-	redactChannelMonitorV2Metric(&snap.Metrics, hideThroughput)
+	redactChannelMonitorV2MetricAndHealth(&snap.Metrics, &snap.Health, hideThroughput)
 	for i := range snap.Trend {
-		redactChannelMonitorV2Metric(&snap.Trend[i].Metrics, hideThroughput)
+		redactChannelMonitorV2MetricAndHealth(&snap.Trend[i].Metrics, &snap.Trend[i].Health, hideThroughput)
 	}
 	// Public snapshot only needs display thresholds + refresh cadence, not
 	// operational allow-lists (group_ids, model inventories, ignored categories).
@@ -631,9 +631,21 @@ func redactChannelMonitorV2PublicConfig(cfg *ChannelMonitorV2Config) {
 }
 
 // redactChannelMonitorV2Metric zeros absolute volume counters while keeping rates
-// (error_rate, success_rate, cache_rate) and latency percentiles.
+// (error_rate, success_rate, cache_rate) and duration percentiles.
+// Upstream first-token latency is available only to administrators.
 // When hideThroughput is true, also zeros RPM/TPM so users cannot reverse-estimate
 // fleet scale from rate × window length.
+func redactChannelMonitorV2MetricAndHealth(m *ChannelMonitorV2Metric, h *ChannelMonitorV2Health, hideThroughput bool) {
+	if m == nil {
+		return
+	}
+	m.TTFT = ChannelMonitorV2Latency{}
+	if h != nil {
+		*h = ChannelMonitorV2HealthForWithThresholds(*m, h.Thresholds)
+	}
+	redactChannelMonitorV2Metric(m, hideThroughput)
+}
+
 func redactChannelMonitorV2Metric(m *ChannelMonitorV2Metric, hideThroughput bool) {
 	if m == nil {
 		return
@@ -649,7 +661,7 @@ func redactChannelMonitorV2Metric(m *ChannelMonitorV2Metric, hideThroughput bool
 	m.CacheRateNumerator = 0
 	m.CacheRateDenominator = 0
 	// Latency sample_count is also a volume signal.
-	m.TTFT.SampleCount = 0
+	m.TTFT = ChannelMonitorV2Latency{}
 	m.Duration.SampleCount = 0
 	m.UpstreamAffectedRequests = nil
 	m.UpstreamAttemptCount = nil

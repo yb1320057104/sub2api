@@ -468,6 +468,12 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	updates[SettingKeyBackendModeEnabled] = strconv.FormatBool(settings.BackendModeEnabled)
 
 	// Gateway forwarding behavior
+	if settings.StreamEarlyHeartbeatMinDelayMS < 0 || settings.StreamEarlyHeartbeatMaxDelayMS < settings.StreamEarlyHeartbeatMinDelayMS || settings.StreamEarlyHeartbeatMaxDelayMS > 30000 {
+		return nil, infraerrors.BadRequest("INVALID_STREAM_EARLY_HEARTBEAT_DELAY", "early SSE heartbeat delay must satisfy 0 <= min <= max <= 30000 milliseconds")
+	}
+	updates[SettingKeyStreamEarlyHeartbeatEnabled] = strconv.FormatBool(settings.StreamEarlyHeartbeatEnabled)
+	updates[SettingKeyStreamEarlyHeartbeatMinDelayMS] = strconv.Itoa(settings.StreamEarlyHeartbeatMinDelayMS)
+	updates[SettingKeyStreamEarlyHeartbeatMaxDelayMS] = strconv.Itoa(settings.StreamEarlyHeartbeatMaxDelayMS)
 	mode := normalizeOpenAITTFTMode(settings.OpenAITTFTMode)
 	if strings.TrimSpace(settings.OpenAITTFTMode) != "" && strings.ToLower(strings.TrimSpace(settings.OpenAITTFTMode)) != OpenAITTFTModeSemantic && strings.ToLower(strings.TrimSpace(settings.OpenAITTFTMode)) != OpenAITTFTModeVisible {
 		return nil, fmt.Errorf("%s must be one of: %s/%s", SettingKeyOpenAITTFTMode, OpenAITTFTModeSemantic, OpenAITTFTModeVisible)
@@ -717,6 +723,11 @@ func (s *SettingService) refreshCachedSettings(settings *SystemSettings) {
 	})
 	gatewayForwardingSF.Forget("gateway_forwarding")
 	gatewayForwardingCache.Store(&cachedGatewayForwardingSettings{
+		streamEarlyHeartbeat: StreamEarlyHeartbeatSettings{
+			Enabled:    settings.StreamEarlyHeartbeatEnabled,
+			MinDelayMS: settings.StreamEarlyHeartbeatMinDelayMS,
+			MaxDelayMS: settings.StreamEarlyHeartbeatMaxDelayMS,
+		},
 		openAITTFTMode:                   normalizeOpenAITTFTMode(settings.OpenAITTFTMode),
 		fingerprintUnification:           settings.EnableFingerprintUnification,
 		metadataPassthrough:              settings.EnableMetadataPassthrough,

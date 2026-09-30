@@ -2109,7 +2109,7 @@ func writeOpenAIFastPolicyBlockedResponse(c *gin.Context, err *OpenAIFastBlocked
 	// body-signal compact 心跳可能已把响应头提交为 200（长排队后才进入
 	// Forward），此时以 response.failed 终止事件回传；未提交时先停拍再写
 	// JSON，保持原状态码语义（#3887）。
-	if StopOpenAICompactSSEKeepaliveCommitted(c) {
+	if StopOpenAICompactSSEKeepaliveCommitted(c) && !EarlySSEHeartbeatCommitted(c) {
 		writeOpenAICompactSSEFailureMessage(c, http.StatusForbidden, "permission_error", err.Message)
 		return
 	}

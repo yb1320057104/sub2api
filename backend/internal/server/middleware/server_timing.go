@@ -113,6 +113,12 @@ func ServerTimingResponseHeader(c *gin.Context) http.Header {
 }
 
 func shouldCollectServerTiming(c *gin.Context) bool {
+	// UI markers must not wrap model gateway streams. Their asynchronous
+	// keepalive writers cannot safely call back into a changing Gin request.
+	if c == nil || c.Request == nil || c.Request.URL == nil ||
+		!strings.HasPrefix(c.Request.URL.Path, "/api/v1/") {
+		return false
+	}
 	return isAdminUIRequest(c) || isUserUIRequest(c)
 }
 

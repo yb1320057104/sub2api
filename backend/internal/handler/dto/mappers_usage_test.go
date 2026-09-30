@@ -332,3 +332,37 @@ func TestUsageLogFromService_PreservesHistoricalMissingImageSize(t *testing.T) {
 func f64Ptr(value float64) *float64 {
 	return &value
 }
+
+func TestPKUsageFirstResponsePrivacy(t *testing.T) {
+	t.Parallel()
+	upstream := 9876
+	for _, tc := range []struct {
+		name     string
+		response *int
+	}{
+		{name: "measured", response: func() *int { value := 12; return &value }()},
+		{name: "zero_is_measured", response: new(int)},
+		{name: "historical_has_no_fallback"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			log := &service.UsageLog{FirstTokenMs: &upstream, FirstResponseMs: tc.response}
+			user := UsageLogFromService(log)
+			admin := UsageLogFromServiceAdmin(log)
+			require.Equal(t, tc.response, user.FirstTokenMs)
+			require.Equal(t, &upstream, admin.FirstTokenMs)
+			require.Equal(t, tc.response, admin.FirstResponseMs)
+			require.Equal(t, &upstream, log.FirstTokenMs, "DTO mapping must not change scheduling/monitoring data")
+			userBody, err := json.Marshal(user)
+			require.NoError(t, err)
+			require.NotContains(t, string(userBody), "9876", "ordinary API must never expose upstream TTFT")
+			require.NotContains(t, string(userBody), "first_response_ms", "extra timing field is admin-only")
+			if tc.response == nil {
+				require.Contains(t, string(userBody), `"first_token_ms":null`)
+			}
+			adminBody, err := json.Marshal(admin)
+			require.NoError(t, err)
+			require.Contains(t, string(adminBody), `"first_token_ms":9876`)
+			require.Contains(t, string(adminBody), `"first_response_ms":`)
+		})
+	}
+}

@@ -203,6 +203,9 @@ type SystemSettings struct {
 
 	// Gateway forwarding behavior
 	OpenAITTFTMode                         string `json:"openai_ttft_mode"`
+	StreamEarlyHeartbeatEnabled            bool   `json:"stream_early_heartbeat_enabled"`
+	StreamEarlyHeartbeatMinDelayMS         int    `json:"stream_early_heartbeat_min_delay_ms"`
+	StreamEarlyHeartbeatMaxDelayMS         int    `json:"stream_early_heartbeat_max_delay_ms"`
 	EnableFingerprintUnification           bool   `json:"enable_fingerprint_unification"`
 	EnableMetadataPassthrough              bool   `json:"enable_metadata_passthrough"`
 	EnableCCHSigning                       bool   `json:"enable_cch_signing"`

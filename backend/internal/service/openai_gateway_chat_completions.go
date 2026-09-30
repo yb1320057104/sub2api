@@ -938,7 +938,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 
 	finalizeStream := func() (*OpenAIForwardResult, error) {
 		if streamFailoverErr != nil {
-			if c == nil || c.Writer == nil || !c.Writer.Written() {
+			if c == nil || c.Writer == nil || !c.Writer.Written() || EarlySSEAdjustedWrittenSize(c) < 0 {
 				return nil, streamFailoverErr
 			}
 			return resultWithUsage(), streamFailoverErr

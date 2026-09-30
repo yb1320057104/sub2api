@@ -455,6 +455,15 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	if before.OpenAITTFTMode != after.OpenAITTFTMode {
 		changed = append(changed, "openai_ttft_mode")
 	}
+	if before.StreamEarlyHeartbeatEnabled != after.StreamEarlyHeartbeatEnabled {
+		changed = append(changed, service.SettingKeyStreamEarlyHeartbeatEnabled)
+	}
+	if before.StreamEarlyHeartbeatMinDelayMS != after.StreamEarlyHeartbeatMinDelayMS {
+		changed = append(changed, service.SettingKeyStreamEarlyHeartbeatMinDelayMS)
+	}
+	if before.StreamEarlyHeartbeatMaxDelayMS != after.StreamEarlyHeartbeatMaxDelayMS {
+		changed = append(changed, service.SettingKeyStreamEarlyHeartbeatMaxDelayMS)
+	}
 	if before.EnableMetadataPassthrough != after.EnableMetadataPassthrough {
 		changed = append(changed, "enable_metadata_passthrough")
 	}

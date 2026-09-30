@@ -895,7 +895,7 @@ func resolveOpenAIWSFallbackErrorResponse(err error) (statusCode int, errType st
 }
 
 func (s *OpenAIGatewayService) writeOpenAIWSFallbackErrorResponse(c *gin.Context, account *Account, wsErr error) bool {
-	if c == nil || c.Writer == nil || c.Writer.Written() {
+	if c == nil || c.Writer == nil || (c.Writer.Written() && EarlySSEAdjustedWrittenSize(c) >= 0) {
 		return false
 	}
 	statusCode, errType, clientMessage, upstreamMessage, ok := resolveOpenAIWSFallbackErrorResponse(wsErr)
