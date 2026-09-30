@@ -1,5 +1,7 @@
 # PK出版：源码、发布与上游更新
 
+新服务器从零安装请先看 [PK版中文部署指南](deploy/PK_DEPLOYMENT_CN.md)。本文用于已有部署维护、合并上游、发布、迁移和恢复。
+
 ## 仓库与当前基线
 
 - 私有仓库：<https://github.com/pengkang0322/sub2api>，本地 remote 为 `origin`。

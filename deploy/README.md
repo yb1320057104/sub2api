@@ -2,6 +2,8 @@
 
 This private edition installs, updates, and restores from `pengkang0322/sub2api` only. Follow [PK_MAINTENANCE.md](../PK_MAINTENANCE.md) for the approved production procedure; preserve the existing database, Redis, ports, secrets, and data volumes. Current private releases support `linux/amd64`.
 
+**新服务器安装：请按 [PK版中文部署指南](PK_DEPLOYMENT_CN.md) 操作。** It covers private access, environment configuration, startup checks, reverse proxy setup, web updates, and recovery.
+
 ## Deployment Methods
 
 | Method | Best For | Setup Wizard |
@@ -14,6 +16,7 @@ This private edition installs, updates, and restores from `pengkang0322/sub2api`
 
 | File | Description |
 |------|-------------|
+| `PK_DEPLOYMENT_CN.md` | PK edition setup guide for a new Linux amd64 server (中文) |
 | `docker-compose.yml` | Docker Compose configuration (named volumes) |
 | `docker-compose.local.yml` | Docker Compose configuration (local directories, easy migration) |
 | `docker-deploy.sh` | Legacy entry point; redirects private-edition operators to the PK maintenance guide |
@@ -49,45 +52,16 @@ Authenticate the host to GHCR with a classic PAT that has `read:packages`. Set `
 
 ### New Deployment
 
-For a new, empty deployment only, after completing the credentials and version selection in the PK guide:
-
-```bash
-# Clone the private repository with an authenticated GitHub CLI session
-gh repo clone pengkang0322/sub2api
-cd sub2api/deploy
-
-# Configure environment
-cp .env.example .env
-chmod 600 .env
-nano .env  # Set SUB2API_PK_VERSION, UPDATE_GITHUB_TOKEN, POSTGRES_PASSWORD, etc.
-
-# Generate secure secrets (recommended)
-JWT_SECRET=$(openssl rand -hex 32)
-TOTP_ENCRYPTION_KEY=$(openssl rand -hex 32)
-echo "JWT_SECRET=${JWT_SECRET}" >> .env
-echo "TOTP_ENCRYPTION_KEY=${TOTP_ENCRYPTION_KEY}" >> .env
-
-# Create data directories
-mkdir -p data postgres_data redis_data
-
-# Start all services using local directory version
-docker compose -f docker-compose.local.yml up -d
-
-# View logs (check for auto-generated admin password)
-docker compose -f docker-compose.local.yml logs -f sub2api
-
-# Access Web UI
-# http://localhost:8080
-```
+Follow [PK_DEPLOYMENT_CN.md](PK_DEPLOYMENT_CN.md) in order. It uses the complete `docker-compose.yml` with named volumes, a pinned private release, separate registry and update credentials, and an explicit administrator password. Edit existing environment keys instead of appending duplicate secret definitions. The procedure is for a new, empty deployment only.
 
 ### Deployment Version Comparison
 
 | Version | Data Storage | Migration | Best For |
 |---------|-------------|-----------|----------|
-| **docker-compose.local.yml** | Local directories (./data, ./postgres_data, ./redis_data) | ✅ Easy (tar entire directory) | Production, need frequent backups/migration |
-| **docker-compose.yml** | Named volumes (/var/lib/docker/volumes/) | ⚠️ Requires docker commands | Simple setup, don't need migration |
+| **docker-compose.local.yml** | Local directories (./data, ./postgres_data, ./redis_data) | Requires consistent database backup and file backup | Operators who manage bind-mounted data |
+| **docker-compose.yml** | Docker-managed named volumes | Back up database and volumes separately from source | Default used by the PK setup guide |
 
-Use `docker-compose.local.yml` for a new deployment that should keep data in local directories. Keep an existing deployment's current volume layout when applying the PK overlay.
+Use the same Compose file consistently for all commands. Keep an existing deployment's current volume layout when applying the PK overlay. Copying live database files is not a consistency-safe backup.
 
 ### How Auto-Setup Works
 

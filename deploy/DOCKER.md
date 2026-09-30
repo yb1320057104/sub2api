@@ -1,14 +1,15 @@
 # Sub2API PK Private Docker Image
 
-Installation, updates, rollback, and disaster recovery use `ghcr.io/pengkang0322/sub2api` and [pengkang0322/sub2api Releases](https://github.com/pengkang0322/sub2api/releases). Follow [PK_MAINTENANCE.md](../PK_MAINTENANCE.md) for the production procedure.
+Installation, updates, rollback, and disaster recovery use `ghcr.io/pengkang0322/sub2api` and [pengkang0322/sub2api Releases](https://github.com/pengkang0322/sub2api/releases). For a new server, follow the [PK deployment guide (中文)](PK_DEPLOYMENT_CN.md). For existing production services, follow [PK_MAINTENANCE.md](../PK_MAINTENANCE.md).
 
 ## Private Registry and Release Access
 
 ```bash
 # Run on the Docker host. Use a classic PAT with read:packages.
+read -rp 'GitHub username (token owner): ' GHCR_USER
 read -rsp 'GHCR read token: ' GHCR_READ_TOKEN; printf '\n'
-printf '%s' "$GHCR_READ_TOKEN" | docker login ghcr.io -u pengkang0322 --password-stdin
-unset GHCR_READ_TOKEN
+printf '%s' "$GHCR_READ_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+unset GHCR_READ_TOKEN GHCR_USER
 ```
 
 Set `UPDATE_GITHUB_TOKEN` in the protected deployment environment file. This is a separate fine-grained token limited to `pengkang0322/sub2api`, with Contents: read. It authenticates both update checks and asset downloads inside the application. It does not authenticate the host Docker client.
