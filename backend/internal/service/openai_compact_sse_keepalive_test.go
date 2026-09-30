@@ -643,7 +643,7 @@ func TestPKFirstResponse_DisabledHeartbeatStillRecordsBodyAndCopiesContext(t *te
 	require.Equal(t, first, FirstResponseMsFromContext(detached))
 	require.Equal(t, "base value", detached.Value(baseKey))
 	require.Nil(t, FirstResponseMsFromContext(context.Background()))
-	require.Nil(t, FirstResponseMsFromContext(nil))
+	require.Nil(t, FirstResponseMsFromContext(nil)) //nolint:staticcheck // Exercise the documented nil-context guard.
 }
 
 func TestPKEarlyHeartbeat_StopRestoresWriterAndPendingHeaders(t *testing.T) {

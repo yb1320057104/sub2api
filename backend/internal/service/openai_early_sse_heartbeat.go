@@ -528,7 +528,7 @@ func (w *earlySSEHeartbeatWriter) errorFrame(data []byte) ([]byte, string, strin
 		payload = map[string]any{
 			"type": event, "sequence_number": 0,
 			"response": map[string]any{
-				"id": "resp_" + strings.ReplaceAll(uuid.NewString(), "-", ""),
+				"id":     "resp_" + strings.ReplaceAll(uuid.NewString(), "-", ""),
 				"object": "response", "created_at": time.Now().Unix(),
 				"status": "failed", "output": []any{},
 				"error": map[string]any{"code": code, "message": message},
