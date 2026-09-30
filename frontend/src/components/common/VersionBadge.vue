@@ -726,7 +726,10 @@ const dockerRollbackCommand = computed(() => {
     '',
     `# ${t('version.dockerRecreate')}`,
     `docker pull ${DOCKER_IMAGE}:${selectedRollbackVersion.value}`,
-    'docker compose up -d --no-deps sub2api'
+    `# ${t('version.dockerRestoreImageProgram')}`,
+    'docker compose stop sub2api',
+    'docker compose run --rm --no-deps sub2api rm -f /app/data/bin/.image-seed.sha256',
+    'docker compose up -d --force-recreate --no-deps sub2api'
   ].join('\n')
 })
 

@@ -60,6 +60,8 @@ export default {
     dockerPrivateLogin:
       'Sign in to GHCR with a GitHub token that can read this private image. Enter the token at the password prompt.',
     dockerEditCompose: 'Edit the image tag in docker-compose.yml',
+    dockerRestoreImageProgram:
+      'Stop the app and reset its seed marker to restore the program from the selected image.',
     dockerRecreate: 'Recreate the container'
   },
 

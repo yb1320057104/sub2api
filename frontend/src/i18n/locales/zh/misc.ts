@@ -59,6 +59,7 @@ export default {
     dockerPrivateLogin:
       '使用有权读取此私有镜像的 GitHub 令牌登录 GHCR，密码处输入令牌。',
     dockerEditCompose: '修改 docker-compose.yml 中的镜像版本',
+    dockerRestoreImageProgram: '停止应用并重置程序种子标记，恢复所选镜像内的程序。',
     dockerRecreate: '重新创建容器'
   },
 
