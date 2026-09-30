@@ -67,16 +67,53 @@ type UpdateService struct {
 	githubClient   GitHubReleaseClient
 	currentVersion string
 	buildType      string // "source" for manual builds, "release" for CI builds
+	installPath    string
+	installPathErr error
 }
 
 // NewUpdateService creates a new UpdateService
 func NewUpdateService(cache UpdateCache, githubClient GitHubReleaseClient, version, buildType string) *UpdateService {
-	return &UpdateService{
+	return newUpdateServiceWithExecutable(cache, githubClient, version, buildType, os.Executable)
+}
+
+func newUpdateServiceWithExecutable(cache UpdateCache, githubClient GitHubReleaseClient, version, buildType string, executable func() (string, error)) *UpdateService {
+	s := &UpdateService{
 		cache:          cache,
 		githubClient:   githubClient,
 		currentVersion: version,
 		buildType:      buildType,
 	}
+	// Resolve once before any replacement. On Linux os.Executable follows the
+	// running inode to .backup after a rename, which is no longer the install path.
+	exePath, err := executable()
+	if err != nil {
+		s.installPathErr = fmt.Errorf("failed to get executable path: %w", err)
+		return s
+	}
+	if exePath == "" {
+		s.installPathErr = fmt.Errorf("executable path is empty")
+		return s
+	}
+	exePath, err = filepath.EvalSymlinks(exePath)
+	if err != nil {
+		s.installPathErr = fmt.Errorf("failed to resolve symlinks: %w", err)
+		return s
+	}
+	s.installPath, err = filepath.Abs(exePath)
+	if err != nil {
+		s.installPathErr = fmt.Errorf("failed to resolve executable path: %w", err)
+	}
+	return s
+}
+
+func (s *UpdateService) executablePath() (string, error) {
+	if s.installPathErr != nil {
+		return "", s.installPathErr
+	}
+	if s.installPath == "" {
+		return "", fmt.Errorf("executable path is unavailable")
+	}
+	return s.installPath, nil
 }
 
 // UpdateInfo contains update information
@@ -223,14 +260,10 @@ func (s *UpdateService) applyReleaseAssets(ctx context.Context, releaseAssets []
 		return fmt.Errorf("invalid checksum URL: %w", err)
 	}
 
-	// Get current executable path
-	exePath, err := os.Executable()
+	// Use the original install path even after the running binary was renamed.
+	exePath, err := s.executablePath()
 	if err != nil {
-		return fmt.Errorf("failed to get executable path: %w", err)
-	}
-	exePath, err = filepath.EvalSymlinks(exePath)
-	if err != nil {
-		return fmt.Errorf("failed to resolve symlinks: %w", err)
+		return err
 	}
 
 	exeDir := filepath.Dir(exePath)
@@ -295,13 +328,9 @@ func (s *UpdateService) applyReleaseAssets(ctx context.Context, releaseAssets []
 
 // Rollback restores the previous version
 func (s *UpdateService) Rollback() error {
-	exePath, err := os.Executable()
+	exePath, err := s.executablePath()
 	if err != nil {
-		return fmt.Errorf("failed to get executable path: %w", err)
-	}
-	exePath, err = filepath.EvalSymlinks(exePath)
-	if err != nil {
-		return fmt.Errorf("failed to resolve symlinks: %w", err)
+		return err
 	}
 
 	backupFile := exePath + ".backup"

@@ -3,6 +3,9 @@
 package service
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -257,8 +260,8 @@ func TestUpdateServicePrivateAssetAPIPreservesChecksumFilename(t *testing.T) {
 	const archiveURL = "https://api.github.com/repos/pengkang0322/sub2api/releases/assets/101"
 	const checksumURL = "https://api.github.com/repos/pengkang0322/sub2api/releases/assets/102"
 	archiveName := fmt.Sprintf("sub2api_0.2.10-pk.2_%s_%s.tar.gz", runtime.GOOS, runtime.GOARCH)
-	// Deliberately invalid archive: checksum validation must pass, then extraction
-	// must stop the operation before the test executable can ever be replaced.
+	// Deliberately invalid archive: checksum validation must pass before extraction
+	// rejects it, leaving the isolated installation unchanged.
 	archive := []byte("this is not a gzip archive")
 	digest := sha256.Sum256(archive)
 	for _, operation := range []string{"update", "rollback"} {
@@ -282,7 +285,11 @@ func TestUpdateServicePrivateAssetAPIPreservesChecksumFilename(t *testing.T) {
 					return []byte(fmt.Sprintf("%x  %s\n", digest, archiveName)), nil
 				},
 			}
-			svc := NewUpdateService(&updateServiceCacheStub{}, client, "0.2.10-pk.1", "release")
+			installPath := filepath.Join(t.TempDir(), "sub2api")
+			require.NoError(t, os.WriteFile(installPath, []byte("previous version"), 0755))
+			svc := newUpdateServiceWithExecutable(&updateServiceCacheStub{}, client, "0.2.10-pk.1", "release", func() (string, error) {
+				return installPath, nil
+			})
 			var err error
 			if operation == "rollback" {
 				svc.currentVersion = "0.2.10-pk.3"
@@ -293,6 +300,9 @@ func TestUpdateServicePrivateAssetAPIPreservesChecksumFilename(t *testing.T) {
 			require.ErrorContains(t, err, "extraction failed")
 			require.True(t, downloaded)
 			require.True(t, checksumRead)
+			installed, readErr := os.ReadFile(installPath)
+			require.NoError(t, readErr)
+			require.Equal(t, "previous version", string(installed))
 		})
 	}
 }
@@ -353,4 +363,127 @@ func TestUpdateServicePrivateCacheRoundTrip(t *testing.T) {
 	require.True(t, info.Cached)
 	require.True(t, info.HasUpdate)
 	require.Equal(t, "0.2.10-pk.2", info.LatestVersion)
+}
+
+func TestUpdateServiceRepeatedUpdatesAndRollbacksKeepInstallPath(t *testing.T) {
+	installPath := filepath.Join(t.TempDir(), "sub2api")
+	require.NoError(t, os.WriteFile(installPath, []byte("original pk.3"), 0755))
+	files := make(map[string][]byte)
+	makeRelease := func(assetID int, version, binary string) *GitHubRelease {
+		var archive bytes.Buffer
+		gz := gzip.NewWriter(&archive)
+		tw := tar.NewWriter(gz)
+		require.NoError(t, tw.WriteHeader(&tar.Header{Name: "sub2api", Mode: 0755, Size: int64(len(binary))}))
+		_, err := tw.Write([]byte(binary))
+		require.NoError(t, err)
+		require.NoError(t, tw.Close())
+		require.NoError(t, gz.Close())
+		name := fmt.Sprintf("sub2api_%s_%s_%s.tar.gz", version, runtime.GOOS, runtime.GOARCH)
+		archiveURL := fmt.Sprintf("https://api.github.com/repos/pengkang0322/sub2api/releases/assets/%d", assetID)
+		checksumURL := fmt.Sprintf("https://api.github.com/repos/pengkang0322/sub2api/releases/assets/%d", assetID+1)
+		files[archiveURL] = archive.Bytes()
+		files[checksumURL] = []byte(fmt.Sprintf("%x  %s\n", sha256.Sum256(archive.Bytes()), name))
+		return &GitHubRelease{TagName: "v" + version, Assets: []GitHubAsset{
+			{Name: name, APIURL: archiveURL},
+			{Name: "checksums.txt", APIURL: checksumURL},
+		}}
+	}
+	first := makeRelease(101, "0.2.10-pk.4", "updated pk.4")
+	second := makeRelease(201, "0.2.10-pk.5", "updated pk.5")
+	older := makeRelease(301, "0.2.10-pk.2", "older pk.2")
+	client := &updateServiceGitHubClientStub{
+		release: first, recentReleases: []*GitHubRelease{older},
+		download: func(_ context.Context, url, dest string, _ int64) error {
+			data, ok := files[url]
+			require.True(t, ok)
+			return os.WriteFile(dest, data, 0600)
+		},
+		checksum: func(_ context.Context, url string) ([]byte, error) {
+			data, ok := files[url]
+			require.True(t, ok)
+			return data, nil
+		},
+	}
+	// Linux reports the renamed running inode as .backup after the first update.
+	// The injected resolver lets this exercise real file replacement safely.
+	reportedPath := installPath
+	resolveCalls := 0
+	svc := newUpdateServiceWithExecutable(&updateServiceCacheStub{}, client, "0.2.10-pk.3", "release", func() (string, error) {
+		resolveCalls++
+		return reportedPath, nil
+	})
+	assertFiles := func(installed, backup string) {
+		t.Helper()
+		data, err := os.ReadFile(installPath)
+		require.NoError(t, err)
+		require.Equal(t, installed, string(data))
+		if backup == "" {
+			require.NoFileExists(t, installPath+".backup")
+		} else {
+			data, err = os.ReadFile(installPath + ".backup")
+			require.NoError(t, err)
+			require.Equal(t, backup, string(data))
+		}
+		require.NoFileExists(t, installPath+".backup.backup")
+		require.Equal(t, 1, resolveCalls)
+	}
+
+	require.NoError(t, svc.PerformUpdate(context.Background()))
+	assertFiles("updated pk.4", "original pk.3")
+	reportedPath = installPath + ".backup"
+	client.release = second
+	require.NoError(t, svc.PerformUpdate(context.Background()))
+	assertFiles("updated pk.5", "updated pk.4")
+	require.NoError(t, svc.Rollback())
+	assertFiles("updated pk.4", "")
+	require.NoError(t, svc.RollbackToVersion(context.Background(), "0.2.10-pk.2"))
+	assertFiles("older pk.2", "updated pk.4")
+	require.NoError(t, svc.Rollback())
+	assertFiles("updated pk.4", "")
+}
+
+func TestUpdateServiceExecutableResolutionFailurePreventsReplacement(t *testing.T) {
+	for _, failure := range []string{"lookup", "symlink resolution", "empty path"} {
+		t.Run(failure, func(t *testing.T) {
+			installPath := filepath.Join(t.TempDir(), "sub2api")
+			require.NoError(t, os.WriteFile(installPath, []byte("original"), 0755))
+			assets := []GitHubAsset{
+				{Name: fmt.Sprintf("sub2api_%s_%s.tar.gz", runtime.GOOS, runtime.GOARCH), APIURL: "https://api.github.com/repos/pengkang0322/sub2api/releases/assets/101"},
+				{Name: "checksums.txt", APIURL: "https://api.github.com/repos/pengkang0322/sub2api/releases/assets/102"},
+			}
+			client := &updateServiceGitHubClientStub{
+				release:        &GitHubRelease{TagName: "v0.2.10-pk.4", Assets: assets},
+				recentReleases: []*GitHubRelease{{TagName: "v0.2.10-pk.2", Assets: assets}},
+			}
+			resolveCalls := 0
+			lookupErr := errors.New("executable lookup unavailable")
+			svc := newUpdateServiceWithExecutable(&updateServiceCacheStub{}, client, "0.2.10-pk.3", "release", func() (string, error) {
+				resolveCalls++
+				switch failure {
+				case "lookup":
+					return "", lookupErr
+				case "symlink resolution":
+					return installPath + ".missing", nil
+				default:
+					return "", nil
+				}
+			})
+			for _, operation := range []func() error{
+				func() error { return svc.PerformUpdate(context.Background()) },
+				func() error { return svc.RollbackToVersion(context.Background(), "0.2.10-pk.2") },
+				svc.Rollback,
+			} {
+				err := operation()
+				require.Error(t, err)
+				if failure == "lookup" {
+					require.ErrorIs(t, err, lookupErr)
+				}
+			}
+			require.Equal(t, 1, resolveCalls)
+			data, err := os.ReadFile(installPath)
+			require.NoError(t, err)
+			require.Equal(t, "original", string(data))
+			require.NoFileExists(t, installPath+".backup")
+		})
+	}
 }
