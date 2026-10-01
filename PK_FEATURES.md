@@ -307,7 +307,7 @@
 - 充值按 `1 USDT = 1 美元余额`，包含识别小数。订单使用五位小数，例如实付 `10.01234` 必须增加 `10.01234`，不得经过现有支付的两位四舍五入或金额容差。金额匹配使用整数最小单位，接口以十进制字符串传递；余额和累计充值使用现有八位 NUMERIC 字段。
 - 币安 Key/Secret 使用现有 SecretEncryptor 加密，响应只显示是否已配置；留空保留已保存的密钥。收款 UID 有历史订单后不得修改，订单保存收款身份。禁用账户停止创建新单，已有订单继续回查。凭据只用于只读账单查询，不提供明文读取接口。
 - 使用币安 `GET /sapi/v1/pay/transactions`，校准服务时间并签名；只识别正向 USDT 的 C2C/PAY 收入及匹配的接收 UID。只读查单不能相信客户端自报到账。查询达到100条时分时间段补查，限流和网络异常记录为可见查询错误，不显示虚假成功。
-- 可选 `BINANCE_RECHARGE_PROXY_URL` 为此客户端指定 HTTP/HTTPS/SOCKS5 代理，未配置时直连；无效代理配置使启动失败，不静默绕过指定代理。`BINANCE_RECHARGE_PROXY_PREFLIGHT` 默认 `false`；开启后必须使用带认证的 HTTP/HTTPS 专用网关，每次查收、探测和实时账单先探测香港节点，规则见 PK-025。其他 HTTP 客户端不继承这两项配置。
+- 可选 `BINANCE_RECHARGE_PROXY_URL` 或持久化配置 `binance_recharge.proxy_url` 为此客户端指定 HTTP/HTTPS/SOCKS5 代理，未配置时直连；无效代理配置使启动失败，不静默绕过指定代理。`BINANCE_RECHARGE_PROXY_PREFLIGHT` / `binance_recharge.proxy_preflight` 默认 `false`；开启后必须使用带认证的 HTTP/HTTPS 专用网关，每次查收、探测和实时账单先探测香港节点，规则见 PK-025。其他 HTTP 客户端不继承这两项配置。
 - 输入整数 `1～1000000` USDT，系统追加 `0.00001～0.99999` 尾数。同一真实收款 UID 的完整应付金额不跨订单复用，防止旧单迟付认领到新用户；报价由数据库事务及唯一约束保护，耗尽明确拒绝。用户同时最多3个待付单，新建间隔30秒，每日最多20单。
 - 币安流水 ID 按真实收款 UID 去重；订单、已使用 balance 充值记录、`users.balance`、`users.total_recharged` 与到账流水同一数据库事务提交。并发、重试和进程重启不能重复加款；提交后失效用户鉴权及余额缓存。新充值须在原用户余额流水中可查。
 - 自动轮询覆盖最近24小时的到账流水，包括到期订单；币安交易时间必须在原订单有效期内，接口延迟发现的有效付款仍可入账。超时付款及无法准确匹配的情况保留供管理员核对，不盲目认领。重新查单按订单创建时间至到期后24小时的窗口读取真实历史流水，受币安可查询历史范围限制。
@@ -347,13 +347,14 @@
 引入：2026-10-01 用户明确要求只让币安相关逻辑使用香港代理，并在每次查询前探测可用节点。
 
 - 仅影响 PK-022/024 的币安客户端。保持其他模型请求、支付渠道、GitHub 更新和系统网络的既有出口；不配置全局代理、TUN 或系统路由。
-- `BINANCE_RECHARGE_PROXY_PREFLIGHT` 默认 `false`，兼容既有静态代理；开启时 `BINANCE_RECHARGE_PROXY_URL` 必须是带用户名和密码的 HTTP/HTTPS 网关。空地址、SOCKS 预探测、非法布尔值或代理配置使启动失败，不能静默降级。
+- 正式配置文件支持 `binance_recharge.proxy_url` 和 `binance_recharge.proxy_preflight`，默认空地址/`false`，兼容既有静态代理；对应的非空环境变量 `BINANCE_RECHARGE_PROXY_URL` / `BINANCE_RECHARGE_PROXY_PREFLIGHT` 优先于文件。开启预探测时必须使用带用户名和密码的 HTTP/HTTPS 网关。空地址、SOCKS 预探测、非法布尔值或代理配置使启动失败，不能静默降级。
+- 配置由既有 Viper 加载链在启动时读取。服务器可先在持久化 `/app/data/config.yaml` 写好独立币安配置，再由用户网页升级触发新程序重启后生效；不要求重建容器注入新环境，也不在升级时丢失代理配置。文件配置同样只注入币安客户端，不成为全局代理。
 - 每次顶层 `History`、`Bills`、`Probe` 操作调用认证网关 `POST /_binance/preflight`，上限15秒，拒绝重定向、非200、畸形响应和非法令牌。预探测包含在原操作超时及数据库查询租约内；失败作为可见错误交给既有退避机制。
 - 网关并行检查最多8个固定节点，允许4轮并发探测，覆盖3个后台账户 worker 并为手动查询保留容量，超限明确返回429。每个候选先以严格 TLS 访问 Cloudflare trace 并确认 `loc=HK`，再确认币安时间接口返回200及有效 `serverTime`；两个检查共享该节点6秒预算。每次重新探测，不用上次成功代替本次证据。全部失败时拒绝操作，不回退到直连或其他地区。
 - 成功的随机令牌固定指向一个节点，有效期240秒。应用为本次操作创建独立 transport，校时和全部分页共享该出口，令牌仅放在 CONNECT 头；并发操作不得通过切换全局代理组互相改路由。固定出口中途失败则本次失败，下次操作重新探测。
 - 网关只接受经过认证且带有效令牌的 `CONNECT api.binance.com:443`。币安签名和 API 凭据在应用到币安的 TLS 内传输；拒绝其他目标、普通转发、无令牌或过期令牌。节点监听仅在本机，网关只绑定应用可达的私网地址，凭据和订阅保存在服务器受限文件中，不写入源码或日志。
-- 入口：`backend/internal/pkg/binancepay/{client,proxy_preflight,bills}.go`、`backend/internal/service/{wire,binance_recharge}.go`、`deploy/binance-proxy/gateway.py`。固定节点及 systemd 运维见该目录说明和 `PK_MAINTENANCE.md`。
-- 验证：既有 `backend/internal/payment/crypto_test.go` 的 `TestPKBinanceProxyPreflight*` 覆盖真实模拟 CONNECT/TLS、分页固定出口、并发隔离、失败关闭和取消；网关验证在 CI 与正式发布工作流执行。全部构建测试在云端；生产只做公开币安时间接口及真实出口探测，不用模拟到账冒充真实转账。
+- 入口：`backend/internal/config/config.go`、`backend/internal/pkg/binancepay/{client,proxy_preflight,bills}.go`、`backend/internal/service/{wire,binance_recharge}.go`、`backend/cmd/server/wire_gen.go`、`deploy/binance-proxy/gateway.py`。固定节点及 systemd 运维见该目录说明和 `PK_MAINTENANCE.md`。
+- 验证：既有 `backend/internal/payment/crypto_test.go` 的 `TestPKBinanceProxyPreflight*` 覆盖真实模拟 CONNECT/TLS、分页固定出口、并发隔离、失败关闭和取消；既有配置测试覆盖文件读取、环境优先及非法配置。网关及配置验证在 CI 与正式发布工作流执行。全部构建测试在云端；生产只做公开币安时间接口及真实出口探测，不用模拟到账冒充真实转账。
 - 边界：地域依据 Cloudflare 当前看到的出口，节点名称不作为地域证明；公开时间接口成功不能代替收款账户 API 权限或真实转账验收。订阅节点凭据失效或出口变化时停止该节点使用，需更新服务器节点配置；没有直连兜底。
 
 ## 验证入口与现有边界

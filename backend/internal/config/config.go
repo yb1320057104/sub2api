@@ -10,6 +10,7 @@ import (
 	"net/textproto"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -71,6 +72,7 @@ type Config struct {
 	CORS                    CORSConfig                    `mapstructure:"cors"`
 	Security                SecurityConfig                `mapstructure:"security"`
 	Billing                 BillingConfig                 `mapstructure:"billing"`
+	BinanceRecharge         BinanceRechargeConfig         `mapstructure:"binance_recharge" json:"-"`
 	Turnstile               TurnstileConfig               `mapstructure:"turnstile"`
 	Database                DatabaseConfig                `mapstructure:"database"`
 	Redis                   RedisConfig                   `mapstructure:"redis"`
@@ -113,6 +115,13 @@ type Config struct {
 // SimpleModeConfig controls startup behavior in simple mode.
 type SimpleModeConfig struct {
 	AutoCreateDefaultGroups bool `mapstructure:"auto_create_default_groups" yaml:"auto_create_default_groups"`
+}
+
+// BinanceRechargeConfig is used only by the dedicated Binance Pay client.
+// Proxy credentials stay in startup configuration and are never API output.
+type BinanceRechargeConfig struct {
+	ProxyURL       string `mapstructure:"proxy_url" json:"-"`
+	ProxyPreflight bool   `mapstructure:"proxy_preflight"`
 }
 
 // PluginConfig 控制管理员手动上传的本地进程插件。
@@ -1823,6 +1832,9 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 	forwardedClientIPHeadersEnv, forwardedClientIPHeadersEnvConfigured := os.LookupEnv("SECURITY_FORWARDED_CLIENT_IP_HEADERS")
 	trustedProxiesConfigured := viper.InConfig("server.trusted_proxies") ||
 		viper.IsSet("server.trusted_proxies") || trustedProxiesEnvConfigured
+	if err := validateBinanceRechargeConfigTypes(); err != nil {
+		return nil, err
+	}
 
 	var cfg Config
 	if err := viper.Unmarshal(&cfg); err != nil {
@@ -1835,6 +1847,7 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 		cfg.Security.ForwardedClientIPHeaders = normalizeStringSlice(strings.Split(forwardedClientIPHeadersEnv, ","))
 	}
 	cfg.Server.TrustedProxiesConfigured = trustedProxiesConfigured
+	cfg.BinanceRecharge.ProxyURL = strings.TrimSpace(cfg.BinanceRecharge.ProxyURL)
 	if cfg.Gateway.OpenAIScheduler.StickyEscapeTTFTMs == 0 {
 		cfg.Gateway.OpenAIScheduler.StickyEscapeTTFTMs = 15000
 	}
@@ -1983,6 +1996,29 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 	return &cfg, nil
 }
 
+// Reject malformed types before mapstructure can include a credential-bearing
+// value in an Unmarshal error printed by startup. URL semantics are validated
+// by the dedicated Binance client constructor before the server starts.
+func validateBinanceRechargeConfigTypes() error {
+	switch viper.Get("binance_recharge").(type) {
+	case nil, map[string]any, map[any]any:
+	default:
+		return fmt.Errorf("binance_recharge must be a configuration object")
+	}
+	if _, ok := viper.Get("binance_recharge.proxy_url").(string); !ok {
+		return fmt.Errorf("binance_recharge.proxy_url must be a string")
+	}
+	switch value := viper.Get("binance_recharge.proxy_preflight").(type) {
+	case bool:
+		return nil
+	case string:
+		if _, err := strconv.ParseBool(value); err == nil {
+			return nil
+		}
+	}
+	return fmt.Errorf("binance_recharge.proxy_preflight must be a boolean")
+}
+
 func configureConfigSource(setConfigFile, addConfigPath func(string)) {
 	if configFile := strings.TrimSpace(os.Getenv("CONFIG_FILE")); configFile != "" {
 		setConfigFile(configFile)
@@ -2000,6 +2036,8 @@ func configureConfigSource(setConfigFile, addConfigPath func(string)) {
 }
 
 func setDefaults() {
+	viper.SetDefault("binance_recharge.proxy_url", "")
+	viper.SetDefault("binance_recharge.proxy_preflight", false)
 	viper.SetDefault("run_mode", RunModeStandard)
 	viper.SetDefault("simple_mode.auto_create_default_groups", true)
 	viper.SetDefault("simple_mode_key_rate_limit_enabled", false)

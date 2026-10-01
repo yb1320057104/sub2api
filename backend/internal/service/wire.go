@@ -5,8 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"os"
-	"strconv"
-	"strings"
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
@@ -1025,16 +1023,11 @@ func ProvidePaymentOrderExpiryService(paymentSvc *PaymentService, lockCache Lead
 	return svc
 }
 
-func ProvideBinanceRechargeService(db *sql.DB, encryptor SecretEncryptor, authInvalidator APIKeyAuthCacheInvalidator, billingCache *BillingCacheService) (*BinanceRechargeService, error) {
-	preflight := false
-	if raw := strings.TrimSpace(os.Getenv("BINANCE_RECHARGE_PROXY_PREFLIGHT")); raw != "" {
-		var err error
-		preflight, err = strconv.ParseBool(raw)
-		if err != nil {
-			return nil, errors.New("binance: invalid BINANCE_RECHARGE_PROXY_PREFLIGHT boolean")
-		}
+func ProvideBinanceRechargeService(cfg *config.Config, db *sql.DB, encryptor SecretEncryptor, authInvalidator APIKeyAuthCacheInvalidator, billingCache *BillingCacheService) (*BinanceRechargeService, error) {
+	if cfg == nil {
+		return nil, errors.New("binance: startup configuration is required")
 	}
-	client, err := binancepay.NewClientWithOptions(binancepay.ClientOptions{ProxyURL: os.Getenv("BINANCE_RECHARGE_PROXY_URL"), ProxyPreflight: preflight})
+	client, err := binancepay.NewClientWithOptions(binancepay.ClientOptions{ProxyURL: cfg.BinanceRecharge.ProxyURL, ProxyPreflight: cfg.BinanceRecharge.ProxyPreflight})
 	if err != nil {
 		return nil, err
 	}

@@ -26,6 +26,20 @@
 - `bind` 必须为私有或 loopback IPv4，不能为 `0.0.0.0`。防火墙仅允许受信应用容器访问该端口。应用到网关的 Basic 认证使用 HTTP，只适合受信主机内部网络；业务请求仍使用端到端 HTTPS。
 - 地区条件固定为 `HK`，不可通过配置关闭或改成其他国家。
 
+## Sub2API 持久化配置
+
+网页升级场景可在现有 `/app/data/config.yaml` 中追加独立配置，保留原有数据库、Redis、密钥和其他字段：
+
+```yaml
+binance_recharge:
+  proxy_url: "http://binance-app:REPLACE-WITH-GATEWAY-PASSWORD@172.19.0.1:17990"
+  proxy_preflight: true
+```
+
+地址和密码须与实际网关一致。该文件必须保留应用用户读取权限，避免其他用户读取含凭据的内容。新程序在网页升级后的重启时加载配置，不需要重建容器。它只影响币安客户端，未配置仍保留原行为。
+
+非空环境变量 `BINANCE_RECHARGE_PROXY_URL` 和 `BINANCE_RECHARGE_PROXY_PREFLIGHT` 优先于文件；显式 `false` 可关闭预探测。仅把变量写入 Compose 使用的 `.env` 文件不会自动注入容器，使用环境变量方式时还需在服务的 `environment` / `env_file` 中传入，并按维护流程替换实例。文件方式适合保留现有容器的网页升级。
+
 ## HTTP 契约
 
 | 请求 | 认证及返回 |

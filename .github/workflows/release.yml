@@ -369,7 +369,7 @@ jobs:
       - name: Check Binance receipt precision and concurrent balance credit
         working-directory: backend
         run: |
-          go test -race -tags unit ./internal/payment ./internal/service ./internal/handler -run 'TestPKBinance' -count=1
+          go test -race -tags unit ./internal/config ./internal/payment ./internal/service ./internal/handler -run 'TestPKBinance' -count=1
           go test -race -tags integration ./internal/repository -run 'TestPKBinance' -count=1
       - name: Build the server and its update archive
         env:

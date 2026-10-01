@@ -308,7 +308,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	passkeyHandler := handler.NewPasskeyHandler(passkeyService, authService, settingService)
 	handlerPaymentHandler := handler.NewPaymentHandler(paymentService, paymentConfigService)
 	paymentWebhookHandler := handler.NewPaymentWebhookHandler(paymentService, registry)
-	binanceRechargeService, err := service.ProvideBinanceRechargeService(db, secretEncryptor, apiKeyAuthCacheInvalidator, billingCacheService)
+	binanceRechargeService, err := service.ProvideBinanceRechargeService(configConfig, db, secretEncryptor, apiKeyAuthCacheInvalidator, billingCacheService)
 	if err != nil {
 		return nil, err
 	}

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"os"
@@ -2675,6 +2676,82 @@ func TestLoadSimpleModeAutoCreateDefaultGroups(t *testing.T) {
 					require.Equal(t, tt.want, cfg.SimpleMode.AutoCreateDefaultGroups)
 				})
 			}
+		})
+	}
+}
+
+func TestPKBinanceProxyConfigurationSources(t *testing.T) {
+	const fileProxy = "http://fixture-file-user:fixture-file-password@127.0.0.1:17990"
+	const envProxy = "http://fixture-env-user:fixture-env-password@127.0.0.1:17992"
+	for _, loader := range []struct {
+		name string
+		load func() (*Config, error)
+	}{{"Load", Load}, {"LoadForBootstrap", LoadForBootstrap}} {
+		t.Run(loader.name, func(t *testing.T) {
+			for _, tc := range []struct {
+				name, yaml, envURL, envPreflight, wantURL string
+				wantPreflight                             bool
+			}{
+				{name: "defaults"},
+				{name: "persistent file", yaml: fmt.Sprintf("binance_recharge:\n  proxy_url: %q\n  proxy_preflight: true\n", fileProxy), wantURL: fileProxy, wantPreflight: true},
+				{name: "environment only", envURL: envProxy, envPreflight: "true", wantURL: envProxy, wantPreflight: true},
+				{name: "environment overrides file including false", yaml: fmt.Sprintf("binance_recharge:\n  proxy_url: %q\n  proxy_preflight: true\n", fileProxy), envURL: envProxy, envPreflight: "false", wantURL: envProxy},
+				{name: "empty environment preserves file", yaml: fmt.Sprintf("binance_recharge:\n  proxy_url: %q\n  proxy_preflight: true\n", fileProxy), wantURL: fileProxy, wantPreflight: true},
+				{name: "environment enables file proxy", yaml: fmt.Sprintf("binance_recharge:\n  proxy_url: %q\n  proxy_preflight: false\n", fileProxy), envPreflight: "true", wantURL: fileProxy, wantPreflight: true},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					resetViperWithJWTSecret(t)
+					t.Setenv("BINANCE_RECHARGE_PROXY_URL", tc.envURL)
+					t.Setenv("BINANCE_RECHARGE_PROXY_PREFLIGHT", tc.envPreflight)
+					if tc.name == "defaults" || tc.name == "persistent file" {
+						require.NoError(t, os.Unsetenv("BINANCE_RECHARGE_PROXY_URL"))
+						require.NoError(t, os.Unsetenv("BINANCE_RECHARGE_PROXY_PREFLIGHT"))
+					}
+					// Exercise the existing DATA_DIR/config.yaml discovery path used
+					// by the persistent /app/data volume, without a new sidecar file.
+					directory := t.TempDir()
+					require.NoError(t, os.WriteFile(filepath.Join(directory, "config.yaml"), []byte(tc.yaml), 0o600))
+					t.Setenv("DATA_DIR", directory)
+					cfg, err := loader.load()
+					require.NoError(t, err)
+					require.Equal(t, tc.wantURL, cfg.BinanceRecharge.ProxyURL)
+					require.Equal(t, tc.wantPreflight, cfg.BinanceRecharge.ProxyPreflight)
+					encoded, err := json.Marshal(cfg)
+					require.NoError(t, err)
+					require.NotContains(t, string(encoded), "fixture-file-password")
+					require.NotContains(t, string(encoded), "fixture-env-password")
+					encoded, err = json.Marshal(cfg.BinanceRecharge)
+					require.NoError(t, err)
+					require.NotContains(t, string(encoded), "password")
+				})
+			}
+		})
+	}
+}
+
+func TestPKBinanceProxyInvalidConfigTypesFailWithoutCredentials(t *testing.T) {
+	const sensitive = "http://fixture-user:hidden-proxy-password@localhost:17990"
+	for _, tc := range []struct {
+		name, yaml, envBool string
+	}{
+		{name: "invalid environment boolean", envBool: sensitive},
+		{name: "invalid file boolean", yaml: fmt.Sprintf("binance_recharge:\n  proxy_preflight: %q\n", sensitive)},
+		{name: "wrong file boolean type", yaml: "binance_recharge:\n  proxy_preflight: 123\n"},
+		{name: "wrong file proxy type", yaml: fmt.Sprintf("binance_recharge:\n  proxy_url: [%q]\n", sensitive)},
+		{name: "wrong file block type", yaml: fmt.Sprintf("binance_recharge: %q\n", sensitive)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resetViperWithJWTSecret(t)
+			t.Setenv("BINANCE_RECHARGE_PROXY_URL", "")
+			t.Setenv("BINANCE_RECHARGE_PROXY_PREFLIGHT", tc.envBool)
+			file := filepath.Join(t.TempDir(), "config.yaml")
+			require.NoError(t, os.WriteFile(file, []byte(tc.yaml), 0o600))
+			t.Setenv("CONFIG_FILE", file)
+			_, err := Load()
+			require.Error(t, err)
+			require.Contains(t, err.Error(), "binance_recharge")
+			require.NotContains(t, err.Error(), "hidden-proxy-password")
+			require.NotContains(t, err.Error(), sensitive)
 		})
 	}
 }

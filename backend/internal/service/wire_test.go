@@ -10,11 +10,41 @@ import (
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/binancepay"
 	"github.com/zeromicro/go-zero/core/collection"
 )
 
 type pkBinanceLifecycleClient struct{ entered chan struct{} }
+
+func TestPKBinanceProxyStartupUsesLoadedConfig(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		cfg       *config.Config
+		wantError bool
+	}{
+		{name: "missing configuration", wantError: true},
+		{name: "default direct", cfg: &config.Config{}},
+		{name: "persistent gateway configuration", cfg: &config.Config{BinanceRecharge: config.BinanceRechargeConfig{ProxyURL: "http://fixture-user:fixture-pass@127.0.0.1:17990", ProxyPreflight: true}}},
+		{name: "static SOCKS remains supported", cfg: &config.Config{BinanceRecharge: config.BinanceRechargeConfig{ProxyURL: "socks5://127.0.0.1:17990"}}},
+		{name: "preflight without gateway", cfg: &config.Config{BinanceRecharge: config.BinanceRechargeConfig{ProxyPreflight: true}}, wantError: true},
+		{name: "invalid gateway fails", cfg: &config.Config{BinanceRecharge: config.BinanceRechargeConfig{ProxyURL: "http://fixture-user:fixture-pass@localhost:17990/private"}}, wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, err := ProvideBinanceRechargeService(tc.cfg, nil, nil, nil, nil)
+			if tc.wantError {
+				if err == nil || svc != nil {
+					t.Fatal("invalid dedicated proxy must fail startup")
+				}
+				return
+			}
+			if err != nil || svc == nil {
+				t.Fatalf("loaded Binance configuration was rejected: %v", err)
+			}
+			svc.Stop()
+		})
+	}
+}
 
 func (c *pkBinanceLifecycleClient) History(ctx context.Context, _, _, _ string, _, _ time.Time) ([]binancepay.Receipt, error) {
 	close(c.entered)
