@@ -63,5 +63,5 @@ v0.2.11默认开启`billing.inflight_reservation`。它在选账号前按请求�
 - 上游自带回归文件保留；本次扩展仓库既有测试文件，不新建临时测试文件。
 - 业务提交 `4077ebaf92f4e68080b3ab1a78b113b012899b17` 的 [Push CI](https://github.com/pengkang0322/sub2api/actions/runs/36921671391) 与 [PR CI](https://github.com/pengkang0322/sub2api/actions/runs/36921675676) 全部必要任务成功；PR 的 pk-candidate 按分支条件跳过，由 Push CI 执行成功。
 - 通过项目 unit/integration、前端类型与关键用例、lint、首字/隐私/缓存转换/余额预留 race、币安并发与 PostgreSQL 回归、前后端候选构建及制品上传。安全扫描 [Push](https://github.com/pengkang0322/sub2api/actions/runs/36921667786) / [PR](https://github.com/pengkang0322/sub2api/actions/runs/36921675811) 均成功。
-- 随后的发布准备只更新本核对、维护文档和功能清单，业务代码与上述已验证提交一致；正式标签由 PK Release 再执行发布回归、构建及持久化启动检查。正式发布成功须另外核对流水线和附件，不能用候选制品代替。
+- 随后的发布准备只更新本核对、维护文档、功能清单及维护 skill 中过期的上游基线说明，业务代码与上述已验证提交一致；正式标签由 PK Release 再执行发布回归、构建及持久化启动检查。正式发布成功须另外核对流水线和附件，不能用候选制品代替。
 - 未覆盖边界仍以 PK_FEATURES.md 为准；未进行生产更新、真实币安转账、New API 串联或所有严格 SDK 验收。
