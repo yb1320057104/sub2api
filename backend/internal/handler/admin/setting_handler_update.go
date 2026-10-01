@@ -502,8 +502,8 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		return
 	}
 	if _, sent := sentFields[service.SettingKeyStreamEarlyHeartbeatMode]; sent {
-		if req.StreamEarlyHeartbeatMode == nil || (*req.StreamEarlyHeartbeatMode != service.StreamEarlyHeartbeatModeComment && *req.StreamEarlyHeartbeatMode != service.StreamEarlyHeartbeatModeDownstreamPing) {
-			response.BadRequest(c, "stream_early_heartbeat_mode must be comment or downstream_ping")
+		if req.StreamEarlyHeartbeatMode == nil || (*req.StreamEarlyHeartbeatMode != service.StreamEarlyHeartbeatModeComment && *req.StreamEarlyHeartbeatMode != service.StreamEarlyHeartbeatModeDownstreamPing && *req.StreamEarlyHeartbeatMode != service.StreamEarlyHeartbeatModeSpace) {
+			response.BadRequest(c, "stream_early_heartbeat_mode must be comment, downstream_ping or space")
 			return
 		}
 	}

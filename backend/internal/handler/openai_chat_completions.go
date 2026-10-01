@@ -125,7 +125,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 	subscription, _ := middleware2.GetSubscriptionFromContext(c)
 	requestPlatform := openAICompatibleRequestPlatform(c.Request.Context(), apiKey)
 	if reqStream {
-		defer h.gatewayService.StartEarlySSEHeartbeat(c, requestStart, "chat")()
+		defer h.gatewayService.StartEarlySSEHeartbeat(c, requestStart, "chat", body)()
 	}
 
 	service.SetOpsLatencyMs(c, service.OpsAuthLatencyMsKey, time.Since(requestStart).Milliseconds())
@@ -341,7 +341,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 						)
 						return
 					}
-					if service.OpenAICompactKeepaliveAdjustedWrittenSize(c) != writerSizeBeforeForward {
+					if !openAIForwardMayFailover(c, writerSizeBeforeForward, nil) {
 						h.gatewayService.ObserveOpenAIAccountHealthFailure(c.Request.Context(), account, err)
 						h.handleFailoverExhausted(c, failoverErr, true)
 						return

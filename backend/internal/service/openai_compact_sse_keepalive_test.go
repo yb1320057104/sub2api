@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1143,5 +1144,338 @@ func TestPKEarlyHeartbeat_ShortLateErrorDoesNotReportSuccess(t *testing.T) {
 				require.Equal(t, 2, short.calls)
 			})
 		}
+	}
+}
+
+func newPKEarlySpaceWriter(t *testing.T, protocol string) (*gin.Context, *earlySSEHeartbeatWriter, func() string) {
+	t.Helper()
+	c, recorder := newCompactBridgeTestContext(t, false)
+	c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), ctxkey.Model, "gpt-test"))
+	stop := startEarlySSEHeartbeat(c, time.Now(), protocol, StreamEarlyHeartbeatSettings{
+		Enabled: true, Mode: StreamEarlyHeartbeatModeSpace, MinDelayMS: 30000, MaxDelayMS: 30000,
+	})
+	t.Cleanup(stop)
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	return c, earlySSEWriterFromContext(c), recorder.Body.String
+}
+
+func pkSpaceEvents(body string) []gjson.Result {
+	var events []gjson.Result
+	forEachOpenAISSEFrame(body, func(_ string, data []byte) {
+		events = append(events, gjson.ParseBytes(data))
+	})
+	return events
+}
+
+const pkSpaceCreated = "event: response.created\ndata: {\"type\":\"response.created\",\"sequence_number\":0,\"response\":{\"id\":\"resp_real\",\"object\":\"response\",\"created_at\":17,\"model\":\"gpt-test\",\"status\":\"in_progress\",\"output\":[]}}\n\n"
+
+func TestPKEarlyHeartbeat_SpaceChatFramesAndFragmentedRealUsage(t *testing.T) {
+	c, w, body := newPKEarlySpaceWriter(t, "chat")
+	firePKEarlyHeartbeat(t, w)
+	events := pkSpaceEvents(body())
+	require.Len(t, events, 3)
+	require.Equal(t, "assistant", events[0].Get("choices.0.delta.role").String())
+	require.Equal(t, " ", events[1].Get("choices.0.delta.content").String())
+	require.Equal(t, "{}", events[2].Get("choices.0.delta").Raw)
+	id := events[0].Get("id").String()
+	require.NotEmpty(t, id)
+	require.Equal(t, "gpt-test", events[0].Get("model").String())
+	require.False(t, events[0].Get("usage").Exists())
+	require.True(t, EarlySSESpaceOutputCommitted(c))
+	require.Positive(t, EarlySSEAdjustedWrittenSize(c), "visible output must stop pre-output failover")
+	real := "id: retained\r\ndata: {\"id\":\"chat_upstream\",\"object\":\"chat.completion.chunk\",\"created\":18,\"model\":\"gpt-test\",\r\ndata: \"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"}}],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":7},\"unknown\":{\"integer\":9007199254740993}}\r\n\r\n"
+	for _, char := range []byte(real) {
+		n, err := c.Writer.Write([]byte{char})
+		require.NoError(t, err)
+		require.Equal(t, 1, n)
+	}
+	events = pkSpaceEvents(body())
+	require.Len(t, events, 4)
+	require.Equal(t, id, events[3].Get("id").String())
+	require.Equal(t, events[0].Get("created").Int(), events[3].Get("created").Int())
+	require.Equal(t, "hello", events[3].Get("choices.0.delta.content").String())
+	require.Equal(t, int64(11), events[3].Get("usage.prompt_tokens").Int())
+	require.Equal(t, int64(7), events[3].Get("usage.completion_tokens").Int())
+	require.Equal(t, "9007199254740993", events[3].Get("unknown.integer").Raw)
+	require.Contains(t, body(), "id: retained")
+}
+
+func TestPKEarlyHeartbeat_SpaceResponsesWaitsForRealIDAndKeepsSnapshots(t *testing.T) {
+	c, w, body := newPKEarlySpaceWriter(t, "responses")
+	firePKEarlyHeartbeat(t, w)
+	require.Empty(t, pkSpaceEvents(body()), "unknown response ID must not create a synthetic response")
+	require.False(t, EarlySSESpaceOutputCommitted(c))
+	w.mu.Lock()
+	firstDueCleared := w.firstDue.IsZero()
+	w.mu.Unlock()
+	require.True(t, firstDueCleared, "a due placeholder awaiting its ID must not busy-spin")
+	_, err := c.Writer.WriteString(pkSpaceCreated)
+	require.NoError(t, err)
+	events := pkSpaceEvents(body())
+	require.Len(t, events, 7)
+	require.Equal(t, "resp_real", events[0].Get("response.id").String())
+	require.Equal(t, " ", events[3].Get("delta").String())
+	require.True(t, EarlySSESpaceOutputCommitted(c))
+	_, err = c.Writer.WriteString("data: {\"type\":\"response.in_progress\",\"sequence_number\":1,\"response\":{\"id\":\"resp_real\",\"output\":[],\"unknown\":true}}\n\n")
+	require.NoError(t, err)
+	events = pkSpaceEvents(body())
+	require.Equal(t, " ", events[len(events)-1].Get("response.output.0.content.0.text").String())
+	require.True(t, events[len(events)-1].Get("response.unknown").Bool())
+	terminal := "data: {\"type\":\"response.completed\",\"sequence_number\":2,\"response\":{\"id\":\"resp_real\",\"status\":\"completed\",\"output\":[{\"type\":\"function_call\",\"id\":\"fc_real\",\"call_id\":\"call_real\",\"name\":\"lookup\",\"arguments\":\"{}\"},{\"type\":\"message\",\"id\":\"msg_real\",\"role\":\"assistant\",\"status\":\"completed\",\"content\":[{\"type\":\"refusal\",\"refusal\":\"\"},{\"type\":\"output_text\",\"text\":\"hello\",\"annotations\":[]}]}],\"usage\":{\"input_tokens\":11,\"output_tokens\":7},\"opaque\":9007199254740993}}\n\n"
+	_, err = c.Writer.WriteString(terminal)
+	require.NoError(t, err)
+	events = pkSpaceEvents(body())
+	var realText strings.Builder
+	var added []string
+	for i, event := range events {
+		require.Equal(t, int64(i), event.Get("sequence_number").Int())
+		if event.Get("type").String() == "response.output_item.added" {
+			added = append(added, event.Get("item.id").String())
+			require.Equal(t, int64(len(added)-1), event.Get("output_index").Int())
+		}
+		if event.Get("type").String() == "response.output_text.delta" && !event.Get("sub2api_placeholder").Bool() {
+			_, _ = realText.WriteString(event.Get("delta").String())
+			require.Equal(t, int64(2), event.Get("output_index").Int())
+			require.Equal(t, int64(1), event.Get("content_index").Int())
+		}
+	}
+	require.Equal(t, "hello", realText.String(), "terminal-only real text must reach downstream converters")
+	require.Len(t, added, 3)
+	last := events[len(events)-1]
+	require.Equal(t, "resp_real", last.Get("response.id").String())
+	require.Equal(t, "fc_real", last.Get("response.output.1.id").String())
+	require.Equal(t, "msg_real", last.Get("response.output.2.id").String())
+	require.Equal(t, int64(11), last.Get("response.usage.input_tokens").Int())
+	require.Equal(t, int64(7), last.Get("response.usage.output_tokens").Int())
+	require.Equal(t, "9007199254740993", last.Get("response.opaque").Raw)
+}
+
+func TestPKEarlyHeartbeat_SpaceRealDeltasAndMissingTerminalOutput(t *testing.T) {
+	c, w, body := newPKEarlySpaceWriter(t, "responses")
+	_, err := c.Writer.WriteString(pkSpaceCreated)
+	require.NoError(t, err)
+	firePKEarlyHeartbeat(t, w)
+	for _, payload := range []string{
+		`{"type":"response.output_item.added","output_index":0,"item":{"id":"msg_real","type":"message","role":"assistant","content":[]}}`,
+		`{"type":"response.content_part.added","output_index":0,"content_index":0,"item_id":"msg_real","part":{"type":"output_text","text":"","annotations":[]}}`,
+		`{"type":"response.output_text.delta","output_index":0,"content_index":0,"item_id":"msg_real","delta":"hello"}`,
+		`{"type":"response.in_progress","response":{"id":"resp_real","output":[]}}`,
+		`{"type":"response.output_item.done","output_index":0,"item":{"id":"msg_real","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"hello","annotations":[]}]}}`,
+		`{"type":"response.completed","response":{"id":"resp_real","status":"completed","usage":{"input_tokens":11,"output_tokens":7}}}`,
+	} {
+		_, err := c.Writer.WriteString("data: " + payload + "\n\n")
+		require.NoError(t, err)
+	}
+	events := pkSpaceEvents(body())
+	deltas := 0
+	for _, event := range events {
+		if event.Get("type").String() == "response.output_text.delta" && !event.Get("sub2api_placeholder").Bool() {
+			deltas++
+		}
+		if event.Get("type").String() == "response.in_progress" {
+			require.Equal(t, "hello", event.Get("response.output.1.content.0.text").String())
+		}
+	}
+	require.Equal(t, 1, deltas, "real text must not be duplicated at item.done or completed")
+	require.Equal(t, "hello", events[len(events)-1].Get("response.output.1.content.0.text").String())
+}
+
+func TestPKEarlyHeartbeat_SpacePartialCommentDeadlineAndFastOutput(t *testing.T) {
+	for _, protocol := range []string{"chat", "responses"} {
+		t.Run(protocol, func(t *testing.T) {
+			c, w, body := newPKEarlySpaceWriter(t, protocol)
+			if protocol == "responses" {
+				_, err := c.Writer.WriteString(pkSpaceCreated)
+				require.NoError(t, err)
+			}
+			_, err := c.Writer.WriteString(": partial")
+			require.NoError(t, err)
+			firePKEarlyHeartbeat(t, w)
+			require.False(t, EarlySSESpaceOutputCommitted(c))
+			_, err = c.Writer.WriteString("\r\n\r\n")
+			require.NoError(t, err)
+			require.True(t, EarlySSESpaceOutputCommitted(c))
+			require.Contains(t, body(), "sub2api_placeholder")
+		})
+	}
+	c, w, body := newPKEarlySpaceWriter(t, "responses")
+	firePKEarlyHeartbeat(t, w)
+	real := pkSpaceCreated + "data: {\"type\":\"response.output_text.delta\",\"delta\":\"fast\"}\n\n"
+	_, err := c.Writer.WriteString(real)
+	require.NoError(t, err)
+	require.NotContains(t, body(), "sub2api_placeholder", "real output in the same write wins over a deferred placeholder")
+	require.False(t, EarlySSESpaceOutputCommitted(c))
+}
+
+func TestPKEarlyHeartbeat_SpaceFallbacksAndShortWrites(t *testing.T) {
+	t.Run("messages stays comments", func(t *testing.T) {
+		c, w, body := newPKEarlySpaceWriter(t, "messages")
+		firePKEarlyHeartbeat(t, w)
+		require.Equal(t, ": keepalive\n\n", body())
+		require.False(t, EarlySSESpaceOutputCommitted(c))
+	})
+	t.Run("structured request stays comments", func(t *testing.T) {
+		c, recorder := newCompactBridgeTestContext(t, false)
+		snapshot := earlySpaceRequestSnapshot(c, []byte(`{"model":"gpt-test","text":{"format":{"type":"json_schema"}}}`))
+		stop := startEarlySSEHeartbeat(c, time.Now(), "responses", StreamEarlyHeartbeatSettings{Enabled: true, Mode: StreamEarlyHeartbeatModeSpace, MinDelayMS: 30000, MaxDelayMS: 30000}, snapshot)
+		defer stop()
+		firePKEarlyHeartbeat(t, earlySSEWriterFromContext(c))
+		require.Equal(t, ": keepalive\n\n", recorder.Body.String())
+	})
+	t.Run("chat input shape stays comments", func(t *testing.T) {
+		c, recorder := newCompactBridgeTestContext(t, false)
+		snapshot := earlySpaceRequestSnapshot(c, []byte(`{"model":"gpt-test","input":"hello"}`))
+		stop := startEarlySSEHeartbeat(c, time.Now(), "chat", StreamEarlyHeartbeatSettings{Enabled: true, Mode: StreamEarlyHeartbeatModeSpace, MinDelayMS: 30000, MaxDelayMS: 30000}, snapshot)
+		defer stop()
+		firePKEarlyHeartbeat(t, earlySSEWriterFromContext(c))
+		require.Equal(t, ": keepalive\n\n", recorder.Body.String())
+		require.Nil(t, c.Request.Context().Value(ctxkey.EarlySSESpaceRetryGate))
+	})
+	for _, count := range []int{0, 7} {
+		t.Run(fmt.Sprintf("short bytes %d", count), func(t *testing.T) {
+			c, _ := newCompactBridgeTestContext(t, false)
+			c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), ctxkey.Model, "gpt-test"))
+			short := &pkEarlySSEShortWriter{ResponseWriter: c.Writer, limit: count}
+			c.Writer = short
+			stop := startEarlySSEHeartbeat(c, time.Now(), "chat", StreamEarlyHeartbeatSettings{Enabled: true, Mode: StreamEarlyHeartbeatModeSpace, MinDelayMS: 30000, MaxDelayMS: 30000})
+			defer stop()
+			w := earlySSEWriterFromContext(c)
+			firePKEarlyHeartbeat(t, w)
+			require.Equal(t, count > 0, EarlySSESpaceOutputCommitted(c))
+			_, err := c.Writer.WriteString("data: {}\n\n")
+			require.ErrorIs(t, err, io.ErrShortWrite)
+			require.Equal(t, 1, short.calls)
+		})
+	}
+}
+
+func TestPKEarlyHeartbeat_SpaceRetryGateCancelsOnlySpace(t *testing.T) {
+	for _, mode := range []string{StreamEarlyHeartbeatModeComment, StreamEarlyHeartbeatModeDownstreamPing, StreamEarlyHeartbeatModeSpace} {
+		t.Run(mode, func(t *testing.T) {
+			c, rec := newCompactBridgeTestContext(t, false)
+			c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), ctxkey.Model, "gpt-test"))
+			stop := startEarlySSEHeartbeat(c, time.Now(), "chat", StreamEarlyHeartbeatSettings{Enabled: true, Mode: mode, MinDelayMS: 30000, MaxDelayMS: 30000})
+			defer stop()
+			require.True(t, PrepareEarlySSESpaceRetry(c))
+			firePKEarlyHeartbeat(t, earlySSEWriterFromContext(c))
+			if mode == StreamEarlyHeartbeatModeSpace {
+				require.Empty(t, rec.Body.String())
+				gate, ok := c.Request.Context().Value(ctxkey.EarlySSESpaceRetryGate).(func() bool)
+				require.True(t, ok)
+				require.True(t, gate())
+			} else {
+				require.NotEmpty(t, rec.Body.String(), "existing heartbeat modes retain their timer")
+				require.Nil(t, c.Request.Context().Value(ctxkey.EarlySSESpaceRetryGate))
+			}
+		})
+	}
+	c, w, _ := newPKEarlySpaceWriter(t, "chat")
+	firePKEarlyHeartbeat(t, w)
+	require.False(t, PrepareEarlySSESpaceRetry(c), "published space must reject another attempt")
+	gate, ok := c.Request.Context().Value(ctxkey.EarlySSESpaceRetryGate).(func() bool)
+	require.True(t, ok)
+	require.False(t, gate(), "transport fallback uses the same atomic gate")
+}
+
+func TestPKEarlyHeartbeat_SpaceResponseLateErrorUsesRealID(t *testing.T) {
+	c, w, body := newPKEarlySpaceWriter(t, "responses")
+	_, err := c.Writer.WriteString(pkSpaceCreated)
+	require.NoError(t, err)
+	firePKEarlyHeartbeat(t, w)
+	_, err = c.Writer.WriteString("data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"id\":\"fc_real\",\"type\":\"function_call\",\"arguments\":\"{}\"}}\n\n")
+	require.NoError(t, err)
+	c.Writer.Header().Set("Content-Type", "application/json")
+	c.Writer.WriteHeader(http.StatusServiceUnavailable)
+	_, err = c.Writer.WriteString(`{"error":{"type":"overloaded_error","message":"later"}}`)
+	require.NoError(t, err)
+	events := pkSpaceEvents(body())
+	last := events[len(events)-1]
+	require.Equal(t, "response.failed", last.Get("type").String())
+	require.Equal(t, "resp_real", last.Get("response.id").String())
+	require.Equal(t, " ", last.Get("response.output.0.content.0.text").String())
+	require.Equal(t, "{}", last.Get("response.output.1.arguments").String())
+	require.Equal(t, int64(len(events)-1), last.Get("sequence_number").Int())
+	require.False(t, last.Get("response.usage").Exists())
+}
+
+func TestPKEarlyHeartbeat_SpaceProgressPreservesSourceAndKnownDeltas(t *testing.T) {
+	c, w, body := newPKEarlySpaceWriter(t, "responses")
+	_, err := c.Writer.WriteString(pkSpaceCreated)
+	require.NoError(t, err)
+	firePKEarlyHeartbeat(t, w)
+	for _, payload := range []string{
+		`{"type":"response.output_item.added","output_index":0,"item":{"id":"fc_real","type":"function_call","arguments":""}}`,
+		`{"type":"response.in_progress","response":{"id":"resp_real","output":[{"id":"fc_real","type":"function_call","arguments":"{}","status":"in_progress","opaque":9007199254740993}]}}`,
+		`{"type":"response.output_item.added","output_index":1,"item":{"id":"rs_real","type":"reasoning","summary":[]}}`,
+		`{"type":"response.reasoning_summary_part.added","output_index":1,"summary_index":0,"part":{"type":"summary_text","text":""}}`,
+		`{"type":"response.reasoning_summary_text.delta","output_index":1,"summary_index":0,"delta":"a"}`,
+		`{"type":"response.output_item.added","output_index":2,"item":{"id":"msg_real","type":"message","role":"assistant","content":[]}}`,
+		`{"type":"response.content_part.added","output_index":2,"content_index":0,"part":{"type":"refusal","refusal":""}}`,
+		`{"type":"response.refusal.delta","output_index":2,"content_index":0,"delta":"no"}`,
+		`{"type":"response.content_part.added","output_index":2,"content_index":1,"part":{"type":"output_text","text":"","annotations":[]}}`,
+		`{"type":"response.output_text.annotation.added","output_index":2,"content_index":1,"annotation_index":0,"annotation":{"type":"url_citation","url":"https://example.com","title":"source","start_index":0,"end_index":1}}`,
+		`{"type":"response.in_progress","response":{"id":"resp_real","output":[]}}`,
+		`{"type":"response.reasoning_summary_text.delta","output_index":1,"summary_index":0,"delta":"b"}`,
+		`{"type":"response.refusal.delta","output_index":2,"content_index":0,"delta":"!"}`,
+		`{"type":"response.in_progress","response":{"id":"resp_real","output":[]}}`,
+	} {
+		_, err := c.Writer.WriteString("data: " + payload + "\n\n")
+		require.NoError(t, err)
+	}
+	events := pkSpaceEvents(body())
+	last := events[len(events)-1]
+	require.Equal(t, "{}", last.Get("response.output.1.arguments").String())
+	require.Equal(t, "9007199254740993", last.Get("response.output.1.opaque").Raw)
+	require.Equal(t, "in_progress", last.Get("response.output.1.status").String())
+	require.Equal(t, "ab", last.Get("response.output.2.summary.0.text").String())
+	require.Equal(t, "no!", last.Get("response.output.3.content.0.refusal").String())
+	require.Equal(t, "https://example.com", last.Get("response.output.3.content.1.annotations.0.url").String())
+}
+
+func TestPKEarlyHeartbeat_SpaceCancellationPreventsDeferredInjection(t *testing.T) {
+	for _, protocol := range []string{"chat", "responses"} {
+		t.Run(protocol, func(t *testing.T) {
+			c, w, body := newPKEarlySpaceWriter(t, protocol)
+			_, err := c.Writer.WriteString(": pending")
+			require.NoError(t, err)
+			firePKEarlyHeartbeat(t, w)
+			w.mu.Lock()
+			w.stopLocked()
+			w.mu.Unlock()
+			_, err = c.Writer.WriteString("\n\n")
+			require.NoError(t, err)
+			if protocol == "responses" {
+				_, err = c.Writer.WriteString(pkSpaceCreated)
+				require.NoError(t, err)
+			}
+			require.NotContains(t, body(), "sub2api_placeholder")
+			require.False(t, EarlySSESpaceOutputCommitted(c))
+		})
+	}
+}
+
+func TestPKEarlyHeartbeat_SpaceCRFrameEOFAndStructuredCreated(t *testing.T) {
+	t.Run("CR-only terminal boundary", func(t *testing.T) {
+		c, w, body := newPKEarlySpaceWriter(t, "chat")
+		firePKEarlyHeartbeat(t, w)
+		_, err := c.Writer.WriteString("data: {\"id\":\"real\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"}}]}\r\r")
+		require.NoError(t, err)
+		w.mu.Lock()
+		w.finishSpaceLocked()
+		w.mu.Unlock()
+		events := pkSpaceEvents(body())
+		require.Len(t, events, 4)
+		require.Equal(t, "hello", events[3].Get("choices.0.delta.content").String())
+		require.NotContains(t, body(), "incomplete SSE")
+	})
+	for _, field := range []string{`"text":{"format":{"type":"json_object"}},`, `"output":[{"id":"already","type":"message","content":[]}],`} {
+		t.Run(field, func(t *testing.T) {
+			c, w, body := newPKEarlySpaceWriter(t, "responses")
+			firePKEarlyHeartbeat(t, w)
+			_, err := c.Writer.WriteString("data: {\"type\":\"response.created\",\"response\":{" + field + "\"id\":\"resp_real\"}}\n\n")
+			require.NoError(t, err)
+			require.NotContains(t, body(), "sub2api_placeholder")
+			require.False(t, EarlySSESpaceOutputCommitted(c))
+		})
 	}
 }

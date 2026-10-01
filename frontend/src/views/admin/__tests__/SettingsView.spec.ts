@@ -1443,6 +1443,7 @@ describe("admin SettingsView payment visible method controls", () => {
       expect((toggle.element as HTMLInputElement).checked).toBe(false);
       expect((mode.element as HTMLSelectElement).value).toBe("comment");
       expect((mode.element as HTMLSelectElement).disabled).toBe(true);
+      expect(mode.findAll("option").map((option) => option.attributes("value"))).toEqual(["comment", "downstream_ping", "space"]);
       expect((minimum.element as HTMLInputElement).value).toBe("1");
       expect((maximum.element as HTMLInputElement).value).toBe("2");
       expect((minimum.element as HTMLInputElement).disabled).toBe(true);
@@ -1498,7 +1499,7 @@ describe("admin SettingsView payment visible method controls", () => {
     });
   });
 
-  it("saves explicit downstream compatibility and preserves the mode while disabled", async () => {
+  it.each(["downstream_ping", "space"])("saves explicit %s mode and preserves it while disabled", async (selectedMode) => {
     const wrapper = mountView();
     await flushPromises();
     await openFirstTokenTab(wrapper);
@@ -1506,26 +1507,29 @@ describe("admin SettingsView payment visible method controls", () => {
     const mode = wrapper.get('[data-testid="stream-early-heartbeat-mode"]');
 
     await toggle.setValue(true);
-    await mode.setValue("downstream_ping");
-    expect(wrapper.find('[data-testid="stream-early-heartbeat-downstream-hint"]').exists()).toBe(true);
-    expect(wrapper.find('[data-testid="stream-early-heartbeat-downstream-warning"]').exists()).toBe(true);
+    await mode.setValue(selectedMode);
+    const hintKind = selectedMode === "space" ? "space" : "downstream";
+    expect(wrapper.find(`[data-testid="stream-early-heartbeat-${hintKind}-hint"]`).exists()).toBe(true);
+    expect(wrapper.find(`[data-testid="stream-early-heartbeat-${hintKind}-warning"]`).exists()).toBe(true);
+    expect(wrapper.find('[data-testid="stream-early-heartbeat-space-timing"]').exists()).toBe(selectedMode === "space");
+    expect(wrapper.find('[data-testid="stream-early-heartbeat-space-fallback"]').exists()).toBe(selectedMode === "space");
     await toggle.setValue(false);
     expect((mode.element as HTMLSelectElement).disabled).toBe(true);
-    expect((mode.element as HTMLSelectElement).value).toBe("downstream_ping");
+    expect((mode.element as HTMLSelectElement).value).toBe(selectedMode);
     await wrapper.find("form").trigger("submit.prevent");
     await flushPromises();
     expect(updateSettings.mock.calls.at(-1)?.[0]).toMatchObject({
       stream_early_heartbeat_enabled: false,
-      stream_early_heartbeat_mode: "downstream_ping",
+      stream_early_heartbeat_mode: selectedMode,
     });
-    expect((mode.element as HTMLSelectElement).value).toBe("downstream_ping");
+    expect((mode.element as HTMLSelectElement).value).toBe(selectedMode);
 
     await toggle.setValue(true);
     await wrapper.find("form").trigger("submit.prevent");
     await flushPromises();
     expect(updateSettings.mock.calls.at(-1)?.[0]).toMatchObject({
       stream_early_heartbeat_enabled: true,
-      stream_early_heartbeat_mode: "downstream_ping",
+      stream_early_heartbeat_mode: selectedMode,
     });
 
     await mode.setValue("comment");
@@ -1533,18 +1537,19 @@ describe("admin SettingsView payment visible method controls", () => {
     await flushPromises();
     expect(updateSettings.mock.calls.at(-1)?.[0].stream_early_heartbeat_mode).toBe("comment");
     expect(wrapper.find('[data-testid="stream-early-heartbeat-downstream-warning"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="stream-early-heartbeat-space-warning"]').exists()).toBe(false);
   });
 
-  it("loads a saved downstream mode without enabling early heartbeats", async () => {
+  it.each(["downstream_ping", "space"])("loads saved %s mode without enabling early heartbeats", async (selectedMode) => {
     getSettings.mockResolvedValueOnce({
       ...baseSettingsResponse,
-      stream_early_heartbeat_mode: "downstream_ping",
+      stream_early_heartbeat_mode: selectedMode,
     });
     const wrapper = mountView();
     await flushPromises();
     await openFirstTokenTab(wrapper);
 
-    expect((wrapper.get('[data-testid="stream-early-heartbeat-mode"]').element as HTMLSelectElement).value).toBe("downstream_ping");
+    expect((wrapper.get('[data-testid="stream-early-heartbeat-mode"]').element as HTMLSelectElement).value).toBe(selectedMode);
     expect((wrapper.get('[data-testid="stream-early-heartbeat-enabled"]').element as HTMLInputElement).checked).toBe(false);
   });
 
@@ -1554,8 +1559,20 @@ describe("admin SettingsView payment visible method controls", () => {
       expect(messages.earlyHeartbeatModeDownstreamHint).toContain("semantic");
       expect(messages.earlyHeartbeatModeDownstreamHint).toContain("visible");
       expect(messages.earlyHeartbeatModeDownstreamHint).toContain("usage");
+      expect(messages.earlyHeartbeatModeDownstreamHint).toContain("New API");
       expect(messages.earlyHeartbeatModeDownstreamWarning).toContain("Responses SDK");
+      expect(messages.earlyHeartbeatModeSpaceHint).toContain("U+0020");
+      expect(messages.earlyHeartbeatModeSpaceTimingHint).toContain("New API");
+      expect(messages.earlyHeartbeatModeSpaceTimingHint).toContain("response.id");
+      expect(messages.earlyHeartbeatModeSpaceTimingHint).toContain("response.created");
+      expect(messages.earlyHeartbeatModeSpaceFallbackHint).toContain("Messages");
+      expect(messages.earlyHeartbeatModeSpaceFallbackHint).toContain("json_schema");
+      expect(messages.earlyHeartbeatModeSpaceFallbackHint).toContain("json_object");
+      expect(messages.earlyHeartbeatModeSpaceWarning).toContain("JSON");
+      expect(messages.earlyHeartbeatModeSpaceWarning).toContain("usage");
     }
+    expect(zhSettings.settings.gatewayForwarding.earlyHeartbeatModeSpaceHint).toContain("不会在真实文字到来时撤回");
+    expect(enSettings.settings.gatewayForwarding.earlyHeartbeatModeSpaceHint).toContain("not retracted");
   });
 
   it.each([["-1", "2"], ["-0.0001", "2"], ["3", "2"], ["1", "31"], ["1", "30.0001"], ["", "2"]])("rejects invalid early SSE heartbeat seconds %s to %s", async (minimum, maximum) => {

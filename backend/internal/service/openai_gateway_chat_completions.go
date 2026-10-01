@@ -415,6 +415,9 @@ func (s *OpenAIGatewayService) forwardAsChatCompletions(
 	if resp.StatusCode >= 400 {
 		respBody, upstreamMsg := s.readOpenAIUpstreamError(resp)
 		if !agentIdentityTaskRecoveryWasTried(ctx) && s.isAgentIdentityAccount(ctx, account) && isAgentIdentityTaskInvalidHTTPResponse(resp.StatusCode, respBody) {
+			if !PrepareEarlySSESpaceRetry(c) {
+				return s.handleChatCompletionsErrorResponse(resp, c, account, billingModel)
+			}
 			expectedTaskID := account.GetCredential("task_id")
 			if err := s.recoverAgentIdentityTask(ctx, account, expectedTaskID); err != nil {
 				return nil, fmt.Errorf("agent identity task recovery failed: %w", err)
@@ -425,6 +428,9 @@ func (s *OpenAIGatewayService) forwardAsChatCompletions(
 			!account.IsOpenCodeGo() &&
 			openai_compat.ResolveResponsesSupport(account.Extra) == openai_compat.ResponsesSupportUnknown &&
 			!isResponsesEndpointSupportedByStatus(resp.StatusCode) {
+			if !PrepareEarlySSESpaceRetry(c) {
+				return s.handleChatCompletionsErrorResponse(resp, c, account, billingModel)
+			}
 			logger.L().Info("openai chat_completions: /responses unsupported, falling back to raw chat completions",
 				zap.Int64("account_id", account.ID),
 				zap.Int("upstream_status", resp.StatusCode),

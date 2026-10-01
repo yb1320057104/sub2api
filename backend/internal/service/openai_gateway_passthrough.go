@@ -360,7 +360,10 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	responseID := ""
 	imageCount := 0
 	var imageOutputSizes []string
-	for {
+	for attempt := 0; ; attempt++ {
+		if attempt > 0 && !PrepareEarlySSESpaceRetry(c) {
+			return nil, fmt.Errorf("upstream retry stopped after early space output")
+		}
 		actualModel := strings.TrimSpace(gjson.GetBytes(body, "model").String())
 		if actualModel == "" {
 			actualModel = reqModel

@@ -38,6 +38,10 @@ const (
 	// RetryCount 表示当前请求在网关层的重试次数（用于 Ops 记录与排障）。
 	RetryCount Key = "ctx_retry_count"
 
+	// EarlySSESpaceRetryGate stores a request-local func() bool that atomically
+	// permits an upstream retry only before early space output is committed.
+	EarlySSESpaceRetryGate Key = "ctx_early_sse_space_retry_gate"
+
 	// AccountSwitchCount 表示请求过程中发生的账号切换次数
 	AccountSwitchCount Key = "ctx_account_switch_count"
 

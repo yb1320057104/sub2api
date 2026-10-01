@@ -1023,7 +1023,7 @@ func parseStreamEarlyHeartbeatSettings(values map[string]string) StreamEarlyHear
 	settings.Enabled = values[SettingKeyStreamEarlyHeartbeatEnabled] == "true"
 	if mode, exists := values[SettingKeyStreamEarlyHeartbeatMode]; exists {
 		switch mode {
-		case StreamEarlyHeartbeatModeComment, StreamEarlyHeartbeatModeDownstreamPing:
+		case StreamEarlyHeartbeatModeComment, StreamEarlyHeartbeatModeDownstreamPing, StreamEarlyHeartbeatModeSpace:
 			settings.Mode = mode
 		default:
 			return defaultStreamEarlyHeartbeatSettings()

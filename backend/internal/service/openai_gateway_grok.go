@@ -110,6 +110,9 @@ func (s *OpenAIGatewayService) forwardGrokResponses(
 	upstreamStart := time.Now()
 	var resp *http.Response
 	for attempt := 0; ; attempt++ {
+		if attempt > 0 && !PrepareEarlySSESpaceRetry(c) {
+			return nil, fmt.Errorf("upstream retry stopped after early space output")
+		}
 		upstreamReq, buildErr := buildGrokResponsesRequest(upstreamCtx, c, account, patchedBody, token, cacheIdentity, s.cfg, s.settingService)
 		if buildErr != nil {
 			return nil, buildErr

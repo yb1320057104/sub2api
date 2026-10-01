@@ -2,6 +2,7 @@ package repository
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -346,6 +348,45 @@ func TestGrokAccessDeniedFallbackRecognizesChatEndpointPermissionDenied(t *testi
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	require.NoError(t, resp.Body.Close())
 	require.Equal(t, []string{grokCLIProxyHost, grokOfficialAPIHost}, hosts)
+}
+
+func TestPKEarlySpaceGrokTransportFallbackHonorsRetryGate(t *testing.T) {
+	for _, allowRetry := range []bool{false, true} {
+		t.Run(fmt.Sprintf("allow_retry_%t", allowRetry), func(t *testing.T) {
+			calls, gateCalls := 0, 0
+			transport := &grokAccessDeniedFallbackTransport{base: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				calls++
+				status, body := http.StatusOK, `{"id":"response-ok"}`
+				if req.URL.Hostname() == grokCLIProxyHost {
+					status, body = http.StatusForbidden, `{"error":"Access denied"}`
+				}
+				return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
+			})}
+			req, err := http.NewRequest(http.MethodPost, "https://cli-chat-proxy.grok.com/v1/chat/completions", strings.NewReader(`{"model":"grok-4.5","stream":true}`))
+			require.NoError(t, err)
+			req.Header.Set("Authorization", "Bearer oauth-token")
+			req.Header.Set("X-XAI-Token-Auth", "xai-grok-cli")
+			req = req.WithContext(context.WithValue(req.Context(), ctxkey.EarlySSESpaceRetryGate, func() bool {
+				gateCalls++
+				return allowRetry
+			}))
+			resp, err := transport.RoundTrip(req)
+			require.NoError(t, err)
+			body, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+			require.NoError(t, resp.Body.Close())
+			require.Equal(t, 1, gateCalls)
+			if allowRetry {
+				require.Equal(t, 2, calls)
+				require.Equal(t, http.StatusOK, resp.StatusCode)
+				require.JSONEq(t, `{"id":"response-ok"}`, string(body))
+			} else {
+				require.Equal(t, 1, calls, "the first request is allowed, but the transport must not replay after space output")
+				require.Equal(t, http.StatusForbidden, resp.StatusCode)
+				require.JSONEq(t, `{"error":"Access denied"}`, string(body))
+			}
+		})
+	}
 }
 
 func TestIsGrokCLICompatibilityAccessDenied(t *testing.T) {

@@ -22,7 +22,7 @@ export interface FetchOptions {
   signal?: AbortSignal
 }
 
-export type StreamEarlyHeartbeatMode = 'comment' | 'downstream_ping'
+export type StreamEarlyHeartbeatMode = 'comment' | 'downstream_ping' | 'space'
 
 // ==================== Notification Types ====================
 
