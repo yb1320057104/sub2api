@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"sort"
@@ -56,8 +57,7 @@ type Client struct {
 // NewClient accepts an optional dedicated HTTP(S) or SOCKS5 proxy. An invalid
 // proxy is an error and never silently falls back to a direct connection.
 func NewClient(proxyURL string) (*Client, error) {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.Proxy = nil
+	transport := cloneDirectTransport()
 	if strings.TrimSpace(proxyURL) != "" {
 		proxy, err := parseProxyURL(proxyURL)
 		if err != nil {
@@ -72,9 +72,7 @@ func NewClient(proxyURL string) (*Client, error) {
 // origin configurable. Callers must not supply an untrusted transport.
 func NewClientWithTransport(transport http.RoundTripper) *Client {
 	if transport == nil {
-		copy := http.DefaultTransport.(*http.Transport).Clone()
-		copy.Proxy = nil
-		transport = copy
+		transport = cloneDirectTransport()
 	}
 	return &Client{http: &http.Client{
 		Transport: transport,
@@ -83,6 +81,24 @@ func NewClientWithTransport(transport http.RoundTripper) *Client {
 			return http.ErrUseLastResponse
 		},
 	}}
+}
+
+func cloneDirectTransport() *http.Transport {
+	if transport, ok := http.DefaultTransport.(*http.Transport); ok && transport != nil {
+		clone := transport.Clone()
+		clone.Proxy = nil
+		return clone
+	}
+	// A replaced global transport must not remove timeouts or enable an
+	// environment proxy when this client is configured for direct access.
+	return &http.Transport{
+		DialContext:           (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: time.Second,
+	}
 }
 
 func (c *Client) CloseIdleConnections() {
@@ -295,7 +311,7 @@ func (c *Client) get(ctx context.Context, path string, params url.Values, apiKey
 		// net/http errors can contain a signed URL or proxy credentials.
 		return errors.New("binance: network request failed")
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusTeapot {
 		return &RateLimitError{RetryAfter: retryDelay(resp.Header.Get("Retry-After"), resp.StatusCode), StatusCode: resp.StatusCode}
 	}
