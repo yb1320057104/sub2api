@@ -468,10 +468,18 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	updates[SettingKeyBackendModeEnabled] = strconv.FormatBool(settings.BackendModeEnabled)
 
 	// Gateway forwarding behavior
+	// Older internal callers have no mode field; keep their comment behavior.
+	if settings.StreamEarlyHeartbeatMode == "" {
+		settings.StreamEarlyHeartbeatMode = StreamEarlyHeartbeatModeComment
+	}
+	if settings.StreamEarlyHeartbeatMode != StreamEarlyHeartbeatModeComment && settings.StreamEarlyHeartbeatMode != StreamEarlyHeartbeatModeDownstreamPing {
+		return nil, infraerrors.BadRequest("INVALID_STREAM_EARLY_HEARTBEAT_MODE", "early SSE heartbeat mode must be comment or downstream_ping")
+	}
 	if settings.StreamEarlyHeartbeatMinDelayMS < 0 || settings.StreamEarlyHeartbeatMaxDelayMS < settings.StreamEarlyHeartbeatMinDelayMS || settings.StreamEarlyHeartbeatMaxDelayMS > 30000 {
 		return nil, infraerrors.BadRequest("INVALID_STREAM_EARLY_HEARTBEAT_DELAY", "early SSE heartbeat delay must satisfy 0 <= min <= max <= 30000 milliseconds")
 	}
 	updates[SettingKeyStreamEarlyHeartbeatEnabled] = strconv.FormatBool(settings.StreamEarlyHeartbeatEnabled)
+	updates[SettingKeyStreamEarlyHeartbeatMode] = settings.StreamEarlyHeartbeatMode
 	updates[SettingKeyStreamEarlyHeartbeatMinDelayMS] = strconv.Itoa(settings.StreamEarlyHeartbeatMinDelayMS)
 	updates[SettingKeyStreamEarlyHeartbeatMaxDelayMS] = strconv.Itoa(settings.StreamEarlyHeartbeatMaxDelayMS)
 	mode := normalizeOpenAITTFTMode(settings.OpenAITTFTMode)
@@ -725,6 +733,7 @@ func (s *SettingService) refreshCachedSettings(settings *SystemSettings) {
 	gatewayForwardingCache.Store(&cachedGatewayForwardingSettings{
 		streamEarlyHeartbeat: StreamEarlyHeartbeatSettings{
 			Enabled:    settings.StreamEarlyHeartbeatEnabled,
+			Mode:       settings.StreamEarlyHeartbeatMode,
 			MinDelayMS: settings.StreamEarlyHeartbeatMinDelayMS,
 			MaxDelayMS: settings.StreamEarlyHeartbeatMaxDelayMS,
 		},

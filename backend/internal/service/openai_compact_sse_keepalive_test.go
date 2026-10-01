@@ -3,12 +3,15 @@ package service
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -380,15 +383,23 @@ func TestPKEarlyHeartbeat_FlushedHeadersStillAllowCommentBeforeBody(t *testing.T
 }
 
 func TestPKEarlyHeartbeat_EnabledTimerUsesRequestStart(t *testing.T) {
-	c, rec := newCompactBridgeTestContext(t, false)
-	stop := startEarlySSEHeartbeat(c, time.Now().Add(-50*time.Millisecond), "responses", StreamEarlyHeartbeatSettings{Enabled: true, MinDelayMS: 20, MaxDelayMS: 20})
-	defer stop()
-	require.Eventually(t, func() bool { return EarlySSEHeartbeatCommitted(c) }, time.Second, time.Millisecond)
-	require.True(t, StopEarlySSEHeartbeatCommitted(c))
-	require.Equal(t, ": keepalive\n\n", rec.Body.String())
-	first := FirstResponseMsFromContext(c.Request.Context())
-	require.NotNil(t, first)
-	require.GreaterOrEqual(t, *first, 50)
+	for _, mode := range []string{"", StreamEarlyHeartbeatModeDownstreamPing} {
+		t.Run(mode, func(t *testing.T) {
+			c, rec := newCompactBridgeTestContext(t, false)
+			stop := startEarlySSEHeartbeat(c, time.Now().Add(-50*time.Millisecond), "responses", StreamEarlyHeartbeatSettings{Enabled: true, Mode: mode, MinDelayMS: 20, MaxDelayMS: 20})
+			defer stop()
+			require.Eventually(t, func() bool { return EarlySSEHeartbeatCommitted(c) }, time.Second, time.Millisecond)
+			require.True(t, StopEarlySSEHeartbeatCommitted(c))
+			want := ": keepalive\n\n"
+			if mode == StreamEarlyHeartbeatModeDownstreamPing {
+				want = "data: {\"type\":\"ping\"}\n\n"
+			}
+			require.Equal(t, want, rec.Body.String())
+			first := FirstResponseMsFromContext(c.Request.Context())
+			require.NotNil(t, first)
+			require.GreaterOrEqual(t, *first, 50)
+		})
+	}
 }
 
 func TestPKEarlyHeartbeat_FastErrorKeepsHTTPStatusAndJSON(t *testing.T) {
@@ -658,4 +669,337 @@ func TestPKEarlyHeartbeat_StopRestoresWriterAndPendingHeaders(t *testing.T) {
 	require.Equal(t, "kept", c.Writer.Header().Get("X-Pending"))
 	firePKEarlyHeartbeat(t, w)
 	require.Empty(t, rec.Body.String())
+}
+
+func TestPKEarlyHeartbeat_DownstreamPingModeAndLegacyDefault(t *testing.T) {
+	for _, mode := range []string{"", StreamEarlyHeartbeatModeComment, "unknown", StreamEarlyHeartbeatModeDownstreamPing} {
+		for _, protocol := range []string{"responses", "chat", "messages"} {
+			t.Run(mode+"/"+protocol, func(t *testing.T) {
+				c, rec := newCompactBridgeTestContext(t, false)
+				stop := startEarlySSEHeartbeat(c, time.Now(), protocol, StreamEarlyHeartbeatSettings{
+					Enabled: true, Mode: mode, MinDelayMS: 30000, MaxDelayMS: 30000,
+				})
+				defer stop()
+				w := earlySSEWriterFromContext(c)
+				c.Writer.Header().Set("X-Upstream-Private", "must-stay-private")
+				firePKEarlyHeartbeat(t, w)
+				want := ": keepalive\n\n"
+				if mode == StreamEarlyHeartbeatModeDownstreamPing {
+					want = "data: {\"type\":\"ping\"}\n\n"
+					if protocol == "messages" {
+						want = "event: ping\n" + want
+					}
+				}
+				require.Equal(t, want, rec.Body.String())
+				require.Equal(t, "text/event-stream", rec.Result().Header.Get("Content-Type"))
+				require.Empty(t, rec.Result().Header.Get("X-Upstream-Private"))
+				require.True(t, c.Writer.Written())
+				require.Equal(t, -1, OpenAICompactKeepaliveAdjustedWrittenSize(c))
+				require.False(t, openAIStreamClientOutputStarted(c, false), "our own ping must preserve local failover")
+				require.NotNil(t, FirstResponseMsFromContext(c.Request.Context()))
+				w.beat()
+				require.Equal(t, want, rec.Body.String(), "the first ping is sent only once")
+				body := "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n"
+				_, err := c.Writer.WriteString(body)
+				require.NoError(t, err)
+				firePKEarlyHeartbeat(t, w)
+				require.Equal(t, want+body, rec.Body.String(), "real output remains byte-for-byte unchanged and stops the timer")
+				require.Equal(t, len(body), OpenAICompactKeepaliveAdjustedWrittenSize(c))
+			})
+		}
+	}
+	require.True(t, openAIStreamDataStartsTTFT(`{"type":"ping"}`, "", false, OpenAITTFTModeSemantic))
+	require.False(t, openAIStreamDataStartsTTFT(`{"type":"ping"}`, "", false, OpenAITTFTModeVisible))
+	require.False(t, isOpenAIChatUsageOnlyStreamChunk(`{"type":"ping"}`))
+}
+
+func TestPKEarlyHeartbeat_DownstreamPingKeepsPeriodicComments(t *testing.T) {
+	c, rec := newCompactBridgeTestContext(t, false)
+	stop := startEarlySSEHeartbeat(c, time.Now(), "responses", StreamEarlyHeartbeatSettings{
+		Enabled: true, Mode: StreamEarlyHeartbeatModeDownstreamPing, MinDelayMS: 30000, MaxDelayMS: 30000,
+	})
+	defer stop()
+	w := earlySSEWriterFromContext(c)
+	stopPeriodic := startOpenAISSEKeepalive(c, time.Hour)
+	defer stopPeriodic()
+	w.mu.Lock()
+	w.repeatDue = time.Now()
+	w.mu.Unlock()
+	w.beat()
+	w.mu.Lock()
+	firstDue := w.firstDue
+	w.mu.Unlock()
+	require.False(t, firstDue.IsZero(), "an earlier periodic comment cannot consume the pending ping")
+	firePKEarlyHeartbeat(t, w)
+	w.mu.Lock()
+	w.repeatDue = time.Now()
+	w.mu.Unlock()
+	w.beat()
+	w.beat()
+	require.Equal(t, ": keepalive\n\ndata: {\"type\":\"ping\"}\n\n: keepalive\n\n", rec.Body.String())
+	require.Equal(t, -1, OpenAICompactKeepaliveAdjustedWrittenSize(c))
+}
+
+func TestPKEarlyHeartbeat_DownstreamPingExternalHeartbeatAccounting(t *testing.T) {
+	for _, frame := range []string{": queue\n\n", "data: {\"type\":\"ping\"}\n\n", "event: ping\ndata: {\"type\":\"ping\"}\n\n"} {
+		t.Run(frame, func(t *testing.T) {
+			c, rec := newCompactBridgeTestContext(t, false)
+			stop := startEarlySSEHeartbeat(c, time.Now(), "responses", StreamEarlyHeartbeatSettings{
+				Enabled: true, Mode: StreamEarlyHeartbeatModeDownstreamPing, MinDelayMS: 30000, MaxDelayMS: 30000,
+			})
+			defer stop()
+			w := earlySSEWriterFromContext(c)
+			c.Writer.Header().Set("Content-Type", "text/event-stream")
+			n, err := c.Writer.WriteString(frame)
+			require.NoError(t, err)
+			c.Set(GatewayStreamHeartbeatBytesKey, n)
+			c.Writer.Flush()
+			w.mu.Lock()
+			firstDue, internalBytes := w.firstDue, w.bytes
+			w.mu.Unlock()
+			require.Zero(t, internalBytes, "queue bytes belong to the queue accounting")
+			want := frame
+			if strings.HasPrefix(frame, ":") {
+				require.False(t, firstDue.IsZero(), "a queue comment leaves the compatibility ping pending")
+				firePKEarlyHeartbeat(t, w)
+				want += "data: {\"type\":\"ping\"}\n\n"
+			} else {
+				require.True(t, firstDue.IsZero(), "an actual queue ping already satisfies the first ping")
+				w.beat()
+			}
+			require.Equal(t, want, rec.Body.String())
+			require.Equal(t, -1, OpenAICompactKeepaliveAdjustedWrittenSize(c))
+			require.False(t, openAIStreamClientOutputStarted(c, false))
+		})
+	}
+}
+
+func TestPKEarlyHeartbeat_DownstreamPingDisabledAndCanceled(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("enabled=%t", enabled), func(t *testing.T) {
+			c, rec := newCompactBridgeTestContext(t, false)
+			ctx, cancel := context.WithCancel(c.Request.Context())
+			defer cancel()
+			c.Request = c.Request.WithContext(ctx)
+			stop := startEarlySSEHeartbeat(c, time.Now(), "responses", StreamEarlyHeartbeatSettings{
+				Enabled: enabled, Mode: StreamEarlyHeartbeatModeDownstreamPing, MinDelayMS: 30000, MaxDelayMS: 30000,
+			})
+			defer stop()
+			w := earlySSEWriterFromContext(c)
+			w.beat()
+			require.Empty(t, rec.Body.String())
+			if !enabled {
+				w.mu.Lock()
+				firstDue := w.firstDue
+				w.mu.Unlock()
+				require.True(t, firstDue.IsZero())
+			}
+			cancel()
+			select {
+			case <-w.done:
+			case <-time.After(time.Second):
+				t.Fatal("cancellation did not stop compatibility ping")
+			}
+			firePKEarlyHeartbeat(t, w)
+			require.Empty(t, rec.Body.String())
+		})
+	}
+}
+
+func TestPKEarlyHeartbeat_DownstreamPingErrorBoundaries(t *testing.T) {
+	for _, protocol := range []string{"responses", "chat", "messages"} {
+		for _, committed := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/committed=%t", protocol, committed), func(t *testing.T) {
+				c, rec := newCompactBridgeTestContext(t, false)
+				stop := startEarlySSEHeartbeat(c, time.Now(), protocol, StreamEarlyHeartbeatSettings{
+					Enabled: true, Mode: StreamEarlyHeartbeatModeDownstreamPing, MinDelayMS: 30000, MaxDelayMS: 30000,
+				})
+				defer stop()
+				w := earlySSEWriterFromContext(c)
+				prefix := ""
+				if committed {
+					firePKEarlyHeartbeat(t, w)
+					prefix = rec.Body.String()
+				}
+				c.JSON(http.StatusServiceUnavailable, map[string]any{"error": map[string]any{"type": "overloaded_error", "message": "try later"}})
+				firePKEarlyHeartbeat(t, w)
+				if !committed {
+					require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+					require.Equal(t, "try later", gjson.Get(rec.Body.String(), "error.message").String())
+					require.NotContains(t, rec.Body.String(), "ping")
+					return
+				}
+				require.Equal(t, http.StatusOK, rec.Code)
+				events := parseCompactBridgeSSE(t, strings.TrimPrefix(rec.Body.String(), prefix))
+				require.Len(t, events, 1)
+				if protocol == "responses" {
+					require.Equal(t, "response.failed", events[0][0])
+					require.Equal(t, "try later", gjson.Get(events[0][1], "response.error.message").String())
+				} else {
+					require.Equal(t, "error", events[0][0])
+					require.Equal(t, "try later", gjson.Get(events[0][1], "error.message").String())
+				}
+				streamErr, ok := GetOpsStreamError(c)
+				require.True(t, ok)
+				require.Equal(t, http.StatusServiceUnavailable, streamErr.IntendedStatus)
+				require.True(t, IsResponseCommitted(c))
+				body := rec.Body.String()
+				_, err := c.Writer.WriteString("must not append after terminal")
+				require.NoError(t, err)
+				require.Equal(t, body, rec.Body.String())
+			})
+		}
+	}
+}
+
+// Feed the frame emitted by the controller through the actual downstream
+// readers. This protects the compatibility claim independently of the small
+// event-classification helpers, and keeps text and original usage observable.
+func TestPKEarlyHeartbeat_DownstreamPingReaderTimingAndUsage(t *testing.T) {
+	readers := []struct {
+		name string
+		chat bool
+		run  func(*OpenAIGatewayService, *gin.Context, *http.Response, time.Time) (*int, *OpenAIUsage, error)
+	}{
+		{"responses", false, func(s *OpenAIGatewayService, c *gin.Context, r *http.Response, start time.Time) (*int, *OpenAIUsage, error) {
+			v, err := s.handleStreamingResponse(c.Request.Context(), r, c, &Account{ID: 1, Platform: PlatformOpenAI}, start, "test-model", "test-model")
+			if v == nil {
+				return nil, nil, err
+			}
+			return v.firstTokenMs, v.usage, err
+		}},
+		{"responses_passthrough", false, func(s *OpenAIGatewayService, c *gin.Context, r *http.Response, start time.Time) (*int, *OpenAIUsage, error) {
+			v, err := s.handleStreamingResponsePassthrough(c.Request.Context(), r, c, &Account{ID: 1, Platform: PlatformOpenAI}, start, "test-model", "test-model")
+			if v == nil {
+				return nil, nil, err
+			}
+			return v.firstTokenMs, v.usage, err
+		}},
+		{"chat_raw", true, func(s *OpenAIGatewayService, c *gin.Context, r *http.Response, start time.Time) (*int, *OpenAIUsage, error) {
+			v, err := s.streamRawChatCompletions(c, r, &Account{ID: 1, Platform: PlatformOpenAI}, "test-model", "test-model", "test-model", nil, nil, start, 0)
+			if v == nil {
+				return nil, nil, err
+			}
+			return v.FirstTokenMs, &v.Usage, err
+		}},
+	}
+	for _, readerCase := range readers {
+		for _, mode := range []string{StreamEarlyHeartbeatModeComment, StreamEarlyHeartbeatModeDownstreamPing} {
+			for _, ttftMode := range []string{OpenAITTFTModeSemantic, OpenAITTFTModeVisible} {
+				if readerCase.chat && ttftMode == OpenAITTFTModeVisible {
+					continue // Responses-only TTFT setting does not govern raw Chat.
+				}
+				t.Run(readerCase.name+"/"+mode+"/"+ttftMode, func(t *testing.T) {
+					gatewayForwardingCache.Store(&cachedGatewayForwardingSettings{openAITTFTMode: ttftMode, expiresAt: time.Now().Add(time.Minute).UnixNano()})
+					t.Cleanup(func() { gatewayForwardingCache.Store(&cachedGatewayForwardingSettings{}) })
+					emitter, emitted := newCompactBridgeTestContext(t, false)
+					stop := startEarlySSEHeartbeat(emitter, time.Now(), "responses", StreamEarlyHeartbeatSettings{
+						Enabled: true, Mode: mode, MinDelayMS: 30000, MaxDelayMS: 30000,
+					})
+					firePKEarlyHeartbeat(t, earlySSEWriterFromContext(emitter))
+					stop()
+					firstFrame := emitted.Body.String()
+					item := `{"id":"msg_real","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"hello","annotations":[]}]}`
+					realStream := "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_real\",\"model\":\"test-model\"}}\n\n" +
+						"event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"id\":\"msg_real\",\"type\":\"message\",\"role\":\"assistant\",\"status\":\"in_progress\",\"content\":[]}}\n\n" +
+						"event: response.content_part.added\ndata: {\"type\":\"response.content_part.added\",\"item_id\":\"msg_real\",\"output_index\":0,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"\",\"annotations\":[]}}\n\n" +
+						"event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_real\",\"output_index\":0,\"content_index\":0,\"delta\":\"hello\"}\n\n" +
+						"event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":" + item + "}\n\n" +
+						"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_real\",\"status\":\"completed\",\"output\":[" + item + "],\"usage\":{\"input_tokens\":11,\"output_tokens\":7,\"total_tokens\":18}}}\n\n"
+					if readerCase.chat {
+						realStream = "data: {\"id\":\"chat_real\",\"object\":\"chat.completion.chunk\",\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}\n\n" +
+							"data: {\"id\":\"chat_real\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
+							"data: {\"id\":\"chat_real\",\"choices\":[],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":7,\"total_tokens\":18}}\n\n" +
+							"data: [DONE]\n\n"
+					}
+					pr, pw := io.Pipe()
+					defer func() { _ = pr.Close() }()
+					defer func() { _ = pw.Close() }()
+					writerDone := make(chan struct{})
+					textReady := make(chan int, 1)
+					started := time.Now()
+					go func() {
+						defer close(writerDone)
+						defer func() { _ = pw.Close() }()
+						if _, err := io.WriteString(pw, firstFrame); err != nil {
+							return
+						}
+						time.Sleep(100 * time.Millisecond)
+						textReady <- int(time.Since(started).Milliseconds())
+						_, _ = io.WriteString(pw, realStream)
+					}()
+					c, rec := newCompactBridgeTestContext(t, false)
+					svc := newCompactBridgeTestService()
+					svc.cfg.Gateway.MaxLineSize = defaultMaxLineSize
+					resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: pr}
+					firstToken, usage, err := readerCase.run(svc, c, resp, started)
+					require.NoError(t, err)
+					require.NotNil(t, firstToken)
+					require.NotNil(t, usage)
+					select {
+					case <-writerDone:
+					case <-time.After(time.Second):
+						t.Fatal("downstream reader left the upstream writer blocked")
+					}
+					var textAt int
+					select {
+					case textAt = <-textReady:
+					default:
+						t.Fatal("upstream never supplied real text")
+					}
+					if mode == StreamEarlyHeartbeatModeDownstreamPing && ttftMode == OpenAITTFTModeSemantic {
+						require.Less(t, *firstToken, textAt, "the actual downstream reader counts ping before text")
+					} else {
+						require.GreaterOrEqual(t, *firstToken, textAt, "comments and visible TTFT still wait for real output")
+					}
+					require.Equal(t, 11, usage.InputTokens)
+					require.Equal(t, 7, usage.OutputTokens)
+					var text string
+					for _, line := range strings.Split(rec.Body.String(), "\n") {
+						payload, ok := extractOpenAISSEDataLine(line)
+						if !ok {
+							continue
+						}
+						if readerCase.chat {
+							text += gjson.Get(payload, "choices.0.delta.content").String()
+						} else if gjson.Get(payload, "type").String() == "response.output_text.delta" {
+							text += gjson.Get(payload, "delta").String()
+						}
+					}
+					require.Equal(t, "hello", text, "no placeholder character may enter the model text")
+					require.Contains(t, rec.Body.String(), firstFrame)
+					require.Contains(t, rec.Body.String(), "\"total_tokens\":18")
+				})
+			}
+		}
+	}
+}
+
+func TestPKEarlyHeartbeat_DownstreamPingPreservesLocalReaderFailover(t *testing.T) {
+	for _, passthrough := range []bool{false, true} {
+		t.Run(fmt.Sprintf("passthrough=%t", passthrough), func(t *testing.T) {
+			c, rec := newCompactBridgeTestContext(t, false)
+			stop := startEarlySSEHeartbeat(c, time.Now(), "responses", StreamEarlyHeartbeatSettings{
+				Enabled: true, Mode: StreamEarlyHeartbeatModeDownstreamPing, MinDelayMS: 30000, MaxDelayMS: 30000,
+			})
+			defer stop()
+			firePKEarlyHeartbeat(t, earlySSEWriterFromContext(c))
+			svc := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}}
+			resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(
+				"data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_failed\"}}\n\n" +
+					"data: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp_failed\",\"status\":\"failed\",\"error\":{\"code\":\"server_is_overloaded\",\"message\":\"Our servers are currently overloaded. Please try again later.\"}}}\n\n"))}
+			account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+			var err error
+			if passthrough {
+				_, err = svc.handleStreamingResponsePassthrough(c.Request.Context(), resp, c, account, time.Now(), "model", "model")
+			} else {
+				_, err = svc.handleStreamingResponse(c.Request.Context(), resp, c, account, time.Now(), "model", "model")
+			}
+			var failoverErr *UpstreamFailoverError
+			require.ErrorAs(t, err, &failoverErr)
+			require.True(t, failoverErr.RetryableOnSameAccount)
+			require.Equal(t, -1, OpenAICompactKeepaliveAdjustedWrittenSize(c))
+			require.Equal(t, "data: {\"type\":\"ping\"}\n\n", rec.Body.String())
+		})
+	}
 }

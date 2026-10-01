@@ -245,6 +245,7 @@ type UpdateSettingsRequest struct {
 	// Gateway forwarding behavior
 	OpenAITTFTMode                         *string `json:"openai_ttft_mode"`
 	StreamEarlyHeartbeatEnabled            *bool   `json:"stream_early_heartbeat_enabled"`
+	StreamEarlyHeartbeatMode               *string `json:"stream_early_heartbeat_mode"`
 	StreamEarlyHeartbeatMinDelayMS         *int    `json:"stream_early_heartbeat_min_delay_ms"`
 	StreamEarlyHeartbeatMaxDelayMS         *int    `json:"stream_early_heartbeat_max_delay_ms"`
 	EnableFingerprintUnification           *bool   `json:"enable_fingerprint_unification"`
@@ -499,6 +500,12 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 	if err := c.ShouldBindBodyWith(&req, binding.JSON); err != nil {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
+	}
+	if _, sent := sentFields[service.SettingKeyStreamEarlyHeartbeatMode]; sent {
+		if req.StreamEarlyHeartbeatMode == nil || (*req.StreamEarlyHeartbeatMode != service.StreamEarlyHeartbeatModeComment && *req.StreamEarlyHeartbeatMode != service.StreamEarlyHeartbeatModeDownstreamPing) {
+			response.BadRequest(c, "stream_early_heartbeat_mode must be comment or downstream_ping")
+			return
+		}
 	}
 	auditReq := settingsAuditRequest(req)
 	omitted := omittedSettingKeys(sentFields)
@@ -1722,6 +1729,12 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 			}
 			return previousSettings.StreamEarlyHeartbeatEnabled
 		}(),
+		StreamEarlyHeartbeatMode: func() string {
+			if req.StreamEarlyHeartbeatMode != nil {
+				return *req.StreamEarlyHeartbeatMode
+			}
+			return previousSettings.StreamEarlyHeartbeatMode
+		}(),
 		StreamEarlyHeartbeatMinDelayMS: func() int {
 			if req.StreamEarlyHeartbeatMinDelayMS != nil {
 				return *req.StreamEarlyHeartbeatMinDelayMS
@@ -2358,6 +2371,7 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		AllowUngroupedKeyScheduling:                            updatedSettings.AllowUngroupedKeyScheduling,
 		BackendModeEnabled:                                     updatedSettings.BackendModeEnabled,
 		StreamEarlyHeartbeatEnabled:                            updatedSettings.StreamEarlyHeartbeatEnabled,
+		StreamEarlyHeartbeatMode:                               updatedSettings.StreamEarlyHeartbeatMode,
 		StreamEarlyHeartbeatMinDelayMS:                         updatedSettings.StreamEarlyHeartbeatMinDelayMS,
 		StreamEarlyHeartbeatMaxDelayMS:                         updatedSettings.StreamEarlyHeartbeatMaxDelayMS,
 		EnableFingerprintUnification:                           updatedSettings.EnableFingerprintUnification,

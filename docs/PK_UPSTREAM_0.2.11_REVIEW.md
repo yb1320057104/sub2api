@@ -6,7 +6,7 @@
 - 上游输入：`Wei-Shaw/sub2api` 的 `v0.2.11`，固定 commit `96f4c115c9749078f90cbf210a01d39baf3f53b6`。tag 对象为 `881a722349105e21aaa38e11de90dd05046ebe4a`。
 - 独立分支：`codex/sync-upstream-0.2.11-first-response`；保留双父提交的合并为 `087e16196553cb1e8b610c3784d6f7c971dc0cb3`。
 - Git 自动合并无冲突；逐项检查自动合并后的业务路径。先完成上游合并，再调查提前首字兼容方案。
-- 无新增 PK ID。更新 PK-003/004 的预留及新模型边界、PK-008 的下游识别说明，以及候选版本号和维护文档。
+- 无新增 PK ID。更新 PK-003/004 的预留及新模型边界、PK-007/008/011 的模式设置与数据 ping 行为，以及候选版本号和维护文档。
 - 未创建正式 Release，未进行线上变更；线上实际版本未核实。
 
 ## 二开保留核对
@@ -21,11 +21,11 @@
 | PK-004 | 已保留，组合待云端验证 | InputContextTokens 继续按原始上下文选档；gpt-6.1-sol 的272000阈值沿用原管线；账号统计仍区分原始token/客户TotalCost。 |
 | PK-005 | 已保留 | usage出口改写、原始计费证据、显式0/别名、Content-Length和SSE完整frame路径未被修改。 |
 | PK-006 | 已保留 | raw Chat、Messages及两种fallback只增加新模型校验，转换出口钩子完整；未新增绕过转换的协议通道。既有OAuth图片/二进制WS边界保留。 |
-| PK-007 | 无影响 | 独立首字页签、默认关闭、1–2秒、局部保存和设置缓存未变。 |
-| PK-008 | 已保留 | Responses/Chat/Messages校验后继续启动提前writer；排除路径未变。下游忽略comment的限制单独记录。 |
+| PK-007 | 已保留并扩展 | 独立首字页签、默认关闭、1–2秒、局部保存和缓存保留；新增comment/downstream_ping模式，默认comment兼容旧配置，显式非法值拒绝。 |
+| PK-008 | 已保留并扩展 | Responses/Chat/Messages校验后继续启动提前writer；排除路径保留。新模式一次发送数据ping，不修改正文/usage，明确semantic与严格SDK边界。 |
 | PK-009 | 已保留 | usageRecordContext保留CopyFirstResponseTiming；上游新增预留引用不替换原子首包状态。数据库列及全部SQL路径未变。 |
 | PK-010 | 无影响 | 普通/管理员DTO、导出、共享表格及公开渠道监控的权限映射未变。 |
-| PK-011 | 已保留 | 心跳字节扣除和周期调度未变；预留在开始心跳后拒绝的路径继续用既有streaming-aware错误。 |
+| PK-011 | 已保留并扩展 | 数据ping仍扣除本层心跳字节；兼容模式的队列/周期注释不消耗首次ping，真实ping可满足，周期保活仍为注释；本层换号规则保留。 |
 | PK-012 | 已保留 | writer锁、header克隆、Stop等待、晚到协议错误保留；新增预留失败使用Responses/Chat/Messages对应错误入口。 |
 | PK-013 | 已保留 | PK出版及数字修订排序保留；候选构建版本更新为0.2.11-pk.candidate。 |
 | PK-014 | 无影响 | 私库来源、下载凭据、缓存隔离及私有镜像配置未变；本次已确认origin仓库private。 |
@@ -52,7 +52,9 @@ v0.2.11默认开启`billing.inflight_reservation`。它在选账号前按请求�
 - `AccountTestModal.vue` 将 `_` 作为闪烁光标；收到content时追加到streamingContent，完成时把累积正文移入结果行并清空流显示。截图无法证明上游撤回过字符。
 - SSE注释是传输保活，不被原版Sub2API记为上游首字。Responses默认semantic会跳过created/in_progress/keepalive；visible要求非空内容。
 - 空output_item/content_part事件可以在semantic模式记时，但仍可能被下游缓冲；空delta缺少正确生命周期/ID会破坏严格客户端，并影响安全换号或在跨协议转换中被丢弃。
-- 调查仍在继续。当前保留原心跳行为，未以虚构正文或不完整事件宣称问题已经解决。
+- 用户授权的外部流式探测共发出3次短生成请求（2次Responses、1次Chat）。参考服务实际提前发送U+0020空格：Responses使用完整占位message生命周期、`sub2api_placeholder: true`、后续output_index偏移和sequence_number重编号；最终output仍保留空格消息。Chat依次发role、空格、真实文本、usage和DONE。没有撤回字符。这里不记录密钥和完整远端响应。
+- 当前实现提供显式`downstream_ping`选项，保留默认注释行为。结构化ping针对原版Sub2API默认semantic/原始Chat识别；不模拟参考服务的空格占位，也不保证visible或严格SDK兼容。
+- 既有`openai_compact_sse_keepalive_test.go`扩展真实Responses普通/直通及Chat reader链路：接收心跳后再接真实正文与usage，比较两种模式的计时、正文完整性、原始usage和本层失败换号；在云端执行。
 
 ## 验证记录
 

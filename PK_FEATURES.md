@@ -127,6 +127,7 @@
 
 - 管理员系统设置保留独立“首字设置”页签、开关及随机时间上下限；默认关闭，范围默认 1–2 秒。界面按秒输入（精度 0.001），后端按毫秒保存。
 - 键：`stream_early_heartbeat_enabled`、`stream_early_heartbeat_min_delay_ms`、`stream_early_heartbeat_max_delay_ms`；必须满足 `0 ≤ min ≤ max ≤ 30000`，非法范围不写入。
+- 2026-10-02 增加 `stream_early_heartbeat_mode`：`comment` 为默认/旧配置行为，`downstream_ping` 为显式选择的下游兼容模式。缺字段保留，显式非法值/空字符串/null/错误类型拒绝；坏存储配置安全关闭并回退默认。GET/PUT、审计、设置缓存和前端局部保存同步包含此字段。关闭开关不清除已选模式。
 - 局部更新缺失字段保留原值，显式 false/0 生效；审计包含新增字段。设置缓存默认60秒，当前进程成功保存后及时失效；读取失败/非法配置采用安全关闭回退。
 - 保存失败不能提前替换有效缓存。其他实例按自身缓存刷新，已开始的请求使用启动时取得的设置，不能承诺所有实例和在途请求立即变更。
 - 入口：`frontend/src/views/admin/SettingsView.vue`、`frontend/src/api/admin/settings.ts`、类型和中英设置文案；`backend/internal/service/{domain_constants,settings_view,setting_parse,setting_update,setting_gateway_runtime}.go`；`backend/internal/handler/admin/setting_handler*.go` 和 `dto/settings.go`。
@@ -134,9 +135,11 @@
 
 ## PK-008
 
-**真实提前发出的 SSE 心跳。** 引入：`54b4372c2`，完善：`41958f4d4`。
+**真实提前发出的 SSE 心跳。** 引入：`54b4372c2`，完善：`41958f4d4`；2026-10-02 按用户提供的下游判断逻辑增加显式结构化 ping 模式。
 
 - 对已接入的 OpenAI 兼容 Responses、Chat、Messages SSE 请求，在完成必要校验后、等待账号/上游时，从请求起始时间计算随机发送时机，真实写出并 flush 无正文的 `: keepalive` 注释。
+- 上述注释为默认 `comment` 模式。选择 `downstream_ping` 时，首次定时写出 `data: {"type":"ping"}\n\n`，Messages 另带 `event: ping`；后续周期保活仍为注释。两种模式均不注入模型正文、空格、usage、伪造响应ID或修改真实输出。
+- 兼容模式针对原版 Sub2API 的 Responses 默认 `semantic` 和原始 Chat 记时路径；Responses `visible` 仍等待非空内容，跨协议桥接/大请求保护也可能丢弃或缓冲 ping。该 ping 不是标准 Responses/Chat 模型事件，严格 SDK 可能拒绝；下游可能把它当已提交输出并停止失败换号。这些限制须在管理员设置中展示，不声称普遍兼容。
 - 真实业务正文开始后停止提前心跳；请求快速结束或取消时不得再写。随机数用于调度发送，不能直接作为统计值，也不伪造模型文本。
 - 单纯修改 Header 或写出成功响应头不能取消等待心跳；首个心跳设置 SSE/no-cache/`X-Accel-Buffering: no` 并移除 `Content-Length`。真实输出更早到达时立即转发，不等待随机时间。
 - 不注入非流式、WebSocket 入站、图片、legacy compact、native V2 compact 等排除路径；上游 WS 转下游 SSE 的既有重连语义保留。
@@ -178,6 +181,7 @@
 
 - 队列心跳、compact/直通原有保活和提前心跳独立计数；从正文提交判断中分别扣除且不重复扣。只有心跳时仍可按原规则换号/回退。
 - 提前控制器与原有心跳共用调度，完整注释/已知 ping 不终止后续周期保活；真实正文、部分或混合业务帧应停止提前心跳，避免插入正文中间。
+- `downstream_ping` 模式下，更早的队列/周期注释不消耗待发送的首次数据 ping；外部完整 ping 可以满足首次发送。内部数据 ping 的字节和原注释一样从本层正文提交判断中扣除，不能重复扣外部队列心跳，也不能改变本层安全换号。
 - 外部排队心跳取消待发送的首次心跳，但共享控制器仍可接受之后的周期保活；关闭提前开关时也必须成立。只有心跳时 adjusted size 归一为 `-1`；外部注释字节由原调用方计数，writer 不重复累计。
 - `Written()` 必须继续表示真实 HTTP 提交状态；只有“是否已输出业务正文、是否允许换号/重试/fallback”的判断使用一致的 adjusted size。Handler 到转发 service 的相关业务判断都要保留，不能遗漏桥接或重试分支，也不能把 HTTP 已提交状态改成未提交。
 - 保留首输出超时的安全标记、最多一次安全切号和客户端取消阻止重放；已输出语义正文后，不进行会重复输出/收费的重放。

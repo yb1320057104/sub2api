@@ -238,6 +238,7 @@ type SystemSettings struct {
 	// Gateway forwarding behavior
 	OpenAITTFTMode                         string // Responses first_token_ms 统计口径（默认 semantic）
 	StreamEarlyHeartbeatEnabled            bool
+	StreamEarlyHeartbeatMode               string
 	StreamEarlyHeartbeatMinDelayMS         int
 	StreamEarlyHeartbeatMaxDelayMS         int
 	EnableFingerprintUnification           bool   // 是否统一 OAuth 账号的指纹头（默认 true）
