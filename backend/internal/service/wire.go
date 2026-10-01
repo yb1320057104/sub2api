@@ -10,6 +10,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/payment"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/binancepay"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
@@ -975,6 +976,7 @@ var ProviderSet = wire.NewSet(
 	ProvidePaymentConfigService,
 	ProvidePaymentService,
 	ProvidePaymentOrderExpiryService,
+	ProvideBinanceRechargeService,
 	ProvideBalanceNotifyService,
 	ProvideChannelMonitorService,
 	ProvideChannelMonitorRunner,
@@ -1018,6 +1020,16 @@ func ProvidePaymentOrderExpiryService(paymentSvc *PaymentService, lockCache Lead
 	svc.SetLeaderLock(lockCache, db)
 	startBackgroundAfterActivation("PaymentOrderExpiryService", svc.Start)
 	return svc
+}
+
+func ProvideBinanceRechargeService(db *sql.DB, encryptor SecretEncryptor, authInvalidator APIKeyAuthCacheInvalidator, billingCache *BillingCacheService) (*BinanceRechargeService, error) {
+	client, err := binancepay.NewClient(os.Getenv("BINANCE_RECHARGE_PROXY_URL"))
+	if err != nil {
+		return nil, err
+	}
+	svc := NewBinanceRechargeService(db, encryptor, client, authInvalidator, billingCache)
+	startBackgroundAfterActivation("BinanceRechargeService", svc.Start)
+	return svc, nil
 }
 
 // ProvideChannelMonitorService 创建渠道监控服务（CRUD + RunCheck + 用户视图聚合）。

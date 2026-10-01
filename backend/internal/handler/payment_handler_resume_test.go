@@ -57,6 +57,37 @@ func TestApplyWeChatPaymentResumeClaims(t *testing.T) {
 	}
 }
 
+func TestPKBinanceUserEndpointsRequireAuthentication(t *testing.T) {
+	h := NewBinanceRechargeHandler(nil)
+	for name, endpoint := range map[string]gin.HandlerFunc{
+		"config": h.Config, "create": h.CreateOrder, "list": h.ListOrders,
+		"detail": h.GetOrder, "refresh": h.RefreshOrder, "stats": h.Stats,
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest(http.MethodGet, "/binance-recharge?user_id=0", nil)
+			endpoint(c)
+			require.Equal(t, http.StatusUnauthorized, w.Code)
+		})
+	}
+}
+
+func TestPKBinanceFiltersCannotOverrideAuthenticatedUser(t *testing.T) {
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/binance-recharge/stats?user_id=0&account_id=8&page_size=100000", nil)
+	params, ok := binanceRechargeListParams(c, 73)
+	require.True(t, ok)
+	require.Equal(t, int64(73), params.UserID, "user_id query cannot broaden the authenticated scope")
+	require.Equal(t, int64(8), params.AccountID)
+	require.LessOrEqual(t, params.PageSize, 100)
+	c.Request = httptest.NewRequest(http.MethodGet, "/binance-recharge/stats?account_id=-1", nil)
+	_, ok = binanceRechargeListParams(c, 73)
+	require.False(t, ok)
+	require.Equal(t, http.StatusBadRequest, w.Code)
+}
+
 func TestApplyWeChatPaymentResumeClaimsRejectsPaymentTypeMismatch(t *testing.T) {
 	t.Parallel()
 

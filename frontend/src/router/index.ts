@@ -302,6 +302,18 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/binance-recharge',
+    name: 'BinanceRecharge',
+    component: () => import('@/views/user/BinanceRechargeView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: false,
+      title: 'Binance Top-up',
+      titleKey: 'binanceRecharge.title',
+      descriptionKey: 'binanceRecharge.description',
+    }
+  },
+  {
     path: '/purchase',
     name: 'PurchaseSubscription',
     component: () => import('@/views/user/PaymentView.vue'),

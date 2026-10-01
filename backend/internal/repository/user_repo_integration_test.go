@@ -5,6 +5,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -13,8 +14,10 @@ import (
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/ent/authidentity"
 	"github.com/Wei-Shaw/sub2api/ent/authidentitychannel"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/binancepay"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 )
 
@@ -776,4 +779,277 @@ func (s *UserRepoSuite) TestDeductBalance_NotFound() {
 	s.Require().Error(err, "expected error for non-existent user")
 	// DeductBalance 在用户不存在时返回 ErrUserNotFound
 	s.Require().ErrorIs(err, service.ErrUserNotFound)
+}
+
+// These tests exercise the actual PostgreSQL recharge transaction with a fake
+// authenticated Binance history source. No real credentials or funds are used.
+type pkBinanceHistoryStub struct {
+	mu       sync.Mutex
+	receipts []binancepay.Receipt
+	err      error
+}
+
+func (s *pkBinanceHistoryStub) History(_ context.Context, _, _, _ string, from, to time.Time) ([]binancepay.Receipt, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.err != nil {
+		return nil, s.err
+	}
+	result := make([]binancepay.Receipt, 0)
+	for _, receipt := range s.receipts {
+		if !receipt.Time.Before(from) && !receipt.Time.After(to) {
+			result = append(result, receipt)
+		}
+	}
+	return result, nil
+}
+func (*pkBinanceHistoryStub) Probe(context.Context, string, string) error { return nil }
+func (*pkBinanceHistoryStub) CloseIdleConnections()                       {}
+
+type pkBinanceFixture struct {
+	svc      *service.BinanceRechargeService
+	provider *pkBinanceHistoryStub
+	user     *service.User
+	account  *service.BinanceRechargeAccount
+	order    *service.BinanceRechargeOrder
+}
+
+func newPKBinanceFixture(t *testing.T) *pkBinanceFixture {
+	t.Helper()
+	ctx := context.Background()
+	provider := &pkBinanceHistoryStub{}
+	svc := service.NewBinanceRechargeService(integrationDB, &AESEncryptor{key: make([]byte, 32)}, provider, nil, nil)
+	user := mustCreateUser(t, integrationEntClient, &service.User{Email: fmt.Sprintf("binance-%d@example.com", time.Now().UnixNano()), Balance: 2.12345678})
+	account, err := svc.SaveAccount(ctx, 0, service.BinanceRechargeAccountInput{
+		Name: "Binance integration", RecipientUID: fmt.Sprint(time.Now().UnixNano()),
+		APIKey: "fixture-key", APISecret: "fixture-secret", Enabled: true, OrderTTLMinutes: 30,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_, _ = integrationDB.ExecContext(ctx, `DELETE FROM binance_recharge_receipts WHERE account_id=$1`, account.ID)
+		_, _ = integrationDB.ExecContext(ctx, `DELETE FROM binance_recharge_orders WHERE account_id=$1`, account.ID)
+		_, _ = integrationDB.ExecContext(ctx, `DELETE FROM binance_recharge_accounts WHERE id=$1`, account.ID)
+		_, _ = integrationDB.ExecContext(ctx, `DELETE FROM redeem_codes WHERE used_by=$1`, user.ID)
+		_, _ = integrationDB.ExecContext(ctx, `DELETE FROM users WHERE id=$1`, user.ID)
+	})
+	order, err := svc.CreateOrder(ctx, user.ID, account.ID, 10)
+	require.NoError(t, err)
+	// Put creation safely before the millisecond provider timestamp, without
+	// sleeping or altering the production clock.
+	_, err = integrationDB.ExecContext(ctx, `UPDATE binance_recharge_orders SET created_at=NOW()-INTERVAL '5 seconds' WHERE id=$1`, order.ID)
+	require.NoError(t, err)
+	return &pkBinanceFixture{svc: svc, provider: provider, user: user, account: account, order: order}
+}
+
+func (f *pkBinanceFixture) receipt(t *testing.T, id string, at time.Time) binancepay.Receipt {
+	t.Helper()
+	units, err := binancepay.ParseAmount(f.order.PayAmount)
+	require.NoError(t, err)
+	return binancepay.Receipt{TransactionID: id, AmountUnits: units, Time: at.UTC().Truncate(time.Millisecond)}
+}
+
+func (f *pkBinanceFixture) releasePoll(t *testing.T) {
+	t.Helper()
+	_, err := integrationDB.ExecContext(context.Background(), `UPDATE binance_recharge_accounts SET next_poll_at=NOW()-INTERVAL '1 minute' WHERE id=$1`, f.account.ID)
+	require.NoError(t, err)
+}
+
+func TestPKBinanceExactCreditAndDuplicatePolling(t *testing.T) {
+	f := newPKBinanceFixture(t)
+	ctx := context.Background()
+	f.provider.receipts = []binancepay.Receipt{f.receipt(t, "same-transfer", time.Now().Add(-time.Second))}
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); _, _ = f.svc.CheckAccount(ctx, f.account.ID) }()
+	}
+	wg.Wait()
+	order, err := f.svc.GetOrder(ctx, f.order.ID, f.user.ID)
+	require.NoError(t, err)
+	require.Equal(t, service.BinanceRechargeCompleted, order.Status)
+	require.Equal(t, f.order.PayAmount, order.CreditedAmount)
+	for i := 0; i < 2; i++ {
+		f.releasePoll(t)
+		_, err = f.svc.CheckAccount(ctx, f.account.ID)
+		require.NoError(t, err)
+	}
+	var balanceExact, totalExact bool
+	err = integrationDB.QueryRowContext(ctx, `SELECT balance=2.12345678+$2::numeric, total_recharged=$2::numeric FROM users WHERE id=$1`, f.user.ID, f.order.PayAmount).Scan(&balanceExact, &totalExact)
+	require.NoError(t, err)
+	require.True(t, balanceExact, "credit must retain the full suffix and existing eight-decimal balance")
+	require.True(t, totalExact, "cumulative recharge must be credited once")
+	var count int
+	err = integrationDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM redeem_codes WHERE used_by=$1 AND type='balance' AND status='used' AND value=$2::numeric`, f.user.ID, f.order.PayAmount).Scan(&count)
+	require.NoError(t, err)
+	require.Equal(t, 1, count, "existing balance history must contain one exact recharge entry")
+	err = integrationDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM binance_recharge_receipts WHERE account_id=$1 AND status='COMPLETED'`, f.account.ID).Scan(&count)
+	require.NoError(t, err)
+	require.Equal(t, 1, count)
+}
+
+func TestPKBinanceExpiredOrderAcceptsOnTimeReceipt(t *testing.T) {
+	f := newPKBinanceFixture(t)
+	ctx := context.Background()
+	_, err := integrationDB.ExecContext(ctx, `UPDATE binance_recharge_orders SET created_at=NOW()-INTERVAL '20 minutes', expires_at=NOW()-INTERVAL '5 minutes', status='EXPIRED' WHERE id=$1`, f.order.ID)
+	require.NoError(t, err)
+	f.provider.receipts = []binancepay.Receipt{f.receipt(t, "delayed-history", time.Now().Add(-10*time.Minute))}
+	// Disabling new orders must not abandon payments already in flight.
+	_, err = f.svc.SaveAccount(ctx, f.account.ID, service.BinanceRechargeAccountInput{Name: f.account.Name, RecipientUID: f.account.RecipientUID, Enabled: false, OrderTTLMinutes: 30})
+	require.NoError(t, err)
+	_, err = f.svc.CheckAccount(ctx, f.account.ID)
+	require.NoError(t, err)
+	order, err := f.svc.GetOrder(ctx, f.order.ID, f.user.ID)
+	require.NoError(t, err)
+	require.Equal(t, service.BinanceRechargeCompleted, order.Status)
+	require.Equal(t, f.order.PayAmount, order.CreditedAmount)
+	_, err = f.svc.CreateOrder(ctx, f.user.ID, f.account.ID, 10)
+	require.Error(t, err, "disabled account must not issue new quotes")
+}
+
+func TestPKBinanceLateReceiptRequiresReview(t *testing.T) {
+	f := newPKBinanceFixture(t)
+	ctx := context.Background()
+	_, err := integrationDB.ExecContext(ctx, `UPDATE binance_recharge_orders SET created_at=NOW()-INTERVAL '20 minutes', expires_at=NOW()-INTERVAL '5 minutes', status='EXPIRED' WHERE id=$1`, f.order.ID)
+	require.NoError(t, err)
+	f.provider.receipts = []binancepay.Receipt{f.receipt(t, "late-payment", time.Now().Add(-time.Minute))}
+	_, err = f.svc.CheckAccount(ctx, f.account.ID)
+	require.NoError(t, err)
+	order, err := f.svc.GetOrder(ctx, f.order.ID, f.user.ID)
+	require.NoError(t, err)
+	require.Equal(t, service.BinanceRechargeReview, order.Status)
+	var unchanged bool
+	err = integrationDB.QueryRowContext(ctx, `SELECT balance=2.12345678 AND total_recharged=0 FROM users WHERE id=$1`, f.user.ID).Scan(&unchanged)
+	require.NoError(t, err)
+	require.True(t, unchanged)
+}
+
+func TestPKBinanceAccountSecrecyAndOrderOwnership(t *testing.T) {
+	f := newPKBinanceFixture(t)
+	ctx := context.Background()
+	_, err := f.svc.GetOrder(ctx, f.order.ID, f.user.ID+1000000)
+	require.Error(t, err, "another user must not read the order")
+	_, err = f.svc.SaveAccount(ctx, f.account.ID, service.BinanceRechargeAccountInput{Name: "Changed", RecipientUID: f.account.RecipientUID + "1", Enabled: true, OrderTTLMinutes: 30})
+	require.Error(t, err, "a receiving UID with existing quotes is immutable")
+	updated, err := f.svc.SaveAccount(ctx, f.account.ID, service.BinanceRechargeAccountInput{Name: "Renamed", RecipientUID: f.account.RecipientUID, Enabled: true, OrderTTLMinutes: 15})
+	require.NoError(t, err)
+	require.True(t, updated.APIKeyConfigured)
+	require.True(t, updated.APISecretConfigured)
+	var key, secret string
+	err = integrationDB.QueryRowContext(ctx, `SELECT api_key_encrypted,api_secret_encrypted FROM binance_recharge_accounts WHERE id=$1`, f.account.ID).Scan(&key, &secret)
+	require.NoError(t, err)
+	require.NotContains(t, key, "fixture-key")
+	require.NotContains(t, secret, "fixture-secret")
+	_, err = f.svc.CreateOrder(ctx, f.user.ID, f.account.ID, 10)
+	require.Error(t, err, "rapid creation is rate limited inside the database transaction")
+	_, err = integrationDB.ExecContext(ctx, `UPDATE binance_recharge_orders SET created_at=NOW()-INTERVAL '1 minute',status='EXPIRED' WHERE id=$1`, f.order.ID)
+	require.NoError(t, err)
+	next, err := f.svc.CreateOrder(ctx, f.user.ID, f.account.ID, 10)
+	require.NoError(t, err)
+	require.NotEqual(t, f.order.PayAmount, next.PayAmount, "historic full quotes must not be reused")
+}
+
+func TestPKBinanceStatsCountOnlyCompletedAndScopeUsers(t *testing.T) {
+	f := newPKBinanceFixture(t)
+	ctx := context.Background()
+	other := mustCreateUser(t, integrationEntClient, &service.User{Email: fmt.Sprintf("binance-other-%d@example.com", time.Now().UnixNano())})
+	t.Cleanup(func() {
+		_, _ = integrationDB.ExecContext(ctx, `DELETE FROM binance_recharge_receipts WHERE account_id=$1`, f.account.ID)
+		_, _ = integrationDB.ExecContext(ctx, `DELETE FROM binance_recharge_orders WHERE user_id=$1`, other.ID)
+		_, _ = integrationDB.ExecContext(ctx, `DELETE FROM redeem_codes WHERE used_by=$1`, other.ID)
+		_, _ = integrationDB.ExecContext(ctx, `DELETE FROM users WHERE id=$1`, other.ID)
+	})
+	otherOrder, err := f.svc.CreateOrder(ctx, other.ID, f.account.ID, 20)
+	require.NoError(t, err)
+	_, err = integrationDB.ExecContext(ctx, `UPDATE binance_recharge_orders SET created_at=NOW()-INTERVAL '1 minute' WHERE account_id=$1`, f.account.ID)
+	require.NoError(t, err)
+	otherUnits, err := binancepay.ParseAmount(otherOrder.PayAmount)
+	require.NoError(t, err)
+	first := f.receipt(t, "stats-one", time.Now().Add(-time.Second))
+	f.provider.receipts = []binancepay.Receipt{first, {TransactionID: "stats-two", AmountUnits: otherUnits, Time: first.Time}}
+	_, err = f.svc.CheckAccount(ctx, f.account.ID)
+	require.NoError(t, err)
+	_, err = f.svc.CreateOrder(ctx, f.user.ID, f.account.ID, 30)
+	require.NoError(t, err, "pending quote should exist but never enter completed totals")
+	all, err := f.svc.Stats(ctx, service.BinanceRechargeListParams{AccountID: f.account.ID})
+	require.NoError(t, err)
+	require.Equal(t, int64(2), all.TotalOrders)
+	require.Equal(t, binancepay.FormatAmount(first.AmountUnits+otherUnits), all.TotalAmount)
+	require.Len(t, all.Items, 2)
+	self, err := f.svc.Stats(ctx, service.BinanceRechargeListParams{AccountID: f.account.ID, UserID: f.user.ID})
+	require.NoError(t, err)
+	require.Equal(t, int64(1), self.TotalOrders)
+	require.Equal(t, f.order.PayAmount, self.TotalAmount)
+	require.Len(t, self.Items, 1)
+	require.Equal(t, f.user.ID, self.Items[0].UserID)
+	require.Empty(t, self.Items[0].UserEmail)
+	orders, total, err := f.svc.ListOrders(ctx, service.BinanceRechargeListParams{AccountID: f.account.ID, UserID: f.user.ID})
+	require.NoError(t, err)
+	require.Equal(t, int64(2), total)
+	for _, order := range orders {
+		require.Equal(t, f.user.ID, order.UserID)
+	}
+}
+
+func TestPKBinanceCreditTransactionRollsBackAndRetries(t *testing.T) {
+	f := newPKBinanceFixture(t)
+	ctx := context.Background()
+	code := fmt.Sprintf("BN-%d", f.order.ID)
+	_, err := integrationDB.ExecContext(ctx, `INSERT INTO redeem_codes(code,type,value,status,used_by) VALUES($1,'balance',1,'used',$2)`, code, f.user.ID)
+	require.NoError(t, err)
+	f.provider.receipts = []binancepay.Receipt{f.receipt(t, "rollback-retry", time.Now().Add(-time.Second))}
+	_, err = f.svc.CheckAccount(ctx, f.account.ID)
+	require.Error(t, err, "failed balance-history insert must fail the whole credit")
+	var unchanged bool
+	err = integrationDB.QueryRowContext(ctx, `SELECT balance=2.12345678 AND total_recharged=0 FROM users WHERE id=$1`, f.user.ID).Scan(&unchanged)
+	require.NoError(t, err)
+	require.True(t, unchanged)
+	var claimed int
+	err = integrationDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM binance_recharge_receipts WHERE account_id=$1`, f.account.ID).Scan(&claimed)
+	require.NoError(t, err)
+	require.Zero(t, claimed, "failed transaction must not consume the transfer")
+	_, err = integrationDB.ExecContext(ctx, `DELETE FROM redeem_codes WHERE code=$1`, code)
+	require.NoError(t, err)
+	f.releasePoll(t)
+	_, err = f.svc.CheckAccount(ctx, f.account.ID)
+	require.NoError(t, err)
+	order, err := f.svc.GetOrder(ctx, f.order.ID, f.user.ID)
+	require.NoError(t, err)
+	require.Equal(t, service.BinanceRechargeCompleted, order.Status)
+}
+
+func TestPKBinanceOlderUnrelatedTransferDoesNotPoisonQuote(t *testing.T) {
+	f := newPKBinanceFixture(t)
+	ctx := context.Background()
+	f.provider.receipts = []binancepay.Receipt{
+		f.receipt(t, "before-quote", time.Now().Add(-time.Hour)),
+		f.receipt(t, "valid-for-quote", time.Now().Add(-time.Second)),
+	}
+	_, err := f.svc.CheckAccount(ctx, f.account.ID)
+	require.NoError(t, err)
+	order, err := f.svc.GetOrder(ctx, f.order.ID, f.user.ID)
+	require.NoError(t, err)
+	require.Equal(t, service.BinanceRechargeCompleted, order.Status)
+	require.Equal(t, "valid-for-quote", order.TransactionID)
+	var unassigned bool
+	err = integrationDB.QueryRowContext(ctx, `SELECT order_id IS NULL AND status='REVIEW' FROM binance_recharge_receipts WHERE account_id=$1 AND transaction_id='before-quote'`, f.account.ID).Scan(&unassigned)
+	require.NoError(t, err)
+	require.True(t, unassigned)
+}
+
+func TestPKBinanceManualCheckReadsOriginalHistoricalWindow(t *testing.T) {
+	f := newPKBinanceFixture(t)
+	ctx := context.Background()
+	_, err := integrationDB.ExecContext(ctx, `UPDATE binance_recharge_orders SET created_at=NOW()-INTERVAL '3 days',expires_at=NOW()-INTERVAL '3 days'+INTERVAL '30 minutes',status='EXPIRED' WHERE id=$1`, f.order.ID)
+	require.NoError(t, err)
+	f.provider.receipts = []binancepay.Receipt{f.receipt(t, "old-on-time-payment", time.Now().Add(-72*time.Hour+10*time.Minute))}
+	_, err = f.svc.CheckAccount(ctx, f.account.ID)
+	require.NoError(t, err)
+	unpaid, err := f.svc.GetOrder(ctx, f.order.ID, f.user.ID)
+	require.NoError(t, err)
+	require.Equal(t, service.BinanceRechargeExpired, unpaid.Status)
+	f.releasePoll(t)
+	paid, err := f.svc.CheckOrder(ctx, f.order.ID, f.user.ID)
+	require.NoError(t, err)
+	require.Equal(t, service.BinanceRechargeCompleted, paid.Status)
+	require.Equal(t, f.order.PayAmount, paid.CreditedAmount)
 }

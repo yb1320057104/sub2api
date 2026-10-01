@@ -1,0 +1,189 @@
+<template>
+  <AppLayout>
+    <div class="space-y-6">
+      <div class="flex flex-wrap gap-2 border-b border-gray-200 pb-3 dark:border-dark-700">
+        <button v-for="tab in tabs" :key="tab" class="btn" :class="activeTab === tab ? 'btn-primary' : 'btn-secondary'" @click="activeTab = tab">{{ t(tab === 'dailyUsage' ? 'binanceRecharge.dailyUsage.title' : `binanceRecharge.${tab}`) }}</button>
+      </div>
+      <template v-if="activeTab === 'accounts'">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <p class="max-w-3xl text-sm text-gray-500">{{ t('binanceRecharge.enabledHint') }}</p>
+          <div class="flex gap-2"><button class="btn btn-secondary" :disabled="accountsLoading" @click="loadAccounts()">{{ t('common.refresh') }}</button><button class="btn btn-primary" @click="editAccount()">{{ t('binanceRecharge.addAccount') }}</button></div>
+        </div>
+        <div v-if="accountsLoading" class="card p-6 text-sm text-gray-500">{{ t('common.loading') }}</div>
+        <div v-else-if="!accounts.length" class="card p-8 text-center text-gray-500">{{ t('binanceRecharge.noAccounts') }}</div>
+        <div v-else class="grid gap-4 xl:grid-cols-2">
+          <article v-for="account in accounts" :key="account.id" class="card space-y-4 p-5">
+            <div class="flex flex-wrap items-start justify-between gap-3">
+              <div><h2 class="text-base font-semibold">{{ account.name }}</h2><p class="mt-1 break-all font-mono text-sm text-gray-500">UID {{ account.recipient_uid }}</p></div>
+              <span class="rounded-full px-2.5 py-1 text-xs" :class="account.enabled ? 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300' : 'bg-gray-100 text-gray-600 dark:bg-dark-700 dark:text-gray-400'">{{ account.enabled ? t('common.enabled') : t('common.disabled') }}</span>
+            </div>
+            <dl class="grid grid-cols-2 gap-3 text-sm">
+              <div><dt class="text-gray-500">{{ t('binanceRecharge.credentials') }}</dt><dd>{{ account.api_key_configured && account.api_secret_configured ? t('binanceRecharge.credentialsConfigured') : t('binanceRecharge.credentialsMissing') }}</dd></div>
+              <div><dt class="text-gray-500">{{ t('binanceRecharge.ttl') }}</dt><dd>{{ t('binanceRecharge.minutes', { minutes: account.order_ttl_minutes }) }}</dd></div>
+              <div class="col-span-2"><dt class="text-gray-500">{{ t('binanceRecharge.lastChecked') }}</dt><dd>{{ account.last_checked_at ? date(account.last_checked_at) : t('binanceRecharge.neverChecked') }}</dd></div>
+            </dl>
+            <p v-if="account.last_error" class="break-words rounded-lg bg-red-50 p-3 text-sm text-red-700 dark:bg-red-900/20 dark:text-red-300">{{ t('binanceRecharge.lastError') }}: {{ account.last_error }}</p>
+            <div class="flex flex-wrap justify-end gap-2">
+              <button class="btn btn-secondary" :disabled="checkingId !== null" @click="checkAccount(account)">{{ checkingId === account.id ? t('binanceRecharge.refreshing') : t('binanceRecharge.check') }}</button>
+              <button class="btn btn-secondary" @click="editAccount(account)">{{ t('common.edit') }}</button>
+            </div>
+          </article>
+        </div>
+      </template>
+      <template v-else-if="activeTab === 'orders'">
+        <form class="card flex flex-wrap gap-3 p-4" @submit.prevent="page = 1; loadOrders()">
+          <input v-model="keyword" class="input min-w-48 flex-1" :placeholder="t('binanceRecharge.search')" :aria-label="t('binanceRecharge.search')" />
+          <select v-model="accountFilter" class="input" :aria-label="t('binanceRecharge.account')" @change="page = 1; loadOrders()">
+            <option value="">{{ t('binanceRecharge.allAccounts') }}</option><option v-for="account in accounts" :key="account.id" :value="String(account.id)">{{ account.name }} · {{ account.recipient_uid }}</option>
+          </select>
+          <select v-model="status" class="input" :aria-label="t('binanceRecharge.statusLabel')" @change="page = 1; loadOrders()">
+            <option value="">{{ t('binanceRecharge.allStatuses') }}</option><option v-for="value in statuses" :key="value" :value="value">{{ t(`binanceRecharge.status.${value}`) }}</option>
+          </select>
+          <button class="btn btn-secondary" type="submit" :disabled="ordersLoading">{{ t('common.refresh') }}</button>
+        </form>
+        <BinanceOrderTable :orders="orders" :loading="ordersLoading" admin @select="selectedOrder = $event" />
+        <Pagination v-if="total > 0" :page="page" :page-size="pageSize" :total="total" @update:page="changePage" @update:page-size="changePageSize" />
+      </template>
+      <BinanceRechargeStats v-else-if="activeTab === 'totals'" admin :accounts="accounts" />
+      <AdminDailyUsage v-else />
+    </div>
+    <BaseDialog :show="showAccountDialog" :title="editingAccount ? t('binanceRecharge.editAccount') : t('binanceRecharge.addAccount')" :close-on-escape="!saving" :close-on-click-outside="!saving" @close="closeAccountDialog">
+      <form id="binance-account-form" class="space-y-4" autocomplete="off" @submit.prevent="saveAccount">
+        <div><label for="binance-name" class="input-label">{{ t('binanceRecharge.accountName') }}</label><input id="binance-name" v-model="form.name" class="input mt-1 w-full" maxlength="100" required /></div>
+        <div><label for="binance-uid" class="input-label">{{ t('binanceRecharge.uid') }}</label><input id="binance-uid" v-model="form.recipient_uid" class="input mt-1 w-full" inputmode="numeric" pattern="[0-9]+" :disabled="editingAccount?.has_orders" required /><p v-if="editingAccount?.has_orders" class="mt-1 text-xs text-gray-500">{{ t('binanceRecharge.uidLocked') }}</p></div>
+        <p class="text-xs text-gray-500">{{ t('binanceRecharge.credentialsHint') }}</p>
+        <div><label for="binance-api-key" class="input-label">{{ t('binanceRecharge.apiKey') }}</label><input id="binance-api-key" v-model="form.api_key" type="password" autocomplete="new-password" class="input mt-1 w-full" :required="!editingAccount" /></div>
+        <div><label for="binance-api-secret" class="input-label">{{ t('binanceRecharge.apiSecret') }}</label><input id="binance-api-secret" v-model="form.api_secret" type="password" autocomplete="new-password" class="input mt-1 w-full" :required="!editingAccount" /><p class="mt-2 text-xs text-gray-500">{{ t('binanceRecharge.secretHint') }}</p></div>
+        <div><label for="binance-ttl" class="input-label">{{ t('binanceRecharge.ttl') }}</label><select id="binance-ttl" v-model="form.order_ttl_minutes" class="input mt-1 w-full"><option :value="15">{{ t('binanceRecharge.minutes', { minutes: 15 }) }}</option><option :value="30">{{ t('binanceRecharge.minutes', { minutes: 30 }) }}</option></select></div>
+        <label class="flex items-center gap-2 text-sm"><input v-model="form.enabled" type="checkbox" class="h-4 w-4 rounded" />{{ t('binanceRecharge.enabled') }}</label>
+      </form>
+      <template #footer><div class="flex justify-end gap-2"><button class="btn btn-secondary" :disabled="saving" @click="closeAccountDialog">{{ t('common.cancel') }}</button><button form="binance-account-form" class="btn btn-primary" type="submit" :disabled="saving">{{ saving ? t('common.processing') : t('common.save') }}</button></div></template>
+    </BaseDialog>
+    <BaseDialog :show="!!selectedOrder" :title="t('binanceRecharge.details')" width="wide" @close="selectedOrder = null">
+      <div v-if="selectedOrder" class="space-y-4"><p class="text-sm text-gray-500">{{ t('binanceRecharge.user') }}: {{ selectedOrder.user_email || `#${selectedOrder.user_id}` }} · #{{ selectedOrder.user_id }}</p><BinanceOrderDetails :order="selectedOrder" :busy="refreshingOrder" @refresh="refreshOrder" /></div>
+    </BaseDialog>
+  </AppLayout>
+</template>
+
+<script setup lang="ts">
+import { onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
+import { adminBinanceRechargeAPI } from '@/api/binanceRecharge'
+import { useAppStore } from '@/stores/app'
+import { useBinanceRechargeStore } from '@/stores/binanceRecharge'
+import { extractApiErrorMessage } from '@/utils/apiError'
+import type { BinanceRechargeAccount, BinanceRechargeAccountInput, BinanceRechargeOrder, BinanceRechargeStatus } from '@/types/binanceRecharge'
+import AppLayout from '@/components/layout/AppLayout.vue'
+import BaseDialog from '@/components/common/BaseDialog.vue'
+import Pagination from '@/components/common/Pagination.vue'
+import BinanceOrderTable from '@/components/payment/BinanceOrderTable.vue'
+import BinanceOrderDetails from '@/components/payment/BinanceOrderDetails.vue'
+import BinanceRechargeStats from '@/components/payment/BinanceRechargeStats.vue'
+import AdminDailyUsage from '@/components/admin/usage/AdminDailyUsage.vue'
+
+const { t } = useI18n()
+const appStore = useAppStore()
+const rechargeStore = useBinanceRechargeStore()
+const tabs = ['accounts', 'orders', 'totals', 'dailyUsage'] as const
+const activeTab = ref<typeof tabs[number]>('accounts')
+const accounts = ref<BinanceRechargeAccount[]>([])
+const accountsLoading = ref(false)
+const checkingId = ref<number | null>(null)
+const showAccountDialog = ref(false)
+const editingAccount = ref<BinanceRechargeAccount | null>(null)
+const saving = ref(false)
+const form = reactive<BinanceRechargeAccountInput>({ name: '', recipient_uid: '', api_key: '', api_secret: '', enabled: false, order_ttl_minutes: 15 })
+const orders = ref<BinanceRechargeOrder[]>([])
+const ordersLoading = ref(false)
+const selectedOrder = ref<BinanceRechargeOrder | null>(null)
+const refreshingOrder = ref(false)
+const keyword = ref('')
+const accountFilter = ref('')
+const status = ref<BinanceRechargeStatus | ''>('')
+const statuses: BinanceRechargeStatus[] = ['PENDING', 'COMPLETED', 'EXPIRED', 'REVIEW']
+const page = ref(1)
+const pageSize = ref(20)
+const total = ref(0)
+let listSequence = 0
+let disposed = false
+const date = (value: string) => new Date(value).toLocaleString()
+function reportError(error: unknown) { appStore.showError(extractApiErrorMessage(error, t('common.error'))) }
+
+async function loadAccounts() {
+  accountsLoading.value = true
+  try {
+    const { data } = await adminBinanceRechargeAPI.getAccounts()
+    if (!disposed) accounts.value = data || []
+  } catch (error) { reportError(error) }
+  finally { accountsLoading.value = false }
+}
+
+function editAccount(account?: BinanceRechargeAccount) {
+  editingAccount.value = account || null
+  // Build the form explicitly: never copy unknown response fields or stored secrets.
+  Object.assign(form, { name: account?.name || '', recipient_uid: account?.recipient_uid || '', api_key: '', api_secret: '', enabled: account?.enabled ?? false, order_ttl_minutes: account?.order_ttl_minutes || 15 })
+  showAccountDialog.value = true
+}
+function closeAccountDialog() {
+  if (saving.value) return
+  showAccountDialog.value = false
+  form.api_key = ''
+  form.api_secret = ''
+  editingAccount.value = null
+}
+async function saveAccount() {
+  if (saving.value) return
+  if (!form.name.trim() || !/^\d+$/.test(form.recipient_uid.trim()) || (!editingAccount.value && (!form.api_key?.trim() || !form.api_secret?.trim()))) {
+    appStore.showError(t('binanceRecharge.requiredFields')); return
+  }
+  saving.value = true
+  try {
+    const data: BinanceRechargeAccountInput = { name: form.name.trim(), recipient_uid: form.recipient_uid.trim(), enabled: form.enabled, order_ttl_minutes: form.order_ttl_minutes }
+    if (form.api_key?.trim()) data.api_key = form.api_key.trim()
+    if (form.api_secret?.trim()) data.api_secret = form.api_secret.trim()
+    if (editingAccount.value) await adminBinanceRechargeAPI.updateAccount(editingAccount.value.id, data)
+    else await adminBinanceRechargeAPI.createAccount(data)
+    form.api_key = ''
+    form.api_secret = ''
+    showAccountDialog.value = false
+    appStore.showSuccess(t('binanceRecharge.saveSuccess'))
+    await loadAccounts()
+    await rechargeStore.fetchConfig(true)
+  } catch (error) { reportError(error) }
+  finally { saving.value = false }
+}
+async function checkAccount(account: BinanceRechargeAccount) {
+  if (checkingId.value !== null) return
+  checkingId.value = account.id
+  try {
+    const { data } = await adminBinanceRechargeAPI.checkAccount(account.id)
+    appStore.showSuccess(t('binanceRecharge.checkResult', data))
+  } catch (error) { reportError(error) }
+  finally { checkingId.value = null; await loadAccounts() }
+}
+async function loadOrders() {
+  const sequence = ++listSequence
+  ordersLoading.value = true
+  try {
+    const { data } = await adminBinanceRechargeAPI.getOrders({ page: page.value, page_size: pageSize.value, status: status.value, account_id: accountFilter.value ? Number(accountFilter.value) : undefined, keyword: keyword.value.trim() || undefined })
+    if (!disposed && sequence === listSequence) { orders.value = data.items || []; total.value = data.total }
+  } catch (error) { reportError(error) }
+  finally { if (sequence === listSequence) ordersLoading.value = false }
+}
+async function refreshOrder() {
+  if (!selectedOrder.value || refreshingOrder.value) return
+  const id = selectedOrder.value.id
+  refreshingOrder.value = true
+  try {
+    const { data } = await adminBinanceRechargeAPI.refreshOrder(id)
+    if (!disposed && selectedOrder.value?.id === id) selectedOrder.value = data
+    await loadOrders()
+  } catch (error) { reportError(error) }
+  finally { refreshingOrder.value = false }
+}
+function changePage(value: number) { page.value = value; void loadOrders() }
+function changePageSize(value: number) { pageSize.value = value; page.value = 1; void loadOrders() }
+watch(activeTab, value => { if (value === 'orders') void loadOrders() })
+onMounted(() => { void loadAccounts() })
+onUnmounted(() => { disposed = true; form.api_key = ''; form.api_secret = '' })
+</script>

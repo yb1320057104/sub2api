@@ -131,9 +131,10 @@ export async function getStats(params: {
   end_date?: string
   timezone?: string
   nocache?: number
-}): Promise<AdminUsageStatsResponse> {
+}, options?: { signal?: AbortSignal }): Promise<AdminUsageStatsResponse> {
   const { data } = await apiClient.get<AdminUsageStatsResponse>('/admin/usage/stats', {
-    params
+    params,
+    signal: options?.signal
   })
   return data
 }

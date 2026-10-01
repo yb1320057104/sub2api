@@ -1,5 +1,5 @@
 <template>
-  <AppLayout>
+  <component :is="embedded ? 'div' : AppLayout">
     <div class="space-y-6">
       <UsageStatsCards :stats="usageStats" />
       <!-- Charts Section -->
@@ -156,6 +156,7 @@
         <div v-if="rankingMounted" v-show="activeTab === 'ranking'" class="overflow-hidden rounded-b-2xl">
           <UserTokenRanking
             ref="rankingRef"
+            :cancellable="embedded"
             :start-date="startDate"
             :end-date="endDate"
             :filters="breakdownFilters"
@@ -166,7 +167,7 @@
       </div>
       <OpsErrorDetailModal v-model:show="showErrorModal" :error-id="selectedErrorId" :error-type="'request'" />
     </div>
-  </AppLayout>
+  </component>
   <UsageExportProgress :show="exportProgress.show" :progress="exportProgress.progress" :current="exportProgress.current" :total="exportProgress.total" :estimated-time="exportProgress.estimatedTime" @cancel="cancelExport" />
   <UsageCleanupDialog
     :show="cleanupDialogVisible"
@@ -208,6 +209,12 @@ import EndpointDistributionChart from '@/components/charts/EndpointDistributionC
 import Icon from '@/components/icons/Icon.vue'
 import type { AdminUsageLog, TrendDataPoint, ModelStat, GroupStat, EndpointStat, AdminUser } from '@/types'; import type { AdminUsageStatsResponse, AdminUsageQueryParams } from '@/api/admin/usage'
 
+const props = withDefaults(defineProps<{
+  embedded?: boolean
+  initialToday?: boolean
+  ignoreRouteFilters?: boolean
+}>(), { embedded: false, initialToday: false, ignoreRouteFilters: false })
+
 const { t } = useI18n()
 const appStore = useAppStore()
 type DistributionMetric = 'tokens' | 'actual_cost'
@@ -231,6 +238,16 @@ const upstreamEndpointStats = ref<EndpointStat[]>([])
 const endpointPathStats = ref<EndpointStat[]>([])
 const endpointStatsLoading = ref(false)
 let abortController: AbortController | null = null; let exportAbortController: AbortController | null = null
+let statsAbortController: AbortController | null = null
+let modelAbortController: AbortController | null = null
+let chartAbortController: AbortController | null = null
+let errorsAbortController: AbortController | null = null
+let initialChartTimer: ReturnType<typeof setTimeout> | undefined
+let requestsSuspended = props.embedded && document.visibilityState === 'hidden'
+let disposed = false
+let refreshInFlight: Promise<void> | null = null
+const requestOptions = (controller: AbortController): [] | [{ signal: AbortSignal }] =>
+  props.embedded ? [{ signal: controller.signal }] : []
 let chartReqSeq = 0
 let statsReqSeq = 0
 let modelStatsReqSeq = 0
@@ -297,7 +314,10 @@ const getGranularityForRange = (start: string, end: string): 'day' | 'hour' => {
   const daysDiff = Math.ceil((endTime - startTime) / (1000 * 60 * 60 * 24))
   return daysDiff <= 1 ? 'hour' : 'day'
 }
-const defaultRange = getLast24HoursRangeDates()
+const getDefaultRange = () => props.initialToday
+  ? { start: formatLD(new Date()), end: formatLD(new Date()) }
+  : getLast24HoursRangeDates()
+const defaultRange = getDefaultRange()
 const startDate = ref(defaultRange.start); const endDate = ref(defaultRange.end)
 const filters = ref<AdminUsageQueryParams>({ user_id: undefined, model: undefined, group_id: undefined, request_type: undefined, native_compaction_v2: null, billing_type: null, start_date: startDate.value, end_date: endDate.value })
 const pagination = reactive({ page: 1, page_size: getPersistedPageSize(), total: 0 })
@@ -319,6 +339,7 @@ const getNumericQueryValue = (value: string | null | Array<string | null> | unde
 }
 
 const applyRouteQueryFilters = () => {
+  if (props.ignoreRouteFilters) return
   const queryStartDate = getSingleQueryValue(route.query.start_date)
   const queryEndDate = getSingleQueryValue(route.query.end_date)
   const queryUserId = getNumericQueryValue(route.query.user_id)
@@ -390,6 +411,7 @@ const buildUsageListParams = (
 }
 
 const loadLogs = async () => {
+  if (disposed || requestsSuspended) return
   abortController?.abort(); const c = new AbortController(); abortController = c; loading.value = true
   try {
     const res = await adminAPI.usage.list(
@@ -397,9 +419,13 @@ const loadLogs = async () => {
       { signal: c.signal }
     )
     if(!c.signal.aborted) { usageLogs.value = res.items; pagination.total = res.total }
-  } catch (error: any) { if(error?.name !== 'AbortError') console.error('Failed to load usage logs:', error) } finally { if(abortController === c) loading.value = false }
+  } catch (error: any) { if(!c.signal.aborted && error?.name !== 'AbortError') console.error('Failed to load usage logs:', error) } finally { if(abortController === c) loading.value = false }
 }
 const loadStats = async (force = false) => {
+  if (disposed || requestsSuspended) return
+  if (props.embedded) statsAbortController?.abort()
+  const controller = new AbortController()
+  statsAbortController = controller
   const seq = ++statsReqSeq
   endpointStatsLoading.value = true
   try {
@@ -409,14 +435,14 @@ const loadStats = async (force = false) => {
       ...filters.value,
       stream: legacyStream === null ? undefined : legacyStream,
       ...(force ? { nocache: 1 } : {}),
-    })
-    if (seq !== statsReqSeq) return
+    }, ...requestOptions(controller))
+    if (seq !== statsReqSeq || controller.signal.aborted || disposed) return
     usageStats.value = s
     inboundEndpointStats.value = s.endpoints || []
     upstreamEndpointStats.value = s.upstream_endpoints || []
     endpointPathStats.value = s.endpoint_paths || []
   } catch (error) {
-    if (seq !== statsReqSeq) return
+    if (seq !== statsReqSeq || controller.signal.aborted || disposed) return
     console.error('Failed to load usage stats:', error)
     inboundEndpointStats.value = []
     upstreamEndpointStats.value = []
@@ -434,11 +460,15 @@ const invalidateModelStatsCache = () => {
 }
 
 const loadModelStats = async (source: ModelDistributionSource, force = false) => {
+  if (disposed || requestsSuspended) return
   if (!force && loadedModelSources[source]) {
     return
   }
 
   const seq = ++modelStatsReqSeq
+  if (props.embedded) modelAbortController?.abort()
+  const controller = new AbortController()
+  modelAbortController = controller
   modelStatsLoading.value = true
   try {
     const requestType = filters.value.request_type
@@ -458,9 +488,9 @@ const loadModelStats = async (source: ModelDistributionSource, force = false) =>
 	  upstream_model_mismatch: filters.value.upstream_model_mismatch,
     }
 
-    const response = await adminAPI.dashboard.getModelStats({ ...baseParams, model_source: source })
+    const response = await adminAPI.dashboard.getModelStats({ ...baseParams, model_source: source }, ...requestOptions(controller))
 
-    if (seq !== modelStatsReqSeq) return
+    if (seq !== modelStatsReqSeq || controller.signal.aborted || disposed) return
 
     const models = response.models || []
     if (source === 'requested') {
@@ -472,7 +502,7 @@ const loadModelStats = async (source: ModelDistributionSource, force = false) =>
     }
     loadedModelSources[source] = true
   } catch (error) {
-    if (seq !== modelStatsReqSeq) return
+    if (seq !== modelStatsReqSeq || controller.signal.aborted || disposed) return
     console.error('Failed to load model stats:', error)
     if (source === 'requested') {
       requestedModelStats.value = []
@@ -488,7 +518,11 @@ const loadModelStats = async (source: ModelDistributionSource, force = false) =>
 }
 
 const loadChartData = async () => {
+  if (disposed || requestsSuspended) return
   const seq = ++chartReqSeq
+  if (props.embedded) chartAbortController?.abort()
+  const controller = new AbortController()
+  chartAbortController = controller
   chartsLoading.value = true
   try {
     const requestType = filters.value.request_type
@@ -512,11 +546,13 @@ const loadChartData = async () => {
       include_model_stats: false,
       include_group_stats: true,
       include_users_trend: false
-    })
-    if (seq !== chartReqSeq) return
+    }, ...requestOptions(controller))
+    if (seq !== chartReqSeq || controller.signal.aborted || disposed) return
     trendData.value = snapshot.trend || []
     groupStats.value = snapshot.groups || []
-  } catch (error) { console.error('Failed to load chart data:', error) } finally { if (seq === chartReqSeq) chartsLoading.value = false }
+  } catch (error) {
+    if (!controller.signal.aborted && !disposed) console.error('Failed to load chart data:', error)
+  } finally { if (seq === chartReqSeq) chartsLoading.value = false }
 }
 const applyFilters = () => {
   pagination.page = 1
@@ -532,17 +568,26 @@ const applyFilters = () => {
     errRows.value = []
   }
 }
-const refreshData = () => {
+const refreshData = (): Promise<void> => {
+  if (disposed || requestsSuspended) return Promise.resolve()
+  if (props.embedded && refreshInFlight) return refreshInFlight
+  // A slow initial load or a filter request must not accumulate more polling
+  // requests. Manual filter changes can still replace their own pending request.
+  if (props.embedded && (loading.value || endpointStatsLoading.value || modelStatsLoading.value || chartsLoading.value || errLoading.value)) return Promise.resolve()
   invalidateModelStatsCache()
-  loadLogs()
-  loadStats(true)
-  loadModelStats(modelDistributionSource.value, true)
-  loadChartData()
-  if (activeTab.value === 'errors') loadAdminErrors()
-  if (rankingMounted.value) rankingRef.value?.reload()
+  const requests: Array<Promise<unknown>> = [loadLogs(), loadStats(true), loadModelStats(modelDistributionSource.value, true), loadChartData()]
+  if (activeTab.value === 'errors') requests.push(loadAdminErrors())
+  if (rankingMounted.value && (!props.embedded || activeTab.value === 'ranking')) {
+    requests.push(Promise.resolve(rankingRef.value?.reload()))
+  }
+  const work: Promise<void> = Promise.all(requests).then(() => undefined).finally(() => {
+    if (refreshInFlight === work) refreshInFlight = null
+  })
+  refreshInFlight = work
+  return work
 }
 const resetFilters = () => {
-  const range = getLast24HoursRangeDates()
+  const range = getDefaultRange()
   startDate.value = range.start
   endDate.value = range.end
   filters.value = { start_date: startDate.value, end_date: endDate.value, request_type: undefined, native_compaction_v2: null, billing_type: null, billing_mode: undefined }
@@ -625,7 +670,9 @@ const exportToExcel = async () => {
       saveAs(new Blob([XLSX.write(wb, { bookType: 'xlsx', type: 'array' })], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), `usage_${filters.value.start_date}_to_${filters.value.end_date}.xlsx`)
       appStore.showSuccess(t('usage.exportSuccess'))
     }
-  } catch (error) { console.error('Failed to export:', error); appStore.showError('Export Failed') }
+  } catch (error) {
+    if (!c.signal.aborted && !disposed) { console.error('Failed to export:', error); appStore.showError('Export Failed') }
+  }
   finally { if(exportAbortController === c) { exportAbortController = null; exporting.value = false; exportProgress.show = false } }
 }
 
@@ -817,6 +864,10 @@ const toRFC3339 = (d: string | undefined, endOfDay = false): string | undefined 
   d ? new Date(d + (endOfDay ? 'T23:59:59.999' : 'T00:00:00')).toISOString() : undefined
 
 const loadAdminErrors = async () => {
+  if (disposed || requestsSuspended) return
+  if (props.embedded) errorsAbortController?.abort()
+  const controller = new AbortController()
+  errorsAbortController = controller
   errLoading.value = true
   try {
     const resp = await listErrorLogs({
@@ -835,14 +886,16 @@ const loadAdminErrors = async () => {
       status_codes: filters.value.status_code != null ? String(filters.value.status_code) : undefined,
       sort_by: errSortBy.value,
       sort_order: errSortOrder.value,
-    })
+    }, ...requestOptions(controller))
+    if (controller.signal.aborted || disposed) return
     errRows.value = resp.items
     errTotal.value = resp.total
   } catch (error) {
+    if (controller.signal.aborted || disposed) return
     console.error('Failed to load admin errors:', error)
     appStore.showError(t('usage.errors.failedToLoad'))
   } finally {
-    errLoading.value = false
+    if (errorsAbortController === controller) errLoading.value = false
   }
 }
 
@@ -865,24 +918,56 @@ const handleColumnClickOutside = (event: MouseEvent) => {
   }
 }
 
+const pauseRequests = () => {
+  requestsSuspended = true
+  clearTimeout(initialChartTimer)
+  abortController?.abort()
+  statsAbortController?.abort()
+  modelAbortController?.abort()
+  chartAbortController?.abort()
+  errorsAbortController?.abort()
+  exportAbortController?.abort()
+  rankingRef.value?.cancel?.()
+  statsReqSeq++
+  modelStatsReqSeq++
+  chartReqSeq++
+  loading.value = false
+  endpointStatsLoading.value = false
+  modelStatsLoading.value = false
+  chartsLoading.value = false
+  errLoading.value = false
+}
+
+const resumeRequests = async (refresh = true) => {
+  if (disposed) return
+  requestsSuspended = false
+  // Wait for aborted requests to unwind before a replacement poll is started.
+  if (refreshInFlight) await refreshInFlight
+  if (refresh && !requestsSuspended && !disposed) await refreshData()
+}
+
 onMounted(() => {
   applyRouteQueryFilters()
   void loadRouteUserFilterLabel()
   loadLogs()
   loadStats()
   loadModelStats(modelDistributionSource.value, true)
-  window.setTimeout(() => {
+  initialChartTimer = setTimeout(() => {
     void loadChartData()
   }, 120)
   loadSavedColumns()
   loadSavedErrColumns()
   document.addEventListener('click', handleColumnClickOutside)
 })
-onUnmounted(() => { abortController?.abort(); exportAbortController?.abort(); document.removeEventListener('click', handleColumnClickOutside) })
+onUnmounted(() => {
+  disposed = true
+  pauseRequests()
+  document.removeEventListener('click', handleColumnClickOutside)
+})
 
 watch(modelDistributionSource, (source) => {
   void loadModelStats(source)
 })
 
-defineExpose({ requestedModelStats, refreshData })
+defineExpose({ requestedModelStats, refreshData, pauseRequests, resumeRequests })
 </script>

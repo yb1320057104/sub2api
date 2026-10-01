@@ -80,7 +80,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { ref, watch, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { getUserBreakdown, type UserBreakdownParams } from '@/api/admin/dashboard'
 import { formatCompactNumber, formatCostFixed } from '@/utils/format'
@@ -93,6 +93,7 @@ const props = defineProps<{
   endDate: string
   filters: Record<string, unknown>
   model?: string
+  cancellable?: boolean
 }>()
 
 defineEmits<{ (e: 'select-user', userId: number, email: string): void }>()
@@ -128,6 +129,7 @@ const loading = ref(false)
 const sortBy = ref<SortKey>('total_tokens')
 const limit = ref(50)
 let reqSeq = 0
+let abortController: AbortController | null = null
 
 const fmtTokens = (v: number) => formatCompactNumber(v)
 const fmtCost = (v: number) => formatCostFixed(v, 4)
@@ -139,6 +141,9 @@ const setSort = (key: SortKey) => {
 }
 
 const load = async () => {
+  abortController?.abort()
+  const controller = new AbortController()
+  abortController = controller
   const seq = ++reqSeq
   loading.value = true
   try {
@@ -150,11 +155,13 @@ const load = async () => {
       limit: limit.value,
     }
     if (props.model) params.model = props.model
-    const res = await getUserBreakdown(params)
-    if (seq !== reqSeq) return
+    const res = await (props.cancellable
+      ? getUserBreakdown(params, { signal: controller.signal })
+      : getUserBreakdown(params))
+    if (seq !== reqSeq || controller.signal.aborted) return
     items.value = res.users || []
   } catch {
-    if (seq !== reqSeq) return
+    if (seq !== reqSeq || controller.signal.aborted) return
     items.value = []
   } finally {
     if (seq === reqSeq) loading.value = false
@@ -168,5 +175,11 @@ watch(
   { immediate: true }
 )
 
-defineExpose({ reload: load })
+const cancel = () => {
+  abortController?.abort()
+  reqSeq++
+  loading.value = false
+}
+onUnmounted(cancel)
+defineExpose({ reload: load, cancel })
 </script>

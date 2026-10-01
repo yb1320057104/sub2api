@@ -8,6 +8,53 @@ import SubscriptionPlanCard from '@/components/payment/SubscriptionPlanCard.vue'
 import en from '@/i18n/locales/en'
 import zh from '@/i18n/locales/zh'
 import type { CheckoutInfoResponse, MethodLimit, SubscriptionPlan } from '@/types/payment'
+import BinanceRechargeView from '../BinanceRechargeView.vue'
+import BinanceOrderDetails from '@/components/payment/BinanceOrderDetails.vue'
+import AdminBinanceRechargeView from '@/views/admin/orders/AdminBinanceRechargeView.vue'
+import type { BinanceRechargeOrder } from '@/types/binanceRecharge'
+
+const binanceHarness = vi.hoisted(() => ({
+  isAdmin: false,
+  createOrder: vi.fn(),
+  getOrders: vi.fn(),
+  getOrder: vi.fn(),
+  refreshOrder: vi.fn(),
+  getStats: vi.fn(),
+  fetchConfig: vi.fn(),
+  copyToClipboard: vi.fn(),
+  showSuccess: vi.fn(),
+  getAccounts: vi.fn(),
+  updateAccount: vi.fn(),
+}))
+
+vi.mock('@/api/binanceRecharge', () => ({
+  binanceRechargeAPI: {
+    createOrder: binanceHarness.createOrder,
+    getOrders: binanceHarness.getOrders,
+    getOrder: binanceHarness.getOrder,
+    refreshOrder: binanceHarness.refreshOrder,
+    getStats: binanceHarness.getStats,
+  },
+  adminBinanceRechargeAPI: { getAccounts: binanceHarness.getAccounts, updateAccount: binanceHarness.updateAccount },
+}))
+
+vi.mock('@/stores/binanceRecharge', () => ({
+  useBinanceRechargeStore: () => ({
+    config: {
+      enabled: true, min_amount: 1, max_amount: 1000000, decimal_places: 5, poll_interval_seconds: 30,
+      accounts: [{ id: 7, name: 'Receiving account', recipient_uid: '123456', order_ttl_minutes: 15 }],
+    },
+    fetchConfig: binanceHarness.fetchConfig,
+  }),
+}))
+
+vi.mock('@/stores/app', () => ({
+  useAppStore: () => ({ showError, showSuccess: binanceHarness.showSuccess }),
+}))
+
+vi.mock('@/composables/useClipboard', () => ({
+  useClipboard: () => ({ copyToClipboard: binanceHarness.copyToClipboard }),
+}))
 
 const routeState = vi.hoisted(() => ({
   path: '/purchase',
@@ -57,6 +104,7 @@ vi.mock('vue-i18n', async () => {
 
 vi.mock('@/stores/auth', () => ({
   useAuthStore: () => ({
+    get isAdmin() { return binanceHarness.isAdmin },
     user: {
       username: 'demo-user',
       balance: 0,
@@ -885,5 +933,151 @@ describe('PaymentView subscription feature flag', () => {
     expect(wrapper.text()).not.toContain('payment.rechargeAccount')
     expect(wrapper.findAllComponents(SubscriptionPlanCard).length).toBeGreaterThan(0)
     wrapper.unmount()
+  })
+})
+
+describe('Binance UID top-up page', () => {
+  const wrappers: ReturnType<typeof shallowMount>[] = []
+  function pendingOrder(): BinanceRechargeOrder {
+    return {
+      id: 41, order_no: 'BN-41', user_id: 5, account_id: 7,
+      account_name: 'Receiving account', recipient_uid: '123456', requested_amount: 10,
+      pay_amount: '10.01234', credited_amount: '0.00000', status: 'PENDING',
+      created_at: '2026-10-01T00:00:00Z', expires_at: '2099-10-01T00:15:00Z',
+    }
+  }
+
+  beforeEach(() => {
+    vi.useRealTimers()
+    binanceHarness.isAdmin = false
+    binanceHarness.createOrder.mockReset().mockResolvedValue({ data: pendingOrder() })
+    binanceHarness.getOrders.mockReset().mockResolvedValue({ data: { items: [], total: 0, page: 1, page_size: 20, pages: 0 } })
+    binanceHarness.getOrder.mockReset().mockResolvedValue({ data: pendingOrder() })
+    binanceHarness.refreshOrder.mockReset().mockResolvedValue({ data: pendingOrder() })
+    binanceHarness.getStats.mockReset().mockResolvedValue({ data: { total_amount: '0.00000', total_orders: 0, items: [], total: 0, page: 1, page_size: 20, pages: 0, account_options: [] } })
+    binanceHarness.fetchConfig.mockReset().mockResolvedValue(undefined)
+    binanceHarness.copyToClipboard.mockReset().mockResolvedValue(true)
+    binanceHarness.showSuccess.mockReset()
+    binanceHarness.getAccounts.mockReset().mockResolvedValue({ data: [] })
+    binanceHarness.updateAccount.mockReset().mockResolvedValue({ data: {} })
+    refreshUser.mockReset().mockResolvedValue(undefined)
+    showError.mockReset()
+    translate.mockImplementation((key: string, params?: Record<string, unknown>) => key === 'binanceRecharge.completed' ? `Credited ${params?.amount} USD` : key)
+  })
+
+  afterEach(() => {
+    for (const wrapper of wrappers.splice(0)) wrapper.unmount()
+    binanceHarness.isAdmin = false
+    translate.mockImplementation((key: string) => key)
+  })
+
+  async function mountBinance() {
+    const wrapper = shallowMount(BinanceRechargeView, {
+      global: {
+        stubs: {
+          AppLayout: { template: '<div><slot /></div>' },
+          BinanceOrderDetails: false,
+          Teleport: true,
+        },
+      },
+    })
+    wrappers.push(wrapper)
+    await flushPromises()
+    return wrapper
+  }
+
+  it('creates a whole-USDT order and displays and copies the full server amount', async () => {
+    const wrapper = await mountBinance()
+    await wrapper.get('#binance-amount').setValue('10')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(binanceHarness.createOrder).toHaveBeenCalledWith(7, 10)
+    expect(wrapper.get('[data-testid="binance-exact-amount"]').text()).toBe('10.01234 USDT')
+    await wrapper.get('[data-testid="binance-copy-amount"]').trigger('click')
+    expect(binanceHarness.copyToClipboard).toHaveBeenCalledWith('10.01234')
+    expect(refreshUser).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-testid="binance-credited"]').exists()).toBe(false)
+  })
+
+  it('refreshes the balance only after the server confirms exact-value credit', async () => {
+    const wrapper = await mountBinance()
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    binanceHarness.refreshOrder.mockResolvedValue({ data: { ...pendingOrder(), status: 'COMPLETED', credited_amount: '10.01234' } })
+    wrapper.getComponent(BinanceOrderDetails).vm.$emit('refresh')
+    await flushPromises()
+    expect(binanceHarness.refreshOrder).toHaveBeenCalledWith(41)
+    expect(refreshUser).toHaveBeenCalledTimes(1)
+    expect(wrapper.get('[data-testid="binance-credited"]').text()).toContain('10.01234 USD')
+    expect(wrapper.find('[data-testid="binance-copy-amount"]').exists()).toBe(false)
+  })
+
+  it('keeps a pending order pending after a failed lookup', async () => {
+    const wrapper = await mountBinance()
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    binanceHarness.refreshOrder.mockRejectedValue(new Error('Binance query unavailable'))
+    wrapper.getComponent(BinanceOrderDetails).vm.$emit('refresh')
+    await flushPromises()
+    expect(wrapper.getComponent(BinanceOrderDetails).props('order').status).toBe('PENDING')
+    expect(wrapper.find('[data-testid="binance-credited"]').exists()).toBe(false)
+    expect(refreshUser).not.toHaveBeenCalled()
+    expect(showError).toHaveBeenCalledWith('Binance query unavailable')
+  })
+
+  it('rejects fractional requested amounts before sending an order', async () => {
+    const wrapper = await mountBinance()
+    await wrapper.get('#binance-amount').setValue('10.01')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(binanceHarness.createOrder).not.toHaveBeenCalled()
+    expect(showError).toHaveBeenCalledWith('binanceRecharge.invalidAmount')
+  })
+
+  it('shows user order and totals tabs without the account configuration or daily usage tabs', async () => {
+    const wrapper = await mountBinance()
+    expect(wrapper.text()).toContain('binanceRecharge.orders')
+    expect(wrapper.text()).toContain('binanceRecharge.totals')
+    expect(wrapper.text()).not.toContain('binanceRecharge.accounts')
+    expect(wrapper.text()).not.toContain('binanceRecharge.dailyUsage.title')
+    expect(wrapper.findComponent(AdminBinanceRechargeView).exists()).toBe(false)
+  })
+
+  it('routes an administrator to the management component without loading personal orders', async () => {
+    binanceHarness.isAdmin = true
+    const wrapper = await mountBinance()
+    expect(wrapper.findComponent(AdminBinanceRechargeView).exists()).toBe(true)
+    expect(binanceHarness.getOrders).not.toHaveBeenCalled()
+    expect(wrapper.find('#binance-amount').exists()).toBe(false)
+  })
+
+  it('shows all four administrator tabs and never copies returned credential fields into the edit form', async () => {
+    binanceHarness.getAccounts.mockResolvedValue({ data: [{
+      id: 7, name: 'Receiving account', recipient_uid: '123456', enabled: true, order_ttl_minutes: 15,
+      has_orders: true, api_key_configured: true, api_secret_configured: true,
+      api_key: 'should-never-be-read', api_secret: 'should-never-be-read',
+    }] })
+    const wrapper = shallowMount(AdminBinanceRechargeView, {
+      global: {
+        stubs: {
+          AppLayout: { template: '<div><slot /></div>' },
+          BaseDialog: { props: ['show'], template: '<div v-if="show"><slot /><slot name="footer" /></div>' },
+        },
+      },
+    })
+    wrappers.push(wrapper)
+    await flushPromises()
+    for (const label of ['accounts', 'orders', 'totals', 'dailyUsage.title']) {
+      expect(wrapper.text()).toContain(`binanceRecharge.${label}`)
+    }
+    await wrapper.findAll('button').find(button => button.text() === 'common.edit')!.trigger('click')
+    expect((wrapper.get('#binance-api-key').element as HTMLInputElement).value).toBe('')
+    expect((wrapper.get('#binance-api-secret').element as HTMLInputElement).value).toBe('')
+    expect(wrapper.get('#binance-uid').attributes('disabled')).toBeDefined()
+    await wrapper.get('#binance-account-form').trigger('submit')
+    await flushPromises()
+    expect(binanceHarness.updateAccount).toHaveBeenCalledWith(7, {
+      name: 'Receiving account', recipient_uid: '123456', enabled: true, order_ttl_minutes: 15,
+    })
   })
 })

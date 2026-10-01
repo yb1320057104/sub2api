@@ -13,10 +13,55 @@ import (
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/ent/paymentauditlog"
 	"github.com/Wei-Shaw/sub2api/internal/payment"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/binancepay"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestPKBinanceReceiptUsesExactAmountAndProviderTime(t *testing.T) {
+	created := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	order := BinanceRechargeOrder{Status: BinanceRechargePending, CreatedAt: created, ExpiresAt: created.Add(30 * time.Minute), amountUnits: 1012345}
+	cases := []struct {
+		name   string
+		units  int64
+		at     time.Time
+		status string
+		accept bool
+	}{
+		{"exact full suffix", 1012345, created.Add(time.Minute), BinanceRechargePending, true},
+		{"same integer wrong suffix", 1012346, created.Add(time.Minute), BinanceRechargePending, false},
+		{"creation boundary", 1012345, created, BinanceRechargePending, true},
+		{"expiry boundary", 1012345, order.ExpiresAt, BinanceRechargePending, true},
+		{"before creation", 1012345, created.Add(-time.Millisecond), BinanceRechargePending, false},
+		{"late payment", 1012345, order.ExpiresAt.Add(time.Millisecond), BinanceRechargeExpired, false},
+		{"delayed polling on time payment", 1012345, created.Add(time.Minute), BinanceRechargeExpired, true},
+		{"completed cannot recharge again", 1012345, created.Add(time.Minute), BinanceRechargeCompleted, false},
+		{"review needs reconciliation", 1012345, created.Add(time.Minute), BinanceRechargeReview, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			copy := order
+			copy.Status = tc.status
+			reason := binanceRechargeReceiptReviewReason(&copy, binancepay.Receipt{AmountUnits: tc.units, Time: tc.at})
+			require.Equal(t, tc.accept, reason == "")
+		})
+	}
+	require.NotEmpty(t, binanceRechargeReceiptReviewReason(nil, binancepay.Receipt{}))
+}
+
+func TestPKBinanceAccountValidationPreservesUIDIdentity(t *testing.T) {
+	normalized, err := normalizeBinanceRechargeAccountInput(BinanceRechargeAccountInput{Name: " account ", RecipientUID: "000123456", OrderTTLMinutes: 15})
+	require.NoError(t, err)
+	require.Equal(t, "123456", normalized.RecipientUID)
+	require.Equal(t, "account", normalized.Name)
+	for _, uid := range []string{"", "0", "1.5", "-1234", "1234e6", "abc", "123 456"} {
+		_, err := normalizeBinanceRechargeAccountInput(BinanceRechargeAccountInput{Name: "account", RecipientUID: uid})
+		require.Error(t, err)
+	}
+	_, err = normalizeBinanceRechargeAccountInput(BinanceRechargeAccountInput{Name: "account", RecipientUID: "123456", OrderTTLMinutes: 20})
+	require.Error(t, err)
+}
 
 type paymentFulfillmentTestProvider struct {
 	key            string

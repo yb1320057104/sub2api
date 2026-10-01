@@ -6,7 +6,7 @@
 
 - 上游业务基线：`a60a29549f488a854966aaec9541abbe006cac22`（0.2.10）。首次二开保存：`6655dd8ca`，恢复标签 `pk-baseline-20260930`。
 - 本次清点覆盖从该上游基线到私库 `23e5fe663338c86cd0cebbf2f688c8a75dd8c152` 的全部二开提交；应用发行参照 `v0.2.10-pk.7`，另登记本次新增的项目约束机制。此处是代码核对基线，不代表线上当前版本。
-- 以下 PK-001 至 PK-021 均为有效保护项。文件路径用于定位，不是完整修改白名单；所有新调用入口、迁移和旁路都要检查。
+- 以下 PK-001 至 PK-023 均为有效保护项。文件路径用于定位，不是完整修改白名单；所有新调用入口、迁移和旁路都要检查。
 - 每项说明“必须保持”的行为。文末另列验证入口与已知边界；测试存在、历史验证通过和本次候选通过是三件不同的事。
 
 ## 功能索引
@@ -34,6 +34,8 @@
 | PK-019 | 后台启动与停止交接 | 18个受控后台、普通文件激活、只启动一次、停止安全 |
 | PK-020 | 切换与恢复运维流程 | 保护端口/数据/密钥、请求排空、后台单实例交接 |
 | PK-021 | 二开登记与项目约束 | Git持久化入口、唯一清单、增量登记、逐项合并审查 |
+| PK-022 | 币安 UID USDT 自助充值 | 五位金额完整入账、账户加密、流水去重、过期回查、订单权限 |
+| PK-023 | 管理员每日消费页签 | 复用全部使用记录、默认今日全用户、可配置自动刷新、仅管理员 |
 
 ## PK-001
 
@@ -159,6 +161,7 @@
 - 监控的 Snapshot、Trend、Models、Matrix/buckets、Users 都要覆盖，连同 sample count、TTFT health/score 一起清理。隐私映射不随提前心跳开关关闭而恢复；未采集的非流式/WS 等用户首字可能为空。
 - 上游计时沿用原 semantic/visible 定义；部分桥接取首上游事件，不承诺等于首段可见文字时间。
 - 入口：`backend/internal/handler/dto/{types,mappers}.go`、`backend/internal/service/channel_monitor_v2.go`；`frontend/src/components/admin/usage/UsageTable.vue`、`frontend/src/views/admin/UsageView.vue`、类型和中英 dashboard 文案。
+- 2026-10-01 PK-023 在币安菜单嵌入同一管理员使用记录页；嵌入模式沿用管理员 DTO、筛选和首字/上游首字展示权限，独立 `/admin/usage` 入口的原有默认行为保留。
 - 验证：`TestPKUsageFirstResponsePrivacy`、`TestPKChannelMonitorPublicLatencyDoesNotExposeUpstreamTTFT`、`UsageTable.spec.ts`。前端该文件的 CI 纳入情况见文末。
 
 ## PK-011
@@ -240,6 +243,7 @@
 - 标签必须指向私库 `main` 历史内的目标提交，已有 Release 不覆盖；发布串行执行，镜像写入来源/版本/revision 标签并核对包私有性，使用 Actions 自身的 `GITHUB_TOKEN`。
 - Release 是正式发布而非 prerelease，带 `sub2api_版本_linux_amd64.tar.gz` 和 `checksums.txt`。当前仅发布 `linux/amd64`；Apple/arm64 必须先发布并验证相应私有镜像，不能替换成上游镜像。
 - 保留云端前端/后端构建、更新与账务/首字回归、部署脚本及持久化启动检查。feature 分支候选制品与正式 Release 分开，发布流程不自动部署生产。
+- 2026-10-01 币安充值接入：私库 `codex/` 分支和原 `feat/` 分支均生成候选制品；正式发布前增加币安协议、余额事务与并发入账检查。前端 Axios 升至 1.20.0，修复旧 1.18.1 的七项 high 安全告警，保持原有 API 客户端与刷新令牌行为，不扩大审计豁免。
 - 原 `install.sh`、`docker-deploy.sh` 的不兼容旧安装入口保持停用。全新部署用私版完整 Compose；已有环境的 `docker-compose.pk.yml` 是 overlay，不能替换整套生产配置。
 - 被保留的脚本 API helper 仅接受本私库 Release 元数据端点，凭据经 stdin 注入，不接受任意 URL/重定向参数；source 后直接调用旧 downloader 也不能绕过停用。Apple restart 必须在停服务前验证显式私有 ARM 镜像配置，不能将 `latest` 当作已支持 ARM。
 - 管理员更新/回退/重启保留原认证、审计和系统操作锁；UI 在线升级仅面向正式 release build，候选不能冒充正式升级包。
@@ -264,7 +268,7 @@
 - 停止流程先调用 `StopPendingBackgroundStarts()`，取消尚未启动的任务并等待正在执行的启动回调，再停止各服务。`wire.go` 和 `wire_gen.go` 顺序必须一致。
 - `BatchImageCleanupService` 保留未启动即停止、立即停止、幂等生命周期保护，不能因启动门等待导致退出死锁。
 - worker 关闭捕获的局部 `done` channel，不能改回读取可能被 Stop 清空的 `s.done` 字段。
-- 当前18项受控后台：BatchImageCleanup、TokenRefresh、CNProviderBalanceCheck、DashboardAggregation、AccountExpiry、OpenAICodexVersionSync、ClaudeCodeVersionSync、ProxyExpiry、SubscriptionExpiry、OpsMetricsCollector、OpsAggregation、OpsAlertEvaluator、IdempotencyCleanup、ScheduledTestRunner、OpsScheduledReport、PaymentOrderExpiry、ChannelMonitorRunner、ChannelMonitorV2Aggregator。新增后台服务时必须审查是否需要同样交接，并同步本条。
+- 当前19项受控后台：BatchImageCleanup、TokenRefresh、CNProviderBalanceCheck、DashboardAggregation、AccountExpiry、OpenAICodexVersionSync、ClaudeCodeVersionSync、ProxyExpiry、SubscriptionExpiry、OpsMetricsCollector、OpsAggregation、OpsAlertEvaluator、IdempotencyCleanup、ScheduledTestRunner、OpsScheduledReport、PaymentOrderExpiry、ChannelMonitorRunner、ChannelMonitorV2Aggregator、BinanceRechargeService。币安轮询随同原后台交接，仍以数据库唯一约束和事务防止重复入账。新增后台服务时必须审查是否需要同样交接，并同步本条。
 - 门控不暂停全部任务，不是数据库只读模式；请求处理、必要记账、缓存失效及已有锁保护的必要工作仍应可用。
 - 入口：`backend/internal/service/{background_start_gate,wire,batch_image_cleanup}.go`、`backend/cmd/server/{wire,wire_gen}.go`。
 - 验证：六项 `TestBackgroundStartGate_*`，以及 `TestBatchImageCleanupLifecycle_StopWithoutStart`、`ImmediateStop`。
@@ -289,6 +293,36 @@
 - 新增二开在同一变更中添加 ID；扩展旧功能更新原 ID；合并上游逐个有效 ID 核对，未登记、未验证的受影响项不能合入/发布。
 - 已安装 skill 读取当前工作区约束和清单；更新仓库版 skill 时同步实际使用的安装副本。目录丢失从私库恢复，不靠旧记忆或功能标题重写项目。
 - 验证：静态核对 Git 跟踪、入口链接、登记条目与 diff、仓库/安装版 skill 一致性。此机制不等于 GitHub 分支保护或自动语义验证。
+
+## PK-022
+
+**币安 UID USDT 小数点自助充值。** 状态：有效。
+引入：2026-10-01 用户要求参考 `多商户版本-部署净版-20260914` 接入，并明确首版仅使用币安 UID 内部转账。
+
+- 独立“币安自助充值”菜单，管理员包含收款账户、充值订单、累计自助充值、每日消费四个页签；每日消费见 PK-023。管理员可配置收款账户并查看全部订单/统计；普通用户不访问账户管理和每日消费，仅查看自己的订单和累计充值。统计只汇总已完成订单，包含所有用户的精确总额、笔数、按 Sub2 用户账户的金额汇总和收款账户筛选。
+- 独立币安充值账户、订单和到账流水，用户关联现有 Sub2 用户，实收金额完整加入原余额。币安账户未启用时不提供新建入口；管理员可配置多个收款账户，用户历史记录在账户禁用后仍可查。
+- 充值按 `1 USDT = 1 美元余额`，包含识别小数。订单使用五位小数，例如实付 `10.01234` 必须增加 `10.01234`，不得经过现有支付的两位四舍五入或金额容差。金额匹配使用整数最小单位，接口以十进制字符串传递；余额和累计充值使用现有八位 NUMERIC 字段。
+- 币安 Key/Secret 使用现有 SecretEncryptor 加密，响应只显示是否已配置；留空保留已保存的密钥。收款 UID 有历史订单后不得修改，订单保存收款身份。禁用账户停止创建新单，已有订单继续回查。凭据只用于只读账单查询，不提供明文读取接口。
+- 使用币安 `GET /sapi/v1/pay/transactions`，校准服务时间并签名；只识别正向 USDT 的 C2C/PAY 收入及匹配的接收 UID。只读查单不能相信客户端自报到账。查询达到100条时分时间段补查，限流和网络异常记录为可见查询错误，不显示虚假成功。
+- 可选 `BINANCE_RECHARGE_PROXY_URL` 为此客户端指定 HTTP/HTTPS/SOCKS5 代理，未配置时直连；无效代理配置使启动失败，不静默绕过指定代理。
+- 输入整数 `1～1000000` USDT，系统追加 `0.00001～0.99999` 尾数。同一真实收款 UID 的完整应付金额不跨订单复用，防止旧单迟付认领到新用户；报价由数据库事务及唯一约束保护，耗尽明确拒绝。用户同时最多3个待付单，新建间隔30秒，每日最多20单。
+- 币安流水 ID 按真实收款 UID 去重；订单、已使用 balance 充值记录、`users.balance`、`users.total_recharged` 与到账流水同一数据库事务提交。并发、重试和进程重启不能重复加款；提交后失效用户鉴权及余额缓存。新充值须在原用户余额流水中可查。
+- 自动轮询覆盖最近24小时的到账流水，包括到期订单；币安交易时间必须在原订单有效期内，接口延迟发现的有效付款仍可入账。超时付款及无法准确匹配的情况保留供管理员核对，不盲目认领。重新查单按订单创建时间至到期后24小时的窗口读取真实历史流水，受币安可查询历史范围限制。
+- 新增轮询纳入 PK-019 启动门、停止等待及多实例查询互斥；普通支付、缓存转换、模型计费与首字行为不改变。
+- 入口：`backend/internal/pkg/binancepay/`、`backend/internal/service/binance_recharge*.go`、`backend/internal/handler/binance_recharge*.go`、`backend/internal/server/routes/binance_recharge.go`、`backend/migrations/242_binance_recharge.sql`，以及前端币安充值 API/类型、用户与管理页面和导航。
+- 验证：在已有支付协议测试、用户 repository 集成测试和支付前端测试中扩展 `PKBinance` 场景；CI 覆盖五位精度、签名/账单过滤、并发重复到账、历史金额不复用、过期回查与权限。仅在 GitHub Actions 执行，本地不运行构建或测试。模拟账单与真实 PostgreSQL 验证不等同于真实币安转账验收。
+- 边界：首版仅 UID 内部转账，不支持链上地址、订阅购买、原支付倍率/手续费、自动退款或邀请返利。有关联订单的异常展示为待核对；无归属到账流水保存在数据库，首版没有独立流水浏览或人工认领入账接口。与其他独立系统共用相同收款 UID 时，小数订单无法识别付款意图，应使用专用收款账户。历史金额占用记录必须保留，不得通过删除订单回收已使用报价。
+
+## PK-023
+
+**管理员每日消费页签。** 状态：有效。
+引入：2026-10-01 用户要求在币安自助充值菜单增加每日消费，复用现有全部使用记录页面。
+
+- 仅管理员可见并通过原管理员使用记录 API 取数，普通用户不能访问全局消费记录。默认选择今天、所有用户，保留原页面的筛选、汇总、详情和导出能力。
+- 展示的是使用记录中的实际消费，不按资金充值来源归属或过滤。页面提示明确包含所有充值渠道余额产生的消费，包括自助充值和手动充值；不得将这些数值标成“仅币安充值的消费”。
+- 默认每5秒自动刷新，可关闭或输入刷新秒数；切换页签/卸载后停止定时任务，刷新不得造成重叠请求堆积。保留现有手动刷新和筛选行为。
+- 复用 `frontend/src/views/admin/UsageView.vue` 的嵌入模式和 `frontend/src/components/admin/usage/AdminDailyUsage.vue`；原 `/admin/usage` 页面默认行为与 PK-010 管理员首字权限保持。
+- 验证：云端前端类型检查、既有使用记录测试及新增在已有测试文件中的嵌入/日期/刷新生命周期断言；不运行本地构建或测试。
 
 ## 验证入口与现有边界
 
@@ -323,7 +357,7 @@
 
 ## 新增条目模板
 
-新增独立能力使用下一个未用 ID，当前下一个为 `PK-022`；分支并行新增时在合并前消除 ID 冲突，已有 ID 不重用。同步更新索引、有效条目范围和此处的下一个 ID。
+新增独立能力使用下一个未用 ID，当前下一个为 `PK-024`；分支并行新增时在合并前消除 ID 冲突，已有 ID 不重用。同步更新索引、有效条目范围和此处的下一个 ID。
 
 ```markdown
 ## PK-NNN
