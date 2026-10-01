@@ -7,7 +7,10 @@
     </template>
     <template #cell-pay_amount="{ row }">
       <div class="font-mono font-semibold">{{ row.pay_amount }} USDT</div>
-      <div class="mt-1 text-xs text-gray-500">{{ t('binanceRecharge.creditedAmount') }}: {{ row.credited_amount }}</div>
+    </template>
+    <template #cell-system_amount="{ row }">
+      <div class="font-mono font-semibold">{{ row.system_amount }} USD</div>
+      <div class="mt-1 text-xs text-gray-500">{{ t('binanceRecharge.creditedAmount') }}: <span class="font-mono">{{ row.credited_amount }} USD</span></div>
     </template>
     <template #cell-status="{ row }"><BinanceOrderStatus :status="row.status" /></template>
     <template #cell-created_at="{ row }">
@@ -36,6 +39,7 @@ const columns = computed<Column[]>(() => [
   ...(props.admin ? [{ key: 'user_id', label: t('binanceRecharge.user') }] : []),
   { key: 'recipient_uid', label: t('binanceRecharge.account') },
   { key: 'pay_amount', label: t('binanceRecharge.paidAmount') },
+  { key: 'system_amount', label: t('binanceRecharge.systemAmount') },
   { key: 'status', label: t('binanceRecharge.statusLabel') },
   { key: 'created_at', label: t('binanceRecharge.createdAt') },
   { key: 'actions', label: t('common.actions') },

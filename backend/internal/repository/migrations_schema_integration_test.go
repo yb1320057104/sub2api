@@ -5,12 +5,108 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestPKBinanceMultiplierMigrationPreservesLegacyDataAndDefaults(t *testing.T) {
+	ctx := context.Background()
+	tx := testTx(t)
+	schema := fmt.Sprintf("pk_binance_multiplier_%d", time.Now().UnixNano())
+	_, err := tx.ExecContext(ctx, `CREATE SCHEMA `+schema)
+	require.NoError(t, err)
+	_, err = tx.ExecContext(ctx, `SET LOCAL search_path TO `+schema)
+	require.NoError(t, err)
+	// Reuse the real balance/history column types while isolating pre-migration
+	// Binance tables from the fully migrated integration database. Rollback of
+	// testTx removes this schema and every fixture row.
+	_, err = tx.ExecContext(ctx, `
+CREATE TABLE users (LIKE public.users INCLUDING ALL);
+CREATE TABLE redeem_codes (LIKE public.redeem_codes INCLUDING ALL);
+INSERT INTO users(id,email,password_hash,role,status,balance,total_recharged,concurrency)
+VALUES(101,'legacy-binance@example.com','fixture','user','active',12.24690678,10.12345,1);
+INSERT INTO redeem_codes(id,code,type,value,status,used_by,used_at,notes)
+VALUES(101,'legacy-binance-credit','balance',10.12345,'used',101,NOW(),'existing recharge history');`)
+	require.NoError(t, err)
+	legacySQL, err := os.ReadFile(filepath.Join("..", "..", "migrations", "242_binance_recharge.sql"))
+	require.NoError(t, err)
+	_, err = tx.ExecContext(ctx, string(legacySQL))
+	require.NoError(t, err)
+	_, err = tx.ExecContext(ctx, `
+INSERT INTO binance_recharge_accounts(id,name,recipient_uid,api_key_encrypted,api_secret_encrypted,enabled,order_ttl_minutes)
+VALUES(101,'legacy account','12345','encrypted-key-fixture','encrypted-secret-fixture',TRUE,15);
+INSERT INTO binance_recharge_orders(id,order_no,user_id,account_id,account_name,recipient_uid,requested_amount,amount_units,credited_units,status,transaction_id,expires_at,paid_at,completed_at)
+VALUES
+(101,'legacy-completed',101,101,'legacy account','12345',10,1012345,1012345,'COMPLETED','legacy-transfer',NOW()+INTERVAL '15 minutes',NOW(),NOW()),
+(102,'legacy-pending',101,101,'legacy account','12345',20,2054321,0,'PENDING','',NOW()+INTERVAL '15 minutes',NULL,NULL),
+(103,'legacy-expired',101,101,'legacy account','12345',30,3067890,0,'EXPIRED','',NOW()-INTERVAL '15 minutes',NULL,NULL),
+(104,'legacy-review',101,101,'legacy account','12345',40,4011111,0,'REVIEW','',NOW()+INTERVAL '15 minutes',NULL,NULL);
+INSERT INTO binance_recharge_receipts(account_id,recipient_uid,transaction_id,amount_units,paid_at,order_id,status)
+VALUES(101,'12345','legacy-transfer',1012345,NOW(),101,'COMPLETED');`)
+	require.NoError(t, err)
+	readJSON := func(query string) string {
+		t.Helper()
+		var value string
+		require.NoError(t, tx.QueryRowContext(ctx, query).Scan(&value))
+		return value
+	}
+	accountsBefore := readJSON(`SELECT jsonb_agg(to_jsonb(a) ORDER BY id)::text FROM binance_recharge_accounts a`)
+	ordersBefore := readJSON(`SELECT jsonb_agg(to_jsonb(o) ORDER BY id)::text FROM binance_recharge_orders o`)
+	usersBefore := readJSON(`SELECT jsonb_agg(to_jsonb(u) ORDER BY id)::text FROM users u`)
+	ledgerBefore := readJSON(`SELECT jsonb_agg(to_jsonb(r) ORDER BY id)::text FROM redeem_codes r`)
+	receiptsBefore := readJSON(`SELECT jsonb_agg(to_jsonb(r) ORDER BY id)::text FROM binance_recharge_receipts r`)
+	migrationSQL, err := os.ReadFile(filepath.Join("..", "..", "migrations", "243_binance_recharge_multiplier.sql"))
+	require.NoError(t, err)
+	_, err = tx.ExecContext(ctx, string(migrationSQL))
+	require.NoError(t, err)
+	require.JSONEq(t, accountsBefore, readJSON(`SELECT jsonb_agg(to_jsonb(a)-'credit_multiplier' ORDER BY id)::text FROM binance_recharge_accounts a`))
+	require.JSONEq(t, ordersBefore, readJSON(`SELECT jsonb_agg(to_jsonb(o)-'credit_multiplier'-'system_amount'-'credited_amount' ORDER BY id)::text FROM binance_recharge_orders o`))
+	require.JSONEq(t, usersBefore, readJSON(`SELECT jsonb_agg(to_jsonb(u) ORDER BY id)::text FROM users u`), "migration must never credit an existing user twice")
+	require.JSONEq(t, ledgerBefore, readJSON(`SELECT jsonb_agg(to_jsonb(r) ORDER BY id)::text FROM redeem_codes r`))
+	require.JSONEq(t, receiptsBefore, readJSON(`SELECT jsonb_agg(to_jsonb(r) ORDER BY id)::text FROM binance_recharge_receipts r`))
+	var legacySnapshots, legacyCredits bool
+	err = tx.QueryRowContext(ctx, `SELECT bool_and(credit_multiplier=1 AND system_amount=amount_units::numeric/100000),bool_and(credited_amount=CASE WHEN status='COMPLETED' THEN credited_units::numeric/100000 ELSE 0 END) FROM binance_recharge_orders`).Scan(&legacySnapshots, &legacyCredits)
+	require.NoError(t, err)
+	require.True(t, legacySnapshots)
+	require.True(t, legacyCredits)
+	var multiplier string
+	err = tx.QueryRowContext(ctx, `INSERT INTO binance_recharge_accounts(name,recipient_uid) VALUES('new default account','54321') RETURNING credit_multiplier::text`).Scan(&multiplier)
+	require.NoError(t, err)
+	require.Equal(t, "1.000000", multiplier)
+	var orderDefault sql.NullString
+	err = tx.QueryRowContext(ctx, `SELECT column_default FROM information_schema.columns WHERE table_schema=$1 AND table_name='binance_recharge_orders' AND column_name='credit_multiplier'`, schema).Scan(&orderDefault)
+	require.NoError(t, err)
+	require.False(t, orderDefault.Valid, "new orders must explicitly snapshot the account multiplier")
+	_, err = tx.ExecContext(ctx, `UPDATE binance_recharge_accounts SET credit_multiplier=6.7 WHERE id=101`)
+	require.NoError(t, err)
+	_, err = tx.ExecContext(ctx, `SAVEPOINT legacy_order_insert`)
+	require.NoError(t, err)
+	_, err = tx.ExecContext(ctx, `INSERT INTO binance_recharge_orders(order_no,user_id,account_id,account_name,recipient_uid,requested_amount,amount_units,expires_at) VALUES('old-binary-new-order',101,101,'legacy account','12345',50,5012345,NOW()+INTERVAL '15 minutes')`)
+	requirePKBinanceSQLState(t, err, "23502")
+	_, err = tx.ExecContext(ctx, `ROLLBACK TO SAVEPOINT legacy_order_insert`)
+	require.NoError(t, err)
+	var systemAmount string
+	err = tx.QueryRowContext(ctx, `INSERT INTO binance_recharge_orders(order_no,user_id,account_id,account_name,recipient_uid,requested_amount,amount_units,credit_multiplier,expires_at) VALUES('new-binary-order',101,101,'legacy account','12345',50,5012345,6.7,NOW()+INTERVAL '15 minutes') RETURNING system_amount::text`).Scan(&systemAmount)
+	require.NoError(t, err)
+	require.Equal(t, "335.82711500", systemAmount)
+	err = tx.QueryRowContext(ctx, `SELECT credit_multiplier::text FROM binance_recharge_orders WHERE id=102`).Scan(&multiplier)
+	require.NoError(t, err)
+	require.Equal(t, "1.000000", multiplier, "changing the account must preserve a legacy unpaid quote")
+}
+
+func requirePKBinanceSQLState(t *testing.T, err error, expected string) {
+	t.Helper()
+	require.Error(t, err)
+	var state interface{ SQLState() string }
+	require.ErrorAs(t, err, &state)
+	require.Equal(t, expected, state.SQLState())
+}
 
 func TestMigrationsRunner_ConcurrentInstancesSerializeOnSessionLock(t *testing.T) {
 	const instances = 2

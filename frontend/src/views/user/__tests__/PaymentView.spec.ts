@@ -10,6 +10,9 @@ import zh from '@/i18n/locales/zh'
 import type { CheckoutInfoResponse, MethodLimit, SubscriptionPlan } from '@/types/payment'
 import BinanceRechargeView from '../BinanceRechargeView.vue'
 import BinanceOrderDetails from '@/components/payment/BinanceOrderDetails.vue'
+import BinanceOrderTable from '@/components/payment/BinanceOrderTable.vue'
+import BinanceRechargeStats from '@/components/payment/BinanceRechargeStats.vue'
+import { formatBinanceMultiplier, isValidBinanceMultiplier } from '@/components/payment/binanceAmounts'
 import AdminBinanceRechargeView from '@/views/admin/orders/AdminBinanceRechargeView.vue'
 import BinanceLiveBills from '@/components/payment/BinanceLiveBills.vue'
 import BinanceBillFields from '@/components/payment/BinanceBillFields.vue'
@@ -26,6 +29,7 @@ const binanceHarness = vi.hoisted(() => ({
   copyToClipboard: vi.fn(),
   showSuccess: vi.fn(),
   getAccounts: vi.fn(),
+  createAccount: vi.fn(),
   updateAccount: vi.fn(),
   getBills: vi.fn(),
 }))
@@ -38,14 +42,17 @@ vi.mock('@/api/binanceRecharge', () => ({
     refreshOrder: binanceHarness.refreshOrder,
     getStats: binanceHarness.getStats,
   },
-  adminBinanceRechargeAPI: { getAccounts: binanceHarness.getAccounts, updateAccount: binanceHarness.updateAccount, getBills: binanceHarness.getBills },
+  adminBinanceRechargeAPI: { getAccounts: binanceHarness.getAccounts, createAccount: binanceHarness.createAccount, updateAccount: binanceHarness.updateAccount, getBills: binanceHarness.getBills, getStats: binanceHarness.getStats },
 }))
 
 vi.mock('@/stores/binanceRecharge', () => ({
   useBinanceRechargeStore: () => ({
     config: {
       enabled: true, min_amount: 1, max_amount: 1000000, decimal_places: 5, poll_interval_seconds: 30,
-      accounts: [{ id: 7, name: 'Receiving account', recipient_uid: '123456', order_ttl_minutes: 15 }],
+      accounts: [
+        { id: 7, name: 'Receiving account', recipient_uid: '123456', order_ttl_minutes: 15, credit_multiplier: '6.700000' },
+        { id: 8, name: 'Second account', recipient_uid: '654321', order_ttl_minutes: 15, credit_multiplier: '1.000000' },
+      ],
     },
     fetchConfig: binanceHarness.fetchConfig,
   }),
@@ -945,7 +952,7 @@ describe('Binance UID top-up page', () => {
     return {
       id: 41, order_no: 'BN-41', user_id: 5, account_id: 7,
       account_name: 'Receiving account', recipient_uid: '123456', requested_amount: 10,
-      pay_amount: '10.01234', credited_amount: '0.00000', status: 'PENDING',
+      pay_amount: '10.01234', credit_multiplier: '6.700000', system_amount: '67.08267800', credited_amount: '0.00000000', status: 'PENDING',
       created_at: '2026-10-01T00:00:00Z', expires_at: '2099-10-01T00:15:00Z',
     }
   }
@@ -957,11 +964,12 @@ describe('Binance UID top-up page', () => {
     binanceHarness.getOrders.mockReset().mockResolvedValue({ data: { items: [], total: 0, page: 1, page_size: 20, pages: 0 } })
     binanceHarness.getOrder.mockReset().mockResolvedValue({ data: pendingOrder() })
     binanceHarness.refreshOrder.mockReset().mockResolvedValue({ data: pendingOrder() })
-    binanceHarness.getStats.mockReset().mockResolvedValue({ data: { total_amount: '0.00000', total_orders: 0, items: [], total: 0, page: 1, page_size: 20, pages: 0, account_options: [] } })
+    binanceHarness.getStats.mockReset().mockResolvedValue({ data: { total_amount: '0.00000', total_credited_amount: '0.00000000', total_orders: 0, items: [], total: 0, page: 1, page_size: 20, pages: 0, account_options: [] } })
     binanceHarness.fetchConfig.mockReset().mockResolvedValue(undefined)
     binanceHarness.copyToClipboard.mockReset().mockResolvedValue(true)
     binanceHarness.showSuccess.mockReset()
     binanceHarness.getAccounts.mockReset().mockResolvedValue({ data: [] })
+    binanceHarness.createAccount.mockReset().mockResolvedValue({ data: {} })
     binanceHarness.updateAccount.mockReset().mockResolvedValue({ data: {} })
     binanceHarness.getBills.mockReset().mockResolvedValue({ data: {
       account_id: 7, account_name: 'Receiving account', recipient_uid: '123456',
@@ -971,7 +979,13 @@ describe('Binance UID top-up page', () => {
     } })
     refreshUser.mockReset().mockResolvedValue(undefined)
     showError.mockReset()
-    translate.mockImplementation((key: string, params?: Record<string, unknown>) => key === 'binanceRecharge.completed' ? `Credited ${params?.amount} USD` : key)
+    translate.mockImplementation((key: string, params?: Record<string, unknown>) => {
+      if (key === 'binanceRecharge.completed') return `Credited ${params?.amount} USD`
+      if (key === 'binanceRecharge.exchangeRate') return `1 USDT = ${params?.multiplier} USD`
+      if (key === 'binanceRecharge.snapshotRate') return `Order rate: 1 USDT = ${params?.multiplier} USD`
+      if (key === 'binanceRecharge.creditHint') return `Receive ${params?.payAmount} USDT to credit ${params?.systemAmount} USD`
+      return key
+    })
   })
 
   afterEach(() => {
@@ -995,6 +1009,18 @@ describe('Binance UID top-up page', () => {
     return wrapper
   }
 
+  async function mountAdminAccounts() {
+    const wrapper = shallowMount(AdminBinanceRechargeView, {
+      global: { stubs: {
+        AppLayout: { template: '<div><slot /></div>' },
+        BaseDialog: { props: ['show'], template: '<div v-if="show"><slot /><slot name="footer" /></div>' },
+      } },
+    })
+    wrappers.push(wrapper)
+    await flushPromises()
+    return wrapper
+  }
+
   it('creates a whole-USDT order and displays and copies the full server amount', async () => {
     const wrapper = await mountBinance()
     await wrapper.get('#binance-amount').setValue('10')
@@ -1002,6 +1028,9 @@ describe('Binance UID top-up page', () => {
     await flushPromises()
     expect(binanceHarness.createOrder).toHaveBeenCalledWith(7, 10)
     expect(wrapper.get('[data-testid="binance-exact-amount"]').text()).toBe('10.01234 USDT')
+    expect(wrapper.get('[data-testid="binance-account-rate"]').text()).toBe('1 USDT = 6.7 USD')
+    expect(wrapper.get('[data-testid="binance-system-amount"]').text()).toBe('67.08267800 USD')
+    expect(wrapper.text()).toContain('Receive 10.01234 USDT to credit 67.08267800 USD')
     await wrapper.get('[data-testid="binance-copy-amount"]').trigger('click')
     expect(binanceHarness.copyToClipboard).toHaveBeenCalledWith('10.01234')
     expect(refreshUser).not.toHaveBeenCalled()
@@ -1012,13 +1041,53 @@ describe('Binance UID top-up page', () => {
     const wrapper = await mountBinance()
     await wrapper.get('form').trigger('submit')
     await flushPromises()
-    binanceHarness.refreshOrder.mockResolvedValue({ data: { ...pendingOrder(), status: 'COMPLETED', credited_amount: '10.01234' } })
+    binanceHarness.refreshOrder.mockResolvedValue({ data: { ...pendingOrder(), status: 'COMPLETED', credited_amount: '67.08267800' } })
     wrapper.getComponent(BinanceOrderDetails).vm.$emit('refresh')
     await flushPromises()
     expect(binanceHarness.refreshOrder).toHaveBeenCalledWith(41)
     expect(refreshUser).toHaveBeenCalledTimes(1)
-    expect(wrapper.get('[data-testid="binance-credited"]').text()).toContain('10.01234 USD')
+    expect(wrapper.get('[data-testid="binance-credited"]').text()).toContain('67.08267800 USD')
     expect(wrapper.find('[data-testid="binance-copy-amount"]').exists()).toBe(false)
+  })
+
+  it('updates the selected account rate while keeping the existing order rate and credit unchanged', async () => {
+    const wrapper = await mountBinance()
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    await wrapper.get('#binance-account').setValue('8')
+    expect(wrapper.get('[data-testid="binance-account-rate"]').text()).toBe('1 USDT = 1 USD')
+    expect(wrapper.get('[data-testid="binance-order-rate"]').text()).toBe('Order rate: 1 USDT = 6.7 USD')
+    expect(wrapper.get('[data-testid="binance-system-amount"]').text()).toBe('67.08267800 USD')
+    expect(wrapper.get('[data-testid="binance-exact-amount"]').text()).toBe('10.01234 USDT')
+  })
+
+  it('displays a historical order snapshot instead of recalculating with the current account rate', async () => {
+    const historical = { ...pendingOrder(), credit_multiplier: '1.000000', system_amount: '10.01234000' }
+    binanceHarness.getOrders.mockResolvedValue({ data: { items: [historical], total: 1, page: 1, page_size: 20, pages: 1 } })
+    binanceHarness.getOrder.mockResolvedValue({ data: historical })
+    const wrapper = await mountBinance()
+    wrapper.getComponent(BinanceOrderTable).vm.$emit('select', historical)
+    await flushPromises()
+    expect(wrapper.get('[data-testid="binance-account-rate"]').text()).toBe('1 USDT = 6.7 USD')
+    expect(wrapper.get('[data-testid="binance-order-rate"]').text()).toBe('Order rate: 1 USDT = 1 USD')
+    expect(wrapper.get('[data-testid="binance-system-amount"]').text()).toBe('10.01234000 USD')
+  })
+
+  it.each([false, true])('shows a separate expected system-credit column for admin=%s', (admin) => {
+    const wrapper = shallowMount(BinanceOrderTable, {
+      props: { admin, loading: false, orders: [pendingOrder()] },
+      global: { stubs: { DataTable: {
+        props: ['columns', 'data'],
+        template: '<div><span v-for="column in columns" :key="column.key" :data-column="column.key">{{ column.label }}</span><div v-for="row in data" :key="row.id"><slot name="cell-pay_amount" :row="row" /><slot name="cell-system_amount" :row="row" /></div></div>',
+      } } },
+    })
+    wrappers.push(wrapper)
+    expect(wrapper.get('[data-column="pay_amount"]').text()).toBe('binanceRecharge.paidAmount')
+    expect(wrapper.get('[data-column="system_amount"]').text()).toBe('binanceRecharge.systemAmount')
+    expect(wrapper.text()).toContain('10.01234 USDT')
+    expect(wrapper.text()).toContain('67.08267800 USD')
+    expect(wrapper.text()).toContain('0.00000000 USD')
+    expect(wrapper.find('[data-column="user_id"]').exists()).toBe(admin)
   })
 
   it('keeps a pending order pending after a failed lookup', async () => {
@@ -1064,19 +1133,11 @@ describe('Binance UID top-up page', () => {
   it('shows all five administrator tabs and never copies returned credential fields into the edit form', async () => {
     binanceHarness.getAccounts.mockResolvedValue({ data: [{
       id: 7, name: 'Receiving account', recipient_uid: '123456', enabled: true, order_ttl_minutes: 15,
+      credit_multiplier: '6.700000',
       has_orders: true, api_key_configured: true, api_secret_configured: true,
       api_key: 'should-never-be-read', api_secret: 'should-never-be-read',
     }] })
-    const wrapper = shallowMount(AdminBinanceRechargeView, {
-      global: {
-        stubs: {
-          AppLayout: { template: '<div><slot /></div>' },
-          BaseDialog: { props: ['show'], template: '<div v-if="show"><slot /><slot name="footer" /></div>' },
-        },
-      },
-    })
-    wrappers.push(wrapper)
-    await flushPromises()
+    const wrapper = await mountAdminAccounts()
     for (const label of ['accounts', 'orders', 'totals', 'dailyUsage.title', 'liveBills.title']) {
       expect(wrapper.text()).toContain(`binanceRecharge.${label}`)
     }
@@ -1084,16 +1145,84 @@ describe('Binance UID top-up page', () => {
     expect((wrapper.get('#binance-api-key').element as HTMLInputElement).value).toBe('')
     expect((wrapper.get('#binance-api-secret').element as HTMLInputElement).value).toBe('')
     expect(wrapper.get('#binance-uid').attributes('disabled')).toBeDefined()
+    expect((wrapper.get('#binance-multiplier').element as HTMLInputElement).value).toBe('6.7')
     await wrapper.get('#binance-account-form').trigger('submit')
     await flushPromises()
     expect(binanceHarness.updateAccount).toHaveBeenCalledWith(7, {
-      name: 'Receiving account', recipient_uid: '123456', enabled: true, order_ttl_minutes: 15,
+      name: 'Receiving account', recipient_uid: '123456', enabled: true, order_ttl_minutes: 15, credit_multiplier: '6.7',
     })
+  })
+
+  it('defaults new accounts to rate one and sends an explicitly configured decimal multiplier', async () => {
+    const wrapper = await mountAdminAccounts()
+    await wrapper.findAll('button').find(button => button.text() === 'binanceRecharge.addAccount')!.trigger('click')
+    expect((wrapper.get('#binance-multiplier').element as HTMLInputElement).value).toBe('1')
+    await wrapper.get('#binance-name').setValue('New account')
+    await wrapper.get('#binance-uid').setValue('654321')
+    await wrapper.get('#binance-api-key').setValue('new-key')
+    await wrapper.get('#binance-api-secret').setValue('new-secret')
+    await wrapper.get('#binance-multiplier').setValue('6.7')
+    await wrapper.get('#binance-account-form').trigger('submit')
+    await flushPromises()
+    expect(binanceHarness.createAccount).toHaveBeenCalledWith({
+      name: 'New account', recipient_uid: '654321', api_key: 'new-key', api_secret: 'new-secret',
+      enabled: false, order_ttl_minutes: 15, credit_multiplier: '6.7',
+    })
+  })
+
+  it('rejects empty, out-of-range and over-precision edit rates before sending a request', async () => {
+    binanceHarness.getAccounts.mockResolvedValue({ data: [{
+      id: 7, name: 'Receiving account', recipient_uid: '123456', enabled: true, order_ttl_minutes: 15,
+      credit_multiplier: '6.700000', has_orders: true, api_key_configured: true, api_secret_configured: true,
+    }] })
+    const wrapper = await mountAdminAccounts()
+    await wrapper.findAll('button').find(button => button.text() === 'common.edit')!.trigger('click')
+    for (const invalid of ['', '0', '-1', '1000.000001', '0.0000001', '1.2345678', '1e3']) {
+      await wrapper.get('#binance-multiplier').setValue(invalid)
+      await wrapper.get('#binance-account-form').trigger('submit')
+      await flushPromises()
+      expect(binanceHarness.updateAccount).not.toHaveBeenCalled()
+      expect(showError).toHaveBeenLastCalledWith('binanceRecharge.invalidMultiplier')
+    }
+    await wrapper.get('#binance-multiplier').setValue('0.000001')
+    await wrapper.get('#binance-account-form').trigger('submit')
+    await flushPromises()
+    expect(binanceHarness.updateAccount).toHaveBeenCalledWith(7, expect.objectContaining({ credit_multiplier: '0.000001' }))
+  })
+
+  it.each([
+    ['0.000001', '0.000001'], ['1.000000', '1'], ['6.700000', '6.7'], ['1000.000000', '1000'],
+  ])('accepts exact rate %s and removes only trailing fractional zeros', (value, expected) => {
+    expect(isValidBinanceMultiplier(value)).toBe(true)
+    expect(formatBinanceMultiplier(value)).toBe(expected)
+  })
+
+  it.each([false, true])('keeps received USDT and credited balance totals distinct for admin=%s', async (admin) => {
+    binanceHarness.getStats.mockResolvedValue({ data: {
+      total_amount: '10.01234', total_credited_amount: '67.08267800', total_orders: 1,
+      items: [{ user_id: 5, user_email: 'user@example.test', total_amount: '10.01234', total_credited_amount: '67.08267800', total_orders: 1 }],
+      total: 1, page: 1, page_size: 20, pages: 1, account_options: [],
+    } })
+    const wrapper = shallowMount(BinanceRechargeStats, {
+      props: { admin, accounts: [{ id: 7, name: 'Receiving account', recipient_uid: '123456', order_ttl_minutes: 15, credit_multiplier: '1.000000' }] },
+      global: { stubs: { DataTable: {
+        props: ['columns', 'data'],
+        template: '<div><span v-for="column in columns" :key="column.key" :data-column="column.key">{{ column.label }}</span><div v-for="row in data" :key="row.user_id"><slot name="cell-total_amount" :value="row.total_amount" /><slot name="cell-total_credited_amount" :value="row.total_credited_amount" /></div></div>',
+      } } },
+    })
+    wrappers.push(wrapper)
+    await flushPromises()
+    expect(wrapper.get('[data-testid="binance-total-usdt"]').text()).toBe('10.01234')
+    expect(wrapper.get('[data-testid="binance-total-credited"]').text()).toBe('67.08267800')
+    expect(wrapper.text()).toContain('binanceRecharge.totalAmount')
+    expect(wrapper.text()).toContain('binanceRecharge.totalCreditedAmount')
+    expect(wrapper.find('[data-column="total_credited_amount"]').exists()).toBe(admin)
+    if (admin) expect(wrapper.get('[data-column="total_credited_amount"]').text()).toBe('binanceRecharge.totalCreditedAmount')
   })
 
   async function mountLiveBills() {
     const wrapper = shallowMount(BinanceLiveBills, {
-      props: { accounts: [{ id: 7, name: 'Receiving account', recipient_uid: '123456', order_ttl_minutes: 15 }] },
+      props: { accounts: [{ id: 7, name: 'Receiving account', recipient_uid: '123456', order_ttl_minutes: 15, credit_multiplier: '1.000000' }] },
       global: { stubs: {
         DataTable: { props: ['data'], template: '<div><div v-for="row in data" :key="row.id"><slot name="cell-amount" :row="row" /><slot name="cell-actions" :row="row" /></div></div>' },
         BaseDialog: { props: ['show'], template: '<div v-if="show"><slot /></div>' },

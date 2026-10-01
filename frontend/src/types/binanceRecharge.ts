@@ -5,6 +5,7 @@ export interface BinanceRechargeAccountOption {
   name: string
   recipient_uid: string
   order_ttl_minutes: number
+  credit_multiplier: string
 }
 
 export interface BinanceRechargeConfig {
@@ -34,6 +35,7 @@ export interface BinanceRechargeAccountInput {
   api_secret?: string
   enabled: boolean
   order_ttl_minutes: number
+  credit_multiplier?: string
 }
 
 export interface BinanceRechargeOrder {
@@ -47,6 +49,10 @@ export interface BinanceRechargeOrder {
   requested_amount: number
   /** Exact decimal strings from the server; never round or convert for payment. */
   pay_amount: string
+  /** Rate and expected balance credit captured when this order was created. */
+  credit_multiplier: string
+  system_amount: string
+  /** Actual balance credit; zero until the order completes. */
   credited_amount: string
   status: BinanceRechargeStatus
   transaction_id?: string
@@ -74,9 +80,11 @@ export interface BinanceRechargeOrderFilters {
 }
 
 export interface BinanceRechargeStats {
+  /** Received USDT and credited system balance are separate totals. */
   total_amount: string
+  total_credited_amount: string
   total_orders: number
-  items: { user_id: number; user_email?: string; total_amount: string; total_orders: number }[]
+  items: { user_id: number; user_email?: string; total_amount: string; total_credited_amount: string; total_orders: number }[]
   total: number
   page: number
   page_size: number

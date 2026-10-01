@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -37,6 +39,7 @@ type BinanceRechargeAccount struct {
 	RecipientUID        string     `json:"recipient_uid"`
 	Enabled             bool       `json:"enabled"`
 	OrderTTLMinutes     int        `json:"order_ttl_minutes"`
+	CreditMultiplier    string     `json:"credit_multiplier"`
 	APIKeyConfigured    bool       `json:"api_key_configured"`
 	APISecretConfigured bool       `json:"api_secret_configured"`
 	HasOrders           bool       `json:"has_orders"`
@@ -49,19 +52,21 @@ type BinanceRechargeAccount struct {
 }
 
 type BinanceRechargeAccountInput struct {
-	Name            string `json:"name"`
-	RecipientUID    string `json:"recipient_uid"`
-	APIKey          string `json:"api_key"`
-	APISecret       string `json:"api_secret"`
-	Enabled         bool   `json:"enabled"`
-	OrderTTLMinutes int    `json:"order_ttl_minutes"`
+	Name             string  `json:"name"`
+	RecipientUID     string  `json:"recipient_uid"`
+	APIKey           string  `json:"api_key"`
+	APISecret        string  `json:"api_secret"`
+	Enabled          bool    `json:"enabled"`
+	OrderTTLMinutes  int     `json:"order_ttl_minutes"`
+	CreditMultiplier *string `json:"credit_multiplier"`
 }
 
 type BinanceRechargePublicAccount struct {
-	ID              int64  `json:"id"`
-	Name            string `json:"name"`
-	RecipientUID    string `json:"recipient_uid"`
-	OrderTTLMinutes int    `json:"order_ttl_minutes"`
+	ID               int64  `json:"id"`
+	Name             string `json:"name"`
+	RecipientUID     string `json:"recipient_uid"`
+	OrderTTLMinutes  int    `json:"order_ttl_minutes"`
+	CreditMultiplier string `json:"credit_multiplier"`
 }
 
 type BinanceRechargeConfig struct {
@@ -74,25 +79,27 @@ type BinanceRechargeConfig struct {
 }
 
 type BinanceRechargeOrder struct {
-	ID              int64      `json:"id"`
-	OrderNo         string     `json:"order_no"`
-	UserID          int64      `json:"user_id"`
-	UserEmail       string     `json:"user_email,omitempty"`
-	AccountID       int64      `json:"account_id"`
-	AccountName     string     `json:"account_name"`
-	RecipientUID    string     `json:"recipient_uid"`
-	RequestedAmount int64      `json:"requested_amount"`
-	PayAmount       string     `json:"pay_amount"`
-	CreditedAmount  string     `json:"credited_amount"`
-	Status          string     `json:"status"`
-	TransactionID   string     `json:"transaction_id,omitempty"`
-	ReviewReason    string     `json:"review_reason,omitempty"`
-	CreatedAt       time.Time  `json:"created_at"`
-	ExpiresAt       time.Time  `json:"expires_at"`
-	PaidAt          *time.Time `json:"paid_at,omitempty"`
-	CompletedAt     *time.Time `json:"completed_at,omitempty"`
-	amountUnits     int64
-	creditedUnits   int64
+	ID               int64      `json:"id"`
+	OrderNo          string     `json:"order_no"`
+	UserID           int64      `json:"user_id"`
+	UserEmail        string     `json:"user_email,omitempty"`
+	AccountID        int64      `json:"account_id"`
+	AccountName      string     `json:"account_name"`
+	RecipientUID     string     `json:"recipient_uid"`
+	RequestedAmount  int64      `json:"requested_amount"`
+	PayAmount        string     `json:"pay_amount"`
+	CreditMultiplier string     `json:"credit_multiplier"`
+	SystemAmount     string     `json:"system_amount"`
+	CreditedAmount   string     `json:"credited_amount"`
+	Status           string     `json:"status"`
+	TransactionID    string     `json:"transaction_id,omitempty"`
+	ReviewReason     string     `json:"review_reason,omitempty"`
+	CreatedAt        time.Time  `json:"created_at"`
+	ExpiresAt        time.Time  `json:"expires_at"`
+	PaidAt           *time.Time `json:"paid_at,omitempty"`
+	CompletedAt      *time.Time `json:"completed_at,omitempty"`
+	amountUnits      int64
+	creditedUnits    int64
 }
 
 type BinanceRechargeListParams struct {
@@ -127,6 +134,35 @@ func NewBinanceRechargeService(db *sql.DB, encryptor SecretEncryptor, client Bin
 }
 
 var binanceUIDPattern = regexp.MustCompile(`^[0-9]{1,32}$`)
+var binanceCreditMultiplierPattern = regexp.MustCompile(`^[0-9]{1,4}(\.[0-9]{1,6})?$`)
+
+// Keep validation in fixed-point integers. Scientific notation and extra
+// decimal places must not be silently rounded by PostgreSQL's NUMERIC cast.
+func normalizeBinanceCreditMultiplier(value string) (string, error) {
+	invalid := func() (string, error) {
+		return "", infraerrors.BadRequest("BINANCE_MULTIPLIER_INVALID", "充值倍率必须为 0.000001 至 1000 的普通正小数，最多 6 位小数")
+	}
+	if len(value) > 11 || !binanceCreditMultiplierPattern.MatchString(value) {
+		return invalid()
+	}
+	whole, fraction, _ := strings.Cut(value, ".")
+	units, err := strconv.ParseInt(whole, 10, 64)
+	if err != nil {
+		return invalid()
+	}
+	units *= 1000000
+	if fraction != "" {
+		part, err := strconv.ParseInt(fraction+strings.Repeat("0", 6-len(fraction)), 10, 64)
+		if err != nil {
+			return invalid()
+		}
+		units += part
+	}
+	if units < 1 || units > 1000000000 {
+		return invalid()
+	}
+	return fmt.Sprintf("%d.%06d", units/1000000, units%1000000), nil
+}
 
 func normalizeBinanceRechargeAccountInput(input BinanceRechargeAccountInput) (BinanceRechargeAccountInput, error) {
 	input.Name = strings.TrimSpace(input.Name)
@@ -145,10 +181,17 @@ func normalizeBinanceRechargeAccountInput(input BinanceRechargeAccountInput) (Bi
 	if len(input.APIKey) > 512 || len(input.APISecret) > 512 {
 		return input, infraerrors.BadRequest("BINANCE_CREDENTIAL_INVALID", "币安 API 凭据格式无效")
 	}
+	if input.CreditMultiplier != nil {
+		multiplier, err := normalizeBinanceCreditMultiplier(*input.CreditMultiplier)
+		if err != nil {
+			return input, err
+		}
+		input.CreditMultiplier = &multiplier
+	}
 	return input, nil
 }
 
-const binanceAccountColumns = `a.id, a.name, a.recipient_uid, a.enabled, a.order_ttl_minutes,
+const binanceAccountColumns = `a.id, a.name, a.recipient_uid, a.enabled, a.order_ttl_minutes, a.credit_multiplier::text,
 a.api_key_encrypted, a.api_secret_encrypted, a.last_checked_at, a.last_error, a.created_at, a.updated_at,
 EXISTS(SELECT 1 FROM binance_recharge_orders o WHERE o.account_id = a.id)`
 
@@ -156,7 +199,7 @@ type binanceRowScanner interface{ Scan(...any) error }
 
 func scanBinanceRechargeAccount(row binanceRowScanner) (*BinanceRechargeAccount, error) {
 	var a BinanceRechargeAccount
-	err := row.Scan(&a.ID, &a.Name, &a.RecipientUID, &a.Enabled, &a.OrderTTLMinutes,
+	err := row.Scan(&a.ID, &a.Name, &a.RecipientUID, &a.Enabled, &a.OrderTTLMinutes, &a.CreditMultiplier,
 		&a.apiKeyEncrypted, &a.apiSecretEncrypted, &a.LastCheckedAt, &a.LastError, &a.CreatedAt, &a.UpdatedAt, &a.HasOrders)
 	a.APIKeyConfigured = a.apiKeyEncrypted != ""
 	a.APISecretConfigured = a.apiSecretEncrypted != ""
@@ -188,7 +231,7 @@ func (s *BinanceRechargeService) Config(ctx context.Context) (*BinanceRechargeCo
 	result := &BinanceRechargeConfig{MinAmount: 1, MaxAmount: 1000000, DecimalPlaces: 5, PollIntervalSeconds: 30, Accounts: make([]BinanceRechargePublicAccount, 0)}
 	for _, a := range accounts {
 		if a.Enabled && a.APIKeyConfigured && a.APISecretConfigured {
-			result.Accounts = append(result.Accounts, BinanceRechargePublicAccount{ID: a.ID, Name: a.Name, RecipientUID: a.RecipientUID, OrderTTLMinutes: a.OrderTTLMinutes})
+			result.Accounts = append(result.Accounts, BinanceRechargePublicAccount{ID: a.ID, Name: a.Name, RecipientUID: a.RecipientUID, OrderTTLMinutes: a.OrderTTLMinutes, CreditMultiplier: a.CreditMultiplier})
 		}
 	}
 	result.Enabled = len(result.Accounts) > 0
@@ -253,10 +296,17 @@ func (s *BinanceRechargeService) SaveAccount(ctx context.Context, id int64, inpu
 	if input.Enabled && (keyEncrypted == "" || secretEncrypted == "") {
 		return nil, infraerrors.BadRequest("BINANCE_CREDENTIAL_REQUIRED", "启用账户前必须配置 API Key 和 API Secret")
 	}
+	multiplier := current.CreditMultiplier
 	if id == 0 {
-		err = tx.QueryRowContext(ctx, `INSERT INTO binance_recharge_accounts (name,recipient_uid,api_key_encrypted,api_secret_encrypted,enabled,order_ttl_minutes) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`, input.Name, input.RecipientUID, keyEncrypted, secretEncrypted, input.Enabled, input.OrderTTLMinutes).Scan(&id)
+		multiplier = "1.000000"
+	}
+	if input.CreditMultiplier != nil {
+		multiplier = *input.CreditMultiplier
+	}
+	if id == 0 {
+		err = tx.QueryRowContext(ctx, `INSERT INTO binance_recharge_accounts (name,recipient_uid,api_key_encrypted,api_secret_encrypted,enabled,order_ttl_minutes,credit_multiplier) VALUES ($1,$2,$3,$4,$5,$6,$7::numeric) RETURNING id`, input.Name, input.RecipientUID, keyEncrypted, secretEncrypted, input.Enabled, input.OrderTTLMinutes, multiplier).Scan(&id)
 	} else {
-		_, err = tx.ExecContext(ctx, `UPDATE binance_recharge_accounts SET name=$2,recipient_uid=$3,api_key_encrypted=$4,api_secret_encrypted=$5,enabled=$6,order_ttl_minutes=$7,updated_at=NOW() WHERE id=$1`, id, input.Name, input.RecipientUID, keyEncrypted, secretEncrypted, input.Enabled, input.OrderTTLMinutes)
+		_, err = tx.ExecContext(ctx, `UPDATE binance_recharge_accounts SET name=$2,recipient_uid=$3,api_key_encrypted=$4,api_secret_encrypted=$5,enabled=$6,order_ttl_minutes=$7,credit_multiplier=$8::numeric,updated_at=NOW() WHERE id=$1`, id, input.Name, input.RecipientUID, keyEncrypted, secretEncrypted, input.Enabled, input.OrderTTLMinutes, multiplier)
 	}
 	if err != nil {
 		if isBinanceUniqueViolation(err) {

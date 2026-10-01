@@ -818,16 +818,20 @@ type pkBinanceFixture struct {
 	order    *service.BinanceRechargeOrder
 }
 
-func newPKBinanceFixture(t *testing.T) *pkBinanceFixture {
+func newPKBinanceFixture(t *testing.T, multiplier ...string) *pkBinanceFixture {
 	t.Helper()
 	ctx := context.Background()
 	provider := &pkBinanceHistoryStub{}
 	svc := service.NewBinanceRechargeService(integrationDB, &AESEncryptor{key: make([]byte, 32)}, provider, nil, nil)
 	user := mustCreateUser(t, integrationEntClient, &service.User{Email: fmt.Sprintf("binance-%d@example.com", time.Now().UnixNano()), Balance: 2.12345678})
-	account, err := svc.SaveAccount(ctx, 0, service.BinanceRechargeAccountInput{
+	input := service.BinanceRechargeAccountInput{
 		Name: "Binance integration", RecipientUID: fmt.Sprint(time.Now().UnixNano()),
 		APIKey: "fixture-key", APISecret: "fixture-secret", Enabled: true, OrderTTLMinutes: 30,
-	})
+	}
+	if len(multiplier) > 0 {
+		input.CreditMultiplier = &multiplier[0]
+	}
+	account, err := svc.SaveAccount(ctx, 0, input)
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		_, _ = integrationDB.ExecContext(ctx, `DELETE FROM binance_recharge_receipts WHERE account_id=$1`, account.ID)
@@ -876,7 +880,8 @@ func TestPKBinanceExactCreditAndDuplicatePolling(t *testing.T) {
 	order, err := f.svc.GetOrder(ctx, f.order.ID, f.user.ID)
 	require.NoError(t, err)
 	require.Equal(t, service.BinanceRechargeCompleted, order.Status)
-	require.Equal(t, f.order.PayAmount, order.CreditedAmount)
+	require.Equal(t, f.order.PayAmount+"000", order.CreditedAmount)
+	require.Equal(t, "1.000000", order.CreditMultiplier)
 	for i := 0; i < 2; i++ {
 		f.releasePoll(t)
 		_, err = f.svc.CheckAccount(ctx, f.account.ID)
@@ -943,7 +948,7 @@ func TestPKBinanceExpiredOrderAcceptsOnTimeReceipt(t *testing.T) {
 	order, err := f.svc.GetOrder(ctx, f.order.ID, f.user.ID)
 	require.NoError(t, err)
 	require.Equal(t, service.BinanceRechargeCompleted, order.Status)
-	require.Equal(t, f.order.PayAmount, order.CreditedAmount)
+	require.Equal(t, f.order.PayAmount+"000", order.CreditedAmount)
 	_, err = f.svc.CreateOrder(ctx, f.user.ID, f.account.ID, 10)
 	require.Error(t, err, "disabled account must not issue new quotes")
 }
@@ -993,6 +998,9 @@ func TestPKBinanceAccountSecrecyAndOrderOwnership(t *testing.T) {
 func TestPKBinanceStatsCountOnlyCompletedAndScopeUsers(t *testing.T) {
 	f := newPKBinanceFixture(t)
 	ctx := context.Background()
+	f.setQuoteAmount(t, 1012345)
+	multiplier := "2.5"
+	f.saveMultiplier(t, &multiplier)
 	other := mustCreateUser(t, integrationEntClient, &service.User{Email: fmt.Sprintf("binance-other-%d@example.com", time.Now().UnixNano())})
 	t.Cleanup(func() {
 		_, _ = integrationDB.ExecContext(ctx, `DELETE FROM binance_recharge_receipts WHERE account_id=$1`, f.account.ID)
@@ -1002,6 +1010,11 @@ func TestPKBinanceStatsCountOnlyCompletedAndScopeUsers(t *testing.T) {
 	})
 	otherOrder, err := f.svc.CreateOrder(ctx, other.ID, f.account.ID, 20)
 	require.NoError(t, err)
+	_, err = integrationDB.ExecContext(ctx, `UPDATE binance_recharge_orders SET amount_units=2054321 WHERE id=$1`, otherOrder.ID)
+	require.NoError(t, err)
+	otherOrder, err = f.svc.GetOrder(ctx, otherOrder.ID, other.ID)
+	require.NoError(t, err)
+	require.Equal(t, "2.500000", otherOrder.CreditMultiplier)
 	_, err = integrationDB.ExecContext(ctx, `UPDATE binance_recharge_orders SET created_at=NOW()-INTERVAL '1 minute' WHERE account_id=$1`, f.account.ID)
 	require.NoError(t, err)
 	otherUnits, err := binancepay.ParseAmount(otherOrder.PayAmount)
@@ -1016,14 +1029,39 @@ func TestPKBinanceStatsCountOnlyCompletedAndScopeUsers(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(2), all.TotalOrders)
 	require.Equal(t, binancepay.FormatAmount(first.AmountUnits+otherUnits), all.TotalAmount)
+	require.Equal(t, "61.48147500", all.TotalCreditedAmount)
 	require.Len(t, all.Items, 2)
+	for _, item := range all.Items {
+		if item.UserID == f.user.ID {
+			require.Equal(t, "10.12345", item.TotalAmount)
+			require.Equal(t, "10.12345000", item.TotalCreditedAmount)
+		} else {
+			require.Equal(t, other.ID, item.UserID)
+			require.Equal(t, "20.54321", item.TotalAmount)
+			require.Equal(t, "51.35802500", item.TotalCreditedAmount)
+		}
+	}
+	foreign := newPKBinanceFixture(t, "6.7")
+	foreign.provider.receipts = []binancepay.Receipt{foreign.receipt(t, "foreign-account", time.Now().Add(-time.Second))}
+	_, err = foreign.svc.CheckAccount(ctx, foreign.account.ID)
+	require.NoError(t, err)
 	self, err := f.svc.Stats(ctx, service.BinanceRechargeListParams{AccountID: f.account.ID, UserID: f.user.ID})
 	require.NoError(t, err)
 	require.Equal(t, int64(1), self.TotalOrders)
 	require.Equal(t, f.order.PayAmount, self.TotalAmount)
+	require.Equal(t, "10.12345000", self.TotalCreditedAmount)
 	require.Len(t, self.Items, 1)
 	require.Equal(t, f.user.ID, self.Items[0].UserID)
 	require.Empty(t, self.Items[0].UserEmail)
+	require.Equal(t, "10.12345000", self.Items[0].TotalCreditedAmount)
+	require.Len(t, self.AccountOptions, 1)
+	require.Equal(t, f.account.ID, self.AccountOptions[0].ID)
+	require.Equal(t, "2.500000", self.AccountOptions[0].CreditMultiplier, "account options reflect current configuration, while orders retain snapshots")
+	foreignStats, err := f.svc.Stats(ctx, service.BinanceRechargeListParams{AccountID: foreign.account.ID, UserID: f.user.ID})
+	require.NoError(t, err)
+	require.Zero(t, foreignStats.TotalOrders)
+	require.Equal(t, "0.00000000", foreignStats.TotalCreditedAmount)
+	require.Empty(t, foreignStats.Items)
 	orders, total, err := f.svc.ListOrders(ctx, service.BinanceRechargeListParams{AccountID: f.account.ID, UserID: f.user.ID})
 	require.NoError(t, err)
 	require.Equal(t, int64(2), total)
@@ -1093,5 +1131,192 @@ func TestPKBinanceManualCheckReadsOriginalHistoricalWindow(t *testing.T) {
 	paid, err := f.svc.CheckOrder(ctx, f.order.ID, f.user.ID)
 	require.NoError(t, err)
 	require.Equal(t, service.BinanceRechargeCompleted, paid.Status)
-	require.Equal(t, f.order.PayAmount, paid.CreditedAmount)
+	require.Equal(t, f.order.PayAmount+"000", paid.CreditedAmount)
+}
+
+// Set a deterministic full amount in a freshly created fixture. The production
+// service still creates the order and snapshots its account multiplier.
+func (f *pkBinanceFixture) setQuoteAmount(t *testing.T, units int64) {
+	t.Helper()
+	ctx := context.Background()
+	_, err := integrationDB.ExecContext(ctx, `UPDATE binance_recharge_orders SET requested_amount=$2,amount_units=$3 WHERE id=$1`, f.order.ID, units/binancepay.MoneyScale, units)
+	require.NoError(t, err)
+	f.order, err = f.svc.GetOrder(ctx, f.order.ID, f.user.ID)
+	require.NoError(t, err)
+}
+
+func (f *pkBinanceFixture) saveMultiplier(t *testing.T, multiplier *string) *service.BinanceRechargeAccount {
+	t.Helper()
+	a, err := f.svc.SaveAccount(context.Background(), f.account.ID, service.BinanceRechargeAccountInput{
+		Name: f.account.Name, RecipientUID: f.account.RecipientUID, Enabled: true, OrderTTLMinutes: 30,
+		CreditMultiplier: multiplier,
+	})
+	require.NoError(t, err)
+	return a
+}
+
+func TestPKBinanceMultiplierCreditsFullUSDTWithEightDecimalRounding(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		multiplier string
+		units      int64
+		want       string
+	}{
+		{name: "requested example retains suffix", multiplier: "6.7", units: 1012345, want: "67.82711500"},
+		{name: "minimum multiplier", multiplier: "0.000001", units: 1012345, want: "0.00001012"},
+		{name: "half rounds up", multiplier: "0.0001", units: 100005, want: "0.00010001"},
+		{name: "below half rounds down", multiplier: "0.0001", units: 100004, want: "0.00010000"},
+		{name: "smallest quote remains positive", multiplier: "0.000001", units: 100001, want: "0.00000100"},
+		{name: "maximum quote and multiplier", multiplier: "1000", units: 100000099999, want: "1000000999.99000000"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newPKBinanceFixture(t, tc.multiplier)
+			ctx := context.Background()
+			f.setQuoteAmount(t, tc.units)
+			require.Equal(t, tc.want, f.order.SystemAmount)
+			require.Equal(t, f.account.CreditMultiplier, f.order.CreditMultiplier)
+			require.Equal(t, "0.00000000", f.order.CreditedAmount, "a quote must not report funds as already credited")
+			f.provider.receipts = []binancepay.Receipt{f.receipt(t, "multiplier-exact", time.Now().Add(-time.Second))}
+			_, err := f.svc.CheckAccount(ctx, f.account.ID)
+			require.NoError(t, err)
+			paid, err := f.svc.GetOrder(ctx, f.order.ID, f.user.ID)
+			require.NoError(t, err)
+			require.Equal(t, service.BinanceRechargeCompleted, paid.Status)
+			require.Equal(t, binancepay.FormatAmount(tc.units), paid.PayAmount)
+			require.Equal(t, tc.want, paid.SystemAmount)
+			require.Equal(t, tc.want, paid.CreditedAmount)
+			var exact bool
+			err = integrationDB.QueryRowContext(ctx, `SELECT balance=2.12345678+$2::numeric AND total_recharged=$2::numeric FROM users WHERE id=$1`, f.user.ID, tc.want).Scan(&exact)
+			require.NoError(t, err)
+			require.True(t, exact, "balance and cumulative recharge must use the rounded system amount")
+			var ledgerCount int
+			err = integrationDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM redeem_codes WHERE used_by=$1 AND type='balance' AND status='used' AND value=$2::numeric`, f.user.ID, tc.want).Scan(&ledgerCount)
+			require.NoError(t, err)
+			require.Equal(t, 1, ledgerCount)
+			stats, err := f.svc.Stats(ctx, service.BinanceRechargeListParams{AccountID: f.account.ID, UserID: f.user.ID})
+			require.NoError(t, err)
+			require.Equal(t, paid.PayAmount, stats.TotalAmount, "USDT statistics keep their existing meaning")
+			require.Equal(t, tc.want, stats.TotalCreditedAmount)
+			require.Len(t, stats.Items, 1)
+			require.Equal(t, tc.want, stats.Items[0].TotalCreditedAmount)
+		})
+	}
+}
+
+func TestPKBinanceMultiplierSnapshotSurvivesAccountChangesAndConcurrentChecks(t *testing.T) {
+	f := newPKBinanceFixture(t, "6.7")
+	ctx := context.Background()
+	f.setQuoteAmount(t, 1012345)
+	require.Equal(t, "6.700000", f.order.CreditMultiplier)
+	changed := "9"
+	updated := f.saveMultiplier(t, &changed)
+	require.Equal(t, "9.000000", updated.CreditMultiplier)
+	updated = f.saveMultiplier(t, nil)
+	require.Equal(t, "9.000000", updated.CreditMultiplier, "omitting the field must preserve an existing account's multiplier")
+	require.True(t, updated.APIKeyConfigured)
+	require.True(t, updated.APISecretConfigured)
+	config, err := f.svc.Config(ctx)
+	require.NoError(t, err)
+	found := false
+	for _, a := range config.Accounts {
+		if a.ID == f.account.ID {
+			found = true
+			require.Equal(t, "9.000000", a.CreditMultiplier)
+		}
+	}
+	require.True(t, found, "the public account configuration must expose the current multiplier")
+	_, err = integrationDB.ExecContext(ctx, `UPDATE binance_recharge_orders SET created_at=NOW()-INTERVAL '1 minute' WHERE id=$1`, f.order.ID)
+	require.NoError(t, err)
+	next, err := f.svc.CreateOrder(ctx, f.user.ID, f.account.ID, 20)
+	require.NoError(t, err)
+	require.Equal(t, "9.000000", next.CreditMultiplier)
+	require.Equal(t, "0.00000000", next.CreditedAmount)
+	prior, err := f.svc.GetOrder(ctx, f.order.ID, f.user.ID)
+	require.NoError(t, err)
+	require.Equal(t, "6.700000", prior.CreditMultiplier)
+	require.Equal(t, "67.82711500", prior.SystemAmount)
+	f.provider.receipts = []binancepay.Receipt{f.receipt(t, "snapshot-duplicate", time.Now().Add(-time.Second))}
+	second := service.NewBinanceRechargeService(integrationDB, &AESEncryptor{key: make([]byte, 32)}, f.provider, nil, nil)
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		svc := f.svc
+		if i%2 == 1 {
+			svc = second
+		}
+		go func(instance *service.BinanceRechargeService) {
+			defer wg.Done()
+			_, _ = instance.CheckAccount(ctx, f.account.ID)
+		}(svc)
+	}
+	wg.Wait()
+	f.releasePoll(t)
+	_, err = second.CheckAccount(ctx, f.account.ID)
+	require.NoError(t, err)
+	paid, err := f.svc.GetOrder(ctx, f.order.ID, f.user.ID)
+	require.NoError(t, err)
+	require.Equal(t, service.BinanceRechargeCompleted, paid.Status)
+	require.Equal(t, "67.82711500", paid.CreditedAmount)
+	require.Equal(t, "6.700000", paid.CreditMultiplier)
+	var exact bool
+	err = integrationDB.QueryRowContext(ctx, `SELECT balance=69.95057178 AND total_recharged=67.827115 FROM users WHERE id=$1`, f.user.ID).Scan(&exact)
+	require.NoError(t, err)
+	require.True(t, exact, "two service instances must credit the original snapshot exactly once")
+	var ledger, receipts int
+	err = integrationDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM redeem_codes WHERE used_by=$1 AND value=67.827115 AND code=$2`, f.user.ID, fmt.Sprintf("BN-%d", f.order.ID)).Scan(&ledger)
+	require.NoError(t, err)
+	err = integrationDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM binance_recharge_receipts WHERE account_id=$1 AND status='COMPLETED'`, f.account.ID).Scan(&receipts)
+	require.NoError(t, err)
+	require.Equal(t, 1, ledger)
+	require.Equal(t, 1, receipts)
+	next, err = f.svc.GetOrder(ctx, next.ID, f.user.ID)
+	require.NoError(t, err)
+	require.Equal(t, service.BinanceRechargePending, next.Status)
+	require.Equal(t, "0.00000000", next.CreditedAmount)
+}
+
+func TestPKBinanceMultiplierRejectsOldSettlementAtomically(t *testing.T) {
+	for _, multiplier := range []string{"1", "6.7"} {
+		t.Run(multiplier, func(t *testing.T) {
+			f := newPKBinanceFixture(t, multiplier)
+			ctx := context.Background()
+			f.setQuoteAmount(t, 1012345)
+			tx, err := integrationDB.BeginTx(ctx, nil)
+			require.NoError(t, err)
+			defer func() { _ = tx.Rollback() }()
+			// This is the released pre-multiplier write sequence. The final
+			// order constraint must reject it and all preceding money writes.
+			_, err = tx.ExecContext(ctx, `INSERT INTO binance_recharge_receipts(account_id,recipient_uid,transaction_id,amount_units,paid_at,status) VALUES($1,$2,'old-settlement',1012345,NOW(),'REVIEW')`, f.account.ID, f.account.RecipientUID)
+			require.NoError(t, err)
+			_, err = tx.ExecContext(ctx, `UPDATE users SET balance=balance+10.12345,total_recharged=total_recharged+10.12345 WHERE id=$1`, f.user.ID)
+			require.NoError(t, err)
+			_, err = tx.ExecContext(ctx, `INSERT INTO redeem_codes(code,type,value,status,used_by) VALUES($1,'balance',10.12345,'used',$2)`, fmt.Sprintf("BN-%d", f.order.ID), f.user.ID)
+			require.NoError(t, err)
+			_, err = tx.ExecContext(ctx, `UPDATE binance_recharge_orders SET status='COMPLETED',credited_units=amount_units,transaction_id='old-settlement',paid_at=NOW(),completed_at=NOW() WHERE id=$1`, f.order.ID)
+			requirePKBinanceSQLState(t, err, "23514")
+			require.NoError(t, tx.Rollback())
+			var unchanged bool
+			err = integrationDB.QueryRowContext(ctx, `SELECT balance=2.12345678 AND total_recharged=0 FROM users WHERE id=$1`, f.user.ID).Scan(&unchanged)
+			require.NoError(t, err)
+			require.True(t, unchanged)
+			var ledger, receipts int
+			err = integrationDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM redeem_codes WHERE used_by=$1`, f.user.ID).Scan(&ledger)
+			require.NoError(t, err)
+			err = integrationDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM binance_recharge_receipts WHERE account_id=$1`, f.account.ID).Scan(&receipts)
+			require.NoError(t, err)
+			require.Zero(t, ledger)
+			require.Zero(t, receipts)
+			pending, err := f.svc.GetOrder(ctx, f.order.ID, f.user.ID)
+			require.NoError(t, err)
+			require.Equal(t, service.BinanceRechargePending, pending.Status)
+			require.Equal(t, "0.00000000", pending.CreditedAmount)
+			f.provider.receipts = []binancepay.Receipt{f.receipt(t, "old-settlement", time.Now().Add(-time.Second))}
+			_, err = f.svc.CheckAccount(ctx, f.account.ID)
+			require.NoError(t, err, "an aborted old binary must not consume the provider transaction")
+			paid, err := f.svc.GetOrder(ctx, f.order.ID, f.user.ID)
+			require.NoError(t, err)
+			require.Equal(t, service.BinanceRechargeCompleted, paid.Status)
+			require.Equal(t, f.order.SystemAmount, paid.CreditedAmount)
+		})
+	}
 }

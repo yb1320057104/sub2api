@@ -10,7 +10,8 @@ import (
 )
 
 // MoneyScale is the number of integer units in one USDT. Matching never uses
-// floating point: the five decimal places shown to a payer are all credited.
+// floating point: all five payer-visible decimal places participate in the
+// recharge multiplier calculation before rounding to system balance precision.
 const MoneyScale int64 = 100000
 
 // ParseAmount accepts unsigned ordinary decimal strings. Additional decimal

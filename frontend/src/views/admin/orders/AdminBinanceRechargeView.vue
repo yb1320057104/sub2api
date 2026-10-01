@@ -20,6 +20,7 @@
             <dl class="grid grid-cols-2 gap-3 text-sm">
               <div><dt class="text-gray-500">{{ t('binanceRecharge.credentials') }}</dt><dd>{{ account.api_key_configured && account.api_secret_configured ? t('binanceRecharge.credentialsConfigured') : t('binanceRecharge.credentialsMissing') }}</dd></div>
               <div><dt class="text-gray-500">{{ t('binanceRecharge.ttl') }}</dt><dd>{{ t('binanceRecharge.minutes', { minutes: account.order_ttl_minutes }) }}</dd></div>
+              <div class="col-span-2"><dt class="text-gray-500">{{ t('binanceRecharge.creditMultiplier') }}</dt><dd>{{ t('binanceRecharge.exchangeRate', { multiplier: formatBinanceMultiplier(account.credit_multiplier) }) }}</dd></div>
               <div class="col-span-2"><dt class="text-gray-500">{{ t('binanceRecharge.lastChecked') }}</dt><dd>{{ account.last_checked_at ? date(account.last_checked_at) : t('binanceRecharge.neverChecked') }}</dd></div>
             </dl>
             <p v-if="account.last_error" class="break-words rounded-lg bg-red-50 p-3 text-sm text-red-700 dark:bg-red-900/20 dark:text-red-300">{{ t('binanceRecharge.lastError') }}: {{ account.last_error }}</p>
@@ -52,6 +53,7 @@
       <form id="binance-account-form" class="space-y-4" autocomplete="off" @submit.prevent="saveAccount">
         <div><label for="binance-name" class="input-label">{{ t('binanceRecharge.accountName') }}</label><input id="binance-name" v-model="form.name" class="input mt-1 w-full" maxlength="100" required /></div>
         <div><label for="binance-uid" class="input-label">{{ t('binanceRecharge.uid') }}</label><input id="binance-uid" v-model="form.recipient_uid" class="input mt-1 w-full" inputmode="numeric" pattern="[0-9]+" :disabled="editingAccount?.has_orders" required /><p v-if="editingAccount?.has_orders" class="mt-1 text-xs text-gray-500">{{ t('binanceRecharge.uidLocked') }}</p></div>
+        <div><label for="binance-multiplier" class="input-label">{{ t('binanceRecharge.creditMultiplier') }}</label><input id="binance-multiplier" v-model="form.credit_multiplier" class="input mt-1 w-full" type="text" inputmode="decimal" maxlength="11" required aria-describedby="binance-multiplier-hint" /><p id="binance-multiplier-hint" class="mt-2 text-xs text-gray-500">{{ t('binanceRecharge.multiplierHint') }}</p></div>
         <p class="text-xs text-gray-500">{{ t('binanceRecharge.credentialsHint') }}</p>
         <div><label for="binance-api-key" class="input-label">{{ t('binanceRecharge.apiKey') }}</label><input id="binance-api-key" v-model="form.api_key" type="password" autocomplete="new-password" class="input mt-1 w-full" :required="!editingAccount" /></div>
         <div><label for="binance-api-secret" class="input-label">{{ t('binanceRecharge.apiSecret') }}</label><input id="binance-api-secret" v-model="form.api_secret" type="password" autocomplete="new-password" class="input mt-1 w-full" :required="!editingAccount" /><p class="mt-2 text-xs text-gray-500">{{ t('binanceRecharge.secretHint') }}</p></div>
@@ -73,6 +75,7 @@ import { adminBinanceRechargeAPI } from '@/api/binanceRecharge'
 import { useAppStore } from '@/stores/app'
 import { useBinanceRechargeStore } from '@/stores/binanceRecharge'
 import { extractApiErrorMessage } from '@/utils/apiError'
+import { formatBinanceMultiplier, isValidBinanceMultiplier } from '@/components/payment/binanceAmounts'
 import type { BinanceRechargeAccount, BinanceRechargeAccountInput, BinanceRechargeOrder, BinanceRechargeStatus } from '@/types/binanceRecharge'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import BaseDialog from '@/components/common/BaseDialog.vue'
@@ -94,7 +97,7 @@ const checkingId = ref<number | null>(null)
 const showAccountDialog = ref(false)
 const editingAccount = ref<BinanceRechargeAccount | null>(null)
 const saving = ref(false)
-const form = reactive<BinanceRechargeAccountInput>({ name: '', recipient_uid: '', api_key: '', api_secret: '', enabled: false, order_ttl_minutes: 15 })
+const form = reactive<BinanceRechargeAccountInput>({ name: '', recipient_uid: '', api_key: '', api_secret: '', enabled: false, order_ttl_minutes: 15, credit_multiplier: '1' })
 const orders = ref<BinanceRechargeOrder[]>([])
 const ordersLoading = ref(false)
 const selectedOrder = ref<BinanceRechargeOrder | null>(null)
@@ -123,7 +126,7 @@ async function loadAccounts() {
 function editAccount(account?: BinanceRechargeAccount) {
   editingAccount.value = account || null
   // Build the form explicitly: never copy unknown response fields or stored secrets.
-  Object.assign(form, { name: account?.name || '', recipient_uid: account?.recipient_uid || '', api_key: '', api_secret: '', enabled: account?.enabled ?? false, order_ttl_minutes: account?.order_ttl_minutes || 15 })
+  Object.assign(form, { name: account?.name || '', recipient_uid: account?.recipient_uid || '', api_key: '', api_secret: '', enabled: account?.enabled ?? false, order_ttl_minutes: account?.order_ttl_minutes || 15, credit_multiplier: account ? formatBinanceMultiplier(account.credit_multiplier) : '1' })
   showAccountDialog.value = true
 }
 function closeAccountDialog() {
@@ -138,9 +141,13 @@ async function saveAccount() {
   if (!form.name.trim() || !/^\d+$/.test(form.recipient_uid.trim()) || (!editingAccount.value && (!form.api_key?.trim() || !form.api_secret?.trim()))) {
     appStore.showError(t('binanceRecharge.requiredFields')); return
   }
+  const multiplier = form.credit_multiplier?.trim() || ''
+  if (!isValidBinanceMultiplier(multiplier)) {
+    appStore.showError(t('binanceRecharge.invalidMultiplier')); return
+  }
   saving.value = true
   try {
-    const data: BinanceRechargeAccountInput = { name: form.name.trim(), recipient_uid: form.recipient_uid.trim(), enabled: form.enabled, order_ttl_minutes: form.order_ttl_minutes }
+    const data: BinanceRechargeAccountInput = { name: form.name.trim(), recipient_uid: form.recipient_uid.trim(), enabled: form.enabled, order_ttl_minutes: form.order_ttl_minutes, credit_multiplier: multiplier }
     if (form.api_key?.trim()) data.api_key = form.api_key.trim()
     if (form.api_secret?.trim()) data.api_secret = form.api_secret.trim()
     if (editingAccount.value) await adminBinanceRechargeAPI.updateAccount(editingAccount.value.id, data)

@@ -17,15 +17,14 @@ import (
 
 const binanceOrderColumns = `o.id,o.order_no,o.user_id,u.email,o.account_id,o.account_name,o.recipient_uid,
 o.requested_amount,o.amount_units,o.credited_units,o.status,o.transaction_id,o.review_reason,
-o.created_at,o.expires_at,o.paid_at,o.completed_at`
+o.created_at,o.expires_at,o.paid_at,o.completed_at,o.credit_multiplier::text,o.system_amount::text,o.credited_amount::text`
 
 func scanBinanceRechargeOrder(row binanceRowScanner) (*BinanceRechargeOrder, error) {
 	var o BinanceRechargeOrder
 	err := row.Scan(&o.ID, &o.OrderNo, &o.UserID, &o.UserEmail, &o.AccountID, &o.AccountName, &o.RecipientUID,
 		&o.RequestedAmount, &o.amountUnits, &o.creditedUnits, &o.Status, &o.TransactionID, &o.ReviewReason,
-		&o.CreatedAt, &o.ExpiresAt, &o.PaidAt, &o.CompletedAt)
+		&o.CreatedAt, &o.ExpiresAt, &o.PaidAt, &o.CompletedAt, &o.CreditMultiplier, &o.SystemAmount, &o.CreditedAmount)
 	o.PayAmount = binancepay.FormatAmount(o.amountUnits)
-	o.CreditedAmount = binancepay.FormatAmount(o.creditedUnits)
 	// Expiry is also projected at read time, even if the poller is inactive.
 	if o.Status == BinanceRechargePending && time.Now().After(o.ExpiresAt) {
 		o.Status = BinanceRechargeExpired
@@ -114,9 +113,9 @@ LIMIT 1`, amount, seed.Int64(), a.RecipientUID).Scan(&units)
 	}
 	var orderID int64
 	err = tx.QueryRowContext(ctx, `INSERT INTO binance_recharge_orders
-(order_no,user_id,account_id,account_name,recipient_uid,requested_amount,amount_units,created_at,expires_at)
-VALUES($1,$2,$3,$4,$5,$6,$7,date_trunc('milliseconds',clock_timestamp()),date_trunc('milliseconds',clock_timestamp())+make_interval(mins=>$8)) RETURNING id`,
-		"BN-"+strings.ReplaceAll(uuid.NewString(), "-", ""), userID, accountID, a.Name, a.RecipientUID, amount, units, a.OrderTTLMinutes).Scan(&orderID)
+(order_no,user_id,account_id,account_name,recipient_uid,requested_amount,amount_units,created_at,expires_at,credit_multiplier)
+VALUES($1,$2,$3,$4,$5,$6,$7,date_trunc('milliseconds',clock_timestamp()),date_trunc('milliseconds',clock_timestamp())+make_interval(mins=>$8),$9::numeric) RETURNING id`,
+		"BN-"+strings.ReplaceAll(uuid.NewString(), "-", ""), userID, accountID, a.Name, a.RecipientUID, amount, units, a.OrderTTLMinutes, a.CreditMultiplier).Scan(&orderID)
 	if err != nil {
 		return nil, err
 	}
@@ -178,21 +177,23 @@ AND ($4::text='' OR position(lower($4) in lower(o.order_no || ' ' || u.email || 
 }
 
 type BinanceRechargeUserStats struct {
-	UserID      int64  `json:"user_id"`
-	UserEmail   string `json:"user_email,omitempty"`
-	TotalAmount string `json:"total_amount"`
-	TotalOrders int64  `json:"total_orders"`
+	UserID              int64  `json:"user_id"`
+	UserEmail           string `json:"user_email,omitempty"`
+	TotalAmount         string `json:"total_amount"`
+	TotalCreditedAmount string `json:"total_credited_amount"`
+	TotalOrders         int64  `json:"total_orders"`
 }
 
 type BinanceRechargeStats struct {
-	TotalAmount    string                         `json:"total_amount"`
-	TotalOrders    int64                          `json:"total_orders"`
-	Items          []BinanceRechargeUserStats     `json:"items"`
-	Total          int64                          `json:"total"`
-	Page           int                            `json:"page"`
-	PageSize       int                            `json:"page_size"`
-	Pages          int                            `json:"pages"`
-	AccountOptions []BinanceRechargePublicAccount `json:"account_options"`
+	TotalAmount         string                         `json:"total_amount"`
+	TotalCreditedAmount string                         `json:"total_credited_amount"`
+	TotalOrders         int64                          `json:"total_orders"`
+	Items               []BinanceRechargeUserStats     `json:"items"`
+	Total               int64                          `json:"total"`
+	Page                int                            `json:"page"`
+	PageSize            int                            `json:"page_size"`
+	Pages               int                            `json:"pages"`
+	AccountOptions      []BinanceRechargePublicAccount `json:"account_options"`
 }
 
 func (s *BinanceRechargeService) Stats(ctx context.Context, p BinanceRechargeListParams) (*BinanceRechargeStats, error) {
@@ -200,19 +201,20 @@ func (s *BinanceRechargeService) Stats(ctx context.Context, p BinanceRechargeLis
 	// Format NUMERIC sums in SQL; summing many users must not overflow int64.
 	where := ` FROM binance_recharge_orders o JOIN users u ON u.id=o.user_id WHERE o.status='COMPLETED' AND ($1::bigint=0 OR o.user_id=$1) AND ($2::bigint=0 OR o.account_id=$2)`
 	amountSQL := `TRIM(TO_CHAR(COALESCE(SUM(o.credited_units),0)/100000::numeric,'FM999999999999999999999999999999999990.00000'))`
+	creditedSQL := `TRIM(TO_CHAR(COALESCE(SUM(o.credited_amount),0),'FM999999999999999999999999999999999990.00000000'))`
 	r := &BinanceRechargeStats{Items: make([]BinanceRechargeUserStats, 0), AccountOptions: make([]BinanceRechargePublicAccount, 0), Page: p.Page, PageSize: p.PageSize}
-	if err := s.db.QueryRowContext(ctx, `SELECT `+amountSQL+`,COUNT(*),COUNT(DISTINCT o.user_id)`+where, p.UserID, p.AccountID).Scan(&r.TotalAmount, &r.TotalOrders, &r.Total); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT `+amountSQL+`,`+creditedSQL+`,COUNT(*),COUNT(DISTINCT o.user_id)`+where, p.UserID, p.AccountID).Scan(&r.TotalAmount, &r.TotalCreditedAmount, &r.TotalOrders, &r.Total); err != nil {
 		return nil, err
 	}
 	r.Pages = int((r.Total + int64(p.PageSize) - 1) / int64(p.PageSize))
-	rows, err := s.db.QueryContext(ctx, `SELECT o.user_id,u.email,`+amountSQL+`,COUNT(*)`+where+` GROUP BY o.user_id,u.email ORDER BY SUM(o.credited_units) DESC,o.user_id LIMIT $3 OFFSET $4`, p.UserID, p.AccountID, p.PageSize, (p.Page-1)*p.PageSize)
+	rows, err := s.db.QueryContext(ctx, `SELECT o.user_id,u.email,`+amountSQL+`,`+creditedSQL+`,COUNT(*)`+where+` GROUP BY o.user_id,u.email ORDER BY SUM(o.credited_units) DESC,o.user_id LIMIT $3 OFFSET $4`, p.UserID, p.AccountID, p.PageSize, (p.Page-1)*p.PageSize)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var item BinanceRechargeUserStats
-		if err := rows.Scan(&item.UserID, &item.UserEmail, &item.TotalAmount, &item.TotalOrders); err != nil {
+		if err := rows.Scan(&item.UserID, &item.UserEmail, &item.TotalAmount, &item.TotalCreditedAmount, &item.TotalOrders); err != nil {
 			return nil, err
 		}
 		if p.UserID > 0 {
@@ -224,14 +226,14 @@ func (s *BinanceRechargeService) Stats(ctx context.Context, p BinanceRechargeLis
 		return nil, err
 	}
 	_ = rows.Close()
-	options, err := s.db.QueryContext(ctx, `SELECT a.id,a.name,a.recipient_uid,a.order_ttl_minutes FROM binance_recharge_accounts a WHERE EXISTS(SELECT 1 FROM binance_recharge_orders o WHERE o.account_id=a.id AND o.status='COMPLETED' AND ($1::bigint=0 OR o.user_id=$1)) ORDER BY a.id`, p.UserID)
+	options, err := s.db.QueryContext(ctx, `SELECT a.id,a.name,a.recipient_uid,a.order_ttl_minutes,a.credit_multiplier::text FROM binance_recharge_accounts a WHERE EXISTS(SELECT 1 FROM binance_recharge_orders o WHERE o.account_id=a.id AND o.status='COMPLETED' AND ($1::bigint=0 OR o.user_id=$1)) ORDER BY a.id`, p.UserID)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = options.Close() }()
 	for options.Next() {
 		var a BinanceRechargePublicAccount
-		if err := options.Scan(&a.ID, &a.Name, &a.RecipientUID, &a.OrderTTLMinutes); err != nil {
+		if err := options.Scan(&a.ID, &a.Name, &a.RecipientUID, &a.OrderTTLMinutes, &a.CreditMultiplier); err != nil {
 			return nil, err
 		}
 		r.AccountOptions = append(r.AccountOptions, a)
@@ -316,15 +318,18 @@ VALUES($1,$2,$3,$4,$5,'REVIEW') ON CONFLICT(recipient_uid,transaction_id) DO NOT
 		}
 		return false, true, nil
 	}
-	amount := binancepay.FormatAmount(r.AmountUnits)
+	// The generated NUMERIC value uses the order's locked creation snapshot, not
+	// the account's current multiplier. It is already rounded to balance precision.
+	amount := o.SystemAmount
 	if _, err := tx.ExecContext(ctx, `UPDATE users SET balance=balance+$2::numeric,total_recharged=total_recharged+$2::numeric,updated_at=NOW() WHERE id=$1`, o.UserID, amount); err != nil {
 		return false, false, err
 	}
 	// Preserve existing user balance history and cumulative recharge queries.
-	if _, err := tx.ExecContext(ctx, `INSERT INTO redeem_codes(code,type,value,status,used_by,used_at,notes) VALUES($1,'balance',$2::numeric,'used',$3,NOW(),$4)`, fmt.Sprintf("BN-%d", o.ID), amount, o.UserID, "币安 UID 自助充值 "+o.OrderNo+" / "+r.TransactionID); err != nil {
+	notes := fmt.Sprintf("币安 UID 自助充值 %s / %s / USDT %s × %s = 系统余额 %s", o.OrderNo, r.TransactionID, o.PayAmount, o.CreditMultiplier, amount)
+	if _, err := tx.ExecContext(ctx, `INSERT INTO redeem_codes(code,type,value,status,used_by,used_at,notes) VALUES($1,'balance',$2::numeric,'used',$3,NOW(),$4)`, fmt.Sprintf("BN-%d", o.ID), amount, o.UserID, notes); err != nil {
 		return false, false, err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE binance_recharge_orders SET status='COMPLETED',credited_units=amount_units,transaction_id=$2,paid_at=$3,completed_at=NOW(),review_reason='',updated_at=NOW() WHERE id=$1`, o.ID, r.TransactionID, r.Time); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE binance_recharge_orders SET status='COMPLETED',credited_units=amount_units,credited_amount=system_amount,transaction_id=$2,paid_at=$3,completed_at=NOW(),review_reason='',updated_at=NOW() WHERE id=$1`, o.ID, r.TransactionID, r.Time); err != nil {
 		return false, false, err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE binance_recharge_receipts SET status='COMPLETED',order_id=$2,review_reason='' WHERE id=$1`, receiptID, o.ID); err != nil {

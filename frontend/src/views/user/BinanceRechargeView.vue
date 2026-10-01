@@ -18,6 +18,7 @@
               <select id="binance-account" v-model="accountId" class="input mt-1 w-full" required>
                 <option v-for="account in config.accounts" :key="account.id" :value="account.id">{{ account.name }} · UID {{ account.recipient_uid }}</option>
               </select>
+              <p v-if="selectedAccount" data-testid="binance-account-rate" class="mt-2 text-sm font-medium text-primary-700 dark:text-primary-300">{{ t('binanceRecharge.exchangeRate', { multiplier: formatBinanceMultiplier(selectedAccount.credit_multiplier) }) }}</p>
             </div>
             <div>
               <label for="binance-amount" class="input-label">{{ t('binanceRecharge.amount') }}</label>
@@ -65,6 +66,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useBinanceRechargeStore } from '@/stores/binanceRecharge'
 import { binanceRechargeAPI } from '@/api/binanceRecharge'
 import { extractApiErrorMessage } from '@/utils/apiError'
+import { formatBinanceMultiplier } from '@/components/payment/binanceAmounts'
 import type { BinanceRechargeAccountOption, BinanceRechargeOrder, BinanceRechargeStatus } from '@/types/binanceRecharge'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import Pagination from '@/components/common/Pagination.vue'
@@ -82,6 +84,7 @@ const configLoading = ref(true)
 const configFailed = ref(false)
 const activeTab = ref<'orders' | 'totals'>('orders')
 const accountId = ref<number | null>(null)
+const selectedAccount = computed(() => config.value?.accounts.find(account => account.id === accountId.value))
 const accountFilter = ref('')
 const historicalAccounts = ref<BinanceRechargeAccountOption[]>([])
 const amountText = ref('10')
@@ -92,7 +95,7 @@ const ordersLoading = ref(false)
 const orders = ref<BinanceRechargeOrder[]>([])
 const filterAccounts = computed(() => Array.from(new Map([
   ...(config.value?.accounts || []), ...historicalAccounts.value,
-  ...orders.value.map(order => ({ id: order.account_id, name: order.account_name, recipient_uid: order.recipient_uid, order_ttl_minutes: 15 })),
+  ...orders.value.map(order => ({ id: order.account_id, name: order.account_name, recipient_uid: order.recipient_uid, order_ttl_minutes: 15, credit_multiplier: order.credit_multiplier })),
 ].map(account => [account.id, account])).values()))
 const selectedOrder = ref<BinanceRechargeOrder | null>(null)
 const statuses: BinanceRechargeStatus[] = ['PENDING', 'COMPLETED', 'EXPIRED', 'REVIEW']

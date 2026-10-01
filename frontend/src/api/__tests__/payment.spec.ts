@@ -49,12 +49,14 @@ describe('Binance recharge API', () => {
     put.mockReset().mockResolvedValue({ data: {} })
   })
 
-  it('creates an authenticated order and preserves all five payment decimals as strings', async () => {
-    post.mockResolvedValue({ data: { id: 41, pay_amount: '10.01234', credited_amount: '0.00000', status: 'PENDING' } })
+  it('preserves the exact transfer, rate snapshot and eight-decimal system credit as strings', async () => {
+    post.mockResolvedValue({ data: { id: 41, pay_amount: '10.01234', credit_multiplier: '6.700000', system_amount: '67.08267800', credited_amount: '0.00000000', status: 'PENDING' } })
     const result = await binanceRechargeAPI.createOrder(7, 10)
     expect(post).toHaveBeenCalledWith('/binance-recharge/orders', { account_id: 7, amount: 10 })
     expect(result.data.pay_amount).toBe('10.01234')
-    expect(result.data.credited_amount).toBe('0.00000')
+    expect(result.data.credit_multiplier).toBe('6.700000')
+    expect(result.data.system_amount).toBe('67.08267800')
+    expect(result.data.credited_amount).toBe('0.00000000')
   })
 
   it('keeps user and administrator order routes separate and forwards account filters', async () => {
@@ -70,10 +72,12 @@ describe('Binance recharge API', () => {
   })
 
   it('keeps full precision in cumulative statistics and uses authenticated stats endpoints', async () => {
-    get.mockResolvedValue({ data: { total_amount: '1000000.01234', total_orders: 1, items: [] } })
+    get.mockResolvedValue({ data: { total_amount: '1000000.01234', total_credited_amount: '6700000.08267800', total_orders: 1, items: [{ user_id: 5, total_amount: '1000000.01234', total_credited_amount: '6700000.08267800', total_orders: 1 }] } })
     const result = await binanceRechargeAPI.getStats({ account_id: 7 })
     expect(get).toHaveBeenLastCalledWith('/binance-recharge/stats', { params: { account_id: 7 } })
     expect(result.data.total_amount).toBe('1000000.01234')
+    expect(result.data.total_credited_amount).toBe('6700000.08267800')
+    expect(result.data.items[0].total_credited_amount).toBe('6700000.08267800')
     await adminBinanceRechargeAPI.getStats({ account_id: 7, page: 2, page_size: 20 })
     expect(get).toHaveBeenLastCalledWith('/admin/binance-recharge/stats', { params: { account_id: 7, page: 2, page_size: 20 } })
   })
@@ -84,6 +88,15 @@ describe('Binance recharge API', () => {
     expect(put).toHaveBeenCalledWith('/admin/binance-recharge/accounts/7', payload)
     expect(put.mock.calls[0][1]).not.toHaveProperty('api_key')
     expect(put.mock.calls[0][1]).not.toHaveProperty('api_secret')
+    expect(put.mock.calls[0][1]).not.toHaveProperty('credit_multiplier')
+  })
+
+  it('sends explicit account multipliers as decimal strings without rounding', async () => {
+    const payload = { name: 'Receiving account', recipient_uid: '123456', enabled: true, order_ttl_minutes: 15, credit_multiplier: '6.700000' }
+    await adminBinanceRechargeAPI.createAccount(payload)
+    expect(post).toHaveBeenLastCalledWith('/admin/binance-recharge/accounts', payload)
+    await adminBinanceRechargeAPI.updateAccount(7, { ...payload, credit_multiplier: '0.000001' })
+    expect(put).toHaveBeenLastCalledWith('/admin/binance-recharge/accounts/7', { ...payload, credit_multiplier: '0.000001' })
   })
 
   it('propagates lookup failures without fabricating a completed order', async () => {

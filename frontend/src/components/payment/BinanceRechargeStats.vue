@@ -10,14 +10,16 @@
         <button class="btn btn-secondary" :disabled="loading" @click="load()">{{ t('common.refresh') }}</button>
       </div>
     </div>
-    <div class="grid gap-4 sm:grid-cols-3" aria-live="polite">
-      <div class="card p-5"><p class="text-sm text-gray-500">{{ t('binanceRecharge.totalAmount') }}</p><p class="mt-2 break-all font-mono text-2xl font-semibold">{{ stats?.total_amount ?? '—' }}</p></div>
+    <div class="grid gap-4" :class="admin ? 'sm:grid-cols-2 xl:grid-cols-4' : 'sm:grid-cols-3'" aria-live="polite">
+      <div class="card p-5"><p class="text-sm text-gray-500">{{ t('binanceRecharge.totalAmount') }}</p><p data-testid="binance-total-usdt" class="mt-2 break-all font-mono text-2xl font-semibold">{{ stats?.total_amount ?? '—' }}</p></div>
+      <div class="card p-5"><p class="text-sm text-gray-500">{{ t('binanceRecharge.totalCreditedAmount') }}</p><p data-testid="binance-total-credited" class="mt-2 break-all font-mono text-2xl font-semibold">{{ stats?.total_credited_amount ?? '—' }}</p></div>
       <div class="card p-5"><p class="text-sm text-gray-500">{{ t('binanceRecharge.totalOrders') }}</p><p class="mt-2 text-2xl font-semibold">{{ stats?.total_orders ?? '—' }}</p></div>
       <div v-if="admin" class="card p-5"><p class="text-sm text-gray-500">{{ t('binanceRecharge.totalUsers') }}</p><p class="mt-2 text-2xl font-semibold">{{ stats?.total ?? '—' }}</p></div>
     </div>
     <DataTable v-if="admin" :columns="columns" :data="stats?.items || []" :loading="loading">
       <template #cell-user_id="{ row }">{{ row.user_email || `#${row.user_id}` }} <span v-if="row.user_email" class="text-xs text-gray-500">#{{ row.user_id }}</span></template>
       <template #cell-total_amount="{ value }"><span class="font-mono">{{ value }}</span></template>
+      <template #cell-total_credited_amount="{ value }"><span class="font-mono">{{ value }}</span></template>
     </DataTable>
     <Pagination v-if="admin && stats && stats.total > 0" :page="page" :page-size="pageSize" :total="stats.total" @update:page="changePage" @update:page-size="changePageSize" />
   </section>
@@ -47,6 +49,7 @@ let disposed = false
 const columns = computed(() => [
   { key: 'user_id', label: t('binanceRecharge.user') },
   { key: 'total_amount', label: t('binanceRecharge.totalAmount') },
+  { key: 'total_credited_amount', label: t('binanceRecharge.totalCreditedAmount') },
   { key: 'total_orders', label: t('binanceRecharge.totalOrders') },
 ])
 async function load() {

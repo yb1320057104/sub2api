@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -16,6 +17,51 @@ import (
 )
 
 type pkBinanceLifecycleClient struct{ entered chan struct{} }
+
+func TestPKBinanceCreditMultiplierValidation(t *testing.T) {
+	for _, tc := range []struct{ input, want string }{
+		{"1", "1.000000"}, {"6.7", "6.700000"}, {"0.000001", "0.000001"},
+		{"999.999999", "999.999999"}, {"1000", "1000.000000"}, {"1000.000000", "1000.000000"},
+		{"0001.0203", "1.020300"},
+	} {
+		t.Run(tc.input, func(t *testing.T) {
+			got, err := normalizeBinanceCreditMultiplier(tc.input)
+			if err != nil || got != tc.want {
+				t.Fatalf("normalize multiplier %q: got %q, error %v, want %q", tc.input, got, err, tc.want)
+			}
+			input, err := normalizeBinanceRechargeAccountInput(BinanceRechargeAccountInput{
+				Name: "fixture", RecipientUID: "12345", CreditMultiplier: &tc.input,
+			})
+			if err != nil || input.CreditMultiplier == nil || *input.CreditMultiplier != tc.want {
+				t.Fatalf("account input did not preserve the validated multiplier: %v", err)
+			}
+		})
+	}
+	for _, value := range []string{
+		"", " ", " 1", "1 ", "1\n", "0", "0.000000", "0.0000001", "-1", "+1", "1000.000001", "1001",
+		"1.0000000", "1.1234567", "1e2", "1E-6", ".5", "1.", "1,5", "NaN", "Infinity", "0x10", "１２", "1..0",
+		"99999999999999999999999999999999999999",
+	} {
+		t.Run("reject "+value, func(t *testing.T) {
+			if _, err := normalizeBinanceCreditMultiplier(value); err == nil {
+				t.Fatalf("invalid multiplier %q was accepted", value)
+			}
+			// No database or provider is available here: rejection must happen
+			// before persistence, encryption or any Binance network operation.
+			svc := NewBinanceRechargeService(nil, nil, nil, nil, nil)
+			_, err := svc.SaveAccount(context.Background(), 1, BinanceRechargeAccountInput{
+				Name: "fixture", RecipientUID: "12345", CreditMultiplier: &value,
+			})
+			if err == nil || !strings.Contains(err.Error(), "倍率") {
+				t.Fatalf("invalid account multiplier must fail validation first: %v", err)
+			}
+		})
+	}
+	input, err := normalizeBinanceRechargeAccountInput(BinanceRechargeAccountInput{Name: "fixture", RecipientUID: "12345"})
+	if err != nil || input.CreditMultiplier != nil {
+		t.Fatalf("an omitted multiplier must remain distinguishable from an explicit replacement: %v", err)
+	}
+}
 
 func TestPKBinanceProxyStartupUsesLoadedConfig(t *testing.T) {
 	for _, tc := range []struct {
@@ -81,7 +127,7 @@ func TestPKBinanceBillsReadDoesNotMutateOrdersOrRescheduleCollection(t *testing.
 	}
 	defer func() { _ = db.Close() }()
 	mock.ExpectQuery(`UPDATE binance_recharge_accounts a`).WillReturnRows(sqlmock.NewRows([]string{"failure_count"}).AddRow(0))
-	mock.ExpectQuery(`SELECT a.id, a.name, a.recipient_uid`).WillReturnRows(sqlmock.NewRows([]string{"id", "name", "recipient_uid", "enabled", "ttl", "key", "secret", "checked", "error", "created", "updated", "has_orders"}).AddRow(1, "test", "12345", true, 30, "test-key", "test-secret", nil, "", time.Now(), time.Now(), true))
+	mock.ExpectQuery(`SELECT a.id, a.name, a.recipient_uid`).WillReturnRows(sqlmock.NewRows([]string{"id", "name", "recipient_uid", "enabled", "ttl", "multiplier", "key", "secret", "checked", "error", "created", "updated", "has_orders"}).AddRow(1, "test", "12345", true, 30, "1.000000", "test-key", "test-secret", nil, "", time.Now(), time.Now(), true))
 	// The only successful-read mutation releases the shared API lock. There is
 	// no order, receipt, user balance or next_poll_at update on this path.
 	mock.ExpectExec(`UPDATE binance_recharge_accounts SET api_locked_until=to_timestamp\(0\),poll_token='' WHERE id=\$1 AND poll_token=\$2`).WillReturnResult(sqlmock.NewResult(0, 1))
@@ -115,7 +161,7 @@ func TestPKBinanceBillsRespectSharedLeaseAndProviderBackoff(t *testing.T) {
 			} else {
 				client.err = &binancepay.RateLimitError{StatusCode: 418, RetryAfter: 24 * time.Hour}
 				mock.ExpectQuery(`UPDATE binance_recharge_accounts a`).WillReturnRows(sqlmock.NewRows([]string{"failure_count"}).AddRow(0))
-				mock.ExpectQuery(`SELECT a.id, a.name, a.recipient_uid`).WillReturnRows(sqlmock.NewRows([]string{"id", "name", "recipient_uid", "enabled", "ttl", "key", "secret", "checked", "error", "created", "updated", "has_orders"}).AddRow(1, "test", "12345", true, 30, "test-key", "test-secret", nil, "", time.Now(), time.Now(), true))
+				mock.ExpectQuery(`SELECT a.id, a.name, a.recipient_uid`).WillReturnRows(sqlmock.NewRows([]string{"id", "name", "recipient_uid", "enabled", "ttl", "multiplier", "key", "secret", "checked", "error", "created", "updated", "has_orders"}).AddRow(1, "test", "12345", true, 30, "1.000000", "test-key", "test-secret", nil, "", time.Now(), time.Now(), true))
 				mock.ExpectExec(`UPDATE binance_recharge_accounts SET api_locked_until=to_timestamp\(0\),poll_token='',failure_count=\$3, next_poll_at=GREATEST`).WithArgs(int64(1), sqlmock.AnyArg(), 1, float64(86400), "币安 API 限流，已延后查收").WillReturnResult(sqlmock.NewResult(0, 1))
 			}
 			svc := NewBinanceRechargeService(db, pkBinanceLifecycleEncryptor{}, client, nil, nil)
@@ -151,7 +197,7 @@ func TestPKBinanceLifecycle_StopCancelsPollingAndWaits(t *testing.T) {
 	defer func() { _ = db.Close() }()
 	mock.ExpectQuery(`SELECT a.id FROM binance_recharge_accounts`).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(1))
 	mock.ExpectQuery(`UPDATE binance_recharge_accounts SET next_poll_at`).WillReturnRows(sqlmock.NewRows([]string{"failure_count"}).AddRow(0))
-	mock.ExpectQuery(`SELECT a.id, a.name, a.recipient_uid`).WillReturnRows(sqlmock.NewRows([]string{"id", "name", "recipient_uid", "enabled", "ttl", "key", "secret", "checked", "error", "created", "updated", "has_orders"}).AddRow(1, "test", "12345", true, 30, "test-key", "test-secret", nil, "", time.Now(), time.Now(), true))
+	mock.ExpectQuery(`SELECT a.id, a.name, a.recipient_uid`).WillReturnRows(sqlmock.NewRows([]string{"id", "name", "recipient_uid", "enabled", "ttl", "multiplier", "key", "secret", "checked", "error", "created", "updated", "has_orders"}).AddRow(1, "test", "12345", true, 30, "1.000000", "test-key", "test-secret", nil, "", time.Now(), time.Now(), true))
 	mock.ExpectExec(`UPDATE binance_recharge_accounts SET last_checked_at`).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`UPDATE binance_recharge_orders SET status='EXPIRED'`).WillReturnResult(sqlmock.NewResult(0, 0))
 	client := &pkBinanceLifecycleClient{entered: make(chan struct{})}
