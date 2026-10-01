@@ -102,6 +102,12 @@ func startEarlySpaceFailoverTestWriter(t *testing.T, protocol, mode string, dela
 		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 		nil, nil, nil, nil, nil, nil, nil, nil, nil, settings, nil,
 	)
+	// Initialize SSE headers before starting the timer so its header snapshot
+	// matches the stream before any zero-delay heartbeat can write.
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
 	stop := gateway.StartEarlySSEHeartbeat(c, time.Now(), protocol)
 	t.Cleanup(stop)
 	return c, rec

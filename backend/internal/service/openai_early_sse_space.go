@@ -680,7 +680,7 @@ func (s *earlySSESpaceState) prepareResponseEvent(object earlySpaceObject, kind 
 		case "response.output_text.delta":
 			part := item.part(contentIndex)
 			delta := earlySpaceString(object, "delta")
-			part.text.WriteString(delta)
+			_, _ = part.text.WriteString(delta)
 			if part.snapshot == nil {
 				part.snapshot = earlySpaceObject{"type": json.RawMessage(`"output_text"`)}
 			}
@@ -914,7 +914,7 @@ func (s *earlySSESpaceState) supplementMessage(index int, output earlySpaceObjec
 				if err := send("response.output_text.delta", partIndex, map[string]any{"delta": missing}); err != nil {
 					return err
 				}
-				part.text.WriteString(missing)
+				_, _ = part.text.WriteString(missing)
 			}
 		}
 		if stopBefore == "response.output_text.done" {
