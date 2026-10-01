@@ -66,18 +66,38 @@ func (r *earlySpaceFailoverSettingsRepo) GetMultiple(_ context.Context, keys []s
 	return values, nil
 }
 
-func startEarlySpaceFailoverTestWriter(t *testing.T, protocol, mode, delay string) (*gin.Context, *httptest.ResponseRecorder) {
+func (r *earlySpaceFailoverSettingsRepo) SetMultiple(_ context.Context, values map[string]string) error {
+	for key, value := range values {
+		r.values[key] = value
+	}
+	return nil
+}
+
+func startEarlySpaceFailoverTestWriter(t *testing.T, protocol, mode string, delay int) (*gin.Context, *httptest.ResponseRecorder) {
 	t.Helper()
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest("POST", "/v1/responses", nil)
 	setOpsRequestContext(c, "gpt-test", true)
-	settings := service.NewSettingService(&earlySpaceFailoverSettingsRepo{values: map[string]string{
-		service.SettingKeyStreamEarlyHeartbeatEnabled:    "true",
-		service.SettingKeyStreamEarlyHeartbeatMode:       mode,
-		service.SettingKeyStreamEarlyHeartbeatMinDelayMS: delay,
-		service.SettingKeyStreamEarlyHeartbeatMaxDelayMS: delay,
-	}}, nil)
+	settings := service.NewSettingService(&earlySpaceFailoverSettingsRepo{values: map[string]string{}}, nil)
+	ctx := context.Background()
+	previous := settings.GetStreamEarlyHeartbeatSettings(ctx)
+	t.Cleanup(func() {
+		require.NoError(t, settings.UpdateSettings(ctx, &service.SystemSettings{
+			StreamEarlyHeartbeatEnabled:    previous.Enabled,
+			StreamEarlyHeartbeatMode:       previous.Mode,
+			StreamEarlyHeartbeatMinDelayMS: previous.MinDelayMS,
+			StreamEarlyHeartbeatMaxDelayMS: previous.MaxDelayMS,
+		}))
+	})
+	// The forwarding cache is shared between SettingService instances. Use the
+	// real successful-write path so each fixture gets its requested snapshot.
+	require.NoError(t, settings.UpdateSettings(ctx, &service.SystemSettings{
+		StreamEarlyHeartbeatEnabled:    true,
+		StreamEarlyHeartbeatMode:       mode,
+		StreamEarlyHeartbeatMinDelayMS: delay,
+		StreamEarlyHeartbeatMaxDelayMS: delay,
+	}))
 	gateway := service.NewOpenAIGatewayService(
 		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 		nil, nil, nil, nil, nil, nil, nil, nil, nil, settings, nil,
@@ -90,7 +110,7 @@ func startEarlySpaceFailoverTestWriter(t *testing.T, protocol, mode, delay strin
 func TestPKEarlySpaceFailoverRejectsSpaceWrittenBeforeForwardSnapshot(t *testing.T) {
 	for _, protocol := range []string{"chat", "responses"} {
 		t.Run(protocol, func(t *testing.T) {
-			c, _ := startEarlySpaceFailoverTestWriter(t, protocol, service.StreamEarlyHeartbeatModeSpace, "0")
+			c, _ := startEarlySpaceFailoverTestWriter(t, protocol, service.StreamEarlyHeartbeatModeSpace, 0)
 			if protocol == "responses" {
 				_, err := c.Writer.Write([]byte("event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_real\",\"output\":[]}}\n\n"))
 				require.NoError(t, err)
@@ -106,7 +126,7 @@ func TestPKEarlySpaceFailoverRejectsSpaceWrittenBeforeForwardSnapshot(t *testing
 }
 
 func TestPKEarlySpaceFailoverCancelsPendingSpaceForLaterAttempt(t *testing.T) {
-	c, rec := startEarlySpaceFailoverTestWriter(t, "responses", service.StreamEarlyHeartbeatModeSpace, "30000")
+	c, rec := startEarlySpaceFailoverTestWriter(t, "responses", service.StreamEarlyHeartbeatModeSpace, 30000)
 	before := service.OpenAICompactKeepaliveAdjustedWrittenSize(c)
 	_, err := c.Writer.Write([]byte("event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_old\",\"output\":[]}}\n\n"))
 	require.NoError(t, err)
@@ -121,7 +141,7 @@ func TestPKEarlySpaceFailoverCancelsPendingSpaceForLaterAttempt(t *testing.T) {
 func TestPKEarlySpaceFailoverKeepsCommentAndPingBehavior(t *testing.T) {
 	for _, mode := range []string{service.StreamEarlyHeartbeatModeComment, service.StreamEarlyHeartbeatModeDownstreamPing} {
 		t.Run(mode, func(t *testing.T) {
-			c, _ := startEarlySpaceFailoverTestWriter(t, "responses", mode, "0")
+			c, _ := startEarlySpaceFailoverTestWriter(t, "responses", mode, 0)
 			require.Eventually(t, func() bool { return service.FirstResponseMsFromContext(c.Request.Context()) != nil }, time.Second, time.Millisecond)
 			before := service.OpenAICompactKeepaliveAdjustedWrittenSize(c)
 			require.False(t, service.EarlySSESpaceOutputCommitted(c))
