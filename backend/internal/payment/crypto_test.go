@@ -649,7 +649,13 @@ func pkBinanceProxyClient(t *testing.T, base int64) (*binancepay.Client, *pkBina
 		state.mu.Lock()
 		state.connections[upstream.LocalAddr().String()] = token
 		state.mu.Unlock()
-		connection, buffered, err := w.(http.Hijacker).Hijack()
+		hijacker, ok := w.(http.Hijacker)
+		if !ok {
+			t.Error("local CONNECT fixture does not support hijacking")
+			http.Error(w, "hijack unavailable", http.StatusInternalServerError)
+			return
+		}
+		connection, buffered, err := hijacker.Hijack()
 		if err != nil {
 			t.Errorf("hijack local CONNECT: %v", err)
 			return
@@ -676,7 +682,11 @@ func pkBinanceProxyClient(t *testing.T, base int64) (*binancepay.Client, *pkBina
 		t.Fatal(err)
 	}
 	proxy.User = url.UserPassword("fixture-user", "fixture-password")
-	transport := api.Client().Transport.(*http.Transport).Clone()
+	apiTransport, ok := api.Client().Transport.(*http.Transport)
+	if !ok {
+		t.Fatal("local TLS fixture did not provide an HTTP transport")
+	}
+	transport := apiTransport.Clone()
 	transport.TLSClientConfig.ServerName = api.Certificate().DNSNames[0]
 	// This pre-existing proxy callback must not escape into either client.
 	transport.Proxy = func(*http.Request) (*url.URL, error) {
