@@ -1003,3 +1003,145 @@ func TestPKEarlyHeartbeat_DownstreamPingPreservesLocalReaderFailover(t *testing.
 		})
 	}
 }
+
+// Deliberately return a short count without an error to exercise defensive
+// handling of middleware writers that violate the io.Writer contract.
+type pkEarlySSEShortWriter struct {
+	gin.ResponseWriter
+	limit int
+	calls int
+}
+
+func (w *pkEarlySSEShortWriter) Write(data []byte) (int, error) {
+	w.calls++
+	if w.limit >= 0 && w.limit < len(data) {
+		data = data[:w.limit]
+	}
+	return w.ResponseWriter.Write(data)
+}
+
+func TestPKEarlyHeartbeat_ShortTimerWriteStopsWithoutCompletingPing(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		mode     string
+		protocol string
+		frame    string
+	}{
+		{"comment", StreamEarlyHeartbeatModeComment, "responses", ": keepalive\n\n"},
+		{"responses ping", StreamEarlyHeartbeatModeDownstreamPing, "responses", "data: {\"type\":\"ping\"}\n\n"},
+		{"messages ping", StreamEarlyHeartbeatModeDownstreamPing, "messages", "event: ping\ndata: {\"type\":\"ping\"}\n\n"},
+	} {
+		for _, written := range []int{0, 7} {
+			t.Run(fmt.Sprintf("%s/bytes=%d", tc.name, written), func(t *testing.T) {
+				c, rec := newCompactBridgeTestContext(t, false)
+				short := &pkEarlySSEShortWriter{ResponseWriter: c.Writer, limit: written}
+				c.Writer = short
+				stop := startEarlySSEHeartbeat(c, time.Now(), tc.protocol, StreamEarlyHeartbeatSettings{
+					Enabled: true, Mode: tc.mode, MinDelayMS: 30000, MaxDelayMS: 30000,
+				})
+				defer stop()
+				w := earlySSEWriterFromContext(c)
+				firePKEarlyHeartbeat(t, w)
+				w.mu.Lock()
+				stopped, firstDue, heartbeatBytes := w.stopped, w.firstDue, w.bytes
+				w.mu.Unlock()
+				require.True(t, stopped)
+				require.False(t, firstDue.IsZero(), "a partial frame must not satisfy the first heartbeat")
+				require.Equal(t, written, heartbeatBytes)
+				require.Equal(t, tc.frame[:written], rec.Body.String())
+				require.False(t, rec.Flushed, "a short frame is a write failure, not a successful flush")
+				if written == 0 {
+					require.Nil(t, FirstResponseMsFromContext(c.Request.Context()))
+				} else {
+					require.NotNil(t, FirstResponseMsFromContext(c.Request.Context()), "partial nonempty writes still count as first response")
+					require.Equal(t, -1, EarlySSEAdjustedWrittenSize(c))
+				}
+				firePKEarlyHeartbeat(t, w)
+				require.Equal(t, 1, short.calls, "write failure must permanently stop the timer")
+				require.Equal(t, tc.frame[:written], rec.Body.String())
+			})
+		}
+	}
+}
+
+func TestPKEarlyHeartbeat_ShortBusinessAndQueueWritesReturnError(t *testing.T) {
+	for _, frame := range []string{
+		"data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n",
+		": queue\n\n",
+		"data: {\"type\":\"ping\"}\n\n",
+	} {
+		for _, written := range []int{0, 7} {
+			t.Run(fmt.Sprintf("%q/bytes=%d", frame, written), func(t *testing.T) {
+				c, rec := newCompactBridgeTestContext(t, false)
+				short := &pkEarlySSEShortWriter{ResponseWriter: c.Writer, limit: written}
+				c.Writer = short
+				stop := startEarlySSEHeartbeat(c, time.Now(), "responses", StreamEarlyHeartbeatSettings{
+					Enabled: true, Mode: StreamEarlyHeartbeatModeDownstreamPing, MinDelayMS: 30000, MaxDelayMS: 30000,
+				})
+				defer stop()
+				c.Writer.Header().Set("Content-Type", "text/event-stream")
+				n, err := c.Writer.WriteString(frame)
+				require.Equal(t, written, n)
+				require.ErrorIs(t, err, io.ErrShortWrite)
+				w := earlySSEWriterFromContext(c)
+				w.mu.Lock()
+				stopped, firstDue, heartbeatBytes := w.stopped, w.firstDue, w.bytes
+				w.mu.Unlock()
+				require.True(t, stopped)
+				require.False(t, firstDue.IsZero(), "a partial queue ping cannot satisfy the pending ping")
+				require.Zero(t, heartbeatBytes, "external bytes must not be counted as timer bytes")
+				require.Equal(t, frame[:written], rec.Body.String())
+				if written == 0 {
+					require.Nil(t, FirstResponseMsFromContext(c.Request.Context()))
+				} else {
+					require.NotNil(t, FirstResponseMsFromContext(c.Request.Context()))
+				}
+				firePKEarlyHeartbeat(t, w)
+				require.Equal(t, 1, short.calls)
+			})
+		}
+	}
+}
+
+func TestPKEarlyHeartbeat_ShortLateErrorDoesNotReportSuccess(t *testing.T) {
+	for _, protocol := range []string{"responses", "chat", "messages"} {
+		for _, written := range []int{0, 7} {
+			t.Run(fmt.Sprintf("%s/bytes=%d", protocol, written), func(t *testing.T) {
+				c, rec := newCompactBridgeTestContext(t, false)
+				short := &pkEarlySSEShortWriter{ResponseWriter: c.Writer, limit: -1}
+				c.Writer = short
+				stop := startEarlySSEHeartbeat(c, time.Now(), protocol, StreamEarlyHeartbeatSettings{
+					Enabled: true, Mode: StreamEarlyHeartbeatModeDownstreamPing, MinDelayMS: 30000, MaxDelayMS: 30000,
+				})
+				defer stop()
+				w := earlySSEWriterFromContext(c)
+				firePKEarlyHeartbeat(t, w)
+				prefix := rec.Body.String()
+				first := FirstResponseMsFromContext(c.Request.Context())
+				w.mu.Lock()
+				short.limit = written
+				w.mu.Unlock()
+				c.Writer.Header().Set("Content-Type", "application/json")
+				c.Writer.WriteHeader(http.StatusServiceUnavailable)
+				n, err := c.Writer.Write([]byte(`{"error":{"type":"overloaded_error","message":"try later"}}`))
+				require.Zero(t, n, "a truncated replacement frame cannot acknowledge the original JSON")
+				require.ErrorIs(t, err, io.ErrShortWrite)
+				require.Len(t, rec.Body.String(), len(prefix)+written)
+				require.Equal(t, first, FirstResponseMsFromContext(c.Request.Context()))
+				w.mu.Lock()
+				stopped, terminal, heartbeatBytes := w.stopped, w.terminal, w.bytes
+				w.mu.Unlock()
+				require.True(t, stopped)
+				require.True(t, terminal)
+				require.Equal(t, len(prefix), heartbeatBytes, "terminal error bytes are not transport heartbeat bytes")
+				firePKEarlyHeartbeat(t, w)
+				require.Equal(t, 2, short.calls)
+				before := rec.Body.String()
+				_, err = c.Writer.WriteString("must not append after partial terminal")
+				require.NoError(t, err)
+				require.Equal(t, before, rec.Body.String())
+				require.Equal(t, 2, short.calls)
+			})
+		}
+	}
+}

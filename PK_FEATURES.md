@@ -182,7 +182,7 @@
 - 队列心跳、compact/直通原有保活和提前心跳独立计数；从正文提交判断中分别扣除且不重复扣。只有心跳时仍可按原规则换号/回退。
 - 提前控制器与原有心跳共用调度，完整注释/已知 ping 不终止后续周期保活；真实正文、部分或混合业务帧应停止提前心跳，避免插入正文中间。
 - `downstream_ping` 模式下，更早的队列/周期注释不消耗待发送的首次数据 ping；外部完整 ping 可以满足首次发送。内部数据 ping 的字节和原注释一样从本层正文提交判断中扣除，不能重复扣外部队列心跳，也不能改变本层安全换号。
-- 外部排队心跳取消待发送的首次心跳，但共享控制器仍可接受之后的周期保活；关闭提前开关时也必须成立。只有心跳时 adjusted size 归一为 `-1`；外部注释字节由原调用方计数，writer 不重复累计。
+- 默认 `comment` 模式的外部排队心跳取消待发送的首次心跳；`downstream_ping` 按上条区分注释与数据 ping。共享控制器仍可接受之后的周期保活，关闭提前开关时也必须成立。只有心跳时 adjusted size 归一为 `-1`；外部注释字节由原调用方计数，writer 不重复累计。
 - `Written()` 必须继续表示真实 HTTP 提交状态；只有“是否已输出业务正文、是否允许换号/重试/fallback”的判断使用一致的 adjusted size。Handler 到转发 service 的相关业务判断都要保留，不能遗漏桥接或重试分支，也不能把 HTTP 已提交状态改成未提交。
 - 保留首输出超时的安全标记、最多一次安全切号和客户端取消阻止重放；已输出语义正文后，不进行会重复输出/收费的重放。
 - 心跳不改变缓存转换、模型正文、usage 和账单，不以排队心跳冒充真实上游首字。
@@ -196,6 +196,7 @@
 - 未发送正文的快速错误保留原 HTTP 状态和 JSON。心跳已提交 HTTP 200 后，晚到错误使用入站协议对应的 SSE 终止事件：Responses、Chat、Messages 不能混发，也不能在流后追加裸 JSON。
 - Header 克隆隔离定时器与业务修改，写锁串行化输出；停止等待定时 goroutine 退出并还原 writer，之后才允许 handler 返回、Gin context 回收。
 - timer 不回读变化中的 Gin context；取消、结束、错误及 Hijack 都要停止等待，Stop 可重复调用。错误转换只发送一次终止事件，保留原拟返回状态的 Ops 错误标记。
+- 2026-10-02 增加短写保护：底层返回不足长度但未报错时转为 `io.ErrShortWrite` 并停止定时器，不把半帧当完整 ping 或成功错误转换；首包仍只按实际非空写出计时，心跳只累计实际写出字节。
 - 保留 Ops 流错误/已提交标记；后到动态上游响应头已无法补发，这是提前响应的边界。
 - `Server-Timing` 中间件只在真实 `/api/v1/` UI 路径启用；伪造 UI 请求头不能在模型网关启用并产生并发写入冲突。
 - 入口：`backend/internal/service/openai_early_sse_heartbeat.go`、`backend/internal/handler/gateway_helper.go`、`backend/internal/server/middleware/server_timing.go`。

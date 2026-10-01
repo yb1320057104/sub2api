@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"math/rand/v2"
 	"net"
 	"net/http"
@@ -252,6 +253,9 @@ func (w *earlySSEHeartbeatWriter) beat() {
 	}
 	w.committed = true
 	n, err := w.ResponseWriter.Write([]byte(frame))
+	if err == nil && n < len(frame) {
+		err = io.ErrShortWrite
+	}
 	w.bytes += n
 	if n > 0 {
 		w.timing.record()
@@ -378,13 +382,17 @@ func (w *earlySSEHeartbeatWriter) Write(data []byte) (int, error) {
 		MarkOpsStreamError(w.c, errType, message, status)
 		MarkResponseCommitted(w.c)
 		n, err := w.ResponseWriter.Write(frame)
+		if err == nil && n < len(frame) {
+			err = io.ErrShortWrite
+		}
 		if n > 0 {
 			w.timing.record()
 		}
-		w.ResponseWriter.Flush()
 		if err != nil {
+			w.stopLocked()
 			return 0, err
 		}
+		w.ResponseWriter.Flush()
 		return len(data), nil
 	}
 	if !w.ResponseWriter.Written() {
@@ -392,6 +400,9 @@ func (w *earlySSEHeartbeatWriter) Write(data []byte) (int, error) {
 		w.ResponseWriter.WriteHeader(w.status)
 	}
 	n, err := w.ResponseWriter.Write(data)
+	if err == nil && n < len(data) {
+		err = io.ErrShortWrite
+	}
 	if n > 0 {
 		w.timing.record()
 		if transportHeartbeat {
@@ -400,13 +411,15 @@ func (w *earlySSEHeartbeatWriter) Write(data []byte) (int, error) {
 			// A queue comment does not satisfy the explicit data-ping mode. A
 			// real queue ping does; both leave periodic keepalive available.
 			w.committed = true
-			if protocolPing || w.mode != StreamEarlyHeartbeatModeDownstreamPing {
-				w.firstDue = time.Time{}
+			if err == nil {
+				if protocolPing || w.mode != StreamEarlyHeartbeatModeDownstreamPing {
+					w.firstDue = time.Time{}
+				}
+				if w.interval > 0 {
+					w.repeatDue = time.Now().Add(w.interval)
+				}
+				w.notify()
 			}
-			if w.interval > 0 {
-				w.repeatDue = time.Now().Add(w.interval)
-			}
-			w.notify()
 		}
 	}
 	if err != nil {
