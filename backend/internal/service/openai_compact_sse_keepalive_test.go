@@ -1234,7 +1234,7 @@ func TestPKEarlyHeartbeat_SpaceResponsesWaitsForRealIDAndKeepsSnapshots(t *testi
 			require.Equal(t, int64(len(added)-1), event.Get("output_index").Int())
 		}
 		if event.Get("type").String() == "response.output_text.delta" && !event.Get("sub2api_placeholder").Bool() {
-			realText.WriteString(event.Get("delta").String())
+			_, _ = realText.WriteString(event.Get("delta").String())
 			require.Equal(t, int64(2), event.Get("output_index").Int())
 			require.Equal(t, int64(1), event.Get("content_index").Int())
 		}

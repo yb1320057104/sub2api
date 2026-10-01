@@ -608,19 +608,19 @@ func (w *earlySSEHeartbeatWriter) errorFrame(data []byte) ([]byte, string, strin
 			code = errType
 		}
 		event = "response.failed"
+		response := map[string]any{
+			"id":     "resp_" + strings.ReplaceAll(uuid.NewString(), "-", ""),
+			"object": "response", "created_at": time.Now().Unix(),
+			"status": "failed", "output": []any{},
+			"error": map[string]any{"code": code, "message": message},
+		}
 		payload = map[string]any{
 			"type": event, "sequence_number": 0,
-			"response": map[string]any{
-				"id":     "resp_" + strings.ReplaceAll(uuid.NewString(), "-", ""),
-				"object": "response", "created_at": time.Now().Unix(),
-				"status": "failed", "output": []any{},
-				"error": map[string]any{"code": code, "message": message},
-			},
+			"response": response,
 		}
 		if w.space != nil && w.space.responseID != "" {
 			payload["sequence_number"] = w.space.nextSequence
 			w.space.nextSequence++
-			response := payload["response"].(map[string]any)
 			response["id"] = w.space.responseID
 			if w.space.active {
 				output, _ := w.space.mergeOutputSnapshot(nil, true)

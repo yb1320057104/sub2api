@@ -415,17 +415,17 @@ func (f earlySpaceFrame) replaceData(payload []byte) []byte {
 		field, _, _ := strings.Cut(line, ":")
 		if field == "data" {
 			if !written {
-				out.WriteString("data: ")
-				out.Write(payload)
-				out.WriteByte('\n')
+				_, _ = out.WriteString("data: ")
+				_, _ = out.Write(payload)
+				_ = out.WriteByte('\n')
 				written = true
 			}
 			continue
 		}
-		out.WriteString(line)
-		out.WriteByte('\n')
+		_, _ = out.WriteString(line)
+		_ = out.WriteByte('\n')
 	}
-	out.WriteByte('\n')
+	_ = out.WriteByte('\n')
 	return []byte(out.String())
 }
 
