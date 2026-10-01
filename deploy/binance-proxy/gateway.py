@@ -54,7 +54,9 @@ MAX_HEADERS = 16384
 MAX_HEADER_FIELDS = 64
 MAX_PROBE_BODY = 8192
 MAX_CONNECTIONS = 64
-MAX_PREFLIGHTS = 2
+# The recharge scheduler runs three account workers; reserve another slot for
+# an administrator query so normal polling does not repeatedly reject one account.
+MAX_PREFLIGHTS = 4
 MAX_TOKENS = 512
 MAX_RELAY_BUFFER = 65536
 MAX_TUNNEL_BYTES = 64 * 1024 * 1024
