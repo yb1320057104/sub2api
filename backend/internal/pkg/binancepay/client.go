@@ -48,24 +48,61 @@ func (e *RateLimitError) Error() string {
 	return fmt.Sprintf("binance: rate limited (HTTP %d), retry after %d seconds", e.StatusCode, int64(e.RetryAfter/time.Second))
 }
 
-// Client has no mutable signing/clock state and may be shared by account workers.
-// Every request is GET against the fixed Binance origin; redirects are rejected.
+// Client has no mutable signing/clock/route state and may be shared by account
+// workers. Binance requests are GET against a fixed origin; redirects are rejected.
 type Client struct {
-	http *http.Client
+	http              *http.Client
+	preflightHTTP     *http.Client
+	proxyURL          *url.URL
+	transportTemplate *http.Transport
+}
+
+// ClientOptions configures only this Binance client. Transport is an optional
+// trusted template (for custom TLS roots or tests); it is cloned, never modified.
+// Environment proxy settings are never inherited.
+type ClientOptions struct {
+	ProxyURL       string
+	ProxyPreflight bool
+	Transport      *http.Transport
 }
 
 // NewClient accepts an optional dedicated HTTP(S) or SOCKS5 proxy. An invalid
 // proxy is an error and never silently falls back to a direct connection.
 func NewClient(proxyURL string) (*Client, error) {
+	return NewClientWithOptions(ClientOptions{ProxyURL: proxyURL})
+}
+
+func NewClientWithOptions(options ClientOptions) (*Client, error) {
 	transport := cloneDirectTransport()
-	if strings.TrimSpace(proxyURL) != "" {
-		proxy, err := parseProxyURL(proxyURL)
+	if options.Transport != nil {
+		transport = options.Transport.Clone()
+		transport.Proxy = nil
+	}
+	var proxy *url.URL
+	if strings.TrimSpace(options.ProxyURL) != "" {
+		var err error
+		proxy, err = parseProxyURL(options.ProxyURL)
 		if err != nil {
 			return nil, err
 		}
 		transport.Proxy = http.ProxyURL(proxy)
 	}
-	return NewClientWithTransport(transport), nil
+	client := NewClientWithTransport(transport)
+	if options.ProxyPreflight {
+		if proxy == nil || (proxy.Scheme != "http" && proxy.Scheme != "https") || proxy.User == nil || proxy.User.Username() == "" {
+			return nil, errors.New("binance: proxy preflight requires an authenticated HTTP(S) proxy")
+		}
+		if password, _ := proxy.User.Password(); password == "" {
+			return nil, errors.New("binance: proxy preflight requires an authenticated HTTP(S) proxy")
+		}
+		// The gateway is reached directly, not through itself or a global proxy.
+		preflightTransport := transport.Clone()
+		preflightTransport.Proxy = nil
+		client.preflightHTTP = newHTTPClient(preflightTransport)
+		client.proxyURL = proxy
+		client.transportTemplate = transport
+	}
+	return client, nil
 }
 
 // NewClientWithTransport permits a mocked transport without making the Binance
@@ -74,13 +111,17 @@ func NewClientWithTransport(transport http.RoundTripper) *Client {
 	if transport == nil {
 		transport = cloneDirectTransport()
 	}
-	return &Client{http: &http.Client{
+	return &Client{http: newHTTPClient(transport)}
+}
+
+func newHTTPClient(transport http.RoundTripper) *http.Client {
+	return &http.Client{
 		Transport: transport,
 		Timeout:   requestTimeout,
 		CheckRedirect: func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
-	}}
+	}
 }
 
 func cloneDirectTransport() *http.Transport {
@@ -105,6 +146,9 @@ func (c *Client) CloseIdleConnections() {
 	if c != nil && c.http != nil {
 		c.http.CloseIdleConnections()
 	}
+	if c != nil && c.preflightHTTP != nil {
+		c.preflightHTTP.CloseIdleConnections()
+	}
 }
 
 // History reads the complete requested millisecond interval or returns an
@@ -122,7 +166,12 @@ func (c *Client) History(ctx context.Context, apiKey, secret, receiverUID string
 	}
 	ctx, cancel := context.WithTimeout(ctx, historyTimeout)
 	defer cancel()
-	offset, err := c.syncTime(ctx)
+	operation, finish, err := c.beginOperation(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer finish()
+	offset, err := operation.syncTime(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -141,7 +190,7 @@ func (c *Client) History(ctx context.Context, apiKey, secret, receiverUID string
 		if end-start > maxWindowMillis {
 			windowEnd = start + maxWindowMillis
 		}
-		if err := c.historyWindow(ctx, apiKey, secret, receiverUID, offset, start, windowEnd, 0, &budget, unique); err != nil {
+		if err := operation.historyWindow(ctx, apiKey, secret, receiverUID, offset, start, windowEnd, 0, &budget, unique); err != nil {
 			return nil, err
 		}
 		if windowEnd == end {
@@ -239,14 +288,19 @@ func (c *Client) Probe(ctx context.Context, apiKey, secret string) error {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
-	offset, err := c.syncTime(ctx)
+	operation, finish, err := c.beginOperation(ctx)
+	if err != nil {
+		return err
+	}
+	defer finish()
+	offset, err := operation.syncTime(ctx)
 	if err != nil {
 		return err
 	}
 	var permissions struct {
 		EnableReading bool `json:"enableReading"`
 	}
-	if err := c.get(ctx, "/sapi/v1/account/apiRestrictions", nil, apiKey, secret, offset, &permissions); err != nil {
+	if err := operation.get(ctx, "/sapi/v1/account/apiRestrictions", nil, apiKey, secret, offset, &permissions); err != nil {
 		return err
 	}
 	if !permissions.EnableReading {
@@ -255,7 +309,7 @@ func (c *Client) Probe(ctx context.Context, apiKey, secret string) error {
 	now := time.Now().UnixMilli() + offset
 	var response historyResponse
 	params := url.Values{"startTime": {strconv.FormatInt(now-int64(24*time.Hour/time.Millisecond), 10)}, "endTime": {strconv.FormatInt(now, 10)}, "limit": {"1"}}
-	if err := c.get(ctx, historyPath, params, apiKey, secret, offset, &response); err != nil {
+	if err := operation.get(ctx, historyPath, params, apiKey, secret, offset, &response); err != nil {
 		return err
 	}
 	if response.Code != "000000" || !response.Success {

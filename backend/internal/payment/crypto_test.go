@@ -5,15 +5,21 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -543,5 +549,342 @@ func TestPKBinanceBillsRejectInvalidRangeAndHonorProviderBackoff(t *testing.T) {
 	var limited *binancepay.RateLimitError
 	if !errors.As(err, &limited) || page != nil || calls != 2 {
 		t.Fatalf("rate limit must stop bill queries: %v", err)
+	}
+}
+
+type pkBinanceProxyState struct {
+	mu          sync.Mutex
+	preflights  int
+	connections map[string]string
+	requests    map[string][]string
+	keys        map[string]map[string]bool
+}
+
+// The gateway performs real HTTP CONNECT tunnelling to a local TLS fixture.
+// Its certificate is trusted only by the explicitly supplied test transport.
+func pkBinanceProxyClient(t *testing.T, base int64) (*binancepay.Client, *pkBinanceProxyState) {
+	t.Helper()
+	state := &pkBinanceProxyState{connections: make(map[string]string), requests: make(map[string][]string), keys: make(map[string]map[string]bool)}
+	api := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Host != "api.binance.com" || r.Header.Get("X-Binance-Route-Token") != "" || r.Header.Get("Proxy-Authorization") != "" || r.Header.Get("Authorization") != "" {
+			t.Error("gateway authentication or route token leaked into Binance TLS request")
+		}
+		state.mu.Lock()
+		token := state.connections[r.RemoteAddr]
+		if token == "" {
+			t.Error("Binance request did not arrive through a pinned CONNECT route")
+		}
+		state.requests[token] = append(state.requests[token], r.URL.Path)
+		if key := r.Header.Get("X-MBX-APIKEY"); key != "" {
+			if state.keys[token] == nil {
+				state.keys[token] = make(map[string]bool)
+			}
+			state.keys[token][key] = true
+		}
+		state.mu.Unlock()
+		var response any
+		switch r.URL.Path {
+		case "/api/v3/time":
+			response = map[string]any{"serverTime": time.Now().UnixMilli()}
+		case "/sapi/v1/account/apiRestrictions":
+			response = map[string]any{"enableReading": true}
+		case "/sapi/v1/pay/transactions":
+			from, _ := strconv.ParseInt(r.URL.Query().Get("startTime"), 10, 64)
+			to, _ := strconv.ParseInt(r.URL.Query().Get("endTime"), 10, 64)
+			limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+			rows := []any{}
+			for i := 0; i < 137; i++ {
+				at := base + int64(i)
+				if at >= from && at <= to && len(rows) < limit {
+					rows = append(rows, pkBinanceTransfer(strconv.Itoa(i), "1.00001", "USDT", "C2C", "42", at))
+				}
+			}
+			response = map[string]any{"code": "000000", "success": true, "data": rows}
+		default:
+			t.Error("unexpected Binance endpoint")
+			http.Error(w, "unexpected endpoint", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			t.Errorf("write local Binance response: %v", err)
+		}
+	}))
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/_binance/preflight" {
+			user, password, ok := r.BasicAuth()
+			if !ok || user != "fixture-user" || password != "fixture-password" || r.Header.Get("X-MBX-APIKEY") != "" || r.URL.User != nil || r.URL.RawQuery != "" {
+				t.Error("preflight authentication must contain only gateway credentials")
+				http.Error(w, "auth", http.StatusUnauthorized)
+				return
+			}
+			state.mu.Lock()
+			state.preflights++
+			token := fmt.Sprintf("route_%d", state.preflights)
+			state.requests[token] = nil
+			state.mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewEncoder(w).Encode(map[string]string{"route_token": token}); err != nil {
+				t.Errorf("write preflight response: %v", err)
+			}
+			return
+		}
+		token := r.Header.Get("X-Binance-Route-Token")
+		state.mu.Lock()
+		_, valid := state.requests[token]
+		state.mu.Unlock()
+		wantAuth := "Basic " + base64.StdEncoding.EncodeToString([]byte("fixture-user:fixture-password"))
+		if r.Method != http.MethodConnect || r.Host != "api.binance.com:443" || !valid || r.Header.Get("Proxy-Authorization") != wantAuth {
+			t.Error("CONNECT must target Binance with gateway authentication and a freshly issued route token")
+			http.Error(w, "bad CONNECT", http.StatusForbidden)
+			return
+		}
+		upstream, err := net.DialTimeout("tcp", api.Listener.Addr().String(), 2*time.Second)
+		if err != nil {
+			t.Errorf("dial local TLS fixture: %v", err)
+			http.Error(w, "dial", http.StatusBadGateway)
+			return
+		}
+		defer func() { _ = upstream.Close() }()
+		state.mu.Lock()
+		state.connections[upstream.LocalAddr().String()] = token
+		state.mu.Unlock()
+		connection, buffered, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Errorf("hijack local CONNECT: %v", err)
+			return
+		}
+		defer func() { _ = connection.Close() }()
+		if _, err := buffered.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
+			return
+		}
+		if err := buffered.Flush(); err != nil {
+			return
+		}
+		finished := make(chan struct{})
+		go func() {
+			_, _ = io.Copy(upstream, buffered)
+			_ = upstream.Close()
+			close(finished)
+		}()
+		_, _ = io.Copy(connection, upstream)
+		_ = connection.Close()
+		<-finished
+	}))
+	proxy, err := url.Parse(gateway.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy.User = url.UserPassword("fixture-user", "fixture-password")
+	transport := api.Client().Transport.(*http.Transport).Clone()
+	transport.TLSClientConfig.ServerName = api.Certificate().DNSNames[0]
+	// This pre-existing proxy callback must not escape into either client.
+	transport.Proxy = func(*http.Request) (*url.URL, error) {
+		t.Error("inherited proxy callback must not run")
+		return nil, errors.New("unexpected inherited proxy")
+	}
+	client, err := binancepay.NewClientWithOptions(binancepay.ClientOptions{ProxyURL: proxy.String(), ProxyPreflight: true, Transport: transport})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		client.CloseIdleConnections()
+		gateway.Close()
+		api.Close()
+	})
+	return client, state
+}
+
+func TestPKBinanceProxyPreflightPinsWholeOperation(t *testing.T) {
+	t.Parallel()
+	base := time.Now().Add(-time.Minute).UnixMilli()
+	client, state := pkBinanceProxyClient(t, base)
+	from, to := time.UnixMilli(base), time.UnixMilli(base+199)
+	for _, key := range []string{"history-one", "history-two"} {
+		receipts, err := client.History(context.Background(), key, "fixture-secret", "42", from, to)
+		if err != nil || len(receipts) != 137 {
+			t.Fatalf("pinned history must retain all split pages: count=%d err=%v", len(receipts), err)
+		}
+	}
+	if _, err := client.Bills(context.Background(), "bills", "fixture-secret", "42", from, to); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Probe(context.Background(), "probe", "fixture-secret"); err != nil {
+		t.Fatal(err)
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.preflights != 4 || len(state.requests) != 4 {
+		t.Fatalf("one fresh preflight required for each top-level operation: %d", state.preflights)
+	}
+	for token, requests := range state.requests {
+		if len(requests) < 2 || requests[0] != "/api/v3/time" || len(state.keys[token]) != 1 {
+			t.Fatalf("time sync and signed calls must share one isolated route: paths=%v keys=%d", requests, len(state.keys[token]))
+		}
+		if state.keys[token]["history-one"] || state.keys[token]["history-two"] {
+			if len(requests) < 4 {
+				t.Fatal("history pagination was not exercised on the pinned route")
+			}
+		}
+	}
+}
+
+func TestPKBinanceProxyPreflightConcurrentOperationsAreIsolated(t *testing.T) {
+	t.Parallel()
+	base := time.Now().Add(-time.Minute).UnixMilli()
+	client, state := pkBinanceProxyClient(t, base)
+	var group sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		group.Add(1)
+		go func(i int) {
+			defer group.Done()
+			_, err := client.History(context.Background(), fmt.Sprintf("key-%d", i), "fixture-secret", "42", time.UnixMilli(base), time.UnixMilli(base+199))
+			if err != nil {
+				t.Errorf("concurrent pinned history failed: %v", err)
+			}
+		}(i)
+	}
+	group.Wait()
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.preflights != 8 || len(state.keys) != 8 {
+		t.Fatalf("parallel operations reused route state: preflights=%d routes=%d", state.preflights, len(state.keys))
+	}
+	for _, keys := range state.keys {
+		if len(keys) != 1 {
+			t.Fatal("a route was shared by different account operations")
+		}
+	}
+}
+
+func TestPKBinanceProxyPreflightFailuresNeverReachBinance(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{"unavailable", 503, `{"error":"hidden-proxy-credential"}`},
+		{"busy", 429, `{"error":"hidden-proxy-credential"}`},
+		{"redirect", 302, `hidden-proxy-credential`},
+		{"malformed", 200, `{`},
+		{"missing-token", 200, `{}`},
+		{"header-injection", 200, `{"route_token":"node\r\nAuthorization: hidden-proxy-credential"}`},
+		{"oversized", 200, strings.Repeat("x", 4097)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls atomic.Int32
+			gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				if r.Method != http.MethodPost || r.URL.Path != "/_binance/preflight" {
+					t.Error("failed preflight must never be followed by CONNECT or redirect")
+				}
+				w.Header().Set("Location", "/redirect-must-not-follow")
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			defer gateway.Close()
+			proxy := strings.Replace(gateway.URL, "://", "://fixture-user:hidden-proxy-credential@", 1)
+			client, err := binancepay.NewClientWithOptions(binancepay.ClientOptions{ProxyURL: proxy, ProxyPreflight: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer client.CloseIdleConnections()
+			now := time.Now()
+			receipts, err := client.History(context.Background(), "fixture-key", "fixture-secret", "42", now.Add(-time.Minute), now)
+			if !errors.Is(err, binancepay.ErrProxyPreflight) || len(receipts) != 0 || calls.Load() != 1 {
+				t.Fatalf("preflight failure must fail closed: count=%d requests=%d err=%v", len(receipts), calls.Load(), err)
+			}
+			if strings.Contains(err.Error(), "hidden-proxy-credential") || strings.Contains(err.Error(), gateway.URL) || strings.Contains(err.Error(), "fixture-key") {
+				t.Fatal("preflight error leaked credentials, response body or URL")
+			}
+		})
+	}
+}
+
+func TestPKBinanceProxyPreflightCancellationAndConfiguration(t *testing.T) {
+	t.Parallel()
+	for _, proxy := range []string{"", "socks5://localhost:1234", "socks5h://localhost:1234", "http://localhost:1234", "https://localhost:1234"} {
+		client, err := binancepay.NewClient(proxy)
+		if err != nil {
+			t.Fatalf("disabled preflight must preserve existing dedicated proxy support: %v", err)
+		}
+		client.CloseIdleConnections()
+	}
+	for _, proxy := range []string{"", "socks5://fixture-user:fixture-pass@localhost:1234", "socks5h://fixture-user:fixture-pass@localhost:1234", "http://localhost:1234", "https://fixture-user@localhost:1234"} {
+		if _, err := binancepay.NewClientWithOptions(binancepay.ClientOptions{ProxyURL: proxy, ProxyPreflight: true}); err == nil {
+			t.Error("preflight requires an authenticated HTTP(S) gateway")
+		}
+	}
+	started := make(chan struct{})
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-r.Context().Done()
+	}))
+	defer gateway.Close()
+	client, err := binancepay.NewClientWithOptions(binancepay.ClientOptions{ProxyURL: strings.Replace(gateway.URL, "://", "://fixture-user:fixture-password@", 1), ProxyPreflight: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.CloseIdleConnections()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	finished := make(chan error, 1)
+	go func() {
+		now := time.Now()
+		_, err := client.Bills(ctx, "fixture-key", "fixture-secret", "42", now.Add(-time.Minute), now)
+		finished <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("preflight did not start")
+	}
+	cancel()
+	select {
+	case err := <-finished:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("preflight did not preserve cancellation: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancelled preflight did not stop")
+	}
+}
+
+func TestPKBinanceProxyPinnedRouteFailureDoesNotRetryOrFallBack(t *testing.T) {
+	t.Parallel()
+	for _, status := range []int{http.StatusForbidden, http.StatusProxyAuthRequired, http.StatusBadGateway} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			var probes, connects atomic.Int32
+			gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodPost && r.URL.Path == "/_binance/preflight" {
+					probes.Add(1)
+					_, _ = io.WriteString(w, `{"route_token":"selected_route"}`)
+					return
+				}
+				connects.Add(1)
+				if r.Method != http.MethodConnect || r.Header.Get("X-Binance-Route-Token") != "selected_route" {
+					t.Error("failed route must still use its pinned CONNECT token")
+				}
+				w.WriteHeader(status)
+				_, _ = io.WriteString(w, "hidden-gateway-response")
+			}))
+			defer gateway.Close()
+			client, err := binancepay.NewClientWithOptions(binancepay.ClientOptions{ProxyURL: strings.Replace(gateway.URL, "://", "://fixture-user:hidden-proxy-password@", 1), ProxyPreflight: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer client.CloseIdleConnections()
+			now := time.Now()
+			receipts, err := client.History(context.Background(), "fixture-key", "fixture-secret", "42", now.Add(-time.Minute), now)
+			if err == nil || len(receipts) != 0 || probes.Load() != 1 || connects.Load() != 1 {
+				t.Fatalf("a rejected pinned route must fail without selecting a new node: probes=%d connects=%d err=%v", probes.Load(), connects.Load(), err)
+			}
+			for _, hidden := range []string{"hidden-proxy-password", "selected_route", "hidden-gateway-response", gateway.URL} {
+				if strings.Contains(err.Error(), hidden) {
+					t.Fatal("CONNECT error exposed gateway credentials, route token, body or URL")
+				}
+			}
+		})
 	}
 }

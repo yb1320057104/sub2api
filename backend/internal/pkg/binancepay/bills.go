@@ -57,7 +57,12 @@ func (c *Client) Bills(ctx context.Context, apiKey, secret, accountUID string, f
 	}
 	ctx, cancel := context.WithTimeout(ctx, 35*time.Second)
 	defer cancel()
-	offset, err := c.syncTime(ctx)
+	operation, finish, err := c.beginOperation(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer finish()
+	offset, err := operation.syncTime(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -70,7 +75,7 @@ func (c *Client) Bills(ctx context.Context, apiKey, secret, accountUID string, f
 	}
 	var response historyResponse
 	params := url.Values{"startTime": {strconv.FormatInt(from.UnixMilli(), 10)}, "endTime": {strconv.FormatInt(end, 10)}, "limit": {"100"}}
-	if err := c.get(ctx, historyPath, params, apiKey, secret, offset, &response); err != nil {
+	if err := operation.get(ctx, historyPath, params, apiKey, secret, offset, &response); err != nil {
 		return nil, err
 	}
 	if response.Code != "000000" || !response.Success {

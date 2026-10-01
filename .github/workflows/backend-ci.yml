@@ -8,6 +8,269 @@ permissions:
   contents: read
 
 jobs:
+  binance-proxy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Check authenticated Binance gateway without external network
+        shell: bash
+        run: |
+          python -B - <<'PY'
+          import base64
+          import hashlib
+          import importlib.util
+          import json
+          from pathlib import Path
+          import socket
+          import ssl
+          import tempfile
+          import threading
+          import time
+          from types import SimpleNamespace
+          import unittest
+          from unittest import mock
+
+          spec = importlib.util.spec_from_file_location("binance_gateway", "deploy/binance-proxy/gateway.py")
+          gateway = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(gateway)
+          AUTH = "Basic " + base64.b64encode(b"ci-user:ci-password-with-32-characters!!").decode()
+          PRINCIPAL = hashlib.sha256(base64.b64decode(AUTH.split()[1])).digest()
+          NODES = (("hk-a", "127.0.0.1", 18001), ("hk-b", "127.0.0.1", 18002))
+
+
+          class MemorySocket:
+              def __init__(self, data=b""):
+                  self.data = bytearray(data)
+                  self.sent = bytearray()
+                  self.closed = False
+                  self.timeouts = []
+
+              def settimeout(self, value):
+                  self.timeouts.append(value)
+
+              def recv(self, size):
+                  chunk = bytes(self.data[:size])
+                  del self.data[:size]
+                  return chunk
+
+              def sendall(self, data):
+                  self.sent.extend(data)
+
+              def close(self):
+                  self.closed = True
+
+              def do_handshake(self):
+                  pass
+
+
+          def response(body, status=200):
+              return ("HTTP/1.1 %d Result\r\nContent-Length: %d\r\n\r\n" % (status, len(body))).encode() + body
+
+
+          class GatewayChecks(unittest.TestCase):
+              def setUp(self):
+                  self.state = gateway.GatewayState(PRINCIPAL, NODES)
+                  self.addCleanup(self.state.executor.shutdown, wait=True)
+                  self.addCleanup(self.state.close_all)
+                  # No test may resolve or open a real network connection.
+                  for name in ("create_connection", "socket", "getaddrinfo"):
+                      patcher = mock.patch.object(gateway.socket, name, side_effect=AssertionError("unexpected network"))
+                      patcher.start()
+                      self.addCleanup(patcher.stop)
+
+              def request(self, method, path, headers=None, prefix=b""):
+                  values = {"Host": gateway.TARGET}
+                  values.update(headers or {})
+                  raw = (method + " " + path + " HTTP/1.1\r\n" + "".join(k + ": " + v + "\r\n" for k, v in values.items()) + "\r\n").encode() + prefix
+                  sock = MemorySocket(raw)
+                  gateway.GatewayHandler(sock, ("127.0.0.1", 1), SimpleNamespace(state=self.state))
+                  head, body = bytes(sock.sent).split(b"\r\n\r\n", 1)
+                  return int(head.split()[1]), json.loads(body) if body else None
+
+              def test_authentication_and_no_unchecked_tunnel(self):
+                  with mock.patch.object(self.state, "upstream") as upstream, mock.patch.object(self.state, "preflight") as preflight:
+                      for auth in (None, "Basic !!!!", "Bearer invalid", "Basic " + base64.b64encode(b"wrong:password").decode()):
+                          headers = {} if auth is None else {"Authorization": auth, "Proxy-Authorization": auth}
+                          self.assertEqual(self.request("POST", "/_binance/preflight", headers)[0], 401)
+                          self.assertEqual(self.request("CONNECT", gateway.TARGET, headers)[0], 407)
+                      self.assertEqual(self.request("GET", "/health")[0], 401)
+                      self.assertEqual(self.request("GET", "/health", {"Authorization": AUTH})[0], 200)
+                      self.assertEqual(self.request("CONNECT", gateway.TARGET, {"Proxy-Authorization": AUTH})[0], 403)
+                      upstream.assert_not_called()
+                      preflight.assert_not_called()
+
+              def test_only_exact_binance_connect_destination(self):
+                  token = self.state.issue(NODES[0])
+                  headers = {"Proxy-Authorization": AUTH, "X-Binance-Route-Token": token}
+                  with mock.patch.object(self.state, "upstream") as upstream:
+                      for target in ("example.com:443", "api.binance.com:80", "api.binance.com:443.evil", "api.binance.com.:443", "127.0.0.1:443", "www.cloudflare.com:443"):
+                          self.assertEqual(self.request("CONNECT", target, headers)[0], 403)
+                      self.assertEqual(self.request("CONNECT", gateway.TARGET, dict(headers, Host="evil.example:443"))[0], 403)
+                      self.assertEqual(self.request("GET", "https://api.binance.com/api/v3/time", {"Authorization": AUTH})[0], 404)
+                      upstream.assert_not_called()
+
+              def test_rejects_duplicate_headers_and_request_bodies(self):
+                  with mock.patch.object(self.state, "preflight") as preflight:
+                      self.assertEqual(self.request("POST", "/_binance/preflight", {"Authorization": AUTH, "authorization": AUTH})[0], 400)
+                      for extra in ({"Content-Length": "1"}, {"Transfer-Encoding": "chunked"}, {"Expect": "100-continue"}):
+                          self.assertEqual(self.request("POST", "/_binance/preflight", dict(extra, Authorization=AUTH))[0], 400)
+                      self.assertEqual(self.request("POST", "/_binance/preflight", {"Authorization": AUTH}, b"body")[0], 400)
+                      preflight.assert_not_called()
+
+              def test_preflight_failures_and_capacity_fail_closed(self):
+                  with mock.patch.object(self.state, "probe", return_value=None):
+                      self.assertEqual(self.request("POST", "/_binance/preflight", {"Authorization": AUTH}), (503, {"error": "no_available_node"}))
+                  self.assertEqual(len(self.state.tokens), 0)
+                  for _ in range(gateway.MAX_PREFLIGHTS):
+                      self.assertTrue(self.state.preflights.acquire(blocking=False))
+                  try:
+                      with mock.patch.object(self.state, "preflight") as preflight:
+                          self.assertEqual(self.request("POST", "/_binance/preflight", {"Authorization": AUTH})[0], 429)
+                          preflight.assert_not_called()
+                  finally:
+                      for _ in range(gateway.MAX_PREFLIGHTS):
+                          self.state.preflights.release()
+
+              def test_fastest_route_is_fixed_for_repeated_connects(self):
+                  with mock.patch.object(self.state, "probe", side_effect=lambda node, deadline: (0.3 if node == NODES[0] else 0.1, node)):
+                      status, data = self.request("POST", "/_binance/preflight", {"Authorization": AUTH})
+                  self.assertEqual(status, 200)
+                  token = data["route_token"]
+                  self.assertEqual(self.state.lookup(token), NODES[1])
+                  with mock.patch.object(self.state, "probe", side_effect=lambda node, deadline: (0.1 if node == NODES[0] else 0.3, node)):
+                      later = self.state.preflight()
+                  self.assertEqual(self.state.lookup(later), NODES[0])
+                  headers = {"Proxy-Authorization": AUTH, "X-Binance-Route-Token": token}
+                  with mock.patch.object(self.state, "upstream", side_effect=lambda *args: MemorySocket()) as upstream, mock.patch.object(gateway, "relay") as relay:
+                      for _ in range(2):
+                          self.assertEqual(self.request("CONNECT", gateway.TARGET, headers, b"opaque-tls")[0], 200)
+                      self.assertEqual([call.args[0] for call in upstream.call_args_list], [NODES[1], NODES[1]])
+                      self.assertEqual(relay.call_args.args[2], b"opaque-tls")
+                  with mock.patch.object(self.state, "upstream", side_effect=OSError("selected node failed")) as upstream:
+                      self.assertEqual(self.request("CONNECT", gateway.TARGET, headers), (502, {"error": "selected_node_unavailable"}))
+                      upstream.assert_called_once()
+                      self.assertEqual(upstream.call_args.args[0], NODES[1])
+                  self.assertEqual(self.state.lookup(token), NODES[1])
+                  self.assertIsNone(self.state.lookup("unknown-token-" + "x" * 32))
+                  with mock.patch.object(gateway, "TOKEN_TTL", -1):
+                      expired = self.state.issue(NODES[0])
+                  self.assertIsNone(self.state.lookup(expired))
+
+              def test_hong_kong_and_binance_must_pass_same_node_deadline(self):
+                  with mock.patch.object(self.state, "probe_response", side_effect=[b"ip=192.0.2.1\nloc=HK\n", b'{"serverTime":1234}']) as probe:
+                      self.assertEqual(self.state.probe(NODES[0], time.monotonic() + 10)[1], NODES[0])
+                  calls = probe.call_args_list
+                  self.assertEqual([call.args[:3] for call in calls], [(NODES[0], "www.cloudflare.com", "/cdn-cgi/trace"), (NODES[0], "api.binance.com", "/api/v3/time")])
+                  self.assertEqual(calls[0].args[3], calls[1].args[3])
+                  self.assertLessEqual(calls[0].args[3], time.monotonic() + gateway.NODE_TIMEOUT)
+                  for trace in (b"loc=US\n", b"loc=HK\nloc=HK\n", b"ip=192.0.2.1\n"):
+                      with mock.patch.object(self.state, "probe_response", return_value=trace) as probe:
+                          self.assertIsNone(self.state.probe(NODES[0], time.monotonic() + 10))
+                          probe.assert_called_once()
+                  for body in (b"invalid", b'{"serverTime":true}', b'{"serverTime":0}', b'{"serverTime":"123"}'):
+                      with mock.patch.object(self.state, "probe_response", side_effect=[b"loc=HK\n", body]):
+                          self.assertIsNone(self.state.probe(NODES[0], time.monotonic() + 10))
+                  with mock.patch.object(self.state, "probe_response", side_effect=socket.timeout("timeout")):
+                      self.assertIsNone(self.state.probe(NODES[0], time.monotonic() + 10))
+
+              def test_overall_preflight_timeout_does_not_issue_route(self):
+                  release = threading.Event()
+                  def blocked_probe(node, deadline):
+                      release.wait(1)
+                      return None
+                  try:
+                      with mock.patch.object(self.state, "probe", side_effect=blocked_probe), mock.patch.object(gateway, "PREFLIGHT_TIMEOUT", 0.02):
+                          started = time.monotonic()
+                          with self.assertRaises(gateway.GatewayError):
+                              self.state.preflight()
+                          self.assertLess(time.monotonic() - started, 0.8)
+                          self.assertEqual(len(self.state.tokens), 0)
+                  finally:
+                      release.set()
+
+              def test_upstream_only_dials_fixed_listener_without_fallback(self):
+                  for target in (gateway.TARGET, "www.cloudflare.com:443"):
+                      sock = MemorySocket(b"HTTP/1.1 200 OK\r\n\r\n")
+                      with mock.patch.object(gateway.socket, "create_connection", return_value=sock) as dial:
+                          self.assertIs(self.state.upstream(NODES[1], time.monotonic() + 1, target), sock)
+                          self.assertEqual(dial.call_args.args[0], ("127.0.0.1", 18002))
+                          self.assertIn(("CONNECT " + target + " HTTP/1.1").encode(), sock.sent)
+                          self.assertNotIn(b"Authorization", sock.sent)
+                      self.state.close(sock)
+                  with mock.patch.object(gateway.socket, "create_connection") as dial:
+                      with self.assertRaises(gateway.GatewayError):
+                          self.state.upstream(NODES[0], time.monotonic() + 1, "evil.example:443")
+                      dial.assert_not_called()
+                  for error in (OSError("failed"), socket.timeout("timeout")):
+                      with mock.patch.object(gateway.socket, "create_connection", side_effect=error) as dial:
+                          with self.assertRaises(OSError):
+                              self.state.upstream(NODES[0], time.monotonic() + 1)
+                          dial.assert_called_once()
+                          self.assertEqual(dial.call_args.args[0], ("127.0.0.1", 18001))
+                  for data in (b"HTTP/1.1 403 Forbidden\r\n\r\n", b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\nx"):
+                      sock = MemorySocket(data)
+                      with mock.patch.object(gateway.socket, "create_connection", return_value=sock):
+                          with self.assertRaises(gateway.GatewayError):
+                              self.state.upstream(NODES[0], time.monotonic() + 1)
+                      self.assertTrue(sock.closed)
+
+              def test_probe_tls_verification_response_errors_and_timeout(self):
+                  self.assertTrue(self.state.tls.check_hostname)
+                  self.assertEqual(self.state.tls.verify_mode, ssl.CERT_REQUIRED)
+                  self.assertGreaterEqual(self.state.tls.minimum_version, ssl.TLSVersion.TLSv1_2)
+                  for status in (200, 403, 429, 500):
+                      plain, wrapped = MemorySocket(), MemorySocket(response(b'{"serverTime":1234}', status))
+                      tls = mock.Mock()
+                      tls.wrap_socket.return_value = wrapped
+                      with mock.patch.object(self.state, "upstream", return_value=plain), mock.patch.object(self.state, "tls", tls):
+                          if status == 200:
+                              self.assertEqual(self.state.probe_response(NODES[0], "api.binance.com", "/api/v3/time", time.monotonic() + 1), b'{"serverTime":1234}')
+                          else:
+                              with self.assertRaises(gateway.GatewayError):
+                                  self.state.probe_response(NODES[0], "api.binance.com", "/api/v3/time", time.monotonic() + 1)
+                          tls.wrap_socket.assert_called_once_with(plain, server_hostname="api.binance.com", do_handshake_on_connect=False)
+                      self.assertTrue(wrapped.closed)
+                  plain = MemorySocket()
+                  tls = mock.Mock()
+                  tls.wrap_socket.side_effect = ssl.SSLCertVerificationError("untrusted certificate")
+                  with mock.patch.object(self.state, "upstream", return_value=plain), mock.patch.object(self.state, "tls", tls):
+                      self.assertIsNone(self.state.probe(NODES[0], time.monotonic() + 1))
+                  self.assertTrue(plain.closed)
+                  stalled = MemorySocket()
+                  stalled.recv = mock.Mock(side_effect=socket.timeout("timeout"))
+                  with self.assertRaises(socket.timeout):
+                      gateway.read_headers(stalled, time.monotonic() + 1)
+                  with self.assertRaises(gateway.GatewayError):
+                      gateway.read_probe_body(MemorySocket(b"x"), {"content-length": "2"}, b"", time.monotonic() + 1)
+                  with self.assertRaises(gateway.GatewayError):
+                      gateway.read_probe_body(MemorySocket(), {"content-length": "9000"}, b"", time.monotonic() + 1)
+
+              def test_configuration_cannot_add_public_or_dynamic_nodes(self):
+                  base = {"bind": "127.0.0.1", "port": 17990, "auth_username": "ci-user", "auth_password": "ci-password-with-32-characters!!", "nodes": [{"name": "hk-a", "host": "127.0.0.1", "port": 18001}]}
+                  with tempfile.TemporaryDirectory() as directory:
+                      path = Path(directory) / "gateway.json"
+                      def load(config, mode=0o600):
+                          path.write_text(json.dumps(config), encoding="utf-8")
+                          path.chmod(mode)
+                          return gateway.load_config(str(path))
+                      self.assertEqual(load(base)[3], (NODES[0],))
+                      for changed in (dict(base, bind="0.0.0.0"), dict(base, bind="8.8.8.8"), dict(base, auth_password="short"), dict(base, nodes=[]), dict(base, nodes=base["nodes"] * 2)):
+                          with self.assertRaises(gateway.GatewayError):
+                              load(changed)
+                      for host in ("example.com", "8.8.8.8", "10.0.0.1"):
+                          with self.assertRaises((gateway.GatewayError, ValueError)):
+                              load(dict(base, nodes=[dict(base["nodes"][0], host=host)]))
+                      with self.assertRaises(gateway.GatewayError):
+                          load(base, 0o644)
+
+
+          unittest.main(verbosity=2)
+          PY
+
   shell:
     runs-on: macos-15
     steps:

@@ -3,7 +3,10 @@ package service
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
@@ -1023,7 +1026,15 @@ func ProvidePaymentOrderExpiryService(paymentSvc *PaymentService, lockCache Lead
 }
 
 func ProvideBinanceRechargeService(db *sql.DB, encryptor SecretEncryptor, authInvalidator APIKeyAuthCacheInvalidator, billingCache *BillingCacheService) (*BinanceRechargeService, error) {
-	client, err := binancepay.NewClient(os.Getenv("BINANCE_RECHARGE_PROXY_URL"))
+	preflight := false
+	if raw := strings.TrimSpace(os.Getenv("BINANCE_RECHARGE_PROXY_PREFLIGHT")); raw != "" {
+		var err error
+		preflight, err = strconv.ParseBool(raw)
+		if err != nil {
+			return nil, errors.New("binance: invalid BINANCE_RECHARGE_PROXY_PREFLIGHT boolean")
+		}
+	}
+	client, err := binancepay.NewClientWithOptions(binancepay.ClientOptions{ProxyURL: os.Getenv("BINANCE_RECHARGE_PROXY_URL"), ProxyPreflight: preflight})
 	if err != nil {
 		return nil, err
 	}

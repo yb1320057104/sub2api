@@ -311,6 +311,9 @@ func binanceRechargeReceiptReviewReason(order *BinanceRechargeOrder, receipt bin
 }
 
 func binanceRechargePollError(err error) string {
+	if errors.Is(err, binancepay.ErrProxyPreflight) {
+		return "币安代理节点探测失败，未执行查账，稍后自动重试"
+	}
 	var limited *binancepay.RateLimitError
 	if errors.As(err, &limited) {
 		return "币安 API 限流，已延后查收"
