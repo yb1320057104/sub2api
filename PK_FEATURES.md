@@ -21,10 +21,10 @@
 | PK-005 | 下游 usage 改写 | JSON/SSE 无损、别名/显式 0、原始用量保留 |
 | PK-006 | 多协议与通道接入 | Responses/Chat/Messages、直通、桥接、WS、图片、embeddings |
 | PK-007 | 首字设置 | 独立页签、默认关闭、随机范围、局部保存与缓存 |
-| PK-008 | 首字提前响应 | 真实发送 SSE 心跳、适用范围、禁用时仍统计首包 |
+| PK-008 | 首字提前响应 | 注释/ping/空格三模式、协议边界、禁用时仍统计首包 |
 | PK-009 | 双计时与持久化 | 首包和原上游计时分开、异步传递、所有 SQL 路径 |
 | PK-010 | 首字显示与权限 | 用户原文案、管理员上游指标、导出和监控不泄露 |
-| PK-011 | 心跳与排队/换号 | 心跳不占正文提交判定、周期保活不丢、费用不变 |
+| PK-011 | 心跳与排队/换号 | 注释/ping不占正文提交判定，空格算正文，周期保活不丢 |
 | PK-012 | 提前响应后的错误与并发 | 协议终止事件、响应头隔离、写锁、停止与 context 生命周期 |
 | PK-013 | PK版本标识与排序 | “版本号 + PK出版”、pk 修订按数值比较 |
 | PK-014 | 私库更新与恢复来源 | 私库/私有镜像、只读凭据、无官方回退路径 |
@@ -121,6 +121,8 @@
 
 验证要覆盖下游实际 usage 与内部账单两侧。当前 API Key 号池是历史真实验收范围；这不授权合并时移除已有其他路径。WS 二进制帧、部分 OAuth 图片合成路径的边界见文末，不能声称所有图片或 WS 都已改写。
 
+2026-10-02 空格首字模式在既有 handler、service 与 Grok HTTP transport 的自动重试/协议回退入口增加同一请求门控，具体见 PK-011。仅空格正文已提交时拒绝重试，comment/ping 的转换与回退行为保留；真实 usage 仍走原缓存转换与账务路径。
+
 ## PK-007
 
 **独立首字设置与配置链路。** 引入：`54b4372c2`；后续完善：`41958f4d4`、`a6123c20c`。
@@ -128,6 +130,7 @@
 - 管理员系统设置保留独立“首字设置”页签、开关及随机时间上下限；默认关闭，范围默认 1–2 秒。界面按秒输入（精度 0.001），后端按毫秒保存。
 - 键：`stream_early_heartbeat_enabled`、`stream_early_heartbeat_min_delay_ms`、`stream_early_heartbeat_max_delay_ms`；必须满足 `0 ≤ min ≤ max ≤ 30000`，非法范围不写入。
 - 2026-10-02 增加 `stream_early_heartbeat_mode`：`comment` 为默认/旧配置行为，`downstream_ping` 为显式选择的下游兼容模式。缺字段保留，显式非法值/空字符串/null/错误类型拒绝；坏存储配置安全关闭并回退默认。GET/PUT、审计、设置缓存和前端局部保存同步包含此字段。关闭开关不清除已选模式。
+- 2026-10-02 用户进一步要求增加第三种 `space`（空格首字/正文占位），并解释三种模式。它代表普通空格 U+0020，不是空字符串；旧默认及已保存的 comment/ping 选择不变。三种值必须在后端解析/校验、GET/PUT、审计、缓存及前端中英说明中同步维护，关闭开关仍保留所选模式。
 - 局部更新缺失字段保留原值，显式 false/0 生效；审计包含新增字段。设置缓存默认60秒，当前进程成功保存后及时失效；读取失败/非法配置采用安全关闭回退。
 - 保存失败不能提前替换有效缓存。其他实例按自身缓存刷新，已开始的请求使用启动时取得的设置，不能承诺所有实例和在途请求立即变更。
 - 入口：`frontend/src/views/admin/SettingsView.vue`、`frontend/src/api/admin/settings.ts`、类型和中英设置文案；`backend/internal/service/{domain_constants,settings_view,setting_parse,setting_update,setting_gateway_runtime}.go`；`backend/internal/handler/admin/setting_handler*.go` 和 `dto/settings.go`。
@@ -135,20 +138,27 @@
 
 ## PK-008
 
-**真实提前发出的 SSE 心跳。** 引入：`54b4372c2`，完善：`41958f4d4`；2026-10-02 按用户提供的下游判断逻辑增加显式结构化 ping 模式。
+**真实提前发出的 SSE 心跳与空格占位。** 引入：`54b4372c2`，完善：`41958f4d4`；2026-10-02 先增加显式结构化 ping 模式，再按用户要求增加空格模式。用户已明确选择保留真实 Responses ID，接受占位可能晚于设定时间。
 
 - 对已接入的 OpenAI 兼容 Responses、Chat、Messages SSE 请求，在完成必要校验后、等待账号/上游时，从请求起始时间计算随机发送时机，真实写出并 flush 无正文的 `: keepalive` 注释。
-- 上述注释为默认 `comment` 模式。选择 `downstream_ping` 时，首次定时写出 `data: {"type":"ping"}\n\n`，Messages 另带 `event: ping`；后续周期保活仍为注释。两种模式均不注入模型正文、空格、usage、伪造响应ID或修改真实输出。
+- 上述注释为默认 `comment` 模式。选择 `downstream_ping` 时，首次定时写出 `data: {"type":"ping"}\n\n`，Messages 另带 `event: ping`；后续周期保活仍为注释。这两种旧模式不注入模型正文、空格、usage、伪造响应ID或修改真实输出。
+- `space` 是用户明确要求的第三种正文占位模式，允许额外发送并保留一个 U+0020 空格，不声称可撤回或加快模型生成。Chat 使用合法 assistant 开始块、空格正文块和空 delta 块，后者推出 New API 原生 Chat 转发暂存的上一帧；后续 Chat 标识保持同一网关响应，真实正文、工具参数、usage 与未知字段保留。
+- Responses 的空格使用独立 message 的完整 item/content/text 生命周期，保留在终态 output 中；保留上游真实 response.id、真实 item/tool ID、usage 和续聊语义，统一调整占位后真实 output_index 及出口 sequence_number。为避免尚未知真实 ID 时伪造响应，须等真实 response.created 到达且配置时间已到才注入；因此 Responses 空格可能晚于设置时间。模型输出先开始时直接保留真实输出，不为占位延迟业务。
+- Messages 不实现空格占位，选择 space 时该请求使用注释保活。Responses 的 JSON Schema/JSON Object 结构化输出也使用注释保活，避免独立空白 message 被 JSON 解析器拒绝；Chat 接口携带 input 且没有 messages 的兼容请求可能返回 Responses SSE，也回退注释以避免混合协议。设置值仍保留 space。非流式、WebSocket、图片和 compact 等原排除范围不变。
+- 空格是输出内容，会影响逐字比较、签名及下游缺失 usage 时的文本估算。本站仍使用原上游 usage 计费，不能声称任何下游的估算费用都不受影响；不能用空格伪造真实模型 token。
+- New API `1a4166d8` / `v1.0.0-rc.41` 的 HTTP/SSE scanner 接受非空 data，原生 Responses 立即转发，原生 Chat 缓存一帧；Responses→Chat 保留非空空格。须保护其 terminal-only 正文兼容：真实正文只出现在完成快照时，出口补足缺失真实文本事件，避免已有空格让转换器跳过真实内容。此项代码依据与我方回归不同于真实部署链路验收。
 - 兼容模式针对原版 Sub2API 的 Responses 默认 `semantic` 和原始 Chat 记时路径；Responses `visible` 仍等待非空内容，跨协议桥接/大请求保护也可能丢弃或缓冲 ping。该 ping 不是标准 Responses/Chat 模型事件，严格 SDK 可能拒绝；下游可能把它当已提交输出并停止失败换号。这些限制须在管理员设置中展示，不声称普遍兼容。
 - 2026-10-02 用户接受“下游日志记首字、客户端仍可能等待”的行为并授权发布当前 ping 方案。New API `1a4166d8` / `v1.0.0-rc.41` 的 HTTP/SSE scanner 会对首个非空 data 帧记时；原生 Chat 缓存上一帧，Responses 转 Chat 丢弃 ping，故其日志时间不保证等于客户端收包时间。此项为源码核对，未做 New API 串联动态验收；不引入正文空格。
+- 上条记录的是 `0.2.11-pk.1` 的 ping 发布范围。此后用户取消付费串联实测并单独授权新增 space 模式；空格变更按本条新增约束保护，不反向改写旧版或宣称已做线上实测。
 - 真实业务正文开始后停止提前心跳；请求快速结束或取消时不得再写。随机数用于调度发送，不能直接作为统计值，也不伪造模型文本。
 - 单纯修改 Header 或写出成功响应头不能取消等待心跳；首个心跳设置 SSE/no-cache/`X-Accel-Buffering: no` 并移除 `Content-Length`。真实输出更早到达时立即转发，不等待随机时间。
 - 不注入非流式、WebSocket 入站、图片、legacy compact、native V2 compact 等排除路径；上游 WS 转下游 SSE 的既有重连语义保留。
 - 适用范围由 `OpenAIGatewayHandler` 及其路由决定（包括复用该处理器的兼容平台），原生 Claude/Gemini handler 不因这项改动自动纳入；新增路由必须重新核对处理器。
 - 禁用提前心跳时，已纳入测量的入口仍采集真实首包。服务器写出耗时不等于客户端网络到达耗时，部分 SDK 忽略注释。
 - 2026-10-02 下游兼容调查：原版 Sub2API 的 Responses 会忽略注释及 `response.created/in_progress/keepalive`；语义模式与可见内容模式判定不同，空语义事件不能保证所有下游识别。Chat 原始转发会对非 usage-only 的数据块记时。账号测试页的 `_` 是 `AccountTestModal.vue` 的 UI 光标，不是可被协议撤回的模型字符；不得据此宣称注入 `_` 后能无损替换正文。
-- 入口：`backend/internal/service/openai_early_sse_heartbeat.go`；`backend/internal/handler/{openai_gateway_handler,openai_chat_completions}.go`。
+- 入口：`backend/internal/service/{openai_early_sse_heartbeat,openai_early_sse_space}.go`；`backend/internal/handler/{openai_gateway_handler,openai_chat_completions}.go`。
 - 验证：`TestPKEarlyHeartbeat_*`、`TestPKFirstResponse_DisabledHeartbeatStillRecordsBodyAndCopiesContext`，以及获准的隔离远端通过实际反代读取 SSE。
+- 空格扩展沿用 `openai_compact_sse_keepalive_test.go`：`TestPKEarlyHeartbeat_Space*` 覆盖 Chat 三帧、真实 Responses ID、terminal-only 正文/工具生命周期、快照字段、CRLF/分片、多行 data、短写、回退与取消。原 comment/ping 回归保留。新增用例由现有 CI/Release 的 `TestPKEarly` 选择器纳入；是否通过须核对本次提交的实际云端结果。
 
 ## PK-009
 
@@ -160,7 +170,7 @@
 - 只记录第一次实际 body 写出，header-only flush 不计；换号不重置同一个下游请求的首包计时。
 - SQL select/scan、单条插入、批量、best-effort、查询和 DTO 均保留字段。插入追加在既有参数末尾，不打乱账务参数位置。
 - 迁移 `backend/migrations/241_usage_log_first_response_ms.sql` 增加可空列，保留旧显式 SQL 兼容。当前由 SQL repository 管理该扩展字段；若以后转入 Ent，必须同步生成描述符并验证索引，不能直接往旧 Ent schema 中插字段。
-- 入口：`backend/internal/service/{openai_early_sse_heartbeat,usage_log,openai_gateway_usage,gateway_usage_billing}.go`、handler usage context、`backend/internal/repository/usage_log_repo_{insert,query}.go`。
+- 入口：`backend/internal/service/{openai_early_sse_heartbeat,openai_early_sse_space,usage_log,openai_gateway_usage,gateway_usage_billing}.go`、handler usage context、`backend/internal/repository/usage_log_repo_{insert,query}.go`。
 - 验证：`TestPKFirstResponseSurvivesDetachedUsageContext`、`TestPKUsageFirstResponseInsertPaths`、integration `TestPKUsageFirstResponsePersistence`，以及 scan/insert shape 现有用例。
 
 ## PK-010
@@ -183,12 +193,16 @@
 - 队列心跳、compact/直通原有保活和提前心跳独立计数；从正文提交判断中分别扣除且不重复扣。只有心跳时仍可按原规则换号/回退。
 - 提前控制器与原有心跳共用调度，完整注释/已知 ping 不终止后续周期保活；真实正文、部分或混合业务帧应停止提前心跳，避免插入正文中间。
 - `downstream_ping` 模式下，更早的队列/周期注释不消耗待发送的首次数据 ping；外部完整 ping 可以满足首次发送。内部数据 ping 的字节和原注释一样从本层正文提交判断中扣除，不能重复扣外部队列心跳，也不能改变本层安全换号。
+- `space` 的占位是正文，实际成功写出后纳入业务已提交判断，不能继续按“只有保活”重试或换号。等待占位前的注释仍按原保活规则处理；comment/ping 的既有字节扣除和安全换号行为不变。这是用户要求正文占位带来的明确边界，不得误用于旧模式。
+- space 在占位前发生安全重试时，须在同一写锁内确认尚未写出占位并取消本请求剩余占位，再进行重试；保存设置不变。不能仅靠“转发前后字节数相等”或分离的布尔检查，因为排队/退避期间定时器也可能写出；不能在新尝试中沿用旧 response.id。
 - 默认 `comment` 模式的外部排队心跳取消待发送的首次心跳；`downstream_ping` 按上条区分注释与数据 ping。共享控制器仍可接受之后的周期保活，关闭提前开关时也必须成立。只有心跳时 adjusted size 归一为 `-1`；外部注释字节由原调用方计数，writer 不重复累计。
 - `Written()` 必须继续表示真实 HTTP 提交状态；只有“是否已输出业务正文、是否允许换号/重试/fallback”的判断使用一致的 adjusted size。Handler 到转发 service 的相关业务判断都要保留，不能遗漏桥接或重试分支，也不能把 HTTP 已提交状态改成未提交。
 - 保留首输出超时的安全标记、最多一次安全切号和客户端取消阻止重放；已输出语义正文后，不进行会重复输出/收费的重放。
 - 心跳不改变缓存转换、模型正文、usage 和账单，不以排队心跳冒充真实上游首字。
-- 入口：`backend/internal/service/{openai_early_sse_heartbeat,openai_compact_sse_keepalive,openai_gateway_forward,openai_gateway_service,openai_gateway_request_body,openai_gateway_chat_completions}.go`；`backend/internal/handler/gateway_helper.go` 及两个 OpenAI handler。
+- 上述“心跳不改变正文”适用于 comment/ping。space 只允许登记的一次空格及协议索引/生命周期适配，不得改写真实模型内容、工具参数或原上游计费证据。
+- 入口：`backend/internal/service/{openai_early_sse_heartbeat,openai_early_sse_space,openai_compact_sse_keepalive,openai_gateway_forward,openai_gateway_service,openai_gateway_request_body,openai_gateway_chat_completions,openai_gateway_passthrough,openai_gateway_grok}.go`；`backend/internal/handler/gateway_helper.go` 及两个 OpenAI handler；`backend/internal/repository/http_upstream.go` 与 `backend/internal/pkg/ctxkey/` 的请求级重试门控。
 - 验证：`TestPKEarlyHeartbeat_AdjustmentCombinesStreamComments`、`ExternalHeartbeatAllowsLaterPeriodicKeepalive`、`OnlyCompleteTransportFramesPreserveController`、`QueueAccountingWithoutController`、`ReusesExistingPassthroughKeepalive` 等同前缀用例。
+- 空格重试回归在原有 `openai_gateway_first_output_timeout_test.go` 的 `TestPKEarlySpaceFailover*`、`http_upstream_test.go` 的 `TestPKEarlySpaceGrokTransportFallbackHonorsRetryGate` 和上述 service 回归文件中。覆盖排队期间先写空格、SafeToFailoverAfterWrite 不能越过正文、原子取消未发占位、transport 不重发及 comment/ping 原行为；均纳入现有 race 选择器。
 
 ## PK-012
 
@@ -198,9 +212,10 @@
 - Header 克隆隔离定时器与业务修改，写锁串行化输出；停止等待定时 goroutine 退出并还原 writer，之后才允许 handler 返回、Gin context 回收。
 - timer 不回读变化中的 Gin context；取消、结束、错误及 Hijack 都要停止等待，Stop 可重复调用。错误转换只发送一次终止事件，保留原拟返回状态的 Ops 错误标记。
 - 2026-10-02 增加短写保护：底层返回不足长度但未报错时转为 `io.ErrShortWrite` 并停止定时器，不把半帧当完整 ping 或成功错误转换；首包仍只按实际非空写出计时，心跳只累计实际写出字节。
+- space 的 SSE 解析须覆盖分片、CRLF、多行 data 及工具调用；定时器不能插进半帧。占位后的序号、终态快照及晚到错误必须使用一致的真实 Responses ID，短写/取消仍停止；格式错误不能静默输出错乱生命周期。已有计时、锁与隐私边界继续保护。
 - 保留 Ops 流错误/已提交标记；后到动态上游响应头已无法补发，这是提前响应的边界。
 - `Server-Timing` 中间件只在真实 `/api/v1/` UI 路径启用；伪造 UI 请求头不能在模型网关启用并产生并发写入冲突。
-- 入口：`backend/internal/service/openai_early_sse_heartbeat.go`、`backend/internal/handler/gateway_helper.go`、`backend/internal/server/middleware/server_timing.go`。
+- 入口：`backend/internal/service/{openai_early_sse_heartbeat,openai_early_sse_space}.go`、`backend/internal/handler/gateway_helper.go`、`backend/internal/server/middleware/server_timing.go`。
 - 验证：`TestPKEarlyHeartbeat_FastErrorKeepsHTTPStatusAndJSON`、`LateJSONErrorUsesProtocolTerminal`、`QueueOnlyLateJSONErrorUsesSSE`、`HeaderMutationDoesNotRaceTimer`、`CancellationStopsPendingTimer`、`StopRestoresWriterAndPendingHeaders`；云端 race 检查与 `TestServerTimingScopesAndRoleGate`。
 
 ## PK-013
@@ -306,6 +321,7 @@
 - `AGENTS.md` 纳入 Git，入口指向 `PROJECT_CONSTRAINTS.md` 和本清单；私库克隆/恢复后也必须保留。
 - 本文件为唯一功能登记表。维护文档、PR模板和 `skills/pk-sub2api-maintenance/` 通过链接/工作区路径读取它，不复制多份可能过期的功能清单。
 - 新增二开在同一变更中添加 ID；扩展旧功能更新原 ID；合并上游逐个有效 ID 核对，未登记、未验证的受影响项不能合入/发布。
+- 2026-10-02 按用户要求强化每次合并的文本冲突和行为冲突检查，覆盖上游新增/替换入口；Git 无冲突不能替代核对。PK-007～PK-012 的三模式、配置、协议 ID/生命周期、真实计时、usage/工具、错误与换号必须整体审查，PR模板记录逐项依据。
 - 已安装 skill 读取当前工作区约束和清单；更新仓库版 skill 时同步实际使用的安装副本。目录丢失从私库恢复，不靠旧记忆或功能标题重写项目。
 - 验证：静态核对 Git 跟踪、入口链接、登记条目与 diff、仓库/安装版 skill 一致性。此机制不等于 GitHub 分支保护或自动语义验证。
 

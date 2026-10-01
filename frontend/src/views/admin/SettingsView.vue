@@ -87,6 +87,9 @@
                   <option value="downstream_ping">
                     {{ t("admin.settings.gatewayForwarding.earlyHeartbeatModeDownstream") }}
                   </option>
+                  <option value="space">
+                    {{ t("admin.settings.gatewayForwarding.earlyHeartbeatModeSpace") }}
+                  </option>
                 </select>
                 <div id="stream-early-heartbeat-mode-hint" class="mt-2 space-y-2 text-xs">
                   <template v-if="form.stream_early_heartbeat_mode === 'downstream_ping'">
@@ -95,6 +98,20 @@
                     </p>
                     <p class="text-amber-700 dark:text-amber-400" data-testid="stream-early-heartbeat-downstream-warning">
                       {{ t("admin.settings.gatewayForwarding.earlyHeartbeatModeDownstreamWarning") }}
+                    </p>
+                  </template>
+                  <template v-else-if="form.stream_early_heartbeat_mode === 'space'">
+                    <p class="text-gray-500 dark:text-gray-400" data-testid="stream-early-heartbeat-space-hint">
+                      {{ t("admin.settings.gatewayForwarding.earlyHeartbeatModeSpaceHint") }}
+                    </p>
+                    <p class="text-gray-500 dark:text-gray-400" data-testid="stream-early-heartbeat-space-timing">
+                      {{ t("admin.settings.gatewayForwarding.earlyHeartbeatModeSpaceTimingHint") }}
+                    </p>
+                    <p class="text-gray-500 dark:text-gray-400" data-testid="stream-early-heartbeat-space-fallback">
+                      {{ t("admin.settings.gatewayForwarding.earlyHeartbeatModeSpaceFallbackHint") }}
+                    </p>
+                    <p class="text-amber-700 dark:text-amber-400" data-testid="stream-early-heartbeat-space-warning">
+                      {{ t("admin.settings.gatewayForwarding.earlyHeartbeatModeSpaceWarning") }}
                     </p>
                   </template>
                   <p v-else class="text-gray-500 dark:text-gray-400">
@@ -11150,7 +11167,9 @@ async function loadSettings() {
       }
     }
     form.stream_early_heartbeat_mode =
-      settings.stream_early_heartbeat_mode === "downstream_ping" ? "downstream_ping" : "comment";
+      settings.stream_early_heartbeat_mode === "downstream_ping" || settings.stream_early_heartbeat_mode === "space"
+        ? settings.stream_early_heartbeat_mode
+        : "comment";
     // For this optional override, null explicitly selects per-account rates.
     if (settings.openai_oauth_scheduling_rate_multiplier === null) {
       form.openai_oauth_scheduling_rate_multiplier = null;
@@ -11952,7 +11971,9 @@ async function saveSettings() {
       }
     }
     form.stream_early_heartbeat_mode =
-      updated.stream_early_heartbeat_mode === "downstream_ping" ? "downstream_ping" : "comment";
+      updated.stream_early_heartbeat_mode === "downstream_ping" || updated.stream_early_heartbeat_mode === "space"
+        ? updated.stream_early_heartbeat_mode
+        : "comment";
     if (updated.openai_oauth_scheduling_rate_multiplier === null) {
       form.openai_oauth_scheduling_rate_multiplier = null;
     }

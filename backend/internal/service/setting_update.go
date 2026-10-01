@@ -472,8 +472,8 @@ func (s *SettingService) buildSystemSettingsUpdates(ctx context.Context, setting
 	if settings.StreamEarlyHeartbeatMode == "" {
 		settings.StreamEarlyHeartbeatMode = StreamEarlyHeartbeatModeComment
 	}
-	if settings.StreamEarlyHeartbeatMode != StreamEarlyHeartbeatModeComment && settings.StreamEarlyHeartbeatMode != StreamEarlyHeartbeatModeDownstreamPing {
-		return nil, infraerrors.BadRequest("INVALID_STREAM_EARLY_HEARTBEAT_MODE", "early SSE heartbeat mode must be comment or downstream_ping")
+	if settings.StreamEarlyHeartbeatMode != StreamEarlyHeartbeatModeComment && settings.StreamEarlyHeartbeatMode != StreamEarlyHeartbeatModeDownstreamPing && settings.StreamEarlyHeartbeatMode != StreamEarlyHeartbeatModeSpace {
+		return nil, infraerrors.BadRequest("INVALID_STREAM_EARLY_HEARTBEAT_MODE", "early SSE heartbeat mode must be comment, downstream_ping or space")
 	}
 	if settings.StreamEarlyHeartbeatMinDelayMS < 0 || settings.StreamEarlyHeartbeatMaxDelayMS < settings.StreamEarlyHeartbeatMinDelayMS || settings.StreamEarlyHeartbeatMaxDelayMS > 30000 {
 		return nil, infraerrors.BadRequest("INVALID_STREAM_EARLY_HEARTBEAT_DELAY", "early SSE heartbeat delay must satisfy 0 <= min <= max <= 30000 milliseconds")

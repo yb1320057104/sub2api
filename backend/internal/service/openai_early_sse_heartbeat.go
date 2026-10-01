@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -66,12 +67,12 @@ func CopyFirstResponseTiming(parent, base context.Context) context.Context {
 // StartEarlySSEHeartbeat is called only for validated Responses, Chat and Messages
 // SSE requests. Compact, WebSocket, images and nonstreaming requests are excluded
 // by the handler. Disabling early heartbeats still collects first-response timing.
-func (s *OpenAIGatewayService) StartEarlySSEHeartbeat(c *gin.Context, requestStart time.Time, protocol string) func() {
+func (s *OpenAIGatewayService) StartEarlySSEHeartbeat(c *gin.Context, requestStart time.Time, protocol string, requestBody ...[]byte) func() {
 	settings := StreamEarlyHeartbeatSettings{}
 	if s != nil && s.settingService != nil && c != nil && c.Request != nil {
 		settings = s.settingService.GetStreamEarlyHeartbeatSettings(c.Request.Context())
 	}
-	return startEarlySSEHeartbeat(c, requestStart, protocol, settings)
+	return startEarlySSEHeartbeat(c, requestStart, protocol, settings, earlySpaceRequestSnapshot(c, requestBody...))
 }
 
 func earlySSEHeartbeatDelay(settings StreamEarlyHeartbeatSettings) time.Duration {
@@ -91,7 +92,7 @@ func earlySSEHeartbeatDelay(settings StreamEarlyHeartbeatSettings) time.Duration
 	return time.Duration(low+rand.IntN(high-low+1)) * time.Millisecond
 }
 
-func startEarlySSEHeartbeat(c *gin.Context, requestStart time.Time, protocol string, settings StreamEarlyHeartbeatSettings) func() {
+func startEarlySSEHeartbeat(c *gin.Context, requestStart time.Time, protocol string, settings StreamEarlyHeartbeatSettings, snapshots ...earlySpaceRequest) func() {
 	if c == nil || c.Writer == nil || c.Request == nil || earlySSEWriterFromContext(c) != nil {
 		return func() {}
 	}
@@ -114,6 +115,17 @@ func startEarlySSEHeartbeat(c *gin.Context, requestStart time.Time, protocol str
 	if settings.Mode == StreamEarlyHeartbeatModeDownstreamPing {
 		w.mode = StreamEarlyHeartbeatModeDownstreamPing
 	}
+	if settings.Enabled && settings.Mode == StreamEarlyHeartbeatModeSpace {
+		request := earlySpaceRequestSnapshot(c)
+		if len(snapshots) > 0 {
+			request = snapshots[0]
+		}
+		if (protocol == "responses" && !request.structured) || (protocol == "chat" && request.model != "" && !request.chatResponsesInput) {
+			w.mode = StreamEarlyHeartbeatModeSpace
+			w.space = newEarlySSESpaceState(protocol, request.model, requestStart)
+			c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), ctxkey.EarlySSESpaceRetryGate, w.prepareSpaceRetry))
+		}
+	}
 	if settings.Enabled {
 		w.firstDue = requestStart.Add(earlySSEHeartbeatDelay(settings))
 	}
@@ -123,6 +135,7 @@ func startEarlySSEHeartbeat(c *gin.Context, requestStart time.Time, protocol str
 	return func() {
 		w.mu.Lock()
 		w.stopLocked()
+		w.finishSpaceLocked()
 		if !original.Written() {
 			w.copyHeadersLocked(w.headers)
 			original.WriteHeader(w.status)
@@ -158,6 +171,7 @@ type earlySSEHeartbeatWriter struct {
 	stop          chan struct{}
 	wake          chan struct{}
 	done          chan struct{}
+	space         *earlySSESpaceState
 }
 
 func (w *earlySSEHeartbeatWriter) stopLocked() {
@@ -227,6 +241,25 @@ func (w *earlySSEHeartbeatWriter) beat() {
 	if !firstDue && (w.repeatDue.IsZero() || now.Before(w.repeatDue)) {
 		return
 	}
+	if w.space != nil && firstDue {
+		w.space.due = true
+		w.firstDue = time.Time{}
+		// Partial source frames belong to the request goroutine. Never insert
+		// a placeholder until their meaning and event boundary are known.
+		if len(w.space.pending) > 0 {
+			if w.interval > 0 {
+				w.repeatDue = now.Add(w.interval)
+			}
+			return
+		}
+		if w.space.canInject() {
+			if err := w.emitSpaceLocked(); err != nil {
+				w.space.err = err
+				w.stopLocked()
+			}
+			return
+		}
+	}
 	if !w.ResponseWriter.Written() {
 		w.copyHeadersLocked(w.stableHeaders)
 		h := w.ResponseWriter.Header()
@@ -267,7 +300,7 @@ func (w *earlySSEHeartbeatWriter) beat() {
 	w.ResponseWriter.Flush()
 	// A periodic comment can arrive before the configured first ping. Keep
 	// that ping pending; comment mode retains its original coalescing behavior.
-	if firstDue || w.mode != StreamEarlyHeartbeatModeDownstreamPing {
+	if firstDue || (w.mode != StreamEarlyHeartbeatModeDownstreamPing && w.mode != StreamEarlyHeartbeatModeSpace) {
 		w.firstDue = time.Time{}
 	}
 	if w.interval > 0 {
@@ -369,6 +402,13 @@ func (w *earlySSEHeartbeatWriter) WriteHeader(code int) {
 func (w *earlySSEHeartbeatWriter) Write(data []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if w.space != nil {
+		return w.writeSpaceLocked(data)
+	}
+	return w.writeOrdinaryLocked(data)
+}
+
+func (w *earlySSEHeartbeatWriter) writeOrdinaryLocked(data []byte) (int, error) {
 	transportHeartbeat, protocolPing := classifyCompleteSSEHeartbeat(data)
 	if len(data) > 0 && !transportHeartbeat {
 		w.stopLocked()
@@ -412,7 +452,7 @@ func (w *earlySSEHeartbeatWriter) Write(data []byte) (int, error) {
 			// real queue ping does; both leave periodic keepalive available.
 			w.committed = true
 			if err == nil {
-				if protocolPing || w.mode != StreamEarlyHeartbeatModeDownstreamPing {
+				if (protocolPing && w.mode != StreamEarlyHeartbeatModeSpace) || (w.mode != StreamEarlyHeartbeatModeDownstreamPing && w.mode != StreamEarlyHeartbeatModeSpace) {
 					w.firstDue = time.Time{}
 				}
 				if w.interval > 0 {
@@ -576,6 +616,17 @@ func (w *earlySSEHeartbeatWriter) errorFrame(data []byte) ([]byte, string, strin
 				"status": "failed", "output": []any{},
 				"error": map[string]any{"code": code, "message": message},
 			},
+		}
+		if w.space != nil && w.space.responseID != "" {
+			payload["sequence_number"] = w.space.nextSequence
+			w.space.nextSequence++
+			response := payload["response"].(map[string]any)
+			response["id"] = w.space.responseID
+			if w.space.active {
+				output, _ := w.space.mergeOutputSnapshot(nil, true)
+				placeholder, _ := json.Marshal(w.space.placeholderItem())
+				response["output"] = append([]json.RawMessage{placeholder}, output...)
+			}
 		}
 	case "messages":
 		payload["type"] = "error"

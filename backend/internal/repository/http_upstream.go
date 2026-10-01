@@ -27,6 +27,7 @@ import (
 	"golang.org/x/net/http2"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/proxyurl"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/proxyutil"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/servertiming"
@@ -400,6 +401,11 @@ func (t *grokAccessDeniedFallbackTransport) RoundTrip(req *http.Request) (*http.
 
 	body, ok := bufferSmallResponseBody(resp, grokFallbackBodyLimit)
 	if !ok || !isGrokCLICompatibilityAccessDenied(body) {
+		return resp, nil
+	}
+	// Chat space output can be committed before even the first upstream call.
+	// Resolve its timer and this transport-level replay under the writer's lock.
+	if allowRetry, ok := req.Context().Value(ctxkey.EarlySSESpaceRetryGate).(func() bool); ok && !allowRetry() {
 		return resp, nil
 	}
 

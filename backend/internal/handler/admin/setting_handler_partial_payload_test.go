@@ -74,7 +74,7 @@ func TestUpdateSettingsEarlyHeartbeatPartialPayloadAndResponse(t *testing.T) {
 }
 
 func TestUpdateSettingsEarlyHeartbeatRejectsInvalidModes(t *testing.T) {
-	for _, mode := range []any{"", "invalid", "DOWNSTREAM_PING", " downstream_ping ", nil, true, 1} {
+	for _, mode := range []any{"", "invalid", "DOWNSTREAM_PING", " downstream_ping ", "SPACE", " space ", nil, true, 1} {
 		h, repo := newStepUpSwitchTestHandler(t, map[string]string{
 			service.SettingKeyStreamEarlyHeartbeatEnabled: "true",
 			service.SettingKeyStreamEarlyHeartbeatMode:    service.StreamEarlyHeartbeatModeDownstreamPing,
@@ -84,6 +84,44 @@ func TestUpdateSettingsEarlyHeartbeatRejectsInvalidModes(t *testing.T) {
 		require.Equal(t, "true", repo.values[service.SettingKeyStreamEarlyHeartbeatEnabled])
 		require.Equal(t, service.StreamEarlyHeartbeatModeDownstreamPing, repo.values[service.SettingKeyStreamEarlyHeartbeatMode])
 	}
+}
+
+func TestUpdateSettingsEarlyHeartbeatSpaceRoundTripAndOmittedMode(t *testing.T) {
+	h, repo := newStepUpSwitchTestHandler(t, map[string]string{})
+	updated := doUpdateSettings(t, h, map[string]any{
+		"stream_early_heartbeat_enabled": true,
+		"stream_early_heartbeat_mode":    service.StreamEarlyHeartbeatModeSpace,
+	}, nil)
+	require.Equal(t, http.StatusOK, updated.Code)
+	var response struct {
+		Data dto.SystemSettings `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(updated.Body.Bytes(), &response))
+	require.Equal(t, service.StreamEarlyHeartbeatModeSpace, response.Data.StreamEarlyHeartbeatMode)
+	require.Equal(t, 1000, response.Data.StreamEarlyHeartbeatMinDelayMS)
+	require.Equal(t, 2000, response.Data.StreamEarlyHeartbeatMaxDelayMS)
+
+	omitted := doUpdateSettings(t, h, map[string]any{"site_name": "Space gateway"}, nil)
+	require.Equal(t, http.StatusOK, omitted.Code)
+	require.Equal(t, service.StreamEarlyHeartbeatModeSpace, repo.values[service.SettingKeyStreamEarlyHeartbeatMode])
+	disabled := doUpdateSettings(t, h, map[string]any{"stream_early_heartbeat_enabled": false}, nil)
+	require.Equal(t, http.StatusOK, disabled.Code)
+
+	get := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(get)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/admin/settings", nil)
+	h.GetSettings(c)
+	require.Equal(t, http.StatusOK, get.Code)
+	require.NoError(t, json.Unmarshal(get.Body.Bytes(), &response))
+	require.False(t, response.Data.StreamEarlyHeartbeatEnabled)
+	require.Equal(t, service.StreamEarlyHeartbeatModeSpace, response.Data.StreamEarlyHeartbeatMode)
+	require.Equal(t, service.StreamEarlyHeartbeatModeSpace, repo.values[service.SettingKeyStreamEarlyHeartbeatMode])
+
+	reenabled := doUpdateSettings(t, h, map[string]any{"stream_early_heartbeat_enabled": true}, nil)
+	require.Equal(t, http.StatusOK, reenabled.Code)
+	require.NoError(t, json.Unmarshal(reenabled.Body.Bytes(), &response))
+	require.True(t, response.Data.StreamEarlyHeartbeatEnabled)
+	require.Equal(t, service.StreamEarlyHeartbeatModeSpace, response.Data.StreamEarlyHeartbeatMode)
 }
 
 func TestUpdateSettingsEarlyHeartbeatRejectsInvalidRanges(t *testing.T) {
@@ -105,6 +143,9 @@ func TestUpdateSettingsEarlyHeartbeatAuditFields(t *testing.T) {
 	after := &service.SystemSettings{StreamEarlyHeartbeatEnabled: true, StreamEarlyHeartbeatMode: service.StreamEarlyHeartbeatModeDownstreamPing, StreamEarlyHeartbeatMinDelayMS: 500, StreamEarlyHeartbeatMaxDelayMS: 2500}
 	changed := diffSettings(before, after, nil, nil, UpdateSettingsRequest{})
 	require.ElementsMatch(t, []string{service.SettingKeyStreamEarlyHeartbeatEnabled, service.SettingKeyStreamEarlyHeartbeatMode, service.SettingKeyStreamEarlyHeartbeatMinDelayMS, service.SettingKeyStreamEarlyHeartbeatMaxDelayMS}, changed)
+	before = after
+	after = &service.SystemSettings{StreamEarlyHeartbeatEnabled: true, StreamEarlyHeartbeatMode: service.StreamEarlyHeartbeatModeSpace, StreamEarlyHeartbeatMinDelayMS: 500, StreamEarlyHeartbeatMaxDelayMS: 2500}
+	require.Equal(t, []string{service.SettingKeyStreamEarlyHeartbeatMode}, diffSettings(before, after, nil, nil, UpdateSettingsRequest{}))
 }
 
 func TestUpdateSettingsPartialPayloadKeepsUnsentKeys(t *testing.T) {

@@ -887,6 +887,9 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		retryStartedAt := time.Now()
 	wsRetryLoop:
 		for attempt := 1; attempt <= maxAttempts; attempt++ {
+			if attempt > 1 && !PrepareEarlySSESpaceRetry(c) {
+				break
+			}
 			wsAttempts = attempt
 			wsResult, wsErr = s.forwardOpenAIWSV2(
 				ctx,
@@ -1037,7 +1040,10 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	compactModelFallbackRetried := false
 	agentTaskRecoveryTried := false
 	rejectedFieldRetryState := openAIResponsesRejectedFieldRetryStateForRequest(c, body)
-	for {
+	for attempt := 0; ; attempt++ {
+		if attempt > 0 && !PrepareEarlySSESpaceRetry(c) {
+			return nil, fmt.Errorf("upstream retry stopped after early space output")
+		}
 		// Build upstream request
 		upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(ctx)
 		var headerGuard *openAIFirstOutputHeaderGuard

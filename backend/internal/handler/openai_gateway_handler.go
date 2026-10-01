@@ -593,7 +593,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	subscription, _ := middleware2.GetSubscriptionFromContext(c)
 	requestPlatform := openAICompatibleRequestPlatform(c.Request.Context(), apiKey)
 	if reqStream && !legacyCompact && !nativeV2 && !imageIntent {
-		defer h.gatewayService.StartEarlySSEHeartbeat(c, requestStart, "responses")()
+		defer h.gatewayService.StartEarlySSEHeartbeat(c, requestStart, "responses", body)()
 	}
 
 	service.SetOpsLatencyMs(c, service.OpsAuthLatencyMsKey, time.Since(requestStart).Milliseconds())
@@ -1474,7 +1474,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 						)
 						return
 					}
-					if service.OpenAICompactKeepaliveAdjustedWrittenSize(c) != writerSizeBeforeForward {
+					if !openAIForwardMayFailover(c, writerSizeBeforeForward, nil) {
 						h.gatewayService.ObserveOpenAIAccountHealthFailure(c.Request.Context(), account, err)
 						h.handleAnthropicFailoverExhausted(c, failoverErr, true)
 						return
@@ -3784,6 +3784,12 @@ func openAIForwardErrorAlreadyCommunicated(c *gin.Context, writerSizeBeforeForwa
 
 func openAIForwardMayFailover(c *gin.Context, writerSizeBeforeForward int, failoverErr *service.UpstreamFailoverError) bool {
 	if c == nil || c.Writer == nil {
+		return false
+	}
+	// A placeholder may already have been sent while selecting or waiting for
+	// the account, before the caller took its size snapshot. Resolve pending
+	// space output and replay atomically; metadata-only failover cannot override it.
+	if !service.PrepareEarlySSESpaceRetry(c) {
 		return false
 	}
 	if service.OpenAICompactKeepaliveAdjustedWrittenSize(c) == writerSizeBeforeForward {

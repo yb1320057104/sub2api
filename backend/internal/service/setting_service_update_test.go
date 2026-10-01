@@ -238,6 +238,8 @@ func TestStreamEarlyHeartbeatSettingsDefaultsAndMalformedValues(t *testing.T) {
 		{"enabled legacy settings keep comments", map[string]string{SettingKeyStreamEarlyHeartbeatEnabled: "true"}, StreamEarlyHeartbeatSettings{Enabled: true, Mode: StreamEarlyHeartbeatModeComment, MinDelayMS: 1000, MaxDelayMS: 2000}},
 		{"immediate", map[string]string{SettingKeyStreamEarlyHeartbeatEnabled: "true", SettingKeyStreamEarlyHeartbeatMinDelayMS: "0", SettingKeyStreamEarlyHeartbeatMaxDelayMS: "0"}, StreamEarlyHeartbeatSettings{Enabled: true, Mode: StreamEarlyHeartbeatModeComment}},
 		{"explicit downstream ping", map[string]string{SettingKeyStreamEarlyHeartbeatEnabled: "true", SettingKeyStreamEarlyHeartbeatMode: StreamEarlyHeartbeatModeDownstreamPing}, StreamEarlyHeartbeatSettings{Enabled: true, Mode: StreamEarlyHeartbeatModeDownstreamPing, MinDelayMS: 1000, MaxDelayMS: 2000}},
+		{"explicit space", map[string]string{SettingKeyStreamEarlyHeartbeatEnabled: "true", SettingKeyStreamEarlyHeartbeatMode: StreamEarlyHeartbeatModeSpace}, StreamEarlyHeartbeatSettings{Enabled: true, Mode: StreamEarlyHeartbeatModeSpace, MinDelayMS: 1000, MaxDelayMS: 2000}},
+		{"disabled space retains mode", map[string]string{SettingKeyStreamEarlyHeartbeatEnabled: "false", SettingKeyStreamEarlyHeartbeatMode: StreamEarlyHeartbeatModeSpace}, StreamEarlyHeartbeatSettings{Mode: StreamEarlyHeartbeatModeSpace, MinDelayMS: 1000, MaxDelayMS: 2000}},
 		{"explicit comment", map[string]string{SettingKeyStreamEarlyHeartbeatEnabled: "true", SettingKeyStreamEarlyHeartbeatMode: StreamEarlyHeartbeatModeComment}, StreamEarlyHeartbeatSettings{Enabled: true, Mode: StreamEarlyHeartbeatModeComment, MinDelayMS: 1000, MaxDelayMS: 2000}},
 		{"malformed mode disables heartbeat", map[string]string{SettingKeyStreamEarlyHeartbeatEnabled: "true", SettingKeyStreamEarlyHeartbeatMode: "invalid"}, StreamEarlyHeartbeatSettings{Mode: StreamEarlyHeartbeatModeComment, MinDelayMS: 1000, MaxDelayMS: 2000}},
 		{"empty stored mode disables heartbeat", map[string]string{SettingKeyStreamEarlyHeartbeatEnabled: "true", SettingKeyStreamEarlyHeartbeatMode: ""}, StreamEarlyHeartbeatSettings{Mode: StreamEarlyHeartbeatModeComment, MinDelayMS: 1000, MaxDelayMS: 2000}},
@@ -259,25 +261,29 @@ func TestStreamEarlyHeartbeatSettingsDefaultsAndMalformedValues(t *testing.T) {
 }
 
 func TestStreamEarlyHeartbeatSettingsCacheRefreshAndWriteFailure(t *testing.T) {
-	resetGatewayForwardingSettingsCacheForTest(t)
-	ctx := context.Background()
-	repo := &forwardedIPMigrationRepoStub{values: map[string]string{}}
-	svc := NewSettingService(repo, &config.Config{})
-	require.False(t, svc.GetStreamEarlyHeartbeatSettings(ctx).Enabled)
-	require.Equal(t, StreamEarlyHeartbeatModeComment, svc.GetStreamEarlyHeartbeatSettings(ctx).Mode)
-	repo.values[SettingKeyStreamEarlyHeartbeatEnabled] = "true"
-	repo.values[SettingKeyStreamEarlyHeartbeatMode] = StreamEarlyHeartbeatModeDownstreamPing
-	require.False(t, svc.GetStreamEarlyHeartbeatSettings(ctx).Enabled, "the hot path must use the cached snapshot")
-	require.Equal(t, StreamEarlyHeartbeatModeComment, svc.GetStreamEarlyHeartbeatSettings(ctx).Mode)
-	require.NoError(t, svc.UpdateSettings(ctx, &SystemSettings{StreamEarlyHeartbeatEnabled: true, StreamEarlyHeartbeatMode: StreamEarlyHeartbeatModeDownstreamPing, StreamEarlyHeartbeatMinDelayMS: 1250, StreamEarlyHeartbeatMaxDelayMS: 2750}))
-	require.Equal(t, StreamEarlyHeartbeatModeDownstreamPing, repo.updates[SettingKeyStreamEarlyHeartbeatMode])
-	require.Equal(t, "1250", repo.updates[SettingKeyStreamEarlyHeartbeatMinDelayMS])
-	require.Equal(t, "2750", repo.updates[SettingKeyStreamEarlyHeartbeatMaxDelayMS])
-	require.Equal(t, StreamEarlyHeartbeatSettings{Enabled: true, Mode: StreamEarlyHeartbeatModeDownstreamPing, MinDelayMS: 1250, MaxDelayMS: 2750}, svc.GetStreamEarlyHeartbeatSettings(ctx))
-	repo.setMultipleErr = errors.New("write failed")
-	require.Error(t, svc.UpdateSettings(ctx, &SystemSettings{}))
-	require.True(t, svc.GetStreamEarlyHeartbeatSettings(ctx).Enabled, "a rejected write must not replace the runtime snapshot")
-	require.Equal(t, StreamEarlyHeartbeatModeDownstreamPing, svc.GetStreamEarlyHeartbeatSettings(ctx).Mode, "failed writes must not reset the selected mode")
+	for _, mode := range []string{StreamEarlyHeartbeatModeDownstreamPing, StreamEarlyHeartbeatModeSpace} {
+		t.Run(mode, func(t *testing.T) {
+			resetGatewayForwardingSettingsCacheForTest(t)
+			ctx := context.Background()
+			repo := &forwardedIPMigrationRepoStub{values: map[string]string{}}
+			svc := NewSettingService(repo, &config.Config{})
+			require.False(t, svc.GetStreamEarlyHeartbeatSettings(ctx).Enabled)
+			require.Equal(t, StreamEarlyHeartbeatModeComment, svc.GetStreamEarlyHeartbeatSettings(ctx).Mode)
+			repo.values[SettingKeyStreamEarlyHeartbeatEnabled] = "true"
+			repo.values[SettingKeyStreamEarlyHeartbeatMode] = mode
+			require.False(t, svc.GetStreamEarlyHeartbeatSettings(ctx).Enabled, "the hot path must use the cached snapshot")
+			require.Equal(t, StreamEarlyHeartbeatModeComment, svc.GetStreamEarlyHeartbeatSettings(ctx).Mode)
+			require.NoError(t, svc.UpdateSettings(ctx, &SystemSettings{StreamEarlyHeartbeatEnabled: true, StreamEarlyHeartbeatMode: mode, StreamEarlyHeartbeatMinDelayMS: 1250, StreamEarlyHeartbeatMaxDelayMS: 2750}))
+			require.Equal(t, mode, repo.updates[SettingKeyStreamEarlyHeartbeatMode])
+			require.Equal(t, "1250", repo.updates[SettingKeyStreamEarlyHeartbeatMinDelayMS])
+			require.Equal(t, "2750", repo.updates[SettingKeyStreamEarlyHeartbeatMaxDelayMS])
+			require.Equal(t, StreamEarlyHeartbeatSettings{Enabled: true, Mode: mode, MinDelayMS: 1250, MaxDelayMS: 2750}, svc.GetStreamEarlyHeartbeatSettings(ctx))
+			repo.setMultipleErr = errors.New("write failed")
+			require.Error(t, svc.UpdateSettings(ctx, &SystemSettings{}))
+			require.True(t, svc.GetStreamEarlyHeartbeatSettings(ctx).Enabled, "a rejected write must not replace the runtime snapshot")
+			require.Equal(t, mode, svc.GetStreamEarlyHeartbeatSettings(ctx).Mode, "failed writes must not reset the selected mode")
+		})
+	}
 }
 
 func TestStreamEarlyHeartbeatSettingsDatabaseFailureDisablesHeartbeat(t *testing.T) {
@@ -287,7 +293,7 @@ func TestStreamEarlyHeartbeatSettingsDatabaseFailureDisablesHeartbeat(t *testing
 }
 
 func TestStreamEarlyHeartbeatSettingsRejectInvalidModeBeforeWrite(t *testing.T) {
-	for _, mode := range []string{"invalid", "DOWNSTREAM_PING", " downstream_ping ", " "} {
+	for _, mode := range []string{"invalid", "DOWNSTREAM_PING", " downstream_ping ", "SPACE", " space ", " "} {
 		t.Run(mode, func(t *testing.T) {
 			repo := &settingUpdateRepoStub{}
 			svc := NewSettingService(repo, &config.Config{})

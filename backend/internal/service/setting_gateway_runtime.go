@@ -55,6 +55,7 @@ const backendModeDBTimeout = 5 * time.Second
 const (
 	StreamEarlyHeartbeatModeComment        = "comment"
 	StreamEarlyHeartbeatModeDownstreamPing = "downstream_ping"
+	StreamEarlyHeartbeatModeSpace          = "space"
 )
 
 // StreamEarlyHeartbeatSettings controls the optional early SSE heartbeat.
