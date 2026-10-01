@@ -63,6 +63,21 @@ func TestPKBinanceAccountValidationPreservesUIDIdentity(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestPKBinanceBillWindowUsesShanghaiTodayAndBoundedDates(t *testing.T) {
+	now := time.Date(2026, 10, 1, 2, 30, 0, 0, time.UTC)
+	from, to, err := BinanceRechargeBillWindow("", "", now)
+	require.NoError(t, err)
+	require.Equal(t, time.Date(2026, 9, 30, 16, 0, 0, 0, time.UTC), from)
+	require.Equal(t, now, to)
+	_, _, err = BinanceRechargeBillWindow(now.Add(-90*24*time.Hour).Format(time.RFC3339), now.Format(time.RFC3339), now)
+	require.Error(t, err)
+	_, _, err = BinanceRechargeBillWindow("invalid-date", "", now)
+	require.Error(t, err)
+	_, to, err = BinanceRechargeBillWindow("", now.Add(time.Hour).Format(time.RFC3339), now)
+	require.NoError(t, err)
+	require.Equal(t, now, to)
+}
+
 type paymentFulfillmentTestProvider struct {
 	key            string
 	supportedTypes []payment.PaymentType

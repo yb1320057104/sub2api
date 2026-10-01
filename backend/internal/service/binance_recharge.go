@@ -220,17 +220,19 @@ func (s *BinanceRechargeService) SaveAccount(ctx context.Context, id int64, inpu
 		current = *a
 		if current.RecipientUID != input.RecipientUID {
 			var polling bool
-			if err := tx.QueryRowContext(ctx, `SELECT poll_token<>'' AND next_poll_at>NOW() FROM binance_recharge_accounts WHERE id=$1`, id).Scan(&polling); err != nil {
+			if err := tx.QueryRowContext(ctx, `SELECT poll_token<>'' AND api_locked_until>NOW() FROM binance_recharge_accounts WHERE id=$1`, id).Scan(&polling); err != nil {
 				return nil, err
 			}
 			if polling {
 				return nil, infraerrors.Conflict("BINANCE_ACCOUNT_POLLING", "查收进行中，暂时不能修改收款 UID")
 			}
-			var hasReceipts bool
-			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM binance_recharge_receipts WHERE account_id=$1)`, id).Scan(&hasReceipts); err != nil {
+			// Recheck after acquiring the account row lock. The initial SELECT's
+			// snapshot may predate a concurrent first order that held that lock.
+			var hasHistory bool
+			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM binance_recharge_orders WHERE account_id=$1) OR EXISTS(SELECT 1 FROM binance_recharge_receipts WHERE account_id=$1)`, id).Scan(&hasHistory); err != nil {
 				return nil, err
 			}
-			if current.HasOrders || hasReceipts {
+			if hasHistory {
 				return nil, infraerrors.Conflict("BINANCE_UID_IMMUTABLE", "已有订单或到账记录的收款 UID 不可修改，请新增账户")
 			}
 		}

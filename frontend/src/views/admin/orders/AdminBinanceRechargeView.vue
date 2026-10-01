@@ -2,7 +2,7 @@
   <AppLayout>
     <div class="space-y-6">
       <div class="flex flex-wrap gap-2 border-b border-gray-200 pb-3 dark:border-dark-700">
-        <button v-for="tab in tabs" :key="tab" class="btn" :class="activeTab === tab ? 'btn-primary' : 'btn-secondary'" @click="activeTab = tab">{{ t(tab === 'dailyUsage' ? 'binanceRecharge.dailyUsage.title' : `binanceRecharge.${tab}`) }}</button>
+        <button v-for="tab in tabs" :key="tab" class="btn" :class="activeTab === tab ? 'btn-primary' : 'btn-secondary'" @click="activeTab = tab">{{ t(tab === 'dailyUsage' || tab === 'liveBills' ? `binanceRecharge.${tab}.title` : `binanceRecharge.${tab}`) }}</button>
       </div>
       <template v-if="activeTab === 'accounts'">
         <div class="flex flex-wrap items-center justify-between gap-3">
@@ -45,7 +45,8 @@
         <Pagination v-if="total > 0" :page="page" :page-size="pageSize" :total="total" @update:page="changePage" @update:page-size="changePageSize" />
       </template>
       <BinanceRechargeStats v-else-if="activeTab === 'totals'" admin :accounts="accounts" />
-      <AdminDailyUsage v-else />
+      <AdminDailyUsage v-else-if="activeTab === 'dailyUsage'" />
+      <BinanceLiveBills v-else :accounts="accounts" />
     </div>
     <BaseDialog :show="showAccountDialog" :title="editingAccount ? t('binanceRecharge.editAccount') : t('binanceRecharge.addAccount')" :close-on-escape="!saving" :close-on-click-outside="!saving" @close="closeAccountDialog">
       <form id="binance-account-form" class="space-y-4" autocomplete="off" @submit.prevent="saveAccount">
@@ -80,11 +81,12 @@ import BinanceOrderTable from '@/components/payment/BinanceOrderTable.vue'
 import BinanceOrderDetails from '@/components/payment/BinanceOrderDetails.vue'
 import BinanceRechargeStats from '@/components/payment/BinanceRechargeStats.vue'
 import AdminDailyUsage from '@/components/admin/usage/AdminDailyUsage.vue'
+import BinanceLiveBills from '@/components/payment/BinanceLiveBills.vue'
 
 const { t } = useI18n()
 const appStore = useAppStore()
 const rechargeStore = useBinanceRechargeStore()
-const tabs = ['accounts', 'orders', 'totals', 'dailyUsage'] as const
+const tabs = ['accounts', 'orders', 'totals', 'dailyUsage', 'liveBills'] as const
 const activeTab = ref<typeof tabs[number]>('accounts')
 const accounts = ref<BinanceRechargeAccount[]>([])
 const accountsLoading = ref(false)

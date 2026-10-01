@@ -29,6 +29,80 @@ type pkBinanceLifecycleEncryptor struct{}
 func (pkBinanceLifecycleEncryptor) Encrypt(s string) (string, error) { return s, nil }
 func (pkBinanceLifecycleEncryptor) Decrypt(s string) (string, error) { return s, nil }
 
+type pkBinanceBillsClient struct {
+	calls int
+	err   error
+}
+
+func (*pkBinanceBillsClient) History(context.Context, string, string, string, time.Time, time.Time) ([]binancepay.Receipt, error) {
+	panic("a read-only bill query must never invoke settlement history")
+}
+func (*pkBinanceBillsClient) Probe(context.Context, string, string) error { return nil }
+func (*pkBinanceBillsClient) CloseIdleConnections()                       {}
+func (c *pkBinanceBillsClient) Bills(context.Context, string, string, string, time.Time, time.Time) (*binancepay.BillsPage, error) {
+	c.calls++
+	return &binancepay.BillsPage{Items: []binancepay.Bill{{ID: "bill", Amount: "1.12345678", Direction: "incoming"}}, Total: 1, Limit: 100}, c.err
+}
+
+func TestPKBinanceBillsReadDoesNotMutateOrdersOrRescheduleCollection(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	mock.ExpectQuery(`UPDATE binance_recharge_accounts a`).WillReturnRows(sqlmock.NewRows([]string{"failure_count"}).AddRow(0))
+	mock.ExpectQuery(`SELECT a.id, a.name, a.recipient_uid`).WillReturnRows(sqlmock.NewRows([]string{"id", "name", "recipient_uid", "enabled", "ttl", "key", "secret", "checked", "error", "created", "updated", "has_orders"}).AddRow(1, "test", "12345", true, 30, "test-key", "test-secret", nil, "", time.Now(), time.Now(), true))
+	// The only successful-read mutation releases the shared API lock. There is
+	// no order, receipt, user balance or next_poll_at update on this path.
+	mock.ExpectExec(`UPDATE binance_recharge_accounts SET api_locked_until=to_timestamp\(0\),poll_token='' WHERE id=\$1 AND poll_token=\$2`).WillReturnResult(sqlmock.NewResult(0, 1))
+	client := &pkBinanceBillsClient{}
+	svc := NewBinanceRechargeService(db, pkBinanceLifecycleEncryptor{}, client, nil, nil)
+	now := time.Now()
+	page, err := svc.Bills(context.Background(), 1, now.Add(-time.Hour), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.calls != 1 || page.Total != 1 || page.Items[0].Amount != "1.12345678" {
+		t.Fatal("live bill result changed")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPKBinanceBillsRespectSharedLeaseAndProviderBackoff(t *testing.T) {
+	for _, limited := range []bool{false, true} {
+		t.Run(map[bool]string{false: "busy account", true: "rate limited"}[limited], func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = db.Close() }()
+			client := &pkBinanceBillsClient{}
+			if !limited {
+				mock.ExpectQuery(`UPDATE binance_recharge_accounts a`).WillReturnRows(sqlmock.NewRows([]string{"failure_count"}))
+				mock.ExpectQuery(`SELECT EXISTS`).WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
+			} else {
+				client.err = &binancepay.RateLimitError{StatusCode: 418, RetryAfter: 24 * time.Hour}
+				mock.ExpectQuery(`UPDATE binance_recharge_accounts a`).WillReturnRows(sqlmock.NewRows([]string{"failure_count"}).AddRow(0))
+				mock.ExpectQuery(`SELECT a.id, a.name, a.recipient_uid`).WillReturnRows(sqlmock.NewRows([]string{"id", "name", "recipient_uid", "enabled", "ttl", "key", "secret", "checked", "error", "created", "updated", "has_orders"}).AddRow(1, "test", "12345", true, 30, "test-key", "test-secret", nil, "", time.Now(), time.Now(), true))
+				mock.ExpectExec(`UPDATE binance_recharge_accounts SET api_locked_until=to_timestamp\(0\),poll_token='',failure_count=\$3, next_poll_at=GREATEST`).WithArgs(int64(1), sqlmock.AnyArg(), 1, float64(86400), "币安 API 限流，已延后查收").WillReturnResult(sqlmock.NewResult(0, 1))
+			}
+			svc := NewBinanceRechargeService(db, pkBinanceLifecycleEncryptor{}, client, nil, nil)
+			now := time.Now()
+			if _, err := svc.Bills(context.Background(), 1, now.Add(-time.Hour), now); err == nil {
+				t.Fatal("busy or rate-limited bill query must fail")
+			}
+			if !limited && client.calls != 0 {
+				t.Fatal("busy account bypassed the shared lock")
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func TestPKBinanceLifecycle_StopWithoutStart(t *testing.T) {
 	svc := NewBinanceRechargeService(nil, nil, nil, nil, nil)
 	svc.Stop()

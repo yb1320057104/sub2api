@@ -447,3 +447,101 @@ func TestPKBinanceProbeRequiresReadingAndPayAccess(t *testing.T) {
 		})
 	}
 }
+
+func TestPKBinanceBillsKeepAllDirectionsCurrenciesAndExactFields(t *testing.T) {
+	t.Parallel()
+	base := time.Now().Add(-time.Minute).UnixMilli()
+	client := binancepay.NewClientWithTransport(pkBinanceTransport(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Path == "/api/v3/time" {
+			return pkBinanceJSON(t, 200, map[string]any{"serverTime": time.Now().UnixMilli()}), nil
+		}
+		if request.Method != http.MethodGet || request.URL.Path != "/sapi/v1/pay/transactions" || request.URL.Query().Get("limit") != "100" {
+			t.Fatal("bills must use only the read-only Pay history endpoint")
+		}
+		if request.URL.Query().Get("signature") == "" || request.Header.Get("X-MBX-APIKEY") != "test-key" {
+			t.Fatal("bill request must be signed")
+		}
+		return pkBinanceJSON(t, 200, map[string]any{"success": true, "code": "000000", "data": []any{
+			map[string]any{"transactionId": "income", "orderType": "CRYPTO_BOX", "currency": "BTC", "amount": "0.00000001", "transactionTime": base, "signature": "must-hide-signature", "receiverInfo": map[string]any{"binanceId": json.Number("90071992547409931234"), "apiKey": "must-hide-key"}, "walletAssetCost": map[string]any{"1": "0.00000001", "signature": "must-hide-wallet-secret"}},
+			map[string]any{"transactionId": "expense", "orderType": "PAY", "currency": "ETH", "amount": "-1.230000000000000001", "transactionTime": base, "receiverInfo": map[string]any{"binanceId": "42"}},
+			map[string]any{"transactionId": "zero", "orderType": "C2C", "currency": "USDT", "amount": "0.00000", "transactionTime": base},
+		}}), nil
+	}))
+	page, err := client.Bills(context.Background(), "test-key", "test-secret", "42", time.UnixMilli(base-1), time.UnixMilli(base+1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 3 || page.Limit != 100 || page.PossiblyMore {
+		t.Fatalf("unexpected bill page: %#v", page)
+	}
+	byID := make(map[string]binancepay.Bill)
+	for _, bill := range page.Items {
+		byID[bill.ID] = bill
+	}
+	if byID["income"].Amount != "0.00000001" || byID["income"].Currency != "BTC" || byID["income"].Kind != "CRYPTO_BOX" || byID["income"].Direction != "incoming" {
+		t.Fatalf("incoming bill changed: %#v", byID["income"])
+	}
+	if byID["expense"].Direction != "outgoing" || byID["expense"].Amount != "-1.230000000000000001" {
+		t.Fatalf("sign or precision lost: %#v", byID["expense"])
+	}
+	if byID["zero"].Direction != "unknown" {
+		t.Fatal("zero is not income or expense")
+	}
+	raw, err := json.Marshal(page)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, hidden := range []string{"must-hide", "test-key", "test-secret", "signature"} {
+		if strings.Contains(string(raw), hidden) {
+			t.Fatalf("bills exposed credential field %q", hidden)
+		}
+	}
+	if !strings.Contains(string(raw), "90071992547409931234") || !strings.Contains(string(raw), `"key":"1"`) {
+		t.Fatal("large IDs and numbered wallet amounts must retain exact field text")
+	}
+}
+
+func TestPKBinanceBillsFullPageWarnsWithoutPartialHistoryClaim(t *testing.T) {
+	t.Parallel()
+	base := time.Now().Add(-time.Minute).UnixMilli()
+	calls := 0
+	client := binancepay.NewClientWithTransport(pkBinanceTransport(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Path == "/api/v3/time" {
+			return pkBinanceJSON(t, 200, map[string]any{"serverTime": time.Now().UnixMilli()}), nil
+		}
+		calls++
+		rows := make([]any, 100)
+		for i := range rows {
+			rows[i] = pkBinanceTransfer(strconv.Itoa(i), "1.000000001", "BNB", "PAY", "42", base)
+		}
+		return pkBinanceJSON(t, 200, map[string]any{"success": true, "code": "000000", "data": rows}), nil
+	}))
+	page, err := client.Bills(context.Background(), "test-key", "test-secret", "42", time.UnixMilli(base-1), time.UnixMilli(base+1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !page.PossiblyMore || page.Total != 100 || calls != 1 {
+		t.Fatal("full bill page must warn about truncation without claiming complete receipt history")
+	}
+}
+
+func TestPKBinanceBillsRejectInvalidRangeAndHonorProviderBackoff(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+	calls := 0
+	client := binancepay.NewClientWithTransport(pkBinanceTransport(func(request *http.Request) (*http.Response, error) {
+		calls++
+		if request.URL.Path == "/api/v3/time" {
+			return pkBinanceJSON(t, 200, map[string]any{"serverTime": time.Now().UnixMilli()}), nil
+		}
+		return pkBinanceJSON(t, http.StatusTooManyRequests, map[string]any{"message": "hidden-provider-message"}), nil
+	}))
+	if _, err := client.Bills(context.Background(), "test-key", "test-secret", "42", now.Add(-90*24*time.Hour), now); err == nil || calls != 0 {
+		t.Fatal("invalid interval must fail before any API request")
+	}
+	page, err := client.Bills(context.Background(), "test-key", "test-secret", "42", now.Add(-time.Hour), now)
+	var limited *binancepay.RateLimitError
+	if !errors.As(err, &limited) || page != nil || calls != 2 {
+		t.Fatalf("rate limit must stop bill queries: %v", err)
+	}
+}

@@ -11,6 +11,8 @@ CREATE TABLE IF NOT EXISTS binance_recharge_accounts (
     last_checked_at TIMESTAMPTZ,
     last_error TEXT NOT NULL DEFAULT '',
     next_poll_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    api_locked_until TIMESTAMPTZ NOT NULL DEFAULT to_timestamp(0),
+    bills_next_query_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     poll_token VARCHAR(36) NOT NULL DEFAULT '',
     failure_count INTEGER NOT NULL DEFAULT 0,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),

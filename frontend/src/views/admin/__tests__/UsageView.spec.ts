@@ -801,3 +801,177 @@ describe('admin UsageView model audit export', () => {
 		expect(saveAs).toHaveBeenCalledTimes(1)
 	})
 })
+
+describe('PKBinance daily usage tab', () => {
+  const mountedViews: Array<{ unmount: () => void }> = []
+  let visibility: ReturnType<typeof vi.spyOn>
+
+  const mountDailyUsage = () => {
+    const wrapper = mount(AdminDailyUsage, {
+      global: { stubs: {
+        AppLayout: AppLayoutStub, UsageStatsCards: true, UsageFilters: UsageFiltersStub,
+        UsageTable: UsageTableStub, UsageExportProgress: true, UsageCleanupDialog: true,
+        UserBalanceHistoryModal: true, Pagination: true, Select: true,
+        DateRangePicker: true, Icon: true, TokenUsageTrend: true,
+        ModelDistributionChart: true, GroupDistributionChart: true,
+        EndpointDistributionChart: true, UserTokenRanking: true,
+        OpsErrorLogTable: true, OpsErrorDetailModal: true,
+      } },
+    })
+    mountedViews.push(wrapper)
+    return wrapper
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(2026, 9, 1, 12))
+    visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
+    Object.keys(routeQuery).forEach((key) => delete routeQuery[key])
+    list.mockReset().mockResolvedValue({ items: [], total: 0, pages: 0 })
+    getStats.mockReset().mockResolvedValue({ total_requests: 0 })
+    getSnapshotV2.mockReset().mockResolvedValue({ trend: [], groups: [] })
+    getModelStats.mockReset().mockResolvedValue({ models: [] })
+    listErrorLogs.mockReset().mockResolvedValue({ items: [], total: 0 })
+    getById.mockReset()
+  })
+
+  afterEach(() => {
+    mountedViews.splice(0).forEach((wrapper) => wrapper.unmount())
+    Object.keys(routeQuery).forEach((key) => delete routeQuery[key])
+    vi.restoreAllMocks()
+    vi.useRealTimers()
+  })
+
+  it('defaults to today and all users without inheriting recharge filters or nesting AppLayout', async () => {
+    routeQuery.user_id = '42'
+    routeQuery.start_date = '2020-01-01'
+    routeQuery.end_date = '2020-02-01'
+    const wrapper = mountDailyUsage()
+    vi.advanceTimersByTime(120)
+    await flushPromises()
+
+    const today = formatLocalDate(new Date())
+    for (const request of [list, getStats, getModelStats, getSnapshotV2]) {
+      const params = request.mock.calls[0][0]
+      expect(params.start_date).toBe(today)
+      expect(params.end_date).toBe(today)
+      expect(params.user_id).toBeUndefined()
+      expect(params).not.toHaveProperty('recharge_type')
+      expect(params).not.toHaveProperty('payment_source')
+    }
+    expect(getById).not.toHaveBeenCalled()
+    expect(wrapper.findComponent(AppLayoutStub).exists()).toBe(false)
+    expect(wrapper.find('[data-test="usage-table"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="daily-usage-auto-refresh"]').element).toHaveProperty('checked', true)
+    expect(wrapper.find('[data-testid="daily-usage-refresh-seconds"]').element).toHaveProperty('value', '5')
+    expect(wrapper.text()).toContain('binanceRecharge.dailyUsage.description')
+  })
+
+  it('refreshes every five seconds by default and supports switching off and changing the interval', async () => {
+    const wrapper = mountDailyUsage()
+    vi.advanceTimersByTime(120)
+    await flushPromises()
+    expect(list).toHaveBeenCalledTimes(1)
+    vi.advanceTimersByTime(4879)
+    await flushPromises()
+    expect(list).toHaveBeenCalledTimes(1)
+    vi.advanceTimersByTime(1)
+    await flushPromises()
+    expect(list).toHaveBeenCalledTimes(2)
+
+    await wrapper.find('[data-testid="daily-usage-auto-refresh"]').setValue(false)
+    vi.advanceTimersByTime(20000)
+    await flushPromises()
+    expect(list).toHaveBeenCalledTimes(2)
+    await wrapper.find('[data-testid="daily-usage-refresh-seconds"]').setValue('3')
+    await wrapper.find('[data-testid="daily-usage-auto-refresh"]').setValue(true)
+    vi.advanceTimersByTime(2999)
+    await flushPromises()
+    expect(list).toHaveBeenCalledTimes(2)
+    vi.advanceTimersByTime(1)
+    await flushPromises()
+    expect(list).toHaveBeenCalledTimes(3)
+
+    await wrapper.find('[data-testid="daily-usage-refresh-seconds"]').setValue('0')
+    vi.advanceTimersByTime(20000)
+    await flushPromises()
+    expect(list).toHaveBeenCalledTimes(3)
+    expect(wrapper.find('[role="alert"]').exists()).toBe(true)
+  })
+
+  it('waits for a slow refresh to finish instead of accumulating polling requests', async () => {
+    mountDailyUsage()
+    vi.advanceTimersByTime(120)
+    await flushPromises()
+    let resolveStats!: (value: { total_requests: number }) => void
+    getStats.mockImplementationOnce(() => new Promise((resolve) => { resolveStats = resolve }))
+    vi.advanceTimersByTime(4880)
+    await flushPromises()
+    expect(list).toHaveBeenCalledTimes(2)
+    expect(getStats).toHaveBeenCalledTimes(2)
+    vi.advanceTimersByTime(30000)
+    await flushPromises()
+    expect(list).toHaveBeenCalledTimes(2)
+    expect(getStats).toHaveBeenCalledTimes(2)
+    resolveStats({ total_requests: 1 })
+    await flushPromises()
+    vi.advanceTimersByTime(5000)
+    await flushPromises()
+    expect(list).toHaveBeenCalledTimes(3)
+  })
+
+  it('cancels requests and polling while hidden, resumes once visible and clears timers on unmount', async () => {
+    const wrapper = mountDailyUsage()
+    vi.advanceTimersByTime(120)
+    await flushPromises()
+    const signals = [list, getStats, getModelStats, getSnapshotV2].map((request) => request.mock.calls[0][1].signal as AbortSignal)
+    visibility.mockReturnValue('hidden')
+    document.dispatchEvent(new Event('visibilitychange'))
+    expect(signals.every((signal) => signal.aborted)).toBe(true)
+    vi.advanceTimersByTime(30000)
+    await flushPromises()
+    expect(list).toHaveBeenCalledTimes(1)
+
+    visibility.mockReturnValue('visible')
+    document.dispatchEvent(new Event('visibilitychange'))
+    await flushPromises()
+    expect(list).toHaveBeenCalledTimes(2)
+    const latestSignal = list.mock.calls[1][1].signal as AbortSignal
+    wrapper.unmount()
+    mountedViews.splice(mountedViews.indexOf(wrapper), 1)
+    expect(latestSignal.aborted).toBe(true)
+    vi.advanceTimersByTime(30000)
+    await flushPromises()
+    expect(list).toHaveBeenCalledTimes(2)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('does not refresh on becoming visible when automatic refresh is off', async () => {
+    const wrapper = mountDailyUsage()
+    vi.advanceTimersByTime(120)
+    await flushPromises()
+    await wrapper.find('[data-testid="daily-usage-auto-refresh"]').setValue(false)
+    visibility.mockReturnValue('hidden')
+    document.dispatchEvent(new Event('visibilitychange'))
+    visibility.mockReturnValue('visible')
+    document.dispatchEvent(new Event('visibilitychange'))
+    await flushPromises()
+    vi.advanceTimersByTime(20000)
+    await flushPromises()
+    expect(list).toHaveBeenCalledTimes(1)
+  })
+
+  it('preserves the standalone usage page default date range and does not auto-refresh it', async () => {
+    const wrapper = mountRouteFilteredUsageView()
+    mountedViews.push(wrapper)
+    vi.advanceTimersByTime(120)
+    await flushPromises()
+    const today = new Date()
+    expect(list.mock.calls[0][0].start_date).toBe(formatLocalDate(new Date(today.getTime() - 86400000)))
+    expect(list.mock.calls[0][0].end_date).toBe(formatLocalDate(today))
+    vi.advanceTimersByTime(30000)
+    await flushPromises()
+    expect(list).toHaveBeenCalledTimes(1)
+    expect(wrapper.findComponent(AppLayoutStub).exists()).toBe(true)
+  })
+})

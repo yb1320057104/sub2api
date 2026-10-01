@@ -7,6 +7,7 @@ import type {
   BinanceRechargeOrderFilters,
   BinanceRechargeOrders,
   BinanceRechargeStats,
+  BinanceLiveBills,
 } from '@/types/binanceRecharge'
 
 export const binanceRechargeAPI = {
@@ -29,6 +30,8 @@ export const adminBinanceRechargeAPI = {
     apiClient.put<BinanceRechargeAccount>(`/admin/binance-recharge/accounts/${id}`, data),
   checkAccount: (id: number) =>
     apiClient.post<{ matched: number; review: number }>(`/admin/binance-recharge/accounts/${id}/check`),
+  getBills: (id: number, params: { start_time: string; end_time: string }) =>
+    apiClient.get<BinanceLiveBills>(`/admin/binance-recharge/accounts/${id}/bills`, { params }),
   getOrders: (params: BinanceRechargeOrderFilters) =>
     apiClient.get<BinanceRechargeOrders>('/admin/binance-recharge/orders', { params }),
   refreshOrder: (id: number) =>

@@ -23,6 +23,7 @@ func RegisterBinanceRechargeRoutes(v1 *gin.RouterGroup, h *handler.BinanceRechar
 	admin.POST("/accounts", h.CreateAccount)
 	admin.PUT("/accounts/:id", h.UpdateAccount)
 	admin.POST("/accounts/:id/check", h.CheckAccount)
+	admin.GET("/accounts/:id/bills", h.Bills)
 	admin.GET("/orders", h.AdminListOrders)
 	admin.GET("/orders/:id", h.AdminGetOrder)
 	admin.POST("/orders/:id/refresh", h.AdminRefreshOrder)

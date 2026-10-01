@@ -63,7 +63,7 @@ func (s *BinanceRechargeService) Stop() {
 func (s *BinanceRechargeService) runBinanceRechargePoll(ctx context.Context) {
 	// Disabling an account stops order creation, never historical collection.
 	rows, err := s.db.QueryContext(ctx, `SELECT a.id FROM binance_recharge_accounts a
-WHERE a.next_poll_at<=NOW() AND a.api_key_encrypted<>'' AND a.api_secret_encrypted<>''
+WHERE a.next_poll_at<=NOW() AND a.api_locked_until<=NOW() AND a.api_key_encrypted<>'' AND a.api_secret_encrypted<>''
 AND (a.enabled OR EXISTS(SELECT 1 FROM binance_recharge_orders o WHERE o.account_id=a.id)) ORDER BY a.id`)
 	if err != nil {
 		if ctx.Err() == nil {
@@ -129,8 +129,8 @@ func (s *BinanceRechargeService) checkAccountWindow(ctx context.Context, account
 	defer cancel()
 	token := uuid.NewString()
 	var failures int
-	err := s.db.QueryRowContext(ctx, `UPDATE binance_recharge_accounts SET next_poll_at=NOW()+INTERVAL '120 seconds',poll_token=$2
-WHERE id=$1 AND next_poll_at<=NOW() RETURNING failure_count`, accountID, token).Scan(&failures)
+	err := s.db.QueryRowContext(ctx, `UPDATE binance_recharge_accounts SET next_poll_at=NOW()+INTERVAL '120 seconds',api_locked_until=NOW()+INTERVAL '120 seconds',poll_token=$2
+WHERE id=$1 AND next_poll_at<=NOW() AND api_locked_until<=NOW() RETURNING failure_count`, accountID, token).Scan(&failures)
 	if errors.Is(err, sql.ErrNoRows) {
 		var exists bool
 		if e := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM binance_recharge_accounts WHERE id=$1)`, accountID).Scan(&exists); e != nil {
@@ -192,7 +192,9 @@ WHERE id=$1 AND next_poll_at<=NOW() RETURNING failure_count`, accountID, token).
 		failures = 0
 	}
 	_, finishErr := s.db.ExecContext(finishCtx, `UPDATE binance_recharge_accounts SET last_checked_at=NOW(),last_error=$3,
-next_poll_at=NOW()+make_interval(secs=>$4),failure_count=$5,poll_token='' WHERE id=$1 AND poll_token=$2`, accountID, token, message, delay.Seconds(), failures)
+next_poll_at=NOW()+make_interval(secs=>$4),failure_count=$5,poll_token='',api_locked_until=to_timestamp(0),
+bills_next_query_at=CASE WHEN $3<>'' THEN GREATEST(bills_next_query_at,NOW()+make_interval(secs=>$4)) ELSE bills_next_query_at END
+WHERE id=$1 AND poll_token=$2`, accountID, token, message, delay.Seconds(), failures)
 	_, expiryErr := s.db.ExecContext(finishCtx, `UPDATE binance_recharge_orders SET status='EXPIRED',updated_at=NOW() WHERE account_id=$1 AND status='PENDING' AND expires_at<NOW()`, accountID)
 	if err != nil {
 		return nil, infraerrors.ServiceUnavailable("BINANCE_CHECK_FAILED", message)

@@ -11,6 +11,8 @@ import type { CheckoutInfoResponse, MethodLimit, SubscriptionPlan } from '@/type
 import BinanceRechargeView from '../BinanceRechargeView.vue'
 import BinanceOrderDetails from '@/components/payment/BinanceOrderDetails.vue'
 import AdminBinanceRechargeView from '@/views/admin/orders/AdminBinanceRechargeView.vue'
+import BinanceLiveBills from '@/components/payment/BinanceLiveBills.vue'
+import BinanceBillFields from '@/components/payment/BinanceBillFields.vue'
 import type { BinanceRechargeOrder } from '@/types/binanceRecharge'
 
 const binanceHarness = vi.hoisted(() => ({
@@ -25,6 +27,7 @@ const binanceHarness = vi.hoisted(() => ({
   showSuccess: vi.fn(),
   getAccounts: vi.fn(),
   updateAccount: vi.fn(),
+  getBills: vi.fn(),
 }))
 
 vi.mock('@/api/binanceRecharge', () => ({
@@ -35,7 +38,7 @@ vi.mock('@/api/binanceRecharge', () => ({
     refreshOrder: binanceHarness.refreshOrder,
     getStats: binanceHarness.getStats,
   },
-  adminBinanceRechargeAPI: { getAccounts: binanceHarness.getAccounts, updateAccount: binanceHarness.updateAccount },
+  adminBinanceRechargeAPI: { getAccounts: binanceHarness.getAccounts, updateAccount: binanceHarness.updateAccount, getBills: binanceHarness.getBills },
 }))
 
 vi.mock('@/stores/binanceRecharge', () => ({
@@ -960,6 +963,12 @@ describe('Binance UID top-up page', () => {
     binanceHarness.showSuccess.mockReset()
     binanceHarness.getAccounts.mockReset().mockResolvedValue({ data: [] })
     binanceHarness.updateAccount.mockReset().mockResolvedValue({ data: {} })
+    binanceHarness.getBills.mockReset().mockResolvedValue({ data: {
+      account_id: 7, account_name: 'Receiving account', recipient_uid: '123456',
+      start_time: '2026-10-01T00:00:00+08:00', end_time: '2026-10-01T12:00:00+08:00',
+      limit: 100, possibly_more: true, total: 1,
+      items: [{ id: '9007199254740993123', amount: '-0.0000000100', currency: 'USDT', channel: 'pay', kind: 'PAY', direction: 'outgoing', status: 'recorded', time: '2026-10-01T10:30:00+08:00', fields: [] }],
+    } })
     refreshUser.mockReset().mockResolvedValue(undefined)
     showError.mockReset()
     translate.mockImplementation((key: string, params?: Record<string, unknown>) => key === 'binanceRecharge.completed' ? `Credited ${params?.amount} USD` : key)
@@ -1040,6 +1049,7 @@ describe('Binance UID top-up page', () => {
     expect(wrapper.text()).toContain('binanceRecharge.totals')
     expect(wrapper.text()).not.toContain('binanceRecharge.accounts')
     expect(wrapper.text()).not.toContain('binanceRecharge.dailyUsage.title')
+    expect(wrapper.text()).not.toContain('binanceRecharge.liveBills.title')
     expect(wrapper.findComponent(AdminBinanceRechargeView).exists()).toBe(false)
   })
 
@@ -1051,7 +1061,7 @@ describe('Binance UID top-up page', () => {
     expect(wrapper.find('#binance-amount').exists()).toBe(false)
   })
 
-  it('shows all four administrator tabs and never copies returned credential fields into the edit form', async () => {
+  it('shows all five administrator tabs and never copies returned credential fields into the edit form', async () => {
     binanceHarness.getAccounts.mockResolvedValue({ data: [{
       id: 7, name: 'Receiving account', recipient_uid: '123456', enabled: true, order_ttl_minutes: 15,
       has_orders: true, api_key_configured: true, api_secret_configured: true,
@@ -1067,7 +1077,7 @@ describe('Binance UID top-up page', () => {
     })
     wrappers.push(wrapper)
     await flushPromises()
-    for (const label of ['accounts', 'orders', 'totals', 'dailyUsage.title']) {
+    for (const label of ['accounts', 'orders', 'totals', 'dailyUsage.title', 'liveBills.title']) {
       expect(wrapper.text()).toContain(`binanceRecharge.${label}`)
     }
     await wrapper.findAll('button').find(button => button.text() === 'common.edit')!.trigger('click')
@@ -1079,5 +1089,76 @@ describe('Binance UID top-up page', () => {
     expect(binanceHarness.updateAccount).toHaveBeenCalledWith(7, {
       name: 'Receiving account', recipient_uid: '123456', enabled: true, order_ttl_minutes: 15,
     })
+  })
+
+  async function mountLiveBills() {
+    const wrapper = shallowMount(BinanceLiveBills, {
+      props: { accounts: [{ id: 7, name: 'Receiving account', recipient_uid: '123456', order_ttl_minutes: 15 }] },
+      global: { stubs: {
+        DataTable: { props: ['data'], template: '<div><div v-for="row in data" :key="row.id"><slot name="cell-amount" :row="row" /><slot name="cell-actions" :row="row" /></div></div>' },
+        BaseDialog: { props: ['show'], template: '<div v-if="show"><slot /></div>' },
+      } },
+    })
+    wrappers.push(wrapper)
+    await flushPromises()
+    return wrapper
+  }
+
+  it('queries live Pay bills with explicit dates and preserves raw amount precision and truncation warnings', async () => {
+    const wrapper = await mountLiveBills()
+    const initialStart = (wrapper.get('#binance-bills-start').element as HTMLInputElement).value
+    expect(new Date(initialStart).getHours()).toBe(0)
+    expect(new Date(initialStart).getDate()).toBe(new Date().getDate())
+    await wrapper.get('#binance-bills-start').setValue('2026-10-01T00:00:00')
+    await wrapper.get('#binance-bills-end').setValue('2026-10-01T12:00:00')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(binanceHarness.getBills).toHaveBeenCalledWith(7, {
+      start_time: new Date('2026-10-01T00:00:00').toISOString(),
+      end_time: new Date('2026-10-01T12:00:00').toISOString(),
+    })
+    expect(wrapper.get('[data-testid="binance-bill-amount"]').text()).toBe('-0.0000000100 USDT')
+    expect(wrapper.get('[data-testid="binance-bills-more"]').text()).toBe('binanceRecharge.liveBills.possiblyMore')
+    expect(binanceHarness.refreshOrder).not.toHaveBeenCalled()
+    expect(binanceHarness.createOrder).not.toHaveBeenCalled()
+  })
+
+  it('clears live results after a date change and does not show an empty successful query on API failure', async () => {
+    const wrapper = await mountLiveBills()
+    await wrapper.get('#binance-bills-start').setValue('2026-10-01T00:00:00')
+    await wrapper.get('#binance-bills-end').setValue('2026-10-01T12:00:00')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="binance-bill-amount"]').exists()).toBe(true)
+    await wrapper.get('#binance-bills-end').setValue('2026-10-01T11:00:00')
+    expect(wrapper.find('[data-testid="binance-bill-amount"]').exists()).toBe(false)
+    await wrapper.get('#binance-bills-start').setValue('2026-10-01T00:00:00')
+    binanceHarness.getBills.mockRejectedValue(new Error('Query rate limited'))
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(wrapper.get('[role="alert"]').text()).toBe('Query rate limited')
+    expect(wrapper.find('[data-testid="binance-bills-more"]').exists()).toBe(false)
+  })
+
+  it('rejects live bill ranges longer than 89 days before calling Binance', async () => {
+    const wrapper = await mountLiveBills()
+    await wrapper.get('#binance-bills-start').setValue('2026-01-01T00:00:00')
+    await wrapper.get('#binance-bills-end').setValue('2026-10-01T00:00:00')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(binanceHarness.getBills).not.toHaveBeenCalled()
+    expect(wrapper.get('[role="alert"]').text()).toBe('binanceRecharge.liveBills.invalidRange')
+  })
+
+  it('renders bill field text without rounding long IDs or exposing credential-like fields', () => {
+    const wrapper = shallowMount(BinanceBillFields, { props: { fields: [
+      { key: 'transactionId', type: 'number', value: '9007199254740993123' },
+      { key: 'amount', type: 'string', value: '-0.0000000100' },
+      { key: 'api_secret', type: 'string', value: 'must-not-render' },
+    ] } })
+    wrappers.push(wrapper)
+    expect(wrapper.text()).toContain('9007199254740993123')
+    expect(wrapper.text()).toContain('-0.0000000100')
+    expect(wrapper.text()).not.toContain('must-not-render')
   })
 })

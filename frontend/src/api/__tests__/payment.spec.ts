@@ -90,4 +90,16 @@ describe('Binance recharge API', () => {
     post.mockRejectedValue(new Error('reconciliation unavailable'))
     await expect(binanceRechargeAPI.refreshOrder(41)).rejects.toThrow('reconciliation unavailable')
   })
+
+  it('queries live bills only through the administrator read endpoint and preserves source precision', async () => {
+    get.mockResolvedValue({ data: { limit: 100, possibly_more: true, items: [{ amount: '-0.0000000100', id: '9007199254740993123' }] } })
+    const params = { start_time: '2026-10-01T00:00:00+08:00', end_time: '2026-10-01T12:00:00+08:00' }
+    const result = await adminBinanceRechargeAPI.getBills(7, params)
+    expect(get).toHaveBeenCalledWith('/admin/binance-recharge/accounts/7/bills', { params })
+    expect(result.data.items[0].amount).toBe('-0.0000000100')
+    expect(result.data.items[0].id).toBe('9007199254740993123')
+    expect(result.data.possibly_more).toBe(true)
+    expect(post).not.toHaveBeenCalled()
+    expect(binanceRechargeAPI).not.toHaveProperty('getBills')
+  })
 })

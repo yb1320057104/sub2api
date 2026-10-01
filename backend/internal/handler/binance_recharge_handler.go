@@ -2,6 +2,7 @@ package handler
 
 import (
 	"strconv"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
@@ -206,5 +207,22 @@ func (h *BinanceRechargeHandler) CheckAccount(c *gin.Context) {
 	if response.ErrorFrom(c, err) {
 		return
 	}
+	response.Success(c, result)
+}
+
+func (h *BinanceRechargeHandler) Bills(c *gin.Context) {
+	id, ok := binanceRechargeID(c)
+	if !ok {
+		return
+	}
+	from, to, err := service.BinanceRechargeBillWindow(c.Query("start_time"), c.Query("end_time"), time.Now())
+	if response.ErrorFrom(c, err) {
+		return
+	}
+	result, err := h.service.Bills(c.Request.Context(), id, from, to)
+	if response.ErrorFrom(c, err) {
+		return
+	}
+	c.Header("Cache-Control", "no-store")
 	response.Success(c, result)
 }

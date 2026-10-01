@@ -125,6 +125,11 @@ jobs:
       - name: Check Binance signed receipt handling and lifecycle
         working-directory: backend
         run: go test -race -tags unit ./internal/payment ./internal/service ./internal/handler -run 'TestPKBinance' -count=1
+      - name: Check Binance balance transactions on PostgreSQL 15
+        working-directory: backend
+        env:
+          SUB2API_TEST_POSTGRES_IMAGE: postgres:15-alpine
+        run: go test -race -tags integration ./internal/repository -run 'TestPKBinance' -count=1
       - name: Build candidate server
         working-directory: backend
         run: |

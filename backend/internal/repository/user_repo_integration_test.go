@@ -806,6 +806,10 @@ func (s *pkBinanceHistoryStub) History(_ context.Context, _, _, _ string, from, 
 func (*pkBinanceHistoryStub) Probe(context.Context, string, string) error { return nil }
 func (*pkBinanceHistoryStub) CloseIdleConnections()                       {}
 
+func (*pkBinanceHistoryStub) Bills(context.Context, string, string, string, time.Time, time.Time) (*binancepay.BillsPage, error) {
+	return &binancepay.BillsPage{Items: []binancepay.Bill{{ID: "display-only", Amount: "10.12345678", Currency: "USDT", Direction: "incoming"}}, Limit: 100, Total: 1}, nil
+}
+
 type pkBinanceFixture struct {
 	svc      *service.BinanceRechargeService
 	provider *pkBinanceHistoryStub
@@ -858,10 +862,15 @@ func TestPKBinanceExactCreditAndDuplicatePolling(t *testing.T) {
 	f := newPKBinanceFixture(t)
 	ctx := context.Background()
 	f.provider.receipts = []binancepay.Receipt{f.receipt(t, "same-transfer", time.Now().Add(-time.Second))}
+	second := service.NewBinanceRechargeService(integrationDB, &AESEncryptor{key: make([]byte, 32)}, f.provider, nil, nil)
 	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {
 		wg.Add(1)
-		go func() { defer wg.Done(); _, _ = f.svc.CheckAccount(ctx, f.account.ID) }()
+		instance := f.svc
+		if i%2 == 1 {
+			instance = second
+		}
+		go func(svc *service.BinanceRechargeService) { defer wg.Done(); _, _ = svc.CheckAccount(ctx, f.account.ID) }(instance)
 	}
 	wg.Wait()
 	order, err := f.svc.GetOrder(ctx, f.order.ID, f.user.ID)
@@ -885,6 +894,39 @@ func TestPKBinanceExactCreditAndDuplicatePolling(t *testing.T) {
 	err = integrationDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM binance_recharge_receipts WHERE account_id=$1 AND status='COMPLETED'`, f.account.ID).Scan(&count)
 	require.NoError(t, err)
 	require.Equal(t, 1, count)
+}
+
+func TestPKBinanceLiveBillsNeverCreditAndDoNotDelayCollection(t *testing.T) {
+	f := newPKBinanceFixture(t)
+	ctx := context.Background()
+	var scheduled time.Time
+	err := integrationDB.QueryRowContext(ctx, `UPDATE binance_recharge_accounts SET next_poll_at=NOW()+INTERVAL '1 minute' WHERE id=$1 RETURNING next_poll_at`, f.account.ID).Scan(&scheduled)
+	require.NoError(t, err)
+	page, err := f.svc.Bills(ctx, f.account.ID, time.Now().Add(-time.Hour), time.Now())
+	require.NoError(t, err)
+	require.Equal(t, "10.12345678", page.Items[0].Amount)
+	var unchanged bool
+	err = integrationDB.QueryRowContext(ctx, `SELECT balance=2.12345678 AND total_recharged=0 FROM users WHERE id=$1`, f.user.ID).Scan(&unchanged)
+	require.NoError(t, err)
+	require.True(t, unchanged, "reading provider bills must never credit a balance")
+	var receipts int
+	err = integrationDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM binance_recharge_receipts WHERE account_id=$1`, f.account.ID).Scan(&receipts)
+	require.NoError(t, err)
+	require.Zero(t, receipts)
+	var after time.Time
+	err = integrationDB.QueryRowContext(ctx, `SELECT next_poll_at FROM binance_recharge_accounts WHERE id=$1`, f.account.ID).Scan(&after)
+	require.NoError(t, err)
+	require.True(t, scheduled.Equal(after), "bill browsing must preserve the collection schedule")
+	second := service.NewBinanceRechargeService(integrationDB, &AESEncryptor{key: make([]byte, 32)}, f.provider, nil, nil)
+	_, err = second.Bills(ctx, f.account.ID, time.Now().Add(-time.Hour), time.Now())
+	require.Error(t, err, "bill cooldown must also apply to another service instance")
+	f.provider.receipts = []binancepay.Receipt{f.receipt(t, "collect-after-view", time.Now().Add(-time.Second))}
+	f.releasePoll(t)
+	_, err = second.CheckAccount(ctx, f.account.ID)
+	require.NoError(t, err, "bill cooldown must not prevent due collection")
+	order, err := f.svc.GetOrder(ctx, f.order.ID, f.user.ID)
+	require.NoError(t, err)
+	require.Equal(t, service.BinanceRechargeCompleted, order.Status)
 }
 
 func TestPKBinanceExpiredOrderAcceptsOnTimeReceipt(t *testing.T) {

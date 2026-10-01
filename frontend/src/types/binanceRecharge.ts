@@ -83,3 +83,38 @@ export interface BinanceRechargeStats {
   pages: number
   account_options: BinanceRechargeAccountOption[]
 }
+
+export interface BinanceBillField {
+  key: string
+  type: 'string' | 'number' | 'boolean' | 'null' | 'object' | 'array'
+  value: string
+  children?: BinanceBillField[]
+}
+
+export interface BinanceLiveBill {
+  id: string
+  channel: 'pay'
+  kind: string
+  currency: string
+  /** Original Binance decimal text, including sign and all decimal places. */
+  amount: string
+  direction: 'incoming' | 'outgoing' | 'self' | 'unknown'
+  status: 'recorded'
+  time: string
+  payer_uid?: string
+  receiver_uid?: string
+  fields: BinanceBillField[]
+}
+
+export interface BinanceLiveBills {
+  account_id: number
+  account_name: string
+  recipient_uid: string
+  start_time: string
+  end_time: string
+  limit: number
+  possibly_more: boolean
+  /** Number returned by this query; not an all-time total. */
+  total: number
+  items: BinanceLiveBill[]
+}
