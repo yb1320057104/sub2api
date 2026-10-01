@@ -291,6 +291,7 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		BackendModeEnabled:                                     settings.BackendModeEnabled,
 		OpenAITTFTMode:                                         settings.OpenAITTFTMode,
 		StreamEarlyHeartbeatEnabled:                            settings.StreamEarlyHeartbeatEnabled,
+		StreamEarlyHeartbeatMode:                               settings.StreamEarlyHeartbeatMode,
 		StreamEarlyHeartbeatMinDelayMS:                         settings.StreamEarlyHeartbeatMinDelayMS,
 		StreamEarlyHeartbeatMaxDelayMS:                         settings.StreamEarlyHeartbeatMaxDelayMS,
 		EnableFingerprintUnification:                           settings.EnableFingerprintUnification,

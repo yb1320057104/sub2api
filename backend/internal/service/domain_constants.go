@@ -669,6 +669,7 @@ const (
 	// SettingKeyOpenAITTFTMode 控制 first_token_ms 的统计口径。
 	SettingKeyOpenAITTFTMode                 = "openai_ttft_mode"
 	SettingKeyStreamEarlyHeartbeatEnabled    = "stream_early_heartbeat_enabled"
+	SettingKeyStreamEarlyHeartbeatMode       = "stream_early_heartbeat_mode"
 	SettingKeyStreamEarlyHeartbeatMinDelayMS = "stream_early_heartbeat_min_delay_ms"
 	SettingKeyStreamEarlyHeartbeatMaxDelayMS = "stream_early_heartbeat_max_delay_ms"
 	OpenAITTFTModeSemantic                   = "semantic"

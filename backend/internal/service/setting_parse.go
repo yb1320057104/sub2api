@@ -239,6 +239,7 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		SettingKeyAllowUngroupedKeyScheduling:                        "false",
 		SettingKeyOpenAILowUpstreamRatePriorityEnabled:               "false",
 		SettingKeyStreamEarlyHeartbeatEnabled:                        "false",
+		SettingKeyStreamEarlyHeartbeatMode:                           StreamEarlyHeartbeatModeComment,
 		SettingKeyStreamEarlyHeartbeatMinDelayMS:                     "1000",
 		SettingKeyStreamEarlyHeartbeatMaxDelayMS:                     "2000",
 		SettingKeyOpenAIOAuthSchedulingRateMultiplier:                "1",
@@ -866,6 +867,7 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	result.OpenAITTFTMode = normalizeOpenAITTFTMode(settings[SettingKeyOpenAITTFTMode])
 	earlyHeartbeat := parseStreamEarlyHeartbeatSettings(settings)
 	result.StreamEarlyHeartbeatEnabled = earlyHeartbeat.Enabled
+	result.StreamEarlyHeartbeatMode = earlyHeartbeat.Mode
 	result.StreamEarlyHeartbeatMinDelayMS = earlyHeartbeat.MinDelayMS
 	result.StreamEarlyHeartbeatMaxDelayMS = earlyHeartbeat.MaxDelayMS
 	if v, ok := settings[SettingKeyEnableFingerprintUnification]; ok && v != "" {
@@ -1019,6 +1021,14 @@ func normalizeOpenAITTFTMode(mode string) string {
 func parseStreamEarlyHeartbeatSettings(values map[string]string) StreamEarlyHeartbeatSettings {
 	settings := defaultStreamEarlyHeartbeatSettings()
 	settings.Enabled = values[SettingKeyStreamEarlyHeartbeatEnabled] == "true"
+	if mode, exists := values[SettingKeyStreamEarlyHeartbeatMode]; exists {
+		switch mode {
+		case StreamEarlyHeartbeatModeComment, StreamEarlyHeartbeatModeDownstreamPing:
+			settings.Mode = mode
+		default:
+			return defaultStreamEarlyHeartbeatSettings()
+		}
+	}
 	for key, dest := range map[string]*int{
 		SettingKeyStreamEarlyHeartbeatMinDelayMS: &settings.MinDelayMS,
 		SettingKeyStreamEarlyHeartbeatMaxDelayMS: &settings.MaxDelayMS,

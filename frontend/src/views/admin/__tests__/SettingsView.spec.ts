@@ -467,6 +467,7 @@ const baseSettingsResponse = {
   allow_ungrouped_key_scheduling: false,
   openai_ttft_mode: "semantic",
   stream_early_heartbeat_enabled: false,
+  stream_early_heartbeat_mode: "comment",
   stream_early_heartbeat_min_delay_ms: 1000,
   stream_early_heartbeat_max_delay_ms: 2000,
   enable_fingerprint_unification: true,
@@ -1436,9 +1437,12 @@ describe("admin SettingsView payment visible method controls", () => {
       expect(tab.attributes("aria-selected")).toBe("true");
       expect(panel.isVisible()).toBe(true);
       const toggle = wrapper.get('[data-testid="stream-early-heartbeat-enabled"]');
+      const mode = wrapper.get('[data-testid="stream-early-heartbeat-mode"]');
       const minimum = wrapper.get('[data-testid="stream-early-heartbeat-min"]');
       const maximum = wrapper.get('[data-testid="stream-early-heartbeat-max"]');
       expect((toggle.element as HTMLInputElement).checked).toBe(false);
+      expect((mode.element as HTMLSelectElement).value).toBe("comment");
+      expect((mode.element as HTMLSelectElement).disabled).toBe(true);
       expect((minimum.element as HTMLInputElement).value).toBe("1");
       expect((maximum.element as HTMLInputElement).value).toBe("2");
       expect((minimum.element as HTMLInputElement).disabled).toBe(true);
@@ -1449,6 +1453,7 @@ describe("admin SettingsView payment visible method controls", () => {
       await flushPromises();
       const payload = updateSettings.mock.calls.at(-1)?.[0] as Record<string, unknown>;
       expect(payload.stream_early_heartbeat_enabled).toBe(true);
+      expect(payload.stream_early_heartbeat_mode).toBe("comment");
       expect(payload.stream_early_heartbeat_min_delay_ms).toBe(1125);
       expect(payload.stream_early_heartbeat_max_delay_ms).toBe(2750);
       expect((minimum.element as HTMLInputElement).value).toBe("1.125");
@@ -1468,6 +1473,89 @@ describe("admin SettingsView payment visible method controls", () => {
     await openFirstTokenTab(wrapper);
     expect((wrapper.get('[data-testid="stream-early-heartbeat-min"]').element as HTMLInputElement).value).toBe("0.5");
     expect((wrapper.get('[data-testid="stream-early-heartbeat-max"]').element as HTMLInputElement).value).toBe("1.25");
+  });
+
+  it.each([undefined, null, "unknown"])("keeps comment heartbeats when the API returns mode %s", async (mode) => {
+    getSettings.mockResolvedValueOnce({
+      ...baseSettingsResponse,
+      stream_early_heartbeat_mode: mode,
+    });
+    const wrapper = mountView();
+    await flushPromises();
+    await openFirstTokenTab(wrapper);
+
+    expect((wrapper.get('[data-testid="stream-early-heartbeat-mode"]').element as HTMLSelectElement).value).toBe("comment");
+    expect((wrapper.get('[data-testid="stream-early-heartbeat-enabled"]').element as HTMLInputElement).checked).toBe(false);
+    expect(wrapper.find('[data-testid="stream-early-heartbeat-downstream-warning"]').exists()).toBe(false);
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+
+    expect(updateSettings.mock.calls.at(-1)?.[0]).toMatchObject({
+      stream_early_heartbeat_enabled: false,
+      stream_early_heartbeat_mode: "comment",
+      stream_early_heartbeat_min_delay_ms: 1000,
+      stream_early_heartbeat_max_delay_ms: 2000,
+    });
+  });
+
+  it("saves explicit downstream compatibility and preserves the mode while disabled", async () => {
+    const wrapper = mountView();
+    await flushPromises();
+    await openFirstTokenTab(wrapper);
+    const toggle = wrapper.get('[data-testid="stream-early-heartbeat-enabled"]');
+    const mode = wrapper.get('[data-testid="stream-early-heartbeat-mode"]');
+
+    await toggle.setValue(true);
+    await mode.setValue("downstream_ping");
+    expect(wrapper.find('[data-testid="stream-early-heartbeat-downstream-hint"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="stream-early-heartbeat-downstream-warning"]').exists()).toBe(true);
+    await toggle.setValue(false);
+    expect((mode.element as HTMLSelectElement).disabled).toBe(true);
+    expect((mode.element as HTMLSelectElement).value).toBe("downstream_ping");
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+    expect(updateSettings.mock.calls.at(-1)?.[0]).toMatchObject({
+      stream_early_heartbeat_enabled: false,
+      stream_early_heartbeat_mode: "downstream_ping",
+    });
+    expect((mode.element as HTMLSelectElement).value).toBe("downstream_ping");
+
+    await toggle.setValue(true);
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+    expect(updateSettings.mock.calls.at(-1)?.[0]).toMatchObject({
+      stream_early_heartbeat_enabled: true,
+      stream_early_heartbeat_mode: "downstream_ping",
+    });
+
+    await mode.setValue("comment");
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+    expect(updateSettings.mock.calls.at(-1)?.[0].stream_early_heartbeat_mode).toBe("comment");
+    expect(wrapper.find('[data-testid="stream-early-heartbeat-downstream-warning"]').exists()).toBe(false);
+  });
+
+  it("loads a saved downstream mode without enabling early heartbeats", async () => {
+    getSettings.mockResolvedValueOnce({
+      ...baseSettingsResponse,
+      stream_early_heartbeat_mode: "downstream_ping",
+    });
+    const wrapper = mountView();
+    await flushPromises();
+    await openFirstTokenTab(wrapper);
+
+    expect((wrapper.get('[data-testid="stream-early-heartbeat-mode"]').element as HTMLSelectElement).value).toBe("downstream_ping");
+    expect((wrapper.get('[data-testid="stream-early-heartbeat-enabled"]').element as HTMLInputElement).checked).toBe(false);
+  });
+
+  it("documents the downstream heartbeat boundaries in both locales", () => {
+    for (const messages of [zhSettings.settings.gatewayForwarding, enSettings.settings.gatewayForwarding]) {
+      expect(messages.earlyHeartbeatModeDownstreamHint).toContain("{event}");
+      expect(messages.earlyHeartbeatModeDownstreamHint).toContain("semantic");
+      expect(messages.earlyHeartbeatModeDownstreamHint).toContain("visible");
+      expect(messages.earlyHeartbeatModeDownstreamHint).toContain("usage");
+      expect(messages.earlyHeartbeatModeDownstreamWarning).toContain("Responses SDK");
+    }
   });
 
   it.each([["-1", "2"], ["-0.0001", "2"], ["3", "2"], ["1", "31"], ["1", "30.0001"], ["", "2"]])("rejects invalid early SSE heartbeat seconds %s to %s", async (minimum, maximum) => {

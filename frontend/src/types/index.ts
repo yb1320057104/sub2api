@@ -22,6 +22,8 @@ export interface FetchOptions {
   signal?: AbortSignal
 }
 
+export type StreamEarlyHeartbeatMode = 'comment' | 'downstream_ping'
+
 // ==================== Notification Types ====================
 
 /** Notification email entry with enable/disable and verification state.

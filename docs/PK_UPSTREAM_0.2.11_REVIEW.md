@@ -1,0 +1,67 @@
+# v0.2.11 合并核对
+
+## 来源与范围
+
+- 合并前私库：`32f068dcbdc75063ff7f6488aef6c85912d7bf3f`。
+- 上游输入：`Wei-Shaw/sub2api` 的 `v0.2.11`，固定 commit `96f4c115c9749078f90cbf210a01d39baf3f53b6`。tag 对象为 `881a722349105e21aaa38e11de90dd05046ebe4a`。
+- 独立分支：`codex/sync-upstream-0.2.11-first-response`；保留双父提交的合并为 `087e16196553cb1e8b610c3784d6f7c971dc0cb3`。
+- Git 自动合并无冲突；逐项检查自动合并后的业务路径。先完成上游合并，再调查提前首字兼容方案。
+- 无新增 PK ID。更新 PK-003/004 的预留及新模型边界、PK-007/008/011 的模式设置与数据 ping 行为、PK-012 短写保护，以及候选版本号和维护文档。
+- 2026-10-02 用户接受当前 ping 方案并授权发布 `v0.2.11-pk.1`，由用户稍后网页更新；实际发布结果以私库 Release 和 PK Release 流水线为准。本次未进行线上变更；线上实际版本未核实。
+
+## 二开保留核对
+
+下表逐项记录静态代码核对；已完成的云端动态检查及其准确业务提交见文末，不将未覆盖的生产链路称为已验收。
+
+| PK ID | 静态结论 | 依据 |
+|---|---|---|
+| PK-001 | 已保留 | 账号创建/更新/局部/批量的缓存转换验证入口和 extra 合并未变；套餐标签更新不覆盖转换设置。 |
+| PK-002 | 无影响 | decimal Floor、int32 溢出检查、倍率0、创建及5m/1h清零模块未变。 |
+| PK-003 | 已保留，组合云端回归通过 | 原始输入拆分后只转换一次，同一 ActualCost 进入账务；新增预留引用保留到异步实扣后。扩展既有 usage integrity 回归。 |
+| PK-004 | 已保留，组合云端回归通过 | InputContextTokens 继续按原始上下文选档；gpt-6.1-sol 的272000阈值沿用原管线；账号统计仍区分原始token/客户TotalCost。 |
+| PK-005 | 已保留 | usage出口改写、原始计费证据、显式0/别名、Content-Length和SSE完整frame路径未被修改。 |
+| PK-006 | 已保留 | raw Chat、Messages及两种fallback只增加新模型校验，转换出口钩子完整；未新增绕过转换的协议通道。既有OAuth图片/二进制WS边界保留。 |
+| PK-007 | 已保留并扩展 | 独立首字页签、默认关闭、1–2秒、局部保存和缓存保留；新增comment/downstream_ping模式，默认comment兼容旧配置，显式非法值拒绝。 |
+| PK-008 | 已保留并扩展 | Responses/Chat/Messages校验后继续启动提前writer；排除路径保留。新模式一次发送数据ping，不修改正文/usage，明确semantic与严格SDK边界。 |
+| PK-009 | 已保留 | usageRecordContext保留CopyFirstResponseTiming；上游新增预留引用不替换原子首包状态。数据库列及全部SQL路径未变。 |
+| PK-010 | 无影响 | 普通/管理员DTO、导出、共享表格及公开渠道监控的权限映射未变。 |
+| PK-011 | 已保留并扩展 | 数据ping仍扣除本层心跳字节；兼容模式的队列/周期注释不消耗首次ping，真实ping可满足，周期保活仍为注释；本层换号规则保留。 |
+| PK-012 | 已保留并修复 | writer锁、header克隆、Stop等待、晚到协议错误保留；新增预留失败使用对应协议错误入口。短写转io.ErrShortWrite并停止定时器，不把半帧当完整发送成功。 |
+| PK-013 | 已保留 | PK出版及数字修订排序保留；候选构建版本更新为0.2.11-pk.candidate。 |
+| PK-014 | 无影响 | 私库来源、下载凭据、缓存隔离及私有镜像配置未变；本次已确认origin仓库private。 |
+| PK-015 | 无影响 | 授权下载、SHA256、固定安装路径和替换逻辑未变。 |
+| PK-016 | 无影响 | Dockerfile、entrypoint及镜像种子/数据卷持久化机制未变。 |
+| PK-017 | 已保留 | 私库/private限制、正式发行流程保留；候选CI增加在途预留race选择并更新版本；用户已授权正式发布，发布不操作生产。 |
+| PK-018 | 已保留 | wire中的skip-startup条件和独立过期槽位清理保留。 |
+| PK-019 | 已保留 | 19项启动门与StopPendingBackgroundStarts顺序保留；新增Claude手动重置复用现有协调器/锁，没有新增全局后台任务。 |
+| PK-020 | 已保留 | 切换、排空、独立数据卷及授权边界保留；补充新旧实例混跑时旧实例不会参与余额预留。 |
+| PK-021 | 已保留 | Git持久化约束、唯一清单、PR模板和维护skill保留；仓库/安装skill内容一致。 |
+| PK-022 | 无影响 | 币安充值、倍率快照、事务、迁移及余额/鉴权缓存失效未变。 |
+| PK-023 | 无影响 | 每日消费、嵌入使用记录、管理员权限与前端回归清单未变。 |
+| PK-024 | 无影响 | 实时账单只读、租约互斥、冷却与限流路径未变。 |
+| PK-025 | 已保留 | 币安专用配置类型校验、环境优先及provider注入保留；网关与客户端出口隔离未变。 |
+
+## 余额预留边界
+
+v0.2.11默认开启`billing.inflight_reservation`。它在选账号前按请求体估算输入和输出上限，不知道账号缓存转换倍率、实际缓存命中及上游usage，不能保证等于PK最终实扣。低余额并发可能提前被拒绝，较大的转换倍率或服务档位也可能使预估偏低。
+
+预留记录独立存在Redis；释放按requestID删除预留，不退款。最终账务仍以转换后ActualCost更新余额、订阅及各额度。同步余额缓存更新发生在计费引用释放之前。新增组合回归验证这两套数值不会混用。
+
+## 首字调查
+
+- `AccountTestModal.vue` 将 `_` 作为闪烁光标；收到content时追加到streamingContent，完成时把累积正文移入结果行并清空流显示。截图无法证明上游撤回过字符。
+- SSE注释是传输保活，不被原版Sub2API记为上游首字。Responses默认semantic会跳过created/in_progress/keepalive；visible要求非空内容。
+- 空output_item/content_part事件可以在semantic模式记时，但仍可能被下游缓冲；空delta缺少正确生命周期/ID会破坏严格客户端，并影响安全换号或在跨协议转换中被丢弃。
+- 用户授权的外部流式探测共发出3次短生成请求（2次Responses、1次Chat）。参考服务实际提前发送U+0020空格：Responses使用完整占位message生命周期、`sub2api_placeholder: true`、后续output_index偏移和sequence_number重编号；最终output仍保留空格消息。Chat依次发role、空格、真实文本、usage和DONE。没有撤回字符。这里不记录密钥和完整远端响应。
+- 当前实现提供显式`downstream_ping`选项，保留默认注释行为。结构化ping针对原版Sub2API默认semantic/原始Chat识别；不模拟参考服务的空格占位，也不保证visible或严格SDK兼容。
+- 既有`openai_compact_sse_keepalive_test.go`扩展真实Responses普通/直通及Chat reader链路：接收心跳后再接真实正文与usage，比较两种模式的计时、正文完整性、原始usage和本层失败换号；在云端执行。
+- New API `1a4166d8e8ba9802d2ca56fe8ecf0ed5404e80d5` 及 `v1.0.0-rc.41` 的相关 HTTP/SSE 计时会接受首个非空 data 帧；原生 Chat 缓存上一帧，Responses 转 Chat 会丢弃 ping。用户明确接受日志提前而客户端仍可能等待，选择发布当前方案。此项为源码审查，未做 New API 串联动态验收。
+
+## 验证记录
+
+- 本地仅做源码、diff、引用和格式静态检查，未运行构建或测试。
+- 上游自带回归文件保留；本次扩展仓库既有测试文件，不新建临时测试文件。
+- 业务提交 `4077ebaf92f4e68080b3ab1a78b113b012899b17` 的 [Push CI](https://github.com/pengkang0322/sub2api/actions/runs/36921671391) 与 [PR CI](https://github.com/pengkang0322/sub2api/actions/runs/36921675676) 全部必要任务成功；PR 的 pk-candidate 按分支条件跳过，由 Push CI 执行成功。
+- 通过项目 unit/integration、前端类型与关键用例、lint、首字/隐私/缓存转换/余额预留 race、币安并发与 PostgreSQL 回归、前后端候选构建及制品上传。安全扫描 [Push](https://github.com/pengkang0322/sub2api/actions/runs/36921667786) / [PR](https://github.com/pengkang0322/sub2api/actions/runs/36921675811) 均成功。
+- 随后的发布准备只更新本核对、维护文档、功能清单及维护 skill 中过期的上游基线说明，业务代码与上述已验证提交一致；正式标签由 PK Release 再执行发布回归、构建及持久化启动检查。正式发布成功须另外核对流水线和附件，不能用候选制品代替。
+- 未覆盖边界仍以 PK_FEATURES.md 为准；未进行生产更新、真实币安转账、New API 串联或所有严格 SDK 验收。

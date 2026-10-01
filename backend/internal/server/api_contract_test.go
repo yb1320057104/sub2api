@@ -926,6 +926,7 @@ func TestAPIContracts(t *testing.T) {
 					"openai_oauth_scheduling_rate_multiplier": 0.05,
 					"openai_ttft_mode": "semantic",
 					"stream_early_heartbeat_enabled": false,
+					"stream_early_heartbeat_mode": "comment",
 					"stream_early_heartbeat_min_delay_ms": 1000,
 					"stream_early_heartbeat_max_delay_ms": 2000,
 					"openai_advanced_scheduler_enabled": true,
@@ -1250,6 +1251,7 @@ func TestAPIContracts(t *testing.T) {
 					"openai_oauth_scheduling_rate_multiplier": 1,
 					"openai_ttft_mode": "semantic",
 					"stream_early_heartbeat_enabled": false,
+					"stream_early_heartbeat_mode": "comment",
 					"stream_early_heartbeat_min_delay_ms": 1000,
 					"stream_early_heartbeat_max_delay_ms": 2000,
 					"openai_advanced_scheduler_enabled": false,
@@ -1744,8 +1746,8 @@ func (stubApiKeyCache) IncrementCreateAttemptCount(ctx context.Context, userID i
 	return nil
 }
 
-func (stubApiKeyCache) DeleteCreateAttemptCount(ctx context.Context, userID int64) error {
-	return nil
+func (stubApiKeyCache) IncrementCreateCount(ctx context.Context, userID int64, window time.Duration) (int64, error) {
+	return 0, nil
 }
 
 func (stubApiKeyCache) IncrementDailyUsage(ctx context.Context, apiKey string) error {

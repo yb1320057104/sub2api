@@ -69,6 +69,39 @@
               <p class="text-xs text-gray-500 dark:text-gray-400">
                 {{ t("admin.settings.gatewayForwarding.earlyHeartbeatHint") }}
               </p>
+              <div>
+                <label for="stream-early-heartbeat-mode" class="input-label">
+                  {{ t("admin.settings.gatewayForwarding.earlyHeartbeatMode") }}
+                </label>
+                <select
+                  id="stream-early-heartbeat-mode"
+                  v-model="form.stream_early_heartbeat_mode"
+                  :disabled="!form.stream_early_heartbeat_enabled"
+                  class="input w-full"
+                  aria-describedby="stream-early-heartbeat-mode-hint"
+                  data-testid="stream-early-heartbeat-mode"
+                >
+                  <option value="comment">
+                    {{ t("admin.settings.gatewayForwarding.earlyHeartbeatModeComment") }}
+                  </option>
+                  <option value="downstream_ping">
+                    {{ t("admin.settings.gatewayForwarding.earlyHeartbeatModeDownstream") }}
+                  </option>
+                </select>
+                <div id="stream-early-heartbeat-mode-hint" class="mt-2 space-y-2 text-xs">
+                  <template v-if="form.stream_early_heartbeat_mode === 'downstream_ping'">
+                    <p class="text-gray-500 dark:text-gray-400" data-testid="stream-early-heartbeat-downstream-hint">
+                      {{ t("admin.settings.gatewayForwarding.earlyHeartbeatModeDownstreamHint", { event: earlyHeartbeatPingEvent }) }}
+                    </p>
+                    <p class="text-amber-700 dark:text-amber-400" data-testid="stream-early-heartbeat-downstream-warning">
+                      {{ t("admin.settings.gatewayForwarding.earlyHeartbeatModeDownstreamWarning") }}
+                    </p>
+                  </template>
+                  <p v-else class="text-gray-500 dark:text-gray-400">
+                    {{ t("admin.settings.gatewayForwarding.earlyHeartbeatModeCommentHint") }}
+                  </p>
+                </div>
+              </div>
               <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <div>
                   <label for="stream-early-heartbeat-min" class="input-label">{{ t("admin.settings.gatewayForwarding.earlyHeartbeatMin") }}</label>
@@ -10050,6 +10083,7 @@ const form = reactive<SettingsForm>({
   // Gateway forwarding behavior
   openai_ttft_mode: "semantic",
   stream_early_heartbeat_enabled: false,
+  stream_early_heartbeat_mode: "comment",
   stream_early_heartbeat_min_delay_ms: 1000,
   stream_early_heartbeat_max_delay_ms: 2000,
   enable_fingerprint_unification: true,
@@ -11079,6 +11113,8 @@ const claudeSyncedVersionLabel = computed(() => {
   });
 });
 
+const earlyHeartbeatPingEvent = 'data: {"type":"ping"}';
+
 function heartbeatSecondsToMilliseconds(value: number | string): number {
   const seconds = Number(value);
   if (value === "" || !Number.isFinite(seconds) || seconds < 0 || seconds > 30) {
@@ -11113,6 +11149,8 @@ async function loadSettings() {
         (form as Record<string, unknown>)[key] = value;
       }
     }
+    form.stream_early_heartbeat_mode =
+      settings.stream_early_heartbeat_mode === "downstream_ping" ? "downstream_ping" : "comment";
     // For this optional override, null explicitly selects per-account rates.
     if (settings.openai_oauth_scheduling_rate_multiplier === null) {
       form.openai_oauth_scheduling_rate_multiplier = null;
@@ -11724,6 +11762,7 @@ async function saveSettings() {
       openai_ttft_mode:
         form.openai_ttft_mode === "visible" ? "visible" : "semantic",
       stream_early_heartbeat_enabled: form.stream_early_heartbeat_enabled,
+      stream_early_heartbeat_mode: form.stream_early_heartbeat_mode,
       stream_early_heartbeat_min_delay_ms: minHeartbeatDelay,
       stream_early_heartbeat_max_delay_ms: maxHeartbeatDelay,
       enable_fingerprint_unification: form.enable_fingerprint_unification,
@@ -11912,6 +11951,8 @@ async function saveSettings() {
         (form as Record<string, unknown>)[key] = value;
       }
     }
+    form.stream_early_heartbeat_mode =
+      updated.stream_early_heartbeat_mode === "downstream_ping" ? "downstream_ping" : "comment";
     if (updated.openai_oauth_scheduling_rate_multiplier === null) {
       form.openai_oauth_scheduling_rate_multiplier = null;
     }

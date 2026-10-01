@@ -33,30 +33,57 @@ func TestUpdateSettingsEarlyHeartbeatPartialPayloadAndResponse(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(get.Body.Bytes(), &response))
 	require.False(t, response.Data.StreamEarlyHeartbeatEnabled)
+	require.Equal(t, service.StreamEarlyHeartbeatModeComment, response.Data.StreamEarlyHeartbeatMode)
 	require.Equal(t, 1000, response.Data.StreamEarlyHeartbeatMinDelayMS)
 	require.Equal(t, 2000, response.Data.StreamEarlyHeartbeatMaxDelayMS)
 
 	updated := doUpdateSettings(t, h, map[string]any{
 		"stream_early_heartbeat_enabled":      true,
+		"stream_early_heartbeat_mode":         service.StreamEarlyHeartbeatModeDownstreamPing,
 		"stream_early_heartbeat_min_delay_ms": 0,
 		"stream_early_heartbeat_max_delay_ms": 30000,
 	}, nil)
 	require.Equal(t, http.StatusOK, updated.Code)
 	require.NoError(t, json.Unmarshal(updated.Body.Bytes(), &response))
 	require.True(t, response.Data.StreamEarlyHeartbeatEnabled)
+	require.Equal(t, service.StreamEarlyHeartbeatModeDownstreamPing, response.Data.StreamEarlyHeartbeatMode)
 	require.Equal(t, 0, response.Data.StreamEarlyHeartbeatMinDelayMS)
 	require.Equal(t, 30000, response.Data.StreamEarlyHeartbeatMaxDelayMS)
 	require.Equal(t, "true", repo.values[service.SettingKeyStreamEarlyHeartbeatEnabled])
+	require.Equal(t, service.StreamEarlyHeartbeatModeDownstreamPing, repo.values[service.SettingKeyStreamEarlyHeartbeatMode])
 	require.Equal(t, "0", repo.values[service.SettingKeyStreamEarlyHeartbeatMinDelayMS])
 
 	omitted := doUpdateSettings(t, h, map[string]any{"site_name": "Existing gateway"}, nil)
 	require.Equal(t, http.StatusOK, omitted.Code)
+	require.NoError(t, json.Unmarshal(omitted.Body.Bytes(), &response))
+	require.Equal(t, service.StreamEarlyHeartbeatModeDownstreamPing, response.Data.StreamEarlyHeartbeatMode)
 	require.Equal(t, "true", repo.values[service.SettingKeyStreamEarlyHeartbeatEnabled])
 	require.Equal(t, "30000", repo.values[service.SettingKeyStreamEarlyHeartbeatMaxDelayMS])
 	disabled := doUpdateSettings(t, h, map[string]any{"stream_early_heartbeat_enabled": false}, nil)
 	require.Equal(t, http.StatusOK, disabled.Code)
 	require.Equal(t, "false", repo.values[service.SettingKeyStreamEarlyHeartbeatEnabled])
+	require.Equal(t, service.StreamEarlyHeartbeatModeDownstreamPing, repo.values[service.SettingKeyStreamEarlyHeartbeatMode])
 	require.Equal(t, "30000", repo.values[service.SettingKeyStreamEarlyHeartbeatMaxDelayMS])
+	comment := doUpdateSettings(t, h, map[string]any{"stream_early_heartbeat_mode": service.StreamEarlyHeartbeatModeComment}, nil)
+	require.Equal(t, http.StatusOK, comment.Code)
+	require.NoError(t, json.Unmarshal(comment.Body.Bytes(), &response))
+	require.Equal(t, service.StreamEarlyHeartbeatModeComment, response.Data.StreamEarlyHeartbeatMode)
+	require.Equal(t, service.StreamEarlyHeartbeatModeComment, repo.values[service.SettingKeyStreamEarlyHeartbeatMode])
+	require.False(t, response.Data.StreamEarlyHeartbeatEnabled)
+	require.Equal(t, 30000, response.Data.StreamEarlyHeartbeatMaxDelayMS)
+}
+
+func TestUpdateSettingsEarlyHeartbeatRejectsInvalidModes(t *testing.T) {
+	for _, mode := range []any{"", "invalid", "DOWNSTREAM_PING", " downstream_ping ", nil, true, 1} {
+		h, repo := newStepUpSwitchTestHandler(t, map[string]string{
+			service.SettingKeyStreamEarlyHeartbeatEnabled: "true",
+			service.SettingKeyStreamEarlyHeartbeatMode:    service.StreamEarlyHeartbeatModeDownstreamPing,
+		})
+		rec := doUpdateSettings(t, h, map[string]any{"stream_early_heartbeat_enabled": false, "stream_early_heartbeat_mode": mode}, nil)
+		require.Equal(t, http.StatusBadRequest, rec.Code)
+		require.Equal(t, "true", repo.values[service.SettingKeyStreamEarlyHeartbeatEnabled])
+		require.Equal(t, service.StreamEarlyHeartbeatModeDownstreamPing, repo.values[service.SettingKeyStreamEarlyHeartbeatMode])
+	}
 }
 
 func TestUpdateSettingsEarlyHeartbeatRejectsInvalidRanges(t *testing.T) {
@@ -74,10 +101,10 @@ func TestUpdateSettingsEarlyHeartbeatRejectsInvalidRanges(t *testing.T) {
 }
 
 func TestUpdateSettingsEarlyHeartbeatAuditFields(t *testing.T) {
-	before := &service.SystemSettings{StreamEarlyHeartbeatMinDelayMS: 1000, StreamEarlyHeartbeatMaxDelayMS: 2000}
-	after := &service.SystemSettings{StreamEarlyHeartbeatEnabled: true, StreamEarlyHeartbeatMinDelayMS: 500, StreamEarlyHeartbeatMaxDelayMS: 2500}
+	before := &service.SystemSettings{StreamEarlyHeartbeatMode: service.StreamEarlyHeartbeatModeComment, StreamEarlyHeartbeatMinDelayMS: 1000, StreamEarlyHeartbeatMaxDelayMS: 2000}
+	after := &service.SystemSettings{StreamEarlyHeartbeatEnabled: true, StreamEarlyHeartbeatMode: service.StreamEarlyHeartbeatModeDownstreamPing, StreamEarlyHeartbeatMinDelayMS: 500, StreamEarlyHeartbeatMaxDelayMS: 2500}
 	changed := diffSettings(before, after, nil, nil, UpdateSettingsRequest{})
-	require.ElementsMatch(t, []string{service.SettingKeyStreamEarlyHeartbeatEnabled, service.SettingKeyStreamEarlyHeartbeatMinDelayMS, service.SettingKeyStreamEarlyHeartbeatMaxDelayMS}, changed)
+	require.ElementsMatch(t, []string{service.SettingKeyStreamEarlyHeartbeatEnabled, service.SettingKeyStreamEarlyHeartbeatMode, service.SettingKeyStreamEarlyHeartbeatMinDelayMS, service.SettingKeyStreamEarlyHeartbeatMaxDelayMS}, changed)
 }
 
 func TestUpdateSettingsPartialPayloadKeepsUnsentKeys(t *testing.T) {

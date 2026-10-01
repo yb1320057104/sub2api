@@ -458,6 +458,9 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	if before.StreamEarlyHeartbeatEnabled != after.StreamEarlyHeartbeatEnabled {
 		changed = append(changed, service.SettingKeyStreamEarlyHeartbeatEnabled)
 	}
+	if before.StreamEarlyHeartbeatMode != after.StreamEarlyHeartbeatMode {
+		changed = append(changed, service.SettingKeyStreamEarlyHeartbeatMode)
+	}
 	if before.StreamEarlyHeartbeatMinDelayMS != after.StreamEarlyHeartbeatMinDelayMS {
 		changed = append(changed, service.SettingKeyStreamEarlyHeartbeatMinDelayMS)
 	}

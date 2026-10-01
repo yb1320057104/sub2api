@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"math/rand/v2"
 	"net"
 	"net/http"
@@ -64,7 +65,7 @@ func CopyFirstResponseTiming(parent, base context.Context) context.Context {
 
 // StartEarlySSEHeartbeat is called only for validated Responses, Chat and Messages
 // SSE requests. Compact, WebSocket, images and nonstreaming requests are excluded
-// by the handler. Disabling early comments still collects first-response timing.
+// by the handler. Disabling early heartbeats still collects first-response timing.
 func (s *OpenAIGatewayService) StartEarlySSEHeartbeat(c *gin.Context, requestStart time.Time, protocol string) func() {
 	settings := StreamEarlyHeartbeatSettings{}
 	if s != nil && s.settingService != nil && c != nil && c.Request != nil {
@@ -105,9 +106,13 @@ func startEarlySSEHeartbeat(c *gin.Context, requestStart time.Time, protocol str
 	original := c.Writer
 	w := &earlySSEHeartbeatWriter{
 		ResponseWriter: original, c: c, protocol: protocol,
+		mode:    StreamEarlyHeartbeatModeComment,
 		headers: original.Header().Clone(), stableHeaders: original.Header().Clone(),
 		status: original.Status(), timing: timing,
 		stop: make(chan struct{}), wake: make(chan struct{}, 1), done: make(chan struct{}),
+	}
+	if settings.Mode == StreamEarlyHeartbeatModeDownstreamPing {
+		w.mode = StreamEarlyHeartbeatModeDownstreamPing
 	}
 	if settings.Enabled {
 		w.firstDue = requestStart.Add(earlySSEHeartbeatDelay(settings))
@@ -137,6 +142,7 @@ type earlySSEHeartbeatWriter struct {
 	gin.ResponseWriter
 	c             *gin.Context
 	protocol      string
+	mode          string
 	headers       http.Header
 	stableHeaders http.Header
 	timing        *firstResponseTiming
@@ -217,7 +223,8 @@ func (w *earlySSEHeartbeatWriter) beat() {
 		return
 	}
 	now := time.Now()
-	if (w.firstDue.IsZero() || now.Before(w.firstDue)) && (w.repeatDue.IsZero() || now.Before(w.repeatDue)) {
+	firstDue := !w.firstDue.IsZero() && !now.Before(w.firstDue)
+	if !firstDue && (w.repeatDue.IsZero() || now.Before(w.repeatDue)) {
 		return
 	}
 	if !w.ResponseWriter.Written() {
@@ -234,8 +241,21 @@ func (w *earlySSEHeartbeatWriter) beat() {
 		return
 	}
 	// No gin.Context access from the timer goroutine: all accounting is local.
+	// Ping is an explicit compatibility option for downstream gateways that
+	// count data events. It is not a Responses/Chat model event; strict clients
+	// must use the default comment mode. Periodic keepalive remains a comment.
+	frame := ": keepalive\n\n"
+	if firstDue && w.mode == StreamEarlyHeartbeatModeDownstreamPing {
+		frame = "data: {\"type\":\"ping\"}\n\n"
+		if w.protocol == "messages" {
+			frame = "event: ping\n" + frame
+		}
+	}
 	w.committed = true
-	n, err := w.ResponseWriter.Write([]byte(": keepalive\n\n"))
+	n, err := w.ResponseWriter.Write([]byte(frame))
+	if err == nil && n < len(frame) {
+		err = io.ErrShortWrite
+	}
 	w.bytes += n
 	if n > 0 {
 		w.timing.record()
@@ -245,7 +265,11 @@ func (w *earlySSEHeartbeatWriter) beat() {
 		return
 	}
 	w.ResponseWriter.Flush()
-	w.firstDue = time.Time{}
+	// A periodic comment can arrive before the configured first ping. Keep
+	// that ping pending; comment mode retains its original coalescing behavior.
+	if firstDue || w.mode != StreamEarlyHeartbeatModeDownstreamPing {
+		w.firstDue = time.Time{}
+	}
 	if w.interval > 0 {
 		w.repeatDue = time.Now().Add(w.interval)
 	}
@@ -307,8 +331,8 @@ func StopEarlySSEHeartbeatCommitted(c *gin.Context) bool {
 	return w.committed
 }
 
-// EarlySSEAdjustedWrittenSize excludes only this controller's comments. Other
-// stream comments are subtracted by OpenAICompactKeepaliveAdjustedWrittenSize.
+// EarlySSEAdjustedWrittenSize excludes only this controller's heartbeat bytes.
+// Other stream heartbeats are subtracted by OpenAICompactKeepaliveAdjustedWrittenSize.
 func EarlySSEAdjustedWrittenSize(c *gin.Context) int {
 	if c == nil || c.Writer == nil {
 		return -1
@@ -345,7 +369,7 @@ func (w *earlySSEHeartbeatWriter) WriteHeader(code int) {
 func (w *earlySSEHeartbeatWriter) Write(data []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	transportHeartbeat := isCompleteSSEHeartbeat(data)
+	transportHeartbeat, protocolPing := classifyCompleteSSEHeartbeat(data)
 	if len(data) > 0 && !transportHeartbeat {
 		w.stopLocked()
 	}
@@ -358,13 +382,17 @@ func (w *earlySSEHeartbeatWriter) Write(data []byte) (int, error) {
 		MarkOpsStreamError(w.c, errType, message, status)
 		MarkResponseCommitted(w.c)
 		n, err := w.ResponseWriter.Write(frame)
+		if err == nil && n < len(frame) {
+			err = io.ErrShortWrite
+		}
 		if n > 0 {
 			w.timing.record()
 		}
-		w.ResponseWriter.Flush()
 		if err != nil {
+			w.stopLocked()
 			return 0, err
 		}
+		w.ResponseWriter.Flush()
 		return len(data), nil
 	}
 	if !w.ResponseWriter.Written() {
@@ -372,19 +400,26 @@ func (w *earlySSEHeartbeatWriter) Write(data []byte) (int, error) {
 		w.ResponseWriter.WriteHeader(w.status)
 	}
 	n, err := w.ResponseWriter.Write(data)
+	if err == nil && n < len(data) {
+		err = io.ErrShortWrite
+	}
 	if n > 0 {
 		w.timing.record()
 		if transportHeartbeat {
-			// Queue and stream readers already account for their own comments.
+			// Queue and stream readers already account for their own heartbeats.
 			// Do not add them to bytes, which counts only this timer's writes.
-			// A queue heartbeat replaces the optional first beat, but must leave
-			// the controller available for passthrough's periodic keepalive.
+			// A queue comment does not satisfy the explicit data-ping mode. A
+			// real queue ping does; both leave periodic keepalive available.
 			w.committed = true
-			w.firstDue = time.Time{}
-			if w.interval > 0 {
-				w.repeatDue = time.Now().Add(w.interval)
+			if err == nil {
+				if protocolPing || w.mode != StreamEarlyHeartbeatModeDownstreamPing {
+					w.firstDue = time.Time{}
+				}
+				if w.interval > 0 {
+					w.repeatDue = time.Now().Add(w.interval)
+				}
+				w.notify()
 			}
-			w.notify()
 		}
 	}
 	if err != nil {
@@ -397,15 +432,22 @@ func (w *earlySSEHeartbeatWriter) Write(data []byte) (int, error) {
 // partial, metadata and real data frames must still stop the timer, so a comment
 // can never be inserted into the middle of a business event.
 func isCompleteSSEHeartbeat(data []byte) bool {
+	heartbeat, _ := classifyCompleteSSEHeartbeat(data)
+	return heartbeat
+}
+
+// classifyCompleteSSEHeartbeat also distinguishes a data ping from comments so
+// queue comments cannot consume a pending downstream-compatible first ping.
+func classifyCompleteSSEHeartbeat(data []byte) (heartbeat, ping bool) {
 	if !bytes.HasSuffix(data, []byte("\n\n")) && !bytes.HasSuffix(data, []byte("\r\n\r\n")) {
-		return false
+		return false, false
 	}
 	trimmed := bytes.TrimSpace(data)
 	if len(trimmed) == 0 {
-		return false
+		return false, false
 	}
 	if trimmed[0] != ':' && !bytes.HasPrefix(trimmed, []byte("data:")) && !bytes.HasPrefix(trimmed, []byte("event: ping")) {
-		return false
+		return false, false
 	}
 	var pingData []byte
 	hasPingEvent := false
@@ -419,25 +461,26 @@ func isCompleteSSEHeartbeat(data []byte) bool {
 			continue
 		}
 		if !bytes.HasPrefix(line, []byte("data:")) || pingData != nil {
-			return false
+			return false, false
 		}
 		pingData = bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
 	}
 	if pingData == nil {
 		// An event name without a data payload is not one of our ping frames.
-		return !hasPingEvent && trimmed[0] == ':'
+		return !hasPingEvent && trimmed[0] == ':', false
 	}
 	// The supported queue ping is tiny. Avoid decoding ordinary model chunks
 	// merely to discover that they are not transport frames.
 	if len(pingData) > 64 || !bytes.Contains(pingData, []byte(`"ping"`)) {
-		return false
+		return false, false
 	}
 	var payload map[string]json.RawMessage
 	if json.Unmarshal(pingData, &payload) != nil || len(payload) != 1 {
-		return false
+		return false, false
 	}
 	var kind string
-	return json.Unmarshal(payload["type"], &kind) == nil && kind == "ping"
+	ping = json.Unmarshal(payload["type"], &kind) == nil && kind == "ping"
+	return ping, ping
 }
 
 func (w *earlySSEHeartbeatWriter) WriteString(data string) (int, error) {

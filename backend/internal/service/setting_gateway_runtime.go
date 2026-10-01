@@ -52,16 +52,22 @@ const backendModeCacheTTL = 60 * time.Second
 const backendModeErrorTTL = 5 * time.Second
 const backendModeDBTimeout = 5 * time.Second
 
-// StreamEarlyHeartbeatSettings controls the optional first bodyless SSE heartbeat.
+const (
+	StreamEarlyHeartbeatModeComment        = "comment"
+	StreamEarlyHeartbeatModeDownstreamPing = "downstream_ping"
+)
+
+// StreamEarlyHeartbeatSettings controls the optional early SSE heartbeat.
 // It applies only to OpenAI-compatible Responses, Chat and Messages SSE requests.
 type StreamEarlyHeartbeatSettings struct {
 	Enabled    bool
+	Mode       string
 	MinDelayMS int
 	MaxDelayMS int
 }
 
 func defaultStreamEarlyHeartbeatSettings() StreamEarlyHeartbeatSettings {
-	return StreamEarlyHeartbeatSettings{MinDelayMS: 1000, MaxDelayMS: 2000}
+	return StreamEarlyHeartbeatSettings{Mode: StreamEarlyHeartbeatModeComment, MinDelayMS: 1000, MaxDelayMS: 2000}
 }
 
 // cachedGatewayForwardingSettings 缓存网关转发行为设置（进程内缓存，60s TTL）
@@ -917,6 +923,7 @@ func (s *SettingService) getGatewayForwardingSettingsCached(ctx context.Context)
 		defer cancel()
 		values, err := s.settingRepo.GetMultiple(dbCtx, []string{
 			SettingKeyStreamEarlyHeartbeatEnabled,
+			SettingKeyStreamEarlyHeartbeatMode,
 			SettingKeyStreamEarlyHeartbeatMinDelayMS,
 			SettingKeyStreamEarlyHeartbeatMaxDelayMS,
 			SettingKeyOpenAITTFTMode,
