@@ -4,7 +4,8 @@
 
 ## 基线与阅读方式
 
-- 上游业务基线：`a60a29549f488a854966aaec9541abbe006cac22`（0.2.10）。首次二开保存：`6655dd8ca`，恢复标签 `pk-baseline-20260930`。
+- 首次二开上游基线：`a60a29549f488a854966aaec9541abbe006cac22`（0.2.10）。首次二开保存：`6655dd8ca`，恢复标签 `pk-baseline-20260930`。
+- 2026-10-02 合并上游 `v0.2.11`（commit `96f4c115c9749078f90cbf210a01d39baf3f53b6`），合并前私库为 `32f068dcbdc75063ff7f6488aef6c85912d7bf3f`。逐项核对及本次验证见 [合并记录](docs/PK_UPSTREAM_0.2.11_REVIEW.md)；合并源码不代表已发布或更新线上。
 - 本次清点覆盖从该上游基线到私库 `23e5fe663338c86cd0cebbf2f688c8a75dd8c152` 的全部二开提交；应用发行参照 `v0.2.10-pk.7`，另登记本次新增的项目约束机制。此处是代码核对基线，不代表线上当前版本。
 - 以下 PK-001 至 PK-025 均为有效保护项。文件路径用于定位，不是完整修改白名单；所有新调用入口、迁移和旁路都要检查。
 - 每项说明“必须保持”的行为。文末另列验证入口与已知边界；测试存在、历史验证通过和本次候选通过是三件不同的事。
@@ -72,9 +73,12 @@
 - 先从原始上游 usage 拆出普通输入，再转换缓存并定价；不能将转换后减少的缓存量误算为普通输入，再收一次费用。
 - usage 记录、余额、订阅额度、API Key 额度/限速额度及账号额度使用同一转换结果；开启/关闭的两条路径都保留。
 - 下游展示改写不反向污染上游原始计费证据，重试、桥接、stream usage 收集也不能重复转换或漏记。
+- 2026-10-02 合入上游余额在途预留：预留只占用 Redis 中的请求额度，不直接扣款；最终账务仍用转换后的 `ActualCost`。请求及异步计费共同持有预留，计费先同步扣余额缓存，再释放预留，异常/丢弃/panic 的引用也须归还。
+- 预留发生在选账号之前，以请求体估算普通输入与输出上限，不读取选定账号的缓存转换倍率或真实 usage，也不精确覆盖服务档位与长上下文倍率。预估可能高于或低于最终账单；低余额并发可能比旧版更早被拒绝。不能把该上游防并发机制描述为与缓存转换实扣严格相等，不能用预留金额替换实扣。开关与参数仍由上游 `billing.inflight_reservation` 控制，默认开启。
 - `RecordUsage` 已收到原始 usage 但转换溢出时，保留原始 token 证据、`ActualCost=0`、跳过后续扣费并返回错误；不能默默改收原价。上游出口提前返回错误而无法到达此分支的缺口见文末。
 - 入口：`backend/internal/service/{openai_gateway_usage,billing_service,openai_cache_conversion,openai_cache_conversion_output}.go` 及各转发结果的 usage 传递。
 - 验证：普通输入/读取/创建/输出拆分、费用及各额度结果、关闭时原账务。已有 `openai_gateway_usage_integrity_test.go`；合并上游余额预留等新机制时必须另查预估与实扣是否使用兼容口径。
+- 2026-10-02 在该既有文件扩展 `TestPKCacheConversionInflightBillingPreservesOriginalContext`：倍率0/0.5/30与原始上下文272000/272001组合，检查预留独立、异步实扣前持有、各额度统一、原始上下文选档以及幂等释放；候选与正式发行CI均纳入race选择。
 
 ## PK-004
 
@@ -86,6 +90,7 @@
 - 自定义账号价格统计及模型价格文件回退使用原始 token；启用“将客户定价应用于账号统计”时使用转换后、客户倍率前的 `TotalCost`。不能在合并中把两个分支统一成另一种算法。
 - 入口：`backend/internal/service/billing_service.go`、`openai_gateway_usage.go` 中的 usage 构造、价格选择与账号统计分支。
 - 验证：原始长上下文恰好跨阶梯、转换倍率 0/小数/大于1、两种账号统计价格分支。现有用例不能代替所有模型价格及预留机制的场景验收。
+- 2026-10-02 上游新增 `gpt-6.1-sol` 的 272000 原始上下文阈值，继续使用 `InputContextTokens()` 选档；转换后 token 数量跨过阈值不得改变该判断。组合回归扩展在原有 `openai_gateway_usage_integrity_test.go`，由 GitHub Actions 执行。
 
 ## PK-005
 
@@ -137,6 +142,7 @@
 - 不注入非流式、WebSocket 入站、图片、legacy compact、native V2 compact 等排除路径；上游 WS 转下游 SSE 的既有重连语义保留。
 - 适用范围由 `OpenAIGatewayHandler` 及其路由决定（包括复用该处理器的兼容平台），原生 Claude/Gemini handler 不因这项改动自动纳入；新增路由必须重新核对处理器。
 - 禁用提前心跳时，已纳入测量的入口仍采集真实首包。服务器写出耗时不等于客户端网络到达耗时，部分 SDK 忽略注释。
+- 2026-10-02 下游兼容调查：原版 Sub2API 的 Responses 会忽略注释及 `response.created/in_progress/keepalive`；语义模式与可见内容模式判定不同，空语义事件不能保证所有下游识别。Chat 原始转发会对非 usage-only 的数据块记时。账号测试页的 `_` 是 `AccountTestModal.vue` 的 UI 光标，不是可被协议撤回的模型字符；不得据此宣称注入 `_` 后能无损替换正文。
 - 入口：`backend/internal/service/openai_early_sse_heartbeat.go`；`backend/internal/handler/{openai_gateway_handler,openai_chat_completions}.go`。
 - 验证：`TestPKEarlyHeartbeat_*`、`TestPKFirstResponse_DisabledHeartbeatStillRecordsBodyAndCopiesContext`，以及获准的隔离远端通过实际反代读取 SSE。
 
