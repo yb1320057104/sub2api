@@ -16,6 +16,43 @@ vi.mock('@/api/client', () => ({
 
 import { paymentAPI } from '@/api/payment'
 import { adminBinanceRechargeAPI, binanceRechargeAPI } from '@/api/binanceRecharge'
+import { securityPolicyRankingAPI } from '@/api/admin/securityPolicyRanking'
+
+describe('PKSecurityPolicyRanking API', () => {
+  const range = { start_date: '2026-10-03', end_date: '2026-10-03', timezone: 'Asia/Shanghai' }
+  beforeEach(() => {
+    get.mockReset().mockResolvedValue({ data: {} })
+    post.mockReset().mockResolvedValue({ data: {} })
+    put.mockReset().mockResolvedValue({ data: {} })
+  })
+
+  it('keeps public and admin reads separate with identical explicit date/timezone pagination', async () => {
+    const params = { ...range, page: 2, page_size: 50 }
+    const signal = new AbortController().signal
+    await securityPolicyRankingAPI.getPublicRanking(params, signal)
+    expect(get).toHaveBeenLastCalledWith('/security-policy-ranking', { params, signal })
+    await securityPolicyRankingAPI.getRanking(params, signal)
+    expect(get).toHaveBeenLastCalledWith('/admin/security-policy-ranking', { params, signal })
+  })
+
+  it('uses admin settings routes and preserves decimal text and auto-disable flags', async () => {
+    await securityPolicyRankingAPI.getSettings()
+    expect(get).toHaveBeenCalledWith('/admin/security-policy-ranking/settings')
+    const settings = { multiplier: '0.290001', auto_disable_enabled: true, auto_disable_threshold: 1000000000, reset_on_manual_enable: false }
+    await securityPolicyRankingAPI.saveSettings(settings)
+    expect(put).toHaveBeenCalledWith('/admin/security-policy-ranking/settings', settings)
+  })
+
+  it('uses the server preview ID for deduction without sending client amounts or counts', async () => {
+    const signal = new AbortController().signal
+    post.mockResolvedValueOnce({ data: { id: 'preview-uuid', trigger_count: 100, multiplier: '0.290001', amount: '29.00010000', balance: '40.00000000' } })
+    const result = await securityPolicyRankingAPI.preview(7, range, signal)
+    expect(post).toHaveBeenLastCalledWith('/admin/security-policy-ranking/users/7/preview', range, { signal })
+    expect(result.data.amount).toBe('29.00010000')
+    await securityPolicyRankingAPI.deduct(7, result.data.id)
+    expect(post).toHaveBeenLastCalledWith('/admin/security-policy-ranking/users/7/deduct', { preview_id: 'preview-uuid' })
+  })
+})
 
 describe('payment api', () => {
   beforeEach(() => {

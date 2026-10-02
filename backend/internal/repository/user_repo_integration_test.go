@@ -4,6 +4,8 @@ package repository
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -17,9 +19,243 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/binancepay"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 )
+
+type pkCyberDeductionFixture struct {
+	svc     *service.CyberPolicyService
+	user    *service.User
+	key     *service.APIKey
+	account *service.Account
+	repo    *usageLogRepository
+	window  service.CyberPolicyWindowInput
+}
+
+func newPKCyberDeductionFixture(t *testing.T) *pkCyberDeductionFixture {
+	t.Helper()
+	configurePKCyberAutoDisable(t, false, 10, true)
+	ctx := context.Background()
+	svc := service.NewCyberPolicyService(integrationDB, nil, nil)
+	old, err := svc.Settings(ctx)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_, err := svc.SaveSettings(ctx, service.CyberPolicySettingsInput{Multiplier: &old.Multiplier})
+		require.NoError(t, err)
+	})
+	multiplier := "6.7"
+	_, err = svc.SaveSettings(ctx, service.CyberPolicySettingsInput{Multiplier: &multiplier})
+	require.NoError(t, err)
+	u, k, a, repo := pkCyberAutoDisableFixture(t, service.RoleUser)
+	_, err = integrationDB.ExecContext(ctx, `UPDATE users SET balance=100.12345678,total_recharged=50,username='中文用户名' WHERE id=$1`, u.ID)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_, err := integrationDB.ExecContext(ctx, `DELETE FROM cyber_policy_charges WHERE user_id=$1`, u.ID)
+		require.NoError(t, err)
+		_, err = integrationDB.ExecContext(ctx, `DELETE FROM cyber_policy_deductions WHERE user_id=$1`, u.ID)
+		require.NoError(t, err)
+		_, err = integrationDB.ExecContext(ctx, `DELETE FROM redeem_codes WHERE used_by=$1`, u.ID)
+		require.NoError(t, err)
+	})
+	return &pkCyberDeductionFixture{svc: svc, user: u, key: k, account: a, repo: repo, window: service.CyberPolicyWindowInput{StartDate: "2006-02-03", EndDate: "2006-02-03", Timezone: "Asia/Shanghai"}}
+}
+
+func (f *pkCyberDeductionFixture) insert(t *testing.T, at time.Time, kind service.RequestType) *service.UsageLog {
+	t.Helper()
+	log := &service.UsageLog{UserID: f.user.ID, APIKeyID: f.key.ID, AccountID: f.account.ID, RequestID: uuid.NewString(), Model: "cyber-ranking-fixture", RequestType: kind, CreatedAt: at}
+	_, err := f.repo.createSingle(context.Background(), integrationDB, log)
+	require.NoError(t, err)
+	return log
+}
+
+func (f *pkCyberDeductionFixture) withinDay() time.Time {
+	return time.Date(2006, 2, 3, 5, 0, 0, 0, time.UTC)
+}
+
+func (f *pkCyberDeductionFixture) assertAccounting(t *testing.T, balance string, charges, entries int) {
+	t.Helper()
+	var exact bool
+	require.NoError(t, integrationDB.QueryRowContext(context.Background(), `SELECT balance=$2::numeric AND total_recharged=50 FROM users WHERE id=$1`, f.user.ID, balance).Scan(&exact))
+	require.True(t, exact, "exact balance and original cumulative recharge")
+	var count int
+	require.NoError(t, integrationDB.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM cyber_policy_charges WHERE user_id=$1`, f.user.ID).Scan(&count))
+	require.Equal(t, charges, count)
+	require.NoError(t, integrationDB.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM redeem_codes WHERE used_by=$1 AND type='admin_balance'`, f.user.ID).Scan(&count))
+	require.Equal(t, entries, count)
+}
+
+func TestPKCyberRankingDatesPublicMaskAndSettings(t *testing.T) {
+	f := newPKCyberDeductionFixture(t)
+	ctx := context.Background()
+	start := time.Date(2006, 2, 2, 16, 0, 0, 0, time.UTC)
+	f.insert(t, start.Add(-time.Microsecond), service.RequestTypeCyberBlocked)
+	f.insert(t, start, service.RequestTypeCyberBlocked)
+	f.insert(t, start.Add(24*time.Hour-time.Microsecond), service.RequestTypeCyberBlocked)
+	f.insert(t, start.Add(24*time.Hour), service.RequestTypeCyberBlocked)
+	f.insert(t, start.Add(time.Hour), service.RequestTypeStream)
+	r, err := f.svc.Ranking(ctx, f.window, 1, 50)
+	require.NoError(t, err)
+	require.Equal(t, int64(2), r.TotalTriggers)
+	require.Equal(t, int64(1), r.Total)
+	require.Len(t, r.Items, 1)
+	require.Equal(t, int64(2), r.Items[0].TriggerCount)
+	require.Equal(t, "13.40000000", r.Items[0].PendingAmount)
+	require.Equal(t, "中文用户名", r.Items[0].Username)
+	require.Equal(t, f.user.Email, r.Items[0].Email)
+	public, err := f.svc.PublicRanking(ctx, f.window, 1, 50)
+	require.NoError(t, err)
+	require.Len(t, public.Items, 1)
+	require.Equal(t, "中文用***", public.Items[0].DisplayName)
+	encoded, err := json.Marshal(public)
+	require.NoError(t, err)
+	for _, field := range []string{f.user.Email, "中文用户名", "user_id", "email", "balance", "multiplier", "pending_count", "auto_disable_count"} {
+		require.NotContains(t, string(encoded), field)
+	}
+	_, err = integrationDB.ExecContext(ctx, `UPDATE users SET username='' WHERE id=$1`, f.user.ID)
+	require.NoError(t, err)
+	public, err = f.svc.PublicRanking(ctx, f.window, 1, 50)
+	require.NoError(t, err)
+	require.Equal(t, string([]rune(f.user.Email)[:3])+"***", public.Items[0].DisplayName)
+	threshold := int64(42)
+	enabled := true
+	reset := false
+	settings, err := f.svc.SaveSettings(ctx, service.CyberPolicySettingsInput{AutoDisableEnabled: &enabled, AutoDisableThreshold: &threshold, ResetOnManualEnable: &reset})
+	require.NoError(t, err)
+	require.Equal(t, "6.700000", settings.Multiplier)
+	require.True(t, settings.AutoDisableEnabled)
+	require.False(t, settings.ResetOnManualEnable)
+	multiplier := "0.29"
+	settings, err = f.svc.SaveSettings(ctx, service.CyberPolicySettingsInput{Multiplier: &multiplier})
+	require.NoError(t, err)
+	require.Equal(t, int64(42), settings.AutoDisableThreshold)
+	require.True(t, settings.AutoDisableEnabled)
+	require.False(t, settings.ResetOnManualEnable)
+}
+
+func TestPKCyberDeductionSnapshotConcurrentRetryAndNormalBilling(t *testing.T) {
+	f := newPKCyberDeductionFixture(t)
+	ctx := context.Background()
+	at := f.withinDay()
+	f.insert(t, at, service.RequestTypeCyberBlocked)
+	f.insert(t, at.Add(time.Second), service.RequestTypeCyberBlocked)
+	preview, err := f.svc.Preview(ctx, 91, f.user.ID, f.window)
+	require.NoError(t, err)
+	require.Equal(t, "13.40000000", preview.Amount)
+	overlap, err := f.svc.Preview(ctx, 92, f.user.ID, f.window)
+	require.NoError(t, err)
+	multiplier := "0.29"
+	_, err = f.svc.SaveSettings(ctx, service.CyberPolicySettingsInput{Multiplier: &multiplier})
+	require.NoError(t, err)
+	f.insert(t, at.Add(2*time.Second), service.RequestTypeCyberBlocked)
+	var wg sync.WaitGroup
+	errs := make([]error, 9)
+	results := make([]*service.CyberPolicyDeduction, 8)
+	start := make(chan struct{})
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			instance := service.NewCyberPolicyService(integrationDB, nil, nil)
+			results[i], errs[i] = instance.Deduct(ctx, 91, f.user.ID, preview.ID)
+		}(i)
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-start
+		_, errs[8] = integrationDB.ExecContext(ctx, `UPDATE users SET balance=balance-0.12345678 WHERE id=$1`, f.user.ID)
+	}()
+	close(start)
+	wg.Wait()
+	for _, err := range errs {
+		require.NoError(t, err)
+	}
+	for _, result := range results {
+		require.Equal(t, "completed", result.Status)
+		require.Equal(t, "13.40000000", result.Amount)
+		require.Equal(t, preview.ID, result.ID)
+		require.Equal(t, *results[0].BalanceAfter, *result.BalanceAfter)
+	}
+	f.assertAccounting(t, "86.60000000", 2, 1)
+	_, err = f.svc.Deduct(ctx, 92, f.user.ID, overlap.ID)
+	require.ErrorContains(t, err, "CYBER_PREVIEW_STALE")
+	f.assertAccounting(t, "86.60000000", 2, 1)
+	next, err := f.svc.Preview(ctx, 91, f.user.ID, f.window)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), next.TriggerCount)
+	require.Equal(t, "0.29000000", next.Amount)
+	_, err = f.svc.Deduct(ctx, 91, f.user.ID, next.ID)
+	require.NoError(t, err)
+	f.assertAccounting(t, "86.31000000", 3, 2)
+	var exactLedger bool
+	require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT SUM(value)=-13.69 AND bool_and(length(code)<=32) FROM redeem_codes WHERE used_by=$1 AND type='admin_balance'`, f.user.ID).Scan(&exactLedger))
+	require.True(t, exactLedger)
+	r, err := f.svc.Ranking(ctx, f.window, 1, 50)
+	require.NoError(t, err)
+	require.Equal(t, int64(3), r.Items[0].DeductedCount)
+	require.Zero(t, r.Items[0].PendingCount)
+}
+
+func TestPKCyberDeductionFailuresRollbackAndRetentionDedup(t *testing.T) {
+	f := newPKCyberDeductionFixture(t)
+	ctx := context.Background()
+	log := f.insert(t, f.withinDay(), service.RequestTypeCyberBlocked)
+	preview, err := f.svc.Preview(ctx, 91, f.user.ID, f.window)
+	require.NoError(t, err)
+	_, err = f.svc.Deduct(ctx, 92, f.user.ID, preview.ID)
+	require.ErrorContains(t, err, "CYBER_PREVIEW_NOT_FOUND")
+	_, err = integrationDB.ExecContext(ctx, `UPDATE users SET balance=1 WHERE id=$1`, f.user.ID)
+	require.NoError(t, err)
+	_, err = f.svc.Deduct(ctx, 91, f.user.ID, preview.ID)
+	require.ErrorContains(t, err, "CYBER_INSUFFICIENT_BALANCE")
+	f.assertAccounting(t, "1", 0, 0)
+	_, err = integrationDB.ExecContext(ctx, `UPDATE users SET balance=100.12345678 WHERE id=$1`, f.user.ID)
+	require.NoError(t, err)
+	// A history write failure must undo both the debit and every identity claim.
+	parsed := uuid.MustParse(preview.ID)
+	code := "CP-" + base64.RawURLEncoding.EncodeToString(parsed[:])
+	_, err = integrationDB.ExecContext(ctx, `INSERT INTO redeem_codes(code,type,value,status,used_by) VALUES($1,'balance',0,'used',$2)`, code, f.user.ID)
+	require.NoError(t, err)
+	_, err = f.svc.Deduct(ctx, 91, f.user.ID, preview.ID)
+	require.Error(t, err)
+	f.assertAccounting(t, "100.12345678", 0, 0)
+	_, err = integrationDB.ExecContext(ctx, `DELETE FROM redeem_codes WHERE code=$1`, code)
+	require.NoError(t, err)
+	stale, err := f.svc.Preview(ctx, 92, f.user.ID, f.window)
+	require.NoError(t, err)
+	var saved string
+	require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT row_to_json(l)::text FROM usage_logs l WHERE id=$1`, log.ID).Scan(&saved))
+	_, err = f.svc.Deduct(ctx, 91, f.user.ID, preview.ID)
+	require.NoError(t, err)
+	f.assertAccounting(t, "93.42345678", 1, 1)
+	_, err = integrationDB.ExecContext(ctx, `DELETE FROM usage_logs WHERE id=$1`, log.ID)
+	require.NoError(t, err)
+	_, err = f.svc.Deduct(ctx, 92, f.user.ID, stale.ID)
+	require.ErrorContains(t, err, "CYBER_PREVIEW_STALE")
+	_, err = f.svc.Deduct(ctx, 91, f.user.ID, preview.ID)
+	require.NoError(t, err)
+	f.assertAccounting(t, "93.42345678", 1, 1)
+	_, err = integrationDB.ExecContext(ctx, `INSERT INTO usage_logs SELECT * FROM json_populate_record(NULL::usage_logs,$1::json)`, saved)
+	require.NoError(t, err)
+	_, err = f.svc.Preview(ctx, 91, f.user.ID, f.window)
+	require.ErrorContains(t, err, "CYBER_NOTHING_TO_DEDUCT")
+	f.assertAccounting(t, "93.42345678", 1, 1)
+	f.insert(t, f.withinDay().Add(time.Second), service.RequestTypeCyberBlocked)
+	expired, err := f.svc.Preview(ctx, 91, f.user.ID, f.window)
+	require.NoError(t, err)
+	_, err = integrationDB.ExecContext(ctx, `UPDATE cyber_policy_deductions SET expires_at=NOW()-INTERVAL '1 second' WHERE id=$1`, expired.ID)
+	require.NoError(t, err)
+	_, err = f.svc.Deduct(ctx, 91, f.user.ID, expired.ID)
+	require.ErrorContains(t, err, "CYBER_PREVIEW_EXPIRED")
+	f.assertAccounting(t, "93.42345678", 1, 1)
+	_, err = f.svc.Preview(ctx, 91, f.user.ID, f.window)
+	require.NoError(t, err)
+	var count int
+	require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM cyber_policy_preview_items WHERE deduction_id=$1`, expired.ID).Scan(&count))
+	require.Zero(t, count, "bounded preview cleanup must remove abandoned item snapshots")
+}
 
 type UserRepoSuite struct {
 	suite.Suite

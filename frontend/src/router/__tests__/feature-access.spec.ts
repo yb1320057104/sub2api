@@ -8,6 +8,7 @@ type NavigationGuard = (
 
 const routerHarness = vi.hoisted(() => ({
   guard: null as NavigationGuard | null,
+  routes: [] as Array<{ path: string; meta?: Record<string, unknown> }>,
 }))
 
 const authStore = vi.hoisted(() => ({
@@ -33,13 +34,16 @@ const appStore = vi.hoisted(() => ({
 
 vi.mock('vue-router', () => ({
   createWebHistory: vi.fn(() => ({})),
-  createRouter: vi.fn(() => ({
-    beforeEach: vi.fn((guard: NavigationGuard) => {
-      routerHarness.guard = guard
-    }),
-    afterEach: vi.fn(),
-    onError: vi.fn(),
-  })),
+  createRouter: vi.fn((options: { routes: Array<{ path: string; meta?: Record<string, unknown> }> }) => {
+    routerHarness.routes = options.routes
+    return {
+      beforeEach: vi.fn((guard: NavigationGuard) => {
+        routerHarness.guard = guard
+      }),
+      afterEach: vi.fn(),
+      onError: vi.fn(),
+    }
+  }),
 }))
 
 vi.mock('@/stores/auth', () => ({
@@ -176,6 +180,33 @@ describe('feature route guard', () => {
     expect(appStore.fetchPublicSettings).not.toHaveBeenCalled()
     expect(next).toHaveBeenCalledOnce()
     expect(next).toHaveBeenCalledWith(target)
+  })
+})
+
+describe('PKSecurityPolicyRanking route access', () => {
+  beforeEach(() => {
+    appStore.backendModeEnabled = false
+    authStore.isSimpleMode = false
+  })
+
+  it.each([false, true])('lets authenticated users read the independent ranking (admin=%s)', async (admin) => {
+    authStore.isAuthenticated = true
+    authStore.isAdmin = admin
+    const route = routerHarness.routes.find(item => item.path === '/security-policy-ranking')
+    expect(route?.meta).toMatchObject({ requiresAuth: true, requiresAdmin: false, titleKey: 'securityPolicyRanking.title' })
+    const { navigation, next } = runGuard(route!.meta!, route!.path)
+    await navigation
+    expect(next).toHaveBeenCalledWith()
+  })
+
+  it('requires login before showing the ranking', async () => {
+    authStore.isAuthenticated = false
+    authStore.isAdmin = false
+    const route = routerHarness.routes.find(item => item.path === '/security-policy-ranking')
+    const { navigation, next } = runGuard(route!.meta!, route!.path)
+    await navigation
+    expect(next).toHaveBeenCalledWith({ path: '/login', query: { redirect: '/security-policy-ranking' } })
+    authStore.isAuthenticated = true
   })
 })
 

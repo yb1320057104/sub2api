@@ -15,6 +15,39 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestPKCyberMigrationDefaultsAndExistingBalancesUnchanged(t *testing.T) {
+	ctx := context.Background()
+	tx := testTx(t)
+	schema := fmt.Sprintf("pk_cyber_%d", time.Now().UnixNano())
+	_, err := tx.ExecContext(ctx, `CREATE SCHEMA `+schema)
+	require.NoError(t, err)
+	_, err = tx.ExecContext(ctx, `SET LOCAL search_path TO `+schema)
+	require.NoError(t, err)
+	_, err = tx.ExecContext(ctx, `CREATE TABLE users (id BIGINT PRIMARY KEY,balance NUMERIC(20,8),total_recharged NUMERIC(20,8)); CREATE TABLE usage_logs(id BIGINT,user_id BIGINT,created_at TIMESTAMPTZ,request_type SMALLINT); INSERT INTO users VALUES(1,12.12345678,99.12345678); INSERT INTO usage_logs VALUES(1,1,NOW(),4);`)
+	require.NoError(t, err)
+	migration, err := os.ReadFile(filepath.Join("..", "..", "migrations", "244_security_policy_ranking.sql"))
+	require.NoError(t, err)
+	_, err = tx.ExecContext(ctx, string(migration))
+	require.NoError(t, err)
+	var defaults, unchanged bool
+	require.NoError(t, tx.QueryRowContext(ctx, `SELECT multiplier=6.7 AND NOT auto_disable_enabled AND auto_disable_threshold=10 AND reset_on_manual_enable FROM cyber_policy_settings WHERE id=1`).Scan(&defaults))
+	require.True(t, defaults)
+	require.NoError(t, tx.QueryRowContext(ctx, `SELECT balance=12.12345678 AND total_recharged=99.12345678 FROM users WHERE id=1`).Scan(&unchanged))
+	require.True(t, unchanged)
+	var count int
+	require.NoError(t, tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM cyber_policy_charges`).Scan(&count))
+	require.Zero(t, count, "migration must not retroactively debit historical safety records")
+	_, err = tx.ExecContext(ctx, `INSERT INTO cyber_policy_deductions(id,actor_id,user_id,email,username,start_date,end_date,timezone,multiplier,trigger_count,balance) VALUES('00000000-0000-0000-0000-000000000001',1,1,'fixture','fixture','2026-10-03','2026-10-03','UTC',0.29,100,12.12345678)`)
+	require.NoError(t, err)
+	var amount string
+	require.NoError(t, tx.QueryRowContext(ctx, `SELECT amount::text FROM cyber_policy_deductions`).Scan(&amount))
+	require.Equal(t, "29.00000000", amount, "generated deduction uses decimal multiplication, not binary float")
+	_, err = tx.ExecContext(ctx, `INSERT INTO cyber_policy_charges SELECT id,created_at,'00000000-0000-0000-0000-000000000001',user_id FROM usage_logs; DELETE FROM usage_logs; DELETE FROM users;`)
+	require.NoError(t, err)
+	require.NoError(t, tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM cyber_policy_charges`).Scan(&count))
+	require.Equal(t, 1, count, "usage and user retention must not erase durable charge identity")
+}
+
 func TestPKBinanceMultiplierMigrationPreservesLegacyDataAndDefaults(t *testing.T) {
 	ctx := context.Background()
 	tx := testTx(t)

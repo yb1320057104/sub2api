@@ -636,6 +636,17 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/security-policy-ranking',
+    name: 'SecurityPolicyRanking',
+    component: () => import('@/views/admin/SecurityPolicyRankingView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: false,
+      title: 'Hall of Shame',
+      titleKey: 'securityPolicyRanking.title',
+    }
+  },
+  {
     path: '/admin/usage',
     name: 'AdminUsage',
     component: () => import('@/views/admin/UsageView.vue'),
