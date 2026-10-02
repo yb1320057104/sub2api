@@ -4,3 +4,5 @@ git
 credentials-binding
 ssh-agent
 timestamper
+locale:641.v84f22d75fd8b_
+localization-zh-cn:371.v23851f835d6b_

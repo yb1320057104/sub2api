@@ -14,10 +14,16 @@ import org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition
 import hudson.plugins.git.GitSCM
 import hudson.plugins.git.UserRemoteConfig
 import hudson.plugins.git.BranchSpec
+import hudson.plugins.locale.PluginImpl
 
 def j = Jenkins.get()
 def marker = new File(j.rootDir, '.pk-bootstrap-complete')
 if (marker.exists()) return
+def locale = PluginImpl.get()
+locale.setSystemLocale('zh_CN')
+locale.setIgnoreAcceptLanguage(true)
+locale.setAllowUserPreferences(false)
+locale.save()
 j.setNumExecutors(0)
 j.setSlaveAgentPort(-1)
 jenkins.model.JenkinsLocationConfiguration.get().setUrl('http://127.0.0.1:18081/')

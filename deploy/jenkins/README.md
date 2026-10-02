@@ -21,6 +21,7 @@ Jenkins 的 Pipeline from SCM 当前固定从私库已审阅的维护分支 `cod
 | 组件 | 当前配置 |
 |---|---|
 | Jenkins controller | `2.580.1` / Java 21，执行器数为 0，禁止匿名访问 |
+| Jenkins 界面语言 | 简体中文 `zh_CN`，Locale + 简体中文语言包，忽略浏览器语言偏好 |
 | 管理入口 | 仅监听服务器 `127.0.0.1:18081`，不开放公网 Jenkins 端口 |
 | 构建 agent | `pk-builder`，1 个执行器，通过 WebSocket 连接 controller |
 | 专用 Docker daemon | `docker:29.8.1-dind`，内部 TLS `2376`，独立构建网络及 Docker 数据卷 |
@@ -29,6 +30,8 @@ Jenkins 的 Pipeline from SCM 当前固定从私库已审阅的维护分支 `cod
 | 管理员凭据 | 用户名 `admin`；密码仅保存在服务器 `/opt/pk-jenkins/bootstrap/admin-password`，不进入仓库或日志 |
 
 本次配置结果：`sub2api-package #3` 已成功，使用私库 `main` 的 `5273f30cb2ee5903c9c6acbd504755c7b0b0505c`，产物 ID 为 `3-5273f30cb2ee`（`0.2.12-pk.candidate.3`）。二进制归档、镜像归档、SHA256 和 manifest 已归档并保存到独立产物目录。没有创建正式发行版本。
+
+界面语言配置保存到 controller 数据目录的 `locale.xml`，刷新和重启后保留；可在「系统管理 → 外观 → Locale」调整。`plugins.txt` 固定语言插件版本，`bootstrap.groovy` 为新安装配置同样默认值。部分第三方插件未提供中文翻译的文本仍会显示英文。
 
 三项凭据均已配置。Release 令牌仅授权此私库的 Contents 读写；GHCR 令牌只有 `write:packages`（包含读取），没有 `repo` 权限。服务器端已核验私库文件读取、镜像包私有状态和 GHCR 认证。两项发布令牌均在北京时间 **2027-01-01** 到期；到期前应在原凭据 ID 下替换。认证核验不等于正式发布的完整动态验证。
 
