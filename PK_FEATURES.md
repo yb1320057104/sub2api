@@ -410,7 +410,7 @@
 - 扣减 `users.balance`、负值 `admin_balance` 原余额流水、扣费批次及逐条使用记录认领在同一数据库事务完成。余额不足整笔拒绝，不部分扣款；不改变累计充值、原模型费用、订阅/API Key/账号额度或上游 usage。成功提交后失效用户鉴权和余额缓存。
 - 扣费记录与去重证据独立保存，清理使用记录不能删除扣费证据。排行榜只统计仍保留的使用记录；数据库迁移不回扣历史余额，也不自动扣款。程序回退不撤销新增表或已完成扣款。
 - 入口：`backend/migrations/244_security_policy_ranking.sql`、`backend/internal/service/cyber_policy*.go`、管理员与普通用户使用记录 handler/routes、前端独立排行 API/页面和导航。自动禁用计数见 PK-027，不能混同为筛选日期内次数。
-- 验证：在已有后端 service/repository/handler 与前端回归文件扩展 `TestPKCyber*` 及排行场景，云端验证金额、权限、日期边界、并发扣款、重试、重叠区间、余额不足回滚与刷新生命周期。当前变更的实际结果见发布核对记录；本地不运行构建或测试，不新增遗留测试文件。
+- 验证：在已有后端 service/repository/handler 与前端回归文件扩展 `TestPKCyber*` 及排行场景，云端验证金额、权限、日期边界、并发扣款、重试、重叠区间、余额不足回滚与刷新生命周期。当前变更的实际结果见[发布核对记录](docs/PK_SHAME_LEADERBOARD_REVIEW.md)；本地不运行构建或测试，不新增遗留测试文件。
 
 ## PK-027
 

@@ -37,5 +37,8 @@
 - 所有新增回归写入仓库已有测试文件，没有新增测试文件需要保留或清理。
 - 后端：`TestPKCyber*` 覆盖日期/设置、权限和脱敏、预览/扣费事务与并发，以及单条/批量/best-effort插入、阈值/管理员豁免、手动重计、保留计数、事务回滚和鉴权失效。
 - 前端：已有 `UsageView.spec.ts`、`payment.spec.ts`、`feature-access.spec.ts`、`AppSidebar.spec.ts` 扩展默认日期、刷新、预览重试、只读隐私、独立菜单和路由权限，纳入关键回归选择器。
-- 当前候选的 GitHub Actions 链接和结论在云端执行后回填；受影响项通过前不合入正式分支、不发布。
+- 已验证业务提交：`cb1d7ce2efe39d957d4fd8090616eb5e6c346242`。
+- [分支完整CI及候选构建](https://github.com/pengkang0322/sub2api/actions/runs/37039960234)与[PR完整CI](https://github.com/pengkang0322/sub2api/actions/runs/37039965056)全部成功：后端unit/integration、lint、前端类型与32个文件共482项关键回归、候选前后端构建、PKCyber及原首字/计费/币安race回归、部署脚本和香港网关检查。
+- [安全扫描](https://github.com/pengkang0322/sub2api/actions/runs/37039960239)成功。`TestPKCyber*` 实际纳入候选的unit/race和PostgreSQL 15 integration/race，自动禁用的父表分区路由与事务回滚也通过。
+- 其后提交只补充本核对和维护/清单文档，业务代码与上述已验证提交一致。受影响功能没有遗留待验证项；正式发行仍执行目标标签对应的发布检查、同一二进制归档/镜像和持久化启动检查。
 - 本次未进行线上变更；线上实际版本未核实。正式发布包和校验文件由 PK Release 生成，用户自行网页升级。
