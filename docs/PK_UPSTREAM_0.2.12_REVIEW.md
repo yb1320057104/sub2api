@@ -57,8 +57,10 @@ PK-007～012 按三模式配置、真实写出计时、协议输出及使用记�
 
 - 本地仅静态读取源码、diff、引用与格式，未运行任何构建或测试。
 - 上游自带测试保留；本次回归只扩展已有测试文件，没有生成临时测试文件。
-- 云端候选/PR CI 待执行：全部 Go unit/integration、lint、前端类型与关键回归、首字/计费/TypeSafe race、币安事务和候选构建。全部必需项通过前不合入或发布。
-- 正式标签和 Release 工作流待执行：私有更新/下载、后台与首字并发、币安精度/事务、Docker 持久化及同二进制制品检查。
+- 候选提交 `51edab0274d4f6c2a0060b7b082ce56852e8297c` 的 [PR CI](https://github.com/pengkang0322/sub2api/actions/runs/36997747019) 已全部成功：Go unit/integration、lint、前端类型与关键回归、部署脚本和网关检查；包括新增迁移及首包持久化。PR 条件跳过候选任务，由同 SHA 的分支任务执行。
+- 同 SHA 的 [分支候选任务](https://github.com/pengkang0322/sub2api/actions/runs/36997729437/job/110808199577) 已成功：首字/缓存转换/余额预留/TypeSafe 请求复用 race、币安协议与 PostgreSQL 15 事务 race、前后端构建及制品上传；候选 artifact `11222856608`。完整分支 CI 的重复测试状态以对应 [运行](https://github.com/pengkang0322/sub2api/actions/runs/36997729437) 为准。
+- [分支安全扫描](https://github.com/pengkang0322/sub2api/actions/runs/36997729399) 和 [PR 安全扫描](https://github.com/pengkang0322/sub2api/actions/runs/36997747042) 均成功。
+- 本次核对结果更新仅修改文档，业务源码和工作流与上述已验证提交一致。正式发行的额外更新/下载、后台并发、Docker 持久化及镜像检查，由 `PK Release` 对正式标签重新执行；实际发布提交、运行链接和附件记录在 [v0.2.12-pk.1 Release](https://github.com/pengkang0322/sub2api/releases/tag/v0.2.12-pk.1)。
 - 未覆盖范围仍见 PK_FEATURES.md；本次合并不等于生产更新、New API 串联、真实币安转账或全部严格 SDK 的验收。
 
 ## 升级边界
