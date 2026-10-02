@@ -45,6 +45,15 @@ description: 维护 pengkang0322/sub2api 私有仓库的 PK出版版本：遵守
 
 ## 发布、更新或恢复
 
-涉及发布/部署/回退时读 [私有发布与恢复](references/private-release.md)，并以仓库最新 `PK_MAINTENANCE.md`、`Jenkinsfile` 和 `deploy/jenkins/README.md` 为准。Jenkins 先打包，后续按当次明确授权在本机对同一提交和制品完成十套件验收后再发布；本次本地禁令不允许跳过验收直接发布，发布必须复用已验证制品，不重新编译。
+涉及发布/部署/回退时读 [私有发布与恢复](references/private-release.md)，并核对私库当前 `Jenkinsfile`、`deploy/jenkins/README.md` 和 `PK_MAINTENANCE.md`。迁移尚未合入 `main` 时，先核对 Jenkins 当前可信 SCM 分支中的实现；工作区缺少这些入口不构成重新使用 GitHub Actions 的理由。
+
+每次正式发布固定按 **`package` → 本地验收并上传报告 → `publish` → 网页更新** 的顺序执行：
+
+1. **打包**：Jenkins `sub2api-package` 选择 `ACTION=package`、已审阅且属于私库 `main` 历史的正式标签 `vX.Y.Z-pk.N`，`COMMIT_SHA` 和 `PACKAGE_ID` 留空。记录成功构建的 `PACKAGE_ID`，下载这一次的完整制品。版本分支或固定 SHA 生成的仍是候选包，不能直接 `publish`。
+2. **验收**：按当次授权在本地对同一 commit/tree 和下载的同一制品完成十套件验收（含 `artifact-runtime`）；确认 `local-validation.json` 的 `publish_eligible=true`，再以 `{PACKAGE_ID}.json` 上传到 `/srv/jenkins-evidence/sub2api/`。仅源码测试通过或仅打包成功均不够；当次禁止测试时不得绕过此步骤发布。
+3. **发布**：选择 `ACTION=publish`，填写上述 `PACKAGE_ID`；此时 `SOURCE_REF` 和 `COMMIT_SHA` 不参与。Jenkins 核验报告与制品后，将原包发布到私有 GitHub Release/GHCR，不重新编译。GitHub 只保存源码与发布产物，不执行打包或测试。
+4. **更新**：正式发布成功后网页更新入口才能发现该版本；是否执行网页更新按当前用户授权处理。发布成功不等于线上已升级，`publish` 不自动更新或重启生产。
+
+用户只要求试打包时完成 `package` 即可；正式发布必须满足以上前置条件，不能把“先 package 再 publish”理解为无验收连续点击两次。失败重试、报告字段和制品路径见引用文档。
 
 交付时说明：私库分支/提交、上游版本、PK版本（如已发布）、受影响/新增 PK ID、清单同步与保留功能的证据、本地测试报告及 Jenkins 制品结果，以及本次是否进行了线上操作。没有读取线上状态时，写“本次未进行线上变更；线上实际版本未核实”，不推断其他人是否更改了线上。

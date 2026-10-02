@@ -31,11 +31,17 @@
 
 同一构建产出的二进制必须同时进入镜像与更新归档，Release 必须带对应平台的 `sub2api_版本_linux_amd64.tar.gz` 和 `checksums.txt`。只有镜像不能支持网页一键更新。PK Release 为正式发布，不能被 GitHub 标为 prerelease 后又期望 `/releases/latest` 找到它。
 
-Jenkins 选择 `ACTION=package`，在 `SOURCE_REF` 的可搜索下拉列表选择已审阅的新标签 `vX.Y.Z-pk.N`，生成待验收包。该列表使用 Git Parameter `PT_BRANCH_TAG`，默认 `origin/main`；选择目标版本已有的 `origin/codex/vX.Y.Z-pk.N` 分支生成候选包，本次迁移仍可使用原有 `origin/codex/jenkins-build`。日常将 `COMMIT_SHA` 留空，仅需固定提交时填写 40 位小写 SHA，覆盖下拉选择并生成候选。流水线将分支/标签规范化为完整 ref 后继续执行原有校验，正式标签仍须位于私库 `main` 历史；选择源码不改变可信流水线的 SCM 分支。
+### 每次正式发布的执行顺序
 
-后续获准执行本地验收时，下载该包并在本机以 `scripts/test-local.ps1 -ArtifactDirectory ...` 或 `python3 scripts/test-local.py --artifact-dir ...` 执行源码与镜像持久化完整验收。缺 WSL/Docker/工具或套件失败时明确报告，不把打包成功写成测试通过。
+固定顺序为 **`package` → 本地验收并上传报告 → `publish` → 网页更新**。仅要求试打包时停在第一步；用户要求正式发布时也不能跳过中间的验收。GitHub 保存源码、Release 和私有镜像，不承担打包或测试。
 
-本地报告必须绑定相同 commit/tree、package_id、二进制和镜像归档 SHA256，十个套件全部通过；按 `{package_id}.json` 上传到 `/srv/jenkins-evidence/sub2api/`。Jenkins `ACTION=publish`、`PACKAGE_ID=...` 校验报告后复用原制品发布，不重新构建。只有源码测试、未跑 artifact-runtime 或缺发布凭据时不可正式发布。候选包不进入正式 latest 更新列表；发布不自动更新生产。
+1. **运行 `package`。** Jenkins 任务 `sub2api-package` 选择 `ACTION=package`，在 `SOURCE_REF` 的可搜索下拉列表选择已审阅的新标签 `vX.Y.Z-pk.N`，`COMMIT_SHA`、`PACKAGE_ID` 留空。只有属于私库 `main` 历史的正式标签才生成 `build_type=release` 的待验收包；标签打包本身不会发布。列表使用 Git Parameter `PT_BRANCH_TAG`，默认 `origin/main`；`origin/codex/vX.Y.Z-pk.N` 等分支即使按版本命名也只生成候选包。填写 40 位小写 `COMMIT_SHA` 会覆盖下拉选择，同样只生成候选。候选包不能直接转为正式发布，需按正式标签重新打包和验收。选择源码不改变可信流水线的 SCM 分支。
+2. **记录并下载同一次制品。** 等待打包成功，记录 `PACKAGE_ID`（构建号-提交前12位），下载 `output/` 中的 `manifest.json`、二进制 `.tar.gz`、镜像 `.docker.tar.gz` 和 `checksums.txt`。封存来源为 `/srv/jenkins-packages/sub2api/{PACKAGE_ID}/`，不能混用不同构建的文件或凭版本名猜测 ID。
+3. **本地验收并上传报告。** 按当次授权在与制品相同 commit/tree 的干净源码目录执行 Windows `scripts/test-local.ps1 -ArtifactDirectory <制品目录> -OutputDirectory <报告目录>`，或 Linux `python3 scripts/test-local.py --artifact-dir <制品目录> --output-dir <报告目录>`；报告目录必须位于源码目录之外。核对生成的 `local-validation.json`：`schema_version=1`、`tests_profile=pk-local-v1`、`status=passed`、`publish_eligible=true`，repository/commit/tree 与制品一致，十个套件（含 `artifact-runtime`）全部通过，artifact 中的 `package_id`、`binary_sha256`、`image_archive_sha256` 均匹配。将此报告上传并命名为 `/srv/jenkins-evidence/sub2api/{PACKAGE_ID}.json`。未传制品目录时，源码测试可能显示 `passed` 但 `publish_eligible=false`，仍不可发布。缺工具、套件失败或当次禁止测试时如实记录，不伪造报告、不跳过验收；测试生成的临时文件用完删除，保留原有回归文件。
+4. **运行 `publish`。** 选择 `ACTION=publish`，填写刚才已验收的 `PACKAGE_ID`；此操作不使用 `SOURCE_REF` 或 `COMMIT_SHA`。Jenkins 复核制品、报告、私库状态、标签指向、`main` 祖先关系及版本未被占用后，复用原镜像与二进制归档发布到私有 GHCR/Release，不重新编译。确认 Release 资产完整、已转为正式非 prerelease/latest，并核对版本镜像与 `latest` 状态；不能仅凭开始执行或出现草稿称为成功。
+5. **按授权执行网页更新。** 正式发布成功后，原网页更新入口才能发现该版本；用户可再在网页执行更新。`publish` 不连接、升级或重启生产应用；发布完成和线上升级须分别记录。
+
+发布部分失败可能已占用版本或留下草稿，先核查日志、Release 与镜像状态，保留原制品及证据，不盲目覆盖重试或重建包。若版本已占用，按维护文档处理；需要改用未占用的新 PK 修订时，重新走该版本的打包和验收流程。若正式 Release 已完成而仅镜像 `latest` 失败，先核对再处理该移动标签，不把已经发布的版本重新打包覆盖。
 
 原网页一键更新能力必须保留：正式 Release 继续是私有仓库中的非 prerelease，带既有名称的二进制归档与 `checksums.txt`；前后端更新 API、凭据来源、回退和 SHA256 校验行为不因迁移 Jenkins 改变。历史云端验收报告保留原记录，不改写为本次本地验证。
 
