@@ -25,6 +25,7 @@ type UsageHandler struct {
 	apiKeyService  *service.APIKeyService
 	adminService   service.AdminService
 	cleanupService *service.UsageCleanupService
+	cyberPolicy    *service.CyberPolicyService
 }
 
 // NewUsageHandler creates a new admin usage handler

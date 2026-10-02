@@ -16,6 +16,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/migrations"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 )
@@ -1697,4 +1698,264 @@ func (s *UsageLogRepoSuite) TestListWithFilters_CombinedFilters() {
 	s.Require().NoError(err, "ListWithFilters combined")
 	s.Require().Len(logs, 2)
 	s.Require().Equal(int64(2), page.Total)
+}
+
+func configurePKCyberAutoDisable(t *testing.T, enabled bool, threshold int64, reset bool) {
+	t.Helper()
+	ctx := context.Background()
+	var oldEnabled, oldReset bool
+	var oldThreshold int64
+	err := integrationDB.QueryRowContext(ctx, `SELECT auto_disable_enabled,auto_disable_threshold,reset_on_manual_enable FROM cyber_policy_settings WHERE id=1`).Scan(&oldEnabled, &oldThreshold, &oldReset)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_, restoreErr := integrationDB.ExecContext(ctx, `UPDATE cyber_policy_settings SET auto_disable_enabled=$1,auto_disable_threshold=$2,reset_on_manual_enable=$3 WHERE id=1`, oldEnabled, oldThreshold, oldReset)
+		require.NoError(t, restoreErr)
+	})
+	_, err = integrationDB.ExecContext(ctx, `UPDATE cyber_policy_settings SET auto_disable_enabled=$1,auto_disable_threshold=$2,reset_on_manual_enable=$3 WHERE id=1`, enabled, threshold, reset)
+	require.NoError(t, err)
+}
+
+func pkCyberAutoDisableFixture(t *testing.T, role string) (*service.User, *service.APIKey, *service.Account, *usageLogRepository) {
+	t.Helper()
+	ctx := context.Background()
+	client := testEntClient(t)
+	user := mustCreateUser(t, client, &service.User{Email: "pk-cyber-auto-" + uuid.NewString() + "@example.com", Role: role, Balance: 100})
+	key := mustCreateApiKey(t, client, &service.APIKey{UserID: user.ID, Key: "sk-pk-cyber-auto-" + uuid.NewString(), Name: "cyber-auto"})
+	account := mustCreateAccount(t, client, &service.Account{Name: "pk-cyber-auto-" + uuid.NewString()})
+	t.Cleanup(func() {
+		_, err := integrationDB.ExecContext(ctx, `DELETE FROM users WHERE id=$1`, user.ID)
+		require.NoError(t, err)
+		_, err = integrationDB.ExecContext(ctx, `DELETE FROM accounts WHERE id=$1`, account.ID)
+		require.NoError(t, err)
+		_, err = integrationDB.ExecContext(ctx, `DELETE FROM auth_cache_invalidation_outbox WHERE cache_key=encode(sha256(convert_to($1,'UTF8')),'hex')`, key.Key)
+		require.NoError(t, err)
+	})
+	return user, key, account, newUsageLogRepositoryWithSQL(client, integrationDB)
+}
+
+func pkCyberAutoDisableLog(user *service.User, key *service.APIKey, account *service.Account) *service.UsageLog {
+	return &service.UsageLog{
+		UserID: user.ID, APIKeyID: key.ID, AccountID: account.ID,
+		RequestID: uuid.NewString(), Model: "cyber-auto-fixture", RequestType: service.RequestTypeCyberBlocked,
+		CreatedAt: time.Now().UTC(),
+	}
+}
+
+func requirePKCyberAutoDisableState(t *testing.T, userID int64, wantStatus string, wantCount int64) {
+	t.Helper()
+	var status string
+	var count int64
+	require.NoError(t, integrationDB.QueryRowContext(context.Background(), `
+SELECT u.status,COALESCE(c.trigger_count,0)
+FROM users u LEFT JOIN cyber_policy_user_counters c ON c.user_id=u.id WHERE u.id=$1`, userID).Scan(&status, &count))
+	require.Equal(t, wantStatus, status)
+	require.Equal(t, wantCount, count)
+}
+
+func requirePKCyberAuthInvalidations(t *testing.T, key string, want int) {
+	t.Helper()
+	var count int
+	require.NoError(t, integrationDB.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM auth_cache_invalidation_outbox WHERE cache_key=encode(sha256(convert_to($1,'UTF8')),'hex')`, key).Scan(&count))
+	require.Equal(t, want, count)
+}
+
+func TestPKCyberAutoDisableCoversSingleBatchBestEffortAndDeduplicates(t *testing.T) {
+	configurePKCyberAutoDisable(t, true, 3, true)
+	ctx := context.Background()
+	user, key, account, repo := pkCyberAutoDisableFixture(t, service.RoleUser)
+	normal := pkCyberAutoDisableLog(user, key, account)
+	normal.RequestType = service.RequestTypeStream
+	_, err := repo.Create(ctx, normal)
+	require.NoError(t, err)
+	requirePKCyberAutoDisableState(t, user.ID, service.StatusActive, 0)
+
+	single := pkCyberAutoDisableLog(user, key, account)
+	single.RequestID = "" // Public Create's synchronous insertion path.
+	_, err = repo.Create(ctx, single)
+	require.NoError(t, err)
+	requirePKCyberAutoDisableState(t, user.ID, service.StatusActive, 1)
+
+	batched := pkCyberAutoDisableLog(user, key, account)
+	inserted, err := repo.Create(ctx, batched)
+	require.NoError(t, err)
+	require.True(t, inserted)
+	inserted, err = repo.Create(ctx, batched)
+	require.NoError(t, err)
+	require.False(t, inserted)
+	requirePKCyberAutoDisableState(t, user.ID, service.StatusActive, 2)
+	requirePKCyberAuthInvalidations(t, key.Key, 0)
+
+	bestEffort := pkCyberAutoDisableLog(user, key, account)
+	require.NoError(t, repo.CreateBestEffort(ctx, bestEffort))
+	require.NoError(t, repo.CreateBestEffort(ctx, bestEffort))
+	requirePKCyberAutoDisableState(t, user.ID, service.StatusDisabled, 3)
+	requirePKCyberAuthInvalidations(t, key.Key, 1)
+	var balance, totalRecharged float64
+	var autoDisabled bool
+	require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT u.balance,u.total_recharged,c.auto_disabled_at IS NOT NULL FROM users u JOIN cyber_policy_user_counters c ON c.user_id=u.id WHERE u.id=$1`, user.ID).Scan(&balance, &totalRecharged, &autoDisabled))
+	require.Equal(t, float64(100), balance, "automatic account disabling must never debit a balance")
+	require.Zero(t, totalRecharged)
+	require.True(t, autoDisabled)
+
+	admin, adminKey, adminAccount, adminRepo := pkCyberAutoDisableFixture(t, service.RoleAdmin)
+	for i := 0; i < 4; i++ {
+		_, err = adminRepo.Create(ctx, pkCyberAutoDisableLog(admin, adminKey, adminAccount))
+		require.NoError(t, err)
+	}
+	requirePKCyberAutoDisableState(t, admin.ID, service.StatusActive, 0)
+	requirePKCyberAuthInvalidations(t, adminKey.Key, 0)
+}
+
+func TestPKCyberAutoDisableResetToggleAndUsageRetention(t *testing.T) {
+	configurePKCyberAutoDisable(t, false, 2, true)
+	ctx := context.Background()
+	user, key, account, repo := pkCyberAutoDisableFixture(t, service.RoleUser)
+	insert := func() {
+		t.Helper()
+		_, err := repo.Create(ctx, pkCyberAutoDisableLog(user, key, account))
+		require.NoError(t, err)
+	}
+	insert()
+	requirePKCyberAutoDisableState(t, user.ID, service.StatusActive, 0)
+	_, err := integrationDB.ExecContext(ctx, `UPDATE cyber_policy_settings SET auto_disable_enabled=TRUE WHERE id=1`)
+	require.NoError(t, err)
+	insert()
+	requirePKCyberAutoDisableState(t, user.ID, service.StatusActive, 1)
+	insert()
+	requirePKCyberAutoDisableState(t, user.ID, service.StatusDisabled, 2)
+
+	_, err = integrationDB.ExecContext(ctx, `UPDATE cyber_policy_settings SET reset_on_manual_enable=FALSE WHERE id=1`)
+	require.NoError(t, err)
+	user.Status = service.StatusActive
+	userRepo := newUserRepositoryWithSQL(testEntClient(t), integrationDB)
+	require.NoError(t, userRepo.Update(ctx, user, service.UserUpdateFields{Status: true}))
+	requirePKCyberAutoDisableState(t, user.ID, service.StatusActive, 2)
+	insert()
+	requirePKCyberAutoDisableState(t, user.ID, service.StatusDisabled, 3)
+
+	_, err = integrationDB.ExecContext(ctx, `UPDATE cyber_policy_settings SET reset_on_manual_enable=TRUE WHERE id=1`)
+	require.NoError(t, err)
+	require.NoError(t, userRepo.Update(ctx, user, service.UserUpdateFields{Status: true}))
+	requirePKCyberAutoDisableState(t, user.ID, service.StatusActive, 0)
+	var recorded int
+	require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_logs WHERE user_id=$1`, user.ID).Scan(&recorded))
+	require.Equal(t, 4, recorded, "counter reset must not erase safety records or deductions")
+	insert()
+	_, err = integrationDB.ExecContext(ctx, `UPDATE cyber_policy_settings SET auto_disable_enabled=FALSE WHERE id=1`)
+	require.NoError(t, err)
+	insert()
+	requirePKCyberAutoDisableState(t, user.ID, service.StatusActive, 1)
+	_, err = integrationDB.ExecContext(ctx, `DELETE FROM usage_logs WHERE user_id=$1`, user.ID)
+	require.NoError(t, err)
+	requirePKCyberAutoDisableState(t, user.ID, service.StatusActive, 1)
+	_, err = integrationDB.ExecContext(ctx, `UPDATE cyber_policy_settings SET auto_disable_enabled=TRUE WHERE id=1`)
+	require.NoError(t, err)
+	insert()
+	requirePKCyberAutoDisableState(t, user.ID, service.StatusDisabled, 2)
+}
+
+func TestPKCyberAutoDisableRollbackIsAtomic(t *testing.T) {
+	configurePKCyberAutoDisable(t, true, 1, true)
+	ctx := context.Background()
+	user, key, account, _ := pkCyberAutoDisableFixture(t, service.RoleUser)
+	tx := testEntTx(t)
+	repo := newUsageLogRepositoryWithSQL(tx.Client(), tx)
+	_, err := repo.Create(dbent.NewTxContext(ctx, tx), pkCyberAutoDisableLog(user, key, account))
+	require.NoError(t, err)
+	disabled, err := tx.Client().User.Get(ctx, user.ID)
+	require.NoError(t, err)
+	require.Equal(t, service.StatusDisabled, disabled.Status)
+	require.NoError(t, tx.Rollback())
+	requirePKCyberAutoDisableState(t, user.ID, service.StatusActive, 0)
+	requirePKCyberAuthInvalidations(t, key.Key, 0)
+}
+
+func TestPKCyberAutoDisableConcurrentInsertsAndReversedUserBatches(t *testing.T) {
+	configurePKCyberAutoDisable(t, true, 10, true)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	userA, keyA, accountA, repo := pkCyberAutoDisableFixture(t, service.RoleUser)
+	userB, keyB, accountB, _ := pkCyberAutoDisableFixture(t, service.RoleUser)
+	const writers = 20
+	start := make(chan struct{})
+	errs := make([]error, writers)
+	var wg sync.WaitGroup
+	for i := range errs {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			<-start
+			_, errs[index] = repo.createSingle(ctx, integrationDB, pkCyberAutoDisableLog(userA, keyA, accountA))
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	for _, err := range errs {
+		require.NoError(t, err, "same-user FK and disable locks must not deadlock")
+	}
+	requirePKCyberAutoDisableState(t, userA.ID, service.StatusDisabled, writers)
+	requirePKCyberAuthInvalidations(t, keyA.Key, 1)
+
+	start = make(chan struct{})
+	for i := range errs {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			first, second := pkCyberAutoDisableLog(userA, keyA, accountA), pkCyberAutoDisableLog(userB, keyB, accountB)
+			if index%2 != 0 {
+				first, second = second, first
+			}
+			query, args := buildUsageLogBestEffortInsertQuery([]usageLogInsertPrepared{prepareUsageLogInsert(first), prepareUsageLogInsert(second)})
+			<-start
+			_, errs[index] = integrationDB.ExecContext(ctx, query, args...)
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	for _, err := range errs {
+		require.NoError(t, err, "multi-user batches must acquire user locks in a stable order")
+	}
+	requirePKCyberAutoDisableState(t, userA.ID, service.StatusDisabled, writers*2)
+	requirePKCyberAutoDisableState(t, userB.ID, service.StatusDisabled, writers)
+	requirePKCyberAuthInvalidations(t, keyA.Key, 1)
+	requirePKCyberAuthInvalidations(t, keyB.Key, 1)
+}
+
+func TestPKCyberAutoDisableMigrationPreservesHistoryAndSupportsPartitions(t *testing.T) {
+	ctx := context.Background()
+	tx := testTx(t)
+	schema := fmt.Sprintf("pk_cyber_partitions_%d", time.Now().UnixNano())
+	_, err := tx.ExecContext(ctx, `CREATE SCHEMA `+schema)
+	require.NoError(t, err)
+	_, err = tx.ExecContext(ctx, `SET LOCAL search_path TO `+schema)
+	require.NoError(t, err)
+	_, err = tx.ExecContext(ctx, `
+CREATE TABLE users(id BIGINT PRIMARY KEY,role TEXT NOT NULL,status TEXT NOT NULL,deleted_at TIMESTAMPTZ,updated_at TIMESTAMPTZ);
+CREATE TABLE cyber_policy_settings(id INTEGER PRIMARY KEY,auto_disable_enabled BOOLEAN,auto_disable_threshold BIGINT,reset_on_manual_enable BOOLEAN);
+INSERT INTO cyber_policy_settings VALUES(1,TRUE,2,TRUE);
+INSERT INTO users(id,role,status) VALUES(1,'user','active');
+CREATE TABLE usage_logs(user_id BIGINT REFERENCES users(id),request_type SMALLINT,created_at TIMESTAMPTZ) PARTITION BY RANGE(created_at);
+CREATE TABLE usage_logs_october_first PARTITION OF usage_logs FOR VALUES FROM ('2026-10-01T00:00:00Z') TO ('2026-10-02T00:00:00Z');
+CREATE TABLE usage_logs_other PARTITION OF usage_logs DEFAULT;
+INSERT INTO usage_logs VALUES(1,4,'2026-09-01T00:00:00Z');`)
+	require.NoError(t, err)
+	migration, err := migrations.FS.ReadFile("245_cyber_policy_auto_disable.sql")
+	require.NoError(t, err)
+	_, err = tx.ExecContext(ctx, string(migration))
+	require.NoError(t, err)
+	var count int64
+	var status string
+	require.NoError(t, tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM cyber_policy_user_counters`).Scan(&count))
+	require.Zero(t, count, "migration must not retroactively count or disable historical records")
+	require.NoError(t, tx.QueryRowContext(ctx, `SELECT status FROM users WHERE id=1`).Scan(&status))
+	require.Equal(t, service.StatusActive, status)
+	_, err = tx.ExecContext(ctx, `INSERT INTO usage_logs VALUES(1,4,'2026-10-01T10:00:00Z'),(1,4,'2026-10-02T10:00:00Z')`)
+	require.NoError(t, err)
+	require.NoError(t, tx.QueryRowContext(ctx, `SELECT u.status,c.trigger_count FROM users u JOIN cyber_policy_user_counters c ON c.user_id=u.id WHERE u.id=1`).Scan(&status, &count))
+	require.Equal(t, service.StatusDisabled, status)
+	require.Equal(t, int64(2), count, "one parent INSERT must count rows routed into both partitions")
+	_, err = tx.ExecContext(ctx, `UPDATE users SET status='active' WHERE id=1`)
+	require.NoError(t, err)
+	require.NoError(t, tx.QueryRowContext(ctx, `SELECT trigger_count FROM cyber_policy_user_counters WHERE user_id=1`).Scan(&count))
+	require.Zero(t, count)
 }

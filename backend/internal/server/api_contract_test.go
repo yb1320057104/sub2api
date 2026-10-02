@@ -1438,6 +1438,46 @@ func TestAPIContracts(t *testing.T) {
 	}
 }
 
+func TestPKCyberPolicyAdminEndpointsRejectOrdinaryUsers(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := adminhandler.NewUsageHandler(nil, nil, nil, nil)
+	for _, tc := range []struct {
+		name, method string
+		handler      gin.HandlerFunc
+	}{
+		{"ranking", http.MethodGet, h.CyberPolicyRanking},
+		{"settings", http.MethodGet, h.CyberPolicySettings},
+		{"save-settings", http.MethodPut, h.SaveCyberPolicySettings},
+		{"preview", http.MethodPost, h.PreviewCyberPolicyDeduction},
+		{"deduct", http.MethodPost, h.DeductCyberPolicyBalance},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, authenticated := range []bool{false, true} {
+				r := gin.New()
+				if authenticated {
+					r.Use(func(c *gin.Context) {
+						c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 7})
+						c.Set(string(middleware.ContextKeyUserRole), service.RoleUser)
+					})
+				}
+				r.Handle(tc.method, "/resource", tc.handler)
+				w := httptest.NewRecorder()
+				r.ServeHTTP(w, httptest.NewRequest(tc.method, "/resource", nil))
+				want := http.StatusUnauthorized
+				if authenticated {
+					want = http.StatusForbidden
+				}
+				require.Equal(t, want, w.Code, "permission must be checked before touching a nil database")
+			}
+		})
+	}
+	r := gin.New()
+	r.GET("/ranking", h.CyberPolicyPublicRanking)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/ranking", nil))
+	require.Equal(t, http.StatusUnauthorized, w.Code)
+}
+
 type contractDeps struct {
 	now         time.Time
 	router      http.Handler

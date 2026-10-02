@@ -93,6 +93,7 @@ func RegisterAdminRoutes(
 
 		// 使用记录管理
 		registerUsageRoutes(admin, h)
+		registerCyberPolicyRoutes(admin, h)
 
 		// 用户属性管理
 		registerUserAttributeRoutes(admin, h)
@@ -131,6 +132,15 @@ func RegisterAdminRoutes(
 		// 操作审计日志
 		registerAuditLogRoutes(admin, h, stepUpAuth)
 	}
+}
+
+func registerCyberPolicyRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	ranking := admin.Group("/security-policy-ranking")
+	ranking.GET("", h.Admin.Usage.CyberPolicyRanking)
+	ranking.GET("/settings", h.Admin.Usage.CyberPolicySettings)
+	ranking.PUT("/settings", h.Admin.Usage.SaveCyberPolicySettings)
+	ranking.POST("/users/:id/preview", h.Admin.Usage.PreviewCyberPolicyDeduction)
+	ranking.POST("/users/:id/deduct", h.Admin.Usage.DeductCyberPolicyBalance)
 }
 
 func registerPromptAuditRoutes(admin *gin.RouterGroup, h *handler.Handlers) {

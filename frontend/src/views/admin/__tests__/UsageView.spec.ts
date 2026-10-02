@@ -4,6 +4,15 @@ import { defineComponent, ref } from 'vue'
 
 import UsageView from '../UsageView.vue'
 import AdminDailyUsage from '@/components/admin/usage/AdminDailyUsage.vue'
+import SecurityPolicyRankingView from '../SecurityPolicyRankingView.vue'
+
+const rankingMocks = vi.hoisted(() => ({
+  getRanking: vi.fn(), getPublicRanking: vi.fn(), getSettings: vi.fn(),
+  saveSettings: vi.fn(), preview: vi.fn(), deduct: vi.fn(),
+  auth: { isAdmin: true },
+}))
+vi.mock('@/api/admin/securityPolicyRanking', () => ({ securityPolicyRankingAPI: rankingMocks }))
+vi.mock('@/stores/auth', () => ({ useAuthStore: () => rankingMocks.auth }))
 
 const { list, exportList, getStats, getSnapshotV2, getById, getModelStats, listErrorLogs, routeQuery, aoaToSheet, sheetAddAoa, saveAs, xlsxWrite } = vi.hoisted(() => {
   vi.stubGlobal('localStorage', {
@@ -41,6 +50,7 @@ const messages: Record<string, string> = {
 	'usage.upstreamModelMismatch': 'Upstream model mismatch',
 	'common.yes': 'Yes',
 	'common.no': 'No',
+  'securityPolicyRanking.previewFormula': '{count} triggers × {multiplier} = {amount}',
 }
 
 const formatLocalDate = (date: Date): string => {
@@ -106,7 +116,7 @@ vi.mock('vue-i18n', async () => {
   return {
     ...actual,
     useI18n: () => ({
-      t: (key: string) => messages[key] ?? key,
+      t: (key: string, params?: Record<string, unknown>) => (messages[key] ?? key).replace(/\{(\w+)\}/g, (match, field: string) => String(params?.[field] ?? match)),
     }),
   }
 })
@@ -800,6 +810,244 @@ describe('admin UsageView model audit export', () => {
 		expect(row.slice(4, 8)).toEqual(['gpt-5.6-sol', 'gpt-5.5', 'gpt-5.4', 'Yes'])
 		expect(saveAs).toHaveBeenCalledTimes(1)
 	})
+})
+
+describe('PKSecurityPolicyRanking', () => {
+  const mountedViews: Array<{ unmount: () => void }> = []
+  let visibility: ReturnType<typeof vi.spyOn>
+  const settingsData = () => ({ multiplier: '6.700000', auto_disable_enabled: false, auto_disable_threshold: 10, reset_on_manual_enable: true })
+  const rankingData = (count = 4) => ({
+    items: [{ rank: 1, user_id: 7, username: 'Example user', email: 'private@example.com', balance: '100.00000000', status: 'active', auto_disable_count: count, trigger_count: count, deducted_count: 1, pending_count: count - 1, pending_amount: '20.10000000' }],
+    total: 1, total_triggers: count, total_pending: count - 1, multiplier: '6.700000',
+    start_date: '2026-10-03', end_date: '2026-10-03', timezone: 'UTC', generated_at: '2026-10-03T12:00:00Z',
+  })
+  const previewData = () => ({
+    id: 'frozen-preview-7', user_id: 7, username: 'Example user', email: 'private@example.com',
+    start_date: '2026-10-03', end_date: '2026-10-03', timezone: 'UTC', trigger_count: 3,
+    multiplier: '6.700000', amount: '20.10000000', balance: '100.00000000',
+    expires_at: '2026-10-03T12:10:00Z', status: 'pending',
+  })
+  const mountRanking = () => {
+    const wrapper = mount(SecurityPolicyRankingView, {
+      global: { stubs: {
+        AppLayout: AppLayoutStub, DateRangePicker: true, Pagination: true,
+        RouterLink: { template: '<a><slot /></a>' },
+        BaseDialog: { props: ['show'], template: '<section v-if="show"><slot /><slot name="footer" /></section>' },
+      } },
+    })
+    mountedViews.push(wrapper)
+    return wrapper
+  }
+  const deferred = <T,>() => {
+    let resolve!: (value: T) => void
+    const promise = new Promise<T>(done => { resolve = done })
+    return { promise, resolve }
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(2026, 9, 3, 12))
+    visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
+    rankingMocks.auth.isAdmin = true
+    rankingMocks.getRanking.mockReset().mockResolvedValue({ data: rankingData() })
+    rankingMocks.getPublicRanking.mockReset().mockResolvedValue({ data: { ...rankingData(), items: [{ rank: 1, display_name: 'Pub***', trigger_count: 4 }] } })
+    rankingMocks.getSettings.mockReset().mockResolvedValue({ data: settingsData() })
+    rankingMocks.saveSettings.mockReset().mockImplementation(async value => ({ data: value }))
+    rankingMocks.preview.mockReset().mockResolvedValue({ data: previewData() })
+    rankingMocks.deduct.mockReset().mockResolvedValue({ data: { ...previewData(), status: 'completed', balance_after: '79.90000000' } })
+  })
+  afterEach(() => {
+    mountedViews.splice(0).forEach(wrapper => wrapper.unmount())
+    vi.restoreAllMocks()
+    vi.useRealTimers()
+  })
+
+  it('defaults to today with an explicit timezone, saved settings and serialized five-second refresh', async () => {
+    const wrapper = mountRanking()
+    await flushPromises()
+    expect(rankingMocks.getRanking).toHaveBeenCalledWith(expect.objectContaining({ start_date: '2026-10-03', end_date: '2026-10-03', timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC', page: 1, page_size: 50 }), expect.any(AbortSignal))
+    expect(wrapper.find('#ranking-multiplier').element).toHaveProperty('value', '6.700000')
+    expect(wrapper.find('[data-testid="ranking-auto-disable"]').element).toHaveProperty('checked', false)
+    expect(wrapper.find('[data-testid="ranking-reset-on-enable"]').element).toHaveProperty('checked', true)
+    const pending = deferred<{ data: ReturnType<typeof rankingData> }>()
+    rankingMocks.getRanking.mockImplementationOnce(() => pending.promise)
+    vi.advanceTimersByTime(5000)
+    await flushPromises()
+    vi.advanceTimersByTime(30000)
+    await flushPromises()
+    expect(rankingMocks.getRanking).toHaveBeenCalledTimes(2)
+    pending.resolve({ data: rankingData(6) })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="ranking-user-7"]').text()).toContain('6')
+    await wrapper.find('[data-testid="ranking-auto-refresh"]').setValue(false)
+    vi.advanceTimersByTime(30000)
+    await flushPromises()
+    expect(rankingMocks.getRanking).toHaveBeenCalledTimes(2)
+    await wrapper.find('[data-testid="ranking-refresh-seconds"]').setValue('2')
+    await wrapper.find('[data-testid="ranking-auto-refresh"]').setValue(true)
+    vi.advanceTimersByTime(2000)
+    await flushPromises()
+    expect(rankingMocks.getRanking).toHaveBeenCalledTimes(3)
+    await wrapper.find('[data-testid="ranking-refresh-seconds"]').setValue('0')
+    vi.advanceTimersByTime(30000)
+    await flushPromises()
+    expect(rankingMocks.getRanking).toHaveBeenCalledTimes(3)
+  })
+
+  it('rejects stale date responses and requests only the newest range after cancellation', async () => {
+    const first = deferred<{ data: ReturnType<typeof rankingData> }>()
+    rankingMocks.getRanking.mockImplementationOnce(() => first.promise)
+    const wrapper = mountRanking()
+    await flushPromises()
+    const firstSignal = rankingMocks.getRanking.mock.calls[0][1] as AbortSignal
+    wrapper.findComponent({ name: 'DateRangePicker' }).vm.$emit('change', { startDate: '2026-10-01', endDate: '2026-10-02', preset: null })
+    await flushPromises()
+    expect(firstSignal.aborted).toBe(true)
+    expect(rankingMocks.getRanking).toHaveBeenCalledTimes(1)
+    first.resolve({ data: { ...rankingData(), items: [{ ...rankingData().items[0], username: 'STALE' }] } })
+    await flushPromises()
+    expect(rankingMocks.getRanking).toHaveBeenCalledTimes(2)
+    expect(rankingMocks.getRanking.mock.calls[1][0]).toMatchObject({ start_date: '2026-10-01', end_date: '2026-10-02' })
+    expect(wrapper.text()).not.toContain('STALE')
+  })
+
+  it('follows today across midnight, cancels hidden requests, and stops polling on unmount', async () => {
+    const wrapper = mountRanking()
+    await flushPromises()
+    vi.setSystemTime(new Date(2026, 9, 4, 0, 1))
+    vi.advanceTimersByTime(5000)
+    await flushPromises()
+    expect(rankingMocks.getRanking.mock.calls[1][0]).toMatchObject({ start_date: '2026-10-04', end_date: '2026-10-04' })
+    const pending = deferred<{ data: ReturnType<typeof rankingData> }>()
+    rankingMocks.getRanking.mockImplementationOnce(() => pending.promise)
+    vi.advanceTimersByTime(5000)
+    await flushPromises()
+    const signal = rankingMocks.getRanking.mock.calls[2][1] as AbortSignal
+    visibility.mockReturnValue('hidden')
+    document.dispatchEvent(new Event('visibilitychange'))
+    expect(signal.aborted).toBe(true)
+    pending.resolve({ data: rankingData() })
+    await flushPromises()
+    vi.advanceTimersByTime(30000)
+    expect(rankingMocks.getRanking).toHaveBeenCalledTimes(3)
+    visibility.mockReturnValue('visible')
+    document.dispatchEvent(new Event('visibilitychange'))
+    await flushPromises()
+    expect(rankingMocks.getRanking).toHaveBeenCalledTimes(4)
+    wrapper.unmount()
+    mountedViews.splice(mountedViews.indexOf(wrapper), 1)
+    vi.advanceTimersByTime(30000)
+    expect(rankingMocks.getRanking).toHaveBeenCalledTimes(4)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('shows only the safe ranking to ordinary users and never calls admin APIs', async () => {
+    rankingMocks.auth.isAdmin = false
+    // Even an unexpected extra field must not become a user-visible column.
+    rankingMocks.getPublicRanking.mockResolvedValue({ data: { ...rankingData(), items: [{ ...rankingData().items[0], display_name: 'Pub***' }] } })
+    const wrapper = mountRanking()
+    await flushPromises()
+    expect(wrapper.text()).toContain('Pub***')
+    expect(wrapper.text()).not.toContain('Example user')
+    expect(wrapper.text()).not.toContain('private@example.com')
+    expect(wrapper.text()).not.toContain('100.00000000')
+    expect(wrapper.find('[data-testid="ranking-settings"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="ranking-deduct-7"]').exists()).toBe(false)
+    expect(rankingMocks.getSettings).not.toHaveBeenCalled()
+    expect(rankingMocks.getRanking).not.toHaveBeenCalled()
+    expect(rankingMocks.preview).not.toHaveBeenCalled()
+    expect(rankingMocks.deduct).not.toHaveBeenCalled()
+    expect(rankingMocks.getPublicRanking).toHaveBeenCalledTimes(1)
+  })
+
+  it('saves exact multiplier and automatic disable options, rejecting invalid input', async () => {
+    const wrapper = mountRanking()
+    await flushPromises()
+    await wrapper.find('#ranking-multiplier').setValue('1e2')
+    await wrapper.find('form').trigger('submit')
+    expect(rankingMocks.saveSettings).not.toHaveBeenCalled()
+    await wrapper.find('#ranking-multiplier').setValue('0.290001')
+    await wrapper.find('[data-testid="ranking-auto-disable"]').setValue(true)
+    await wrapper.find('[data-testid="ranking-threshold"]').setValue('1000000000')
+    await wrapper.find('[data-testid="ranking-reset-on-enable"]').setValue(false)
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+    expect(rankingMocks.saveSettings).toHaveBeenCalledWith({ multiplier: '0.290001', auto_disable_enabled: true, auto_disable_threshold: 1000000000, reset_on_manual_enable: false })
+  })
+
+  it('bounds pagination independently of global table options and keeps custom dates fixed across midnight', async () => {
+    const wrapper = mountRanking()
+    await flushPromises()
+    expect(wrapper.find('[data-testid="ranking-page-size"]').findAll('option').map(option => option.element.value)).toEqual(['10', '20', '50', '100'])
+    wrapper.findComponent({ name: 'Pagination' }).vm.$emit('update:pageSize', 500)
+    await flushPromises()
+    expect(rankingMocks.getRanking.mock.calls.at(-1)?.[0].page_size).toBe(100)
+    wrapper.findComponent({ name: 'DateRangePicker' }).vm.$emit('change', { startDate: '2026-10-01', endDate: '2026-10-02', preset: null })
+    await flushPromises()
+    vi.setSystemTime(new Date(2026, 9, 4, 0, 1))
+    vi.advanceTimersByTime(5000)
+    await flushPromises()
+    expect(rankingMocks.getRanking.mock.calls.at(-1)?.[0]).toMatchObject({ start_date: '2026-10-01', end_date: '2026-10-02' })
+    await wrapper.find('[data-testid="ranking-auto-refresh"]').setValue(false)
+    const calls = rankingMocks.getRanking.mock.calls.length
+    visibility.mockReturnValue('hidden')
+    document.dispatchEvent(new Event('visibilitychange'))
+    visibility.mockReturnValue('visible')
+    document.dispatchEvent(new Event('visibilitychange'))
+    await flushPromises()
+    vi.advanceTimersByTime(30000)
+    expect(rankingMocks.getRanking).toHaveBeenCalledTimes(calls)
+  })
+
+  it('confirms a server snapshot and reuses its ID after a network failure without recalculating from live rows', async () => {
+    const wrapper = mountRanking()
+    await flushPromises()
+    await wrapper.find('[data-testid="ranking-deduct-7"]').trigger('click')
+    await flushPromises()
+    expect(rankingMocks.deduct).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-testid="ranking-preview-formula"]').text()).toBe('3 triggers × 6.7 = 20.1')
+    expect(wrapper.find('[data-testid="ranking-deduction-preview"]').text()).toContain('private@example.com')
+    rankingMocks.getRanking.mockResolvedValue({ data: rankingData(10) })
+    vi.advanceTimersByTime(5000)
+    await flushPromises()
+    expect(wrapper.find('[data-testid="ranking-preview-formula"]').text()).toBe('3 triggers × 6.7 = 20.1')
+    rankingMocks.deduct.mockRejectedValueOnce(new Error('Connection lost'))
+    await wrapper.find('[data-testid="ranking-confirm-deduct"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('Connection lost')
+    expect(wrapper.find('[data-testid="ranking-deduction-preview"]').exists()).toBe(true)
+    await wrapper.find('[data-testid="ranking-confirm-deduct"]').trigger('click')
+    await flushPromises()
+    expect(rankingMocks.deduct.mock.calls).toEqual([[7, 'frozen-preview-7'], [7, 'frozen-preview-7']])
+    expect(rankingMocks.preview).toHaveBeenCalledTimes(1)
+    expect(wrapper.find('[data-testid="ranking-deduction-preview"]').exists()).toBe(false)
+  })
+
+  it('disables settled/deleted rows and prevents overlapping deduction clicks', async () => {
+    rankingMocks.getRanking.mockResolvedValue({ data: { ...rankingData(), items: [
+      { ...rankingData().items[0], pending_count: 0 },
+      { ...rankingData().items[0], user_id: 8, deleted: true },
+      { ...rankingData().items[0], user_id: 9 },
+    ] } })
+    const wrapper = mountRanking()
+    await flushPromises()
+    expect(wrapper.find('[data-testid="ranking-deduct-7"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('[data-testid="ranking-deduct-8"]').attributes('disabled')).toBeDefined()
+    const pending = deferred<{ data: ReturnType<typeof previewData> }>()
+    rankingMocks.preview.mockImplementationOnce(() => pending.promise)
+    await wrapper.find('[data-testid="ranking-deduct-9"]').trigger('click')
+    await wrapper.find('[data-testid="ranking-deduct-9"]').trigger('click')
+    expect(rankingMocks.preview).toHaveBeenCalledTimes(1)
+    pending.resolve({ data: { ...previewData(), user_id: 9 } })
+    await flushPromises()
+    const deduction = deferred<{ data: ReturnType<typeof previewData> }>()
+    rankingMocks.deduct.mockImplementationOnce(() => deduction.promise)
+    await wrapper.find('[data-testid="ranking-confirm-deduct"]').trigger('click')
+    await wrapper.find('[data-testid="ranking-confirm-deduct"]').trigger('click')
+    expect(rankingMocks.deduct).toHaveBeenCalledTimes(1)
+    deduction.resolve({ data: previewData() })
+    await flushPromises()
+  })
 })
 
 describe('PKBinance daily usage tab', () => {

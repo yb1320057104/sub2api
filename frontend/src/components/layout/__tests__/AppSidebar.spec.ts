@@ -3,11 +3,24 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { describe, expect, it } from 'vitest'
+import zhRanking from '@/i18n/locales/zh/securityPolicyRanking'
+import enRanking from '@/i18n/locales/en/securityPolicyRanking'
 
 const componentPath = resolve(dirname(fileURLToPath(import.meta.url)), '../AppSidebar.vue')
 const componentSource = readFileSync(componentPath, 'utf8')
 const stylePath = resolve(dirname(fileURLToPath(import.meta.url)), '../../../style.css')
 const styleSource = readFileSync(stylePath, 'utf8')
+
+describe('PKSecurityPolicyRanking independent navigation', () => {
+  it('provides the requested standalone menu for users and admins without duplicating the admin personal menu', () => {
+    const shared = componentSource.slice(componentSource.indexOf('function buildSelfNavItems'), componentSource.indexOf('// finalizeNav'))
+    const admin = componentSource.slice(componentSource.indexOf('const adminNavItems = computed'))
+    expect(shared).toMatch(/path: '\/security-policy-ranking'[^\n]*featureFlag: \(\) => !authStore.isAdmin/)
+    expect(admin).toMatch(/path: '\/security-policy-ranking'[^\n]*label: t\('securityPolicyRanking.title'\)/)
+    expect(zhRanking.securityPolicyRanking.title).toBe('耻辱排行榜')
+    expect(enRanking.securityPolicyRanking.title).toBe('Hall of Shame')
+  })
+})
 
 describe('AppSidebar custom SVG styles', () => {
   it('does not override uploaded SVG fill or stroke colors', () => {

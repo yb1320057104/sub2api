@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -15,6 +16,53 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/binancepay"
 	"github.com/zeromicro/go-zero/core/collection"
 )
+
+func TestPKCyberPolicyValidationAndMasking(t *testing.T) {
+	for input, want := range map[string]string{"6.7": "6.700000", "0.29": "0.290000", "0.000001": "0.000001", "1000": "1000.000000"} {
+		got, err := normalizeCyberPolicyMultiplier(input)
+		if err != nil || got != want {
+			t.Fatalf("multiplier %s: %s %v", input, got, err)
+		}
+	}
+	for _, input := range []string{"", "0", "-1", "1e2", "NaN", "1000.000001", "0.0000001", " 6.7", "6.7 "} {
+		if _, err := normalizeCyberPolicyMultiplier(input); err == nil {
+			t.Fatalf("accepted invalid multiplier %q", input)
+		}
+	}
+	for input, want := range map[string]string{"": "用户***", "alice@example.com": "ali***", "中文用户名": "中文用***", "😀😃😄😁": "😀😃😄***", "李": "李***", "abc": "abc***"} {
+		if got := maskCyberPolicyIdentity(input); got != want {
+			t.Fatalf("mask %q = %q, want %q", input, got, want)
+		}
+	}
+	encoded, err := json.Marshal(CyberPolicyPublicRanking{Items: []CyberPolicyPublicRank{{Rank: 1, DisplayName: maskCyberPolicyIdentity("alice@example.com"), TriggerCount: 2}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"alice@example.com", "user_id", "email", "balance", "multiplier", "pending_count", "auto_disable_count"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("public DTO leaks %s: %s", forbidden, encoded)
+		}
+	}
+	now := time.Date(2026, 10, 2, 18, 0, 0, 0, time.UTC)
+	window, err := ParseCyberPolicyWindow(CyberPolicyWindowInput{Timezone: "Asia/Shanghai"}, now)
+	if err != nil || window.StartDate != "2026-10-03" || window.EndDate != "2026-10-03" || window.From.Hour() != 0 {
+		t.Fatalf("local today: %+v %v", window, err)
+	}
+	window, err = ParseCyberPolicyWindow(CyberPolicyWindowInput{StartDate: "2026-03-08", EndDate: "2026-03-08", Timezone: "America/New_York"}, now)
+	if err != nil || window.To.Sub(window.From) != 23*time.Hour {
+		t.Fatalf("DST calendar day: %+v %v", window, err)
+	}
+	for _, input := range []CyberPolicyWindowInput{
+		{StartDate: "2026-10-04", EndDate: "2026-10-03", Timezone: "UTC"},
+		{StartDate: "2026-02-30", EndDate: "2026-03-01", Timezone: "UTC"},
+		{StartDate: "2025-01-01", EndDate: "2026-01-02", Timezone: "UTC"},
+		{StartDate: "2026-10-03", Timezone: "UTC"}, {Timezone: "Invalid/Timezone"},
+	} {
+		if _, err := ParseCyberPolicyWindow(input, now); err == nil {
+			t.Fatalf("accepted invalid window %+v", input)
+		}
+	}
+}
 
 type pkBinanceLifecycleClient struct{ entered chan struct{} }
 
