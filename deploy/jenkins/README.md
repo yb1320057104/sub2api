@@ -10,6 +10,8 @@
 
 Jenkins 的 Pipeline from SCM 当前固定从私库已审阅的维护分支 `codex/jenkins-build` 读取根目录 `Jenkinsfile`，对应任务为 `sub2api-package`。本变更合入 `main` 后，再将任务的 SCM 分支切换到已审阅的 `main`。不能将流水线 SCM 分支改成用户选择的 `SOURCE_REF` 或填写的 `COMMIT_SHA`；这些参数只选择被打包的源码。有权修改任务或其可信 SCM 分支的人等同拥有该任务的发布权限。正式发行标签仍必须属于私库 `main` 历史，与流水线暂用维护分支无关。
 
+后续新工作分支按项目约束第 6 节统一为 `codex/vX.Y.Z-pk.N`，同一未发布版本复用一个分支与 PR。Jenkins 的 `SOURCE_REF` 可选择对应的 `origin/codex/vX.Y.Z-pk.N` 来打候选包；选择版本命名的分支仍是候选，只有正式标签才走标签包校验。当前 `codex/jenkins-build` 是既有迁移引用，切换完成前不得为整理分支而删改它；不因一次打包或重试新建分支。
+
 需要 Git、Git Parameter、Pipeline、Credentials Binding 插件及 agent 的 Python 3.11+、Bash、Git、Docker CLI、gzip/tar。Node 24、pnpm 9.15.9 和 `backend/go.mod` 指定的 Go 工具链由隔离编译容器提供。编译容器不挂载凭据、流水线代码、历史产物、测试证据或生产数据，也不挂载 Docker socket。默认每个编译容器最多 2 CPU / 4 GiB，可通过 agent 的 `PK_BUILD_CPUS`、`PK_BUILD_MEMORY` 调整。
 
 任务不运行 `go test`、Vitest 或应用程序。前端执行 `vue-tsc -b` 和 `vite build`，避免 `pnpm run build` 内置的 Vitest；相应翻译回归保留在本地测试套件。

@@ -23,11 +23,15 @@
 
 仅在当前请求包含发布时执行本节。读取私库当前 `Jenkinsfile`、`deploy/jenkins/README.md` 和 `PK_MAINTENANCE.md`；核实推送、PR、标签、打包与正式发布的触发链，确认不会引发未授权的生产部署。自 2026-10-03 按用户要求由 Jenkins 打包，后续本地电脑测试按当次明确授权执行，GitHub Actions 不再执行这两项工作。本次 Jenkins 迁移不运行任何本地构建或测试；未来流程不覆盖当次禁令，也不降低发布验收门禁。Jenkins 仅在 `127.0.0.1:18081` 监听，用户自行配置域名反代；不要开放公网端口。
 
-版本为 `上游版本-pk.修订号`；相同上游版本继续递增修订号，不复用已使用的标签。页面在机器版本后追加 `PK出版`，不能把中文写入机器版本。
+版本为 `上游版本-pk.修订号`；当前版本完成既定合入/发行后，规划同一上游版本的下一次发行时才核对标签并递增修订号；未发布版本内的修复和重新打包不递增，不复用已使用的标签。页面在机器版本后追加 `PK出版`，不能把中文写入机器版本。
+
+新的工作分支以目标未发布版本命名为 `codex/vX.Y.Z-pk.N`，例如 `codex/v0.2.13-pk.1` 只是格式示例。同一目标版本的功能、修复、文档和上游合并复用一个分支及一个 PR，不为反复修复/打包递增版本或添加任务、日期、助手、功能后缀。新建前核对本地/私库远端分支、在途 PR 和私库标签；目标版本未明确时先明确，不先建临时分支。默认只有一个在途版本，确需并行不同版本须用户明确要求；新版本分支从已核对的私库 `main` 创建，`main` 的原审核、测试和发布门禁不变。
+
+本次不删除或改名已有分支。当前 Jenkins 仍使用固定的 `codex/jenkins-build` 完成既有迁移，收尾后按既定流程切到已审阅的 `main`，不能因新命名规则中断此引用。未来分支清理必须先确认已按要求合入并发布、没有未保全的独有提交、无在途 PR/Jenkins/worktree 引用，再按授权执行，不强制删除。
 
 同一构建产出的二进制必须同时进入镜像与更新归档，Release 必须带对应平台的 `sub2api_版本_linux_amd64.tar.gz` 和 `checksums.txt`。只有镜像不能支持网页一键更新。PK Release 为正式发布，不能被 GitHub 标为 prerelease 后又期望 `/releases/latest` 找到它。
 
-Jenkins 选择 `ACTION=package`，在 `SOURCE_REF` 的可搜索下拉列表选择已审阅的新标签 `vX.Y.Z-pk.N`，生成待验收包。该列表使用 Git Parameter `PT_BRANCH_TAG`，默认 `origin/main`；选择 `origin/分支名` 生成候选包。日常将 `COMMIT_SHA` 留空，仅需固定提交时填写 40 位小写 SHA，覆盖下拉选择并生成候选。流水线将分支/标签规范化为完整 ref 后继续执行原有校验，正式标签仍须位于私库 `main` 历史；选择源码不改变可信流水线的 SCM 分支。
+Jenkins 选择 `ACTION=package`，在 `SOURCE_REF` 的可搜索下拉列表选择已审阅的新标签 `vX.Y.Z-pk.N`，生成待验收包。该列表使用 Git Parameter `PT_BRANCH_TAG`，默认 `origin/main`；选择目标版本已有的 `origin/codex/vX.Y.Z-pk.N` 分支生成候选包，本次迁移仍可使用原有 `origin/codex/jenkins-build`。日常将 `COMMIT_SHA` 留空，仅需固定提交时填写 40 位小写 SHA，覆盖下拉选择并生成候选。流水线将分支/标签规范化为完整 ref 后继续执行原有校验，正式标签仍须位于私库 `main` 历史；选择源码不改变可信流水线的 SCM 分支。
 
 后续获准执行本地验收时，下载该包并在本机以 `scripts/test-local.ps1 -ArtifactDirectory ...` 或 `python3 scripts/test-local.py --artifact-dir ...` 执行源码与镜像持久化完整验收。缺 WSL/Docker/工具或套件失败时明确报告，不把打包成功写成测试通过。
 
