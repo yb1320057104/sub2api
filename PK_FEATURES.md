@@ -5,6 +5,7 @@
 ## 基线与阅读方式
 
 - 首次二开上游基线：`a60a29549f488a854966aaec9541abbe006cac22`（0.2.10）。首次二开保存：`6655dd8ca`，恢复标签 `pk-baseline-20260930`。
+- 2026-10-02 合并上游 `v0.2.12`（commit `5106065716e494204fc0e8db16f68f6e9d576be0`，tag 对象 `cbe9966432317e6757b47f598a103d2132ec27db`），合并前私库为 `162a58972bee08078a43eefa761da1b245f667fa`。逐项核对见 [0.2.12 合并记录](docs/PK_UPSTREAM_0.2.12_REVIEW.md)，正式发布目标为 `v0.2.12-pk.1`；发布与线上更新分别记录。
 - 2026-10-02 合并上游 `v0.2.11`（commit `96f4c115c9749078f90cbf210a01d39baf3f53b6`），合并前私库为 `32f068dcbdc75063ff7f6488aef6c85912d7bf3f`。逐项核对及本次验证见 [合并记录](docs/PK_UPSTREAM_0.2.11_REVIEW.md)；合并源码不代表已发布或更新线上。
 - 本次清点覆盖从该上游基线到私库 `23e5fe663338c86cd0cebbf2f688c8a75dd8c152` 的全部二开提交；应用发行参照 `v0.2.10-pk.7`，另登记本次新增的项目约束机制。此处是代码核对基线，不代表线上当前版本。
 - 以下 PK-001 至 PK-025 均为有效保护项。文件路径用于定位，不是完整修改白名单；所有新调用入口、迁移和旁路都要检查。
@@ -172,6 +173,7 @@
 - SQL select/scan、单条插入、批量、best-effort、查询和 DTO 均保留字段。插入追加在既有参数末尾，不打乱账务参数位置。
 - 迁移 `backend/migrations/241_usage_log_first_response_ms.sql` 增加可空列，保留旧显式 SQL 兼容。当前由 SQL repository 管理该扩展字段；若以后转入 Ent，必须同步生成描述符并验证索引，不能直接往旧 Ent schema 中插字段。
 - 入口：`backend/internal/service/{openai_early_sse_heartbeat,openai_early_sse_space,usage_log,openai_gateway_usage,gateway_usage_billing}.go`、handler usage context、`backend/internal/repository/usage_log_repo_{insert,query}.go`。
+- 2026-10-02 上游新增 TypeSafe `/v1/systemone` 为非流式独立平台，不注入 SSE 或虚构首包值；其异步用量任务入队前必须快照渠道用量字段，闭包不得再访问原 Gin context。沿用 detached usage context、预留引用和原上游计时，扩展该入口已有回归并纳入候选及正式发布 race。
 - 验证：`TestPKFirstResponseSurvivesDetachedUsageContext`、`TestPKUsageFirstResponseInsertPaths`、integration `TestPKUsageFirstResponsePersistence`，以及 scan/insert shape 现有用例。
 
 ## PK-010
@@ -275,6 +277,7 @@
 - 保留云端前端/后端构建、更新与账务/首字回归、部署脚本及持久化启动检查。feature 分支候选制品与正式 Release 分开，发布流程不自动部署生产。
 - 2026-10-01 币安充值接入：私库 `codex/` 分支和原 `feat/` 分支均生成候选制品；正式发布前增加币安协议、余额事务与并发入账检查。前端 Axios 升至 1.20.0，修复旧 1.18.1 的七项 high 安全告警，保持原有 API 客户端与刷新令牌行为，不扩大审计豁免。
 - PK-025 接入时，CI 和正式发布增加独立网关检查，验证认证、香港地域、目标白名单、每次探测与固定节点、错误及超时；正式发布必须等待此检查通过。网关脚本随私库源码管理，服务器凭据单独保存。
+- 2026-10-02 上游同步分支 `sync/` 同样运行私库候选构建；候选版本从 `backend/cmd/server/VERSION` 读取并追加 `-pk.candidate`，仍不进入正式更新列表。前端关键回归增加上游充值优惠、金额组件、账号优先级、平台/配额及仪表盘测试，保留原有币安、首字与使用记录覆盖；TypeSafe 异步用量上下文回归加入候选和正式发布的 race 检查。
 - 原 `install.sh`、`docker-deploy.sh` 的不兼容旧安装入口保持停用。全新部署用私版完整 Compose；已有环境的 `docker-compose.pk.yml` 是 overlay，不能替换整套生产配置。
 - 被保留的脚本 API helper 仅接受本私库 Release 元数据端点，凭据经 stdin 注入，不接受任意 URL/重定向参数；source 后直接调用旧 downloader 也不能绕过停用。Apple restart 必须在停服务前验证显式私有 ARM 镜像配置，不能将 `latest` 当作已支持 ARM。
 - 管理员更新/回退/重启保留原认证、审计和系统操作锁；UI 在线升级仅面向正式 release build，候选不能冒充正式升级包。
@@ -344,6 +347,7 @@
 - 币安流水 ID 按真实收款 UID 去重；订单、已使用 balance 充值记录、`users.balance`、`users.total_recharged` 与到账流水同一数据库事务提交，使用同一个订单快照系统金额。实收 USDT 仍按原五位整数单位匹配、留存，币安原始账单不乘倍率。并发、重试和进程重启不能重复加款；提交后失效用户鉴权及余额缓存。新充值须在原用户余额流水中可查。
 - 自动轮询覆盖最近24小时的到账流水，包括到期订单；币安交易时间必须在原订单有效期内，接口延迟发现的有效付款仍可入账。超时付款及无法准确匹配的情况保留供管理员核对，不盲目认领。重新查单按订单创建时间至到期后24小时的窗口读取真实历史流水，受币安可查询历史范围限制。
 - 新增轮询纳入 PK-019 启动门、停止等待及多实例查询互斥；普通支付、缓存转换、模型计费与首字行为不改变。
+- 2026-10-02 上游普通充值赠送/折扣仅使用 `payment_orders` 和普通支付报价，币安继续使用自己的倍率快照与独立事务，不叠加该赠送或折扣。新增上游两份 `241_*` 迁移与首包迁移文件名不同；迁移器按完整文件名和校验和跟踪，保留已发行迁移名称及内容。
 - 入口：`backend/internal/pkg/binancepay/`、`backend/internal/service/binance_recharge*.go`、`backend/internal/handler/binance_recharge*.go`、`backend/internal/server/routes/binance_recharge.go`、`backend/migrations/242_binance_recharge.sql` / `243_binance_recharge_multiplier.sql`，以及前端币安充值 API/类型、用户与管理页面和导航。
 - 验证：在已有支付协议测试、用户 repository 集成测试和支付前端测试中扩展 `TestPKBinance*` 场景；CI 与正式发布覆盖五位精度、倍率与8位舍入、配置缺省/更新保留、订单快照、旧数据迁移、签名/账单过滤、并发重复到账、多倍率统计、历史金额不复用、过期回查与权限。前端原有 `PaymentView.spec.ts` / `payment.spec.ts` 检查配置保存、兑换比例、订单金额与统计口径。仅在 GitHub Actions 执行，本地不运行构建或测试。模拟账单与真实 PostgreSQL 验证不等同于真实币安转账验收。
 - 倍率回归入口：原有 `backend/internal/service/wire_test.go` 的 `TestPKBinanceCreditMultiplierValidation`、`backend/internal/repository/user_repo_integration_test.go` 的 `TestPKBinanceMultiplierCreditsFullUSDTWithEightDecimalRounding` / `SnapshotSurvivesAccountChangesAndConcurrentChecks` / `RejectsOldSettlementAtomically`（后三项同 `TestPKBinanceMultiplier` 前缀），以及原有 `migrations_schema_integration_test.go` 的 `TestPKBinanceMultiplierMigrationPreservesLegacyDataAndDefaults`。保留既有重复入账、状态/权限和实时账单只读断言。

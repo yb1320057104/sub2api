@@ -360,7 +360,7 @@ jobs:
   pk-candidate:
     # Private feature branches provide an installable candidate for isolated
     # acceptance checks. This job never creates a Release or updates a server.
-    if: github.repository == 'pengkang0322/sub2api' && github.event.repository.private == true && (startsWith(github.ref, 'refs/heads/feat/') || startsWith(github.ref, 'refs/heads/codex/'))
+    if: github.repository == 'pengkang0322/sub2api' && github.event.repository.private == true && (startsWith(github.ref, 'refs/heads/feat/') || startsWith(github.ref, 'refs/heads/codex/') || startsWith(github.ref, 'refs/heads/sync/'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -384,7 +384,7 @@ jobs:
           cache-dependency-path: backend/go.sum
       - name: Check heartbeat concurrency and protected billing behavior
         working-directory: backend
-        run: go test -race -tags unit ./internal/service ./internal/handler ./internal/handler/dto ./internal/handler/admin ./internal/repository ./internal/server/middleware -run 'Test(PKEarly|PKFirstResponse|PKUsage|PKCacheConversion|PKChannelMonitor|StreamEarlyHeartbeat|UpdateSettingsEarlyHeartbeat|ServerTiming|Inflight|EstimateInflight|ReserveInflight|WrapUsageRecord|SyncBalanceCacheAfterDeduction|RequestMaxOutputTokens|WebSearch_RejectsWhenInflight)' -count=1
+        run: go test -race -tags unit ./internal/service ./internal/handler ./internal/handler/dto ./internal/handler/admin ./internal/repository ./internal/server/middleware -run 'Test(PKEarly|PKFirstResponse|PKUsage|PKSystemOne|PKCacheConversion|PKChannelMonitor|StreamEarlyHeartbeat|UpdateSettingsEarlyHeartbeat|ServerTiming|Inflight|EstimateInflight|ReserveInflight|WrapUsageRecord|SyncBalanceCacheAfterDeduction|RequestMaxOutputTokens|WebSearch_RejectsWhenInflight)' -count=1
       - name: Check Binance signed receipt handling and lifecycle
         working-directory: backend
         run: go test -race -tags unit ./internal/config ./internal/payment ./internal/service ./internal/handler -run 'TestPKBinance' -count=1
@@ -398,7 +398,7 @@ jobs:
         run: |
           mkdir -p ../candidate
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags embed -trimpath \
-            -ldflags="-s -w -X main.Version=0.2.11-pk.candidate -X main.Commit=$GITHUB_SHA -X main.BuildType=candidate" \
+            -ldflags="-s -w -X main.Version=$(cat cmd/server/VERSION)-pk.candidate -X main.Commit=$GITHUB_SHA -X main.BuildType=candidate" \
             -o ../candidate/sub2api ./cmd/server
           cd ../candidate
           sha256sum sub2api > checksums.txt
