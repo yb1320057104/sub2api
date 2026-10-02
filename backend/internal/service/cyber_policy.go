@@ -198,7 +198,7 @@ func (s *CyberPolicyService) PublicRanking(ctx context.Context, input CyberPolic
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var item CyberPolicyPublicRank
 		if err = rows.Scan(&item.Rank, &item.DisplayName, &item.TriggerCount); err != nil {
@@ -260,7 +260,7 @@ func (s *CyberPolicyService) Ranking(ctx context.Context, input CyberPolicyWindo
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var item CyberPolicyRank
 		if err := rows.Scan(&item.Rank, &item.UserID, &item.Email, &item.Username, &item.Balance, &item.TriggerCount, &item.DeductedCount, &item.PendingCount, &item.PendingAmount, &item.Status, &item.AutoDisableCount); err != nil {
