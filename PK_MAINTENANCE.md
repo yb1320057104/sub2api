@@ -32,7 +32,7 @@ PostgreSQL/Redis 由原有 Testcontainers 测试自动建立隔离容器：常�
 后续已获准执行相应测试与发布操作时，按以下顺序进行；未获准或未执行的验收不能跳过，也不能将本次迁移称为正式发布全链路通过：
 
 1. 完成二开清单核对、提交源码、本地源码测试，再按授权合入私库 `main`；选一个从未使用的 PK 标签并推送该标签。
-2. 在 Jenkins 选择 `ACTION=package`、`SOURCE_REF=refs/tags/该标签`。分支也可打候选，但不进入网页更新列表。标签包的 `BuildType=release` 仅表示它可接受完整验收，此时尚未发布。
+2. 在 Jenkins 选择 `ACTION=package`，从 `SOURCE_REF` 的可搜索下拉列表选择刚才的 `vX.Y.Z-pk.N` 标签；日常候选可选 `origin/分支名`，默认 `origin/main`。`COMMIT_SHA` 通常留空，仅需固定提交时填写 40 位小写 SHA，它会覆盖下拉选择并按提交打候选。流水线把分支/标签规范化为完整 ref 后沿用现有校验。分支和提交候选不进入网页更新列表；符合私库 `main` 历史要求的标签包具有 `BuildType=release`，仅表示可接受完整验收，此时尚未发布。
 3. 下载该 Jenkins 包，在本机运行完整 `--artifact-dir` 验收，确认 `local-validation.json` 的十项均通过且 `publish_eligible=true`。
 4. 将原始报告按 manifest 中的 `package_id` 命名为 `/srv/jenkins-evidence/sub2api/{package_id}.json`，经管理通道上传到 Jenkins 服务器。该目录由管理员维护，构建容器不挂载；同时保留原始日志。报告不是可自行批准的空表，必须来源于实际本机执行。
 5. Jenkins 选择 `ACTION=publish`、对应 `PACKAGE_ID`。任务检查本地报告、同一提交和同一归档哈希，再发布已验证的二进制与镜像，不重新编译。缺少独立发布凭据或任何检查未通过即停止，不降级为 GitHub Actions。

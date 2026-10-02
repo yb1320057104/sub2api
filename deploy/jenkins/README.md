@@ -8,9 +8,9 @@
 
 控制器不执行构建，任务固定运行在 `pk-builder`。构建 agent 使用专用 Docker daemon，`DOCKER_HOST` 必须是独立 daemon 的 TCP 地址；不挂载生产主机 Docker socket。Agent 与专用 daemon 必须以相同绝对路径共享 `/home/jenkins/agent`，因为编译容器只挂载任务的 `source` 子目录。
 
-Jenkins 的 Pipeline from SCM 当前固定从私库已审阅的维护分支 `codex/jenkins-build` 读取根目录 `Jenkinsfile`，对应任务为 `sub2api-package`。本变更合入 `main` 后，再将任务的 SCM 分支切换到已审阅的 `main`。不能将流水线 SCM 分支改成用户输入的 `SOURCE_REF`；该参数只选择被打包的源码。有权修改任务或其可信 SCM 分支的人等同拥有该任务的发布权限。正式发行标签仍必须属于私库 `main` 历史，与流水线暂用维护分支无关。
+Jenkins 的 Pipeline from SCM 当前固定从私库已审阅的维护分支 `codex/jenkins-build` 读取根目录 `Jenkinsfile`，对应任务为 `sub2api-package`。本变更合入 `main` 后，再将任务的 SCM 分支切换到已审阅的 `main`。不能将流水线 SCM 分支改成用户选择的 `SOURCE_REF` 或填写的 `COMMIT_SHA`；这些参数只选择被打包的源码。有权修改任务或其可信 SCM 分支的人等同拥有该任务的发布权限。正式发行标签仍必须属于私库 `main` 历史，与流水线暂用维护分支无关。
 
-需要 Git、Pipeline、Credentials Binding 插件及 agent 的 Python 3.11+、Bash、Git、Docker CLI、gzip/tar。Node 24、pnpm 9.15.9 和 `backend/go.mod` 指定的 Go 工具链由隔离编译容器提供。编译容器不挂载凭据、流水线代码、历史产物、测试证据或生产数据，也不挂载 Docker socket。默认每个编译容器最多 2 CPU / 4 GiB，可通过 agent 的 `PK_BUILD_CPUS`、`PK_BUILD_MEMORY` 调整。
+需要 Git、Git Parameter、Pipeline、Credentials Binding 插件及 agent 的 Python 3.11+、Bash、Git、Docker CLI、gzip/tar。Node 24、pnpm 9.15.9 和 `backend/go.mod` 指定的 Go 工具链由隔离编译容器提供。编译容器不挂载凭据、流水线代码、历史产物、测试证据或生产数据，也不挂载 Docker socket。默认每个编译容器最多 2 CPU / 4 GiB，可通过 agent 的 `PK_BUILD_CPUS`、`PK_BUILD_MEMORY` 调整。
 
 任务不运行 `go test`、Vitest 或应用程序。前端执行 `vue-tsc -b` 和 `vite build`，避免 `pnpm run build` 内置的 Vitest；相应翻译回归保留在本地测试套件。
 
@@ -99,7 +99,7 @@ docker compose -f compose.yaml ps
 
 ## 打包、验证和发布
 
-1. 选择 `ACTION=package`。`SOURCE_REF` 填完整 `refs/heads/...`、40 位提交 SHA 或 `refs/tags/vX.Y.Z-pk.N`。分支/SHA生成 `candidate`；正式 PK 标签须位于私库 `main` 历史，生成 `BuildType=release` 的待验证包。标签打包本身不发布。
+1. 选择 `ACTION=package`，在 `SOURCE_REF` 的可搜索下拉列表中选择分支或标签。该列表使用 Git Parameter 的 `PT_BRANCH_TAG`，默认 `origin/main`；分支显示为 `origin/分支名`，正式 PK 标签显示为 `vX.Y.Z-pk.N`，无需手填完整 ref。日常将 `COMMIT_SHA` 留空；仅需构建固定提交时，填写 40 位小写提交 SHA，它会覆盖下拉选择并生成 `candidate`。分支也生成 `candidate`；正式 PK 标签须位于私库 `main` 历史，生成 `BuildType=release` 的待验证包。流水线将分支/标签选择规范化为 `refs/heads/...` / `refs/tags/...` 后交给现有校验，标签打包本身不发布。
 2. Jenkins 显示 `PACKAGE_ID` 并归档 `output/`。下载此目录的文件：`manifest.json`、二进制 `.tar.gz`、Docker `.docker.tar.gz`、`checksums.txt`。Docker 镜像和更新归档来自同一次 Go 编译。
 3. 后续获准执行本地验证时，在本地电脑对同一 commit/tree 运行 `scripts/test-local.ps1` 或 `scripts/test-local.py`，将上述目录作为 `--artifact-dir`。本地执行源码完整套件和原镜像持久化验收；测试后清理临时文件和容器。
 4. 将通过的证据 JSON 上传为 `/srv/jenkins-evidence/sub2api/{package_id}.json`。JSON 须使用 `schema_version=1`、`tests_profile=pk-local-v1`、完整 commit/tree，并包含 `backend-unit`、`backend-integration`、`backend-race`、`backend-lint`、`frontend`、`shell`、`binance-proxy`、`release-helpers`、`security`、`artifact-runtime` 全部通过的记录。`artifact` 的 `package_id`、`binary_sha256`、`image_archive_sha256` 必须匹配。

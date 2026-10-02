@@ -27,7 +27,9 @@
 
 同一构建产出的二进制必须同时进入镜像与更新归档，Release 必须带对应平台的 `sub2api_版本_linux_amd64.tar.gz` 和 `checksums.txt`。只有镜像不能支持网页一键更新。PK Release 为正式发布，不能被 GitHub 标为 prerelease 后又期望 `/releases/latest` 找到它。
 
-Jenkins 以 `ACTION=package`、`SOURCE_REF=refs/tags/已审阅的新标签` 生成待验收包；分支生成候选包。后续获准执行本地验收时，下载该包并在本机以 `scripts/test-local.ps1 -ArtifactDirectory ...` 或 `python3 scripts/test-local.py --artifact-dir ...` 执行源码与镜像持久化完整验收。缺 WSL/Docker/工具或套件失败时明确报告，不把打包成功写成测试通过。
+Jenkins 选择 `ACTION=package`，在 `SOURCE_REF` 的可搜索下拉列表选择已审阅的新标签 `vX.Y.Z-pk.N`，生成待验收包。该列表使用 Git Parameter `PT_BRANCH_TAG`，默认 `origin/main`；选择 `origin/分支名` 生成候选包。日常将 `COMMIT_SHA` 留空，仅需固定提交时填写 40 位小写 SHA，覆盖下拉选择并生成候选。流水线将分支/标签规范化为完整 ref 后继续执行原有校验，正式标签仍须位于私库 `main` 历史；选择源码不改变可信流水线的 SCM 分支。
+
+后续获准执行本地验收时，下载该包并在本机以 `scripts/test-local.ps1 -ArtifactDirectory ...` 或 `python3 scripts/test-local.py --artifact-dir ...` 执行源码与镜像持久化完整验收。缺 WSL/Docker/工具或套件失败时明确报告，不把打包成功写成测试通过。
 
 本地报告必须绑定相同 commit/tree、package_id、二进制和镜像归档 SHA256，十个套件全部通过；按 `{package_id}.json` 上传到 `/srv/jenkins-evidence/sub2api/`。Jenkins `ACTION=publish`、`PACKAGE_ID=...` 校验报告后复用原制品发布，不重新构建。只有源码测试、未跑 artifact-runtime 或缺发布凭据时不可正式发布。候选包不进入正式 latest 更新列表；发布不自动更新生产。
 
