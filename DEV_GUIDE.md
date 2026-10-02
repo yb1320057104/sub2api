@@ -43,6 +43,14 @@ npm install -g pnpm
 
 ## 三、CI/CD 流水线
 
+### 版本分支规则
+
+`main` 是正式分支，新工作分支统一为 `codex/vX.Y.Z-pk.N`。例如 `codex/v0.2.13-pk.1` 仅说明格式，不能直接当作下一版本。新建前核对本地分支、私库远端分支、在途 PR 和正式标签；目标版本未明确时先明确，不随意建立临时分支。已有目标版本分支和 PR 必须复用；确需新建时从已核对的私库 `main` 创建。
+
+同一未发布版本的功能、修复、文档、依赖调整、上游合并和并行助手工作共用一个分支及一个 PR，不加任务、日期、助手或功能后缀。默认只有一个在途版本，只有用户明确要求并行不同版本时例外。所有二开审查、本地测试授权、合入及发布门禁保持不变。
+
+现有分支本次不删改。Jenkins 当前固定引用 `codex/jenkins-build`，应继续完成既有迁移，收尾后按既定流程换到已审阅的 `main`，不能提前删除或改名。未来清理须确认已完成该变更既定的合入/发行流程、没有未保全的独有提交、无在途 PR/Jenkins/worktree 引用，再按授权操作，不强制删除。完整规则见 [项目约束](PROJECT_CONSTRAINTS.md) 第 6 节及 [维护流程](PK_MAINTENANCE.md)。
+
 ### GitHub Actions Workflows
 
 | Workflow | 触发条件 | 检查内容 |
@@ -263,20 +271,18 @@ psql -U sub2api -h 127.0.0.1 -d sub2api -f migration.sql
 
 ### Git 操作
 
+先确认目标版本和已有工作；以下只读核对完成后，按同一版本复用分支及 PR，不直接把上游合入 `main`：
+
 ```bash
-# 同步上游
-git fetch upstream
-git checkout main
-git merge upstream/main
-git push origin main
-
-# 创建功能分支
-git checkout -b feature/xxx
-
-# Rebase 到最新 main
-git fetch upstream
-git rebase upstream/main
+git fetch origin --no-tags
+git branch --list
+git branch --remotes
+git ls-remote --tags origin
+gh pr list --repo pengkang0322/sub2api --state open
+git fetch upstream --no-tags
 ```
+
+目标版本分支存在时直接检出；只有远端存在时跟踪它；两者都不存在且版本与单一在途规则已确认时，才从已核对的 `origin/main` 新建 `codex/vX.Y.Z-pk.N`。上游标签/分支先固定 commit，再合入该版本分支并更新同一 PR。具体步骤见 [维护流程](PK_MAINTENANCE.md#每次合并原作者的版本或分支)，不得通过改名分支、重建 PR 或直接推送正式分支绕过审核。
 
 ### 前端操作
 
