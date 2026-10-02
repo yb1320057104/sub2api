@@ -2,11 +2,11 @@
 
 新服务器从零安装请先看 [PK版中文部署指南](deploy/PK_DEPLOYMENT_CN.md)。本文用于已有部署维护、合并上游、发布、迁移和恢复。
 
-自 2026-10-03 用户明确调整后，**Jenkins 负责打包，本地电脑负责测试；不再使用 GitHub Actions 打包或测试。** GitHub 私库、私有 Release 和 GHCR 继续保存源码与发行物。本文和历史报告中的旧云端通过记录只证明当时提交，不代表新流程或新提交已经验收。
+2026-10-03 用户指定的后续流程为 **Jenkins 负责打包、本地电脑负责测试，不再使用 GitHub Actions 打包或测试。** 本地测试按当次任务明确授权执行；**本次 Jenkins 迁移不运行任何本地构建或测试**，未来流程不覆盖本次禁令。 GitHub 私库、私有 Release 和 GHCR 继续保存源码与发行物。本文和历史报告中的旧云端通过记录只证明当时提交，不代表新流程或新提交已经验收。
 
 ## 本地测试与 Jenkins 打包
 
-Jenkins 的安装、凭据、任务参数和制品目录见 [Jenkins 运维说明](deploy/jenkins/README.md)。发行构建只在 Jenkins 执行；本地测试会编译 Go 测试程序并创建可清理的测试夹具，不运行应用发行构建。
+Jenkins 的安装、凭据、任务参数和制品目录见 [Jenkins 运维说明](deploy/jenkins/README.md)。发行构建只在 Jenkins 执行。后续获准执行本地测试时，才会编译 Go 测试程序并创建可清理的测试夹具；本次不执行这些操作，也不运行应用发行构建。
 
 按用户要求，Jenkins 只监听服务器 `127.0.0.1:18081`，不开放公网端口，由用户配置域名反向代理。原网页一键更新和回退继续读取本私库正式 Release；迁移不会把网页更新改成访问 Jenkins，也不会取消原授权下载和 SHA256 校验。
 
@@ -14,7 +14,7 @@ Jenkins 的安装、凭据、任务参数和制品目录见 [Jenkins 运维说�
 
 PostgreSQL/Redis 由原有 Testcontainers 测试自动建立隔离容器：常规 PostgreSQL 为 `postgres:18.1-alpine3.23`、Redis 为 `redis:8.4-alpine`，币安与自动禁用 race 专项另跑 `postgres:15-alpine`。不连接生产数据库，不需要复制生产 `.env` 或密钥。原有可选真实模型、TLS 抓包与插件测试并未因此变为全覆盖；默认仍不执行这些额外验收，报告列出 Go 跳过项，受保护 `TestPK*` 被跳过会失败。
 
-在干净且已提交的私库 checkout 中运行：
+以下命令供后续获准执行本地测试的任务使用；本次迁移不运行。执行时须使用干净且已提交的私库 checkout：
 
 ```powershell
 # Windows：由本机 WSL 执行；可用 -Distribution 选择发行版。
@@ -29,7 +29,7 @@ PostgreSQL/Redis 由原有 Testcontainers 测试自动建立隔离容器：常�
 
 只执行源码测试时，`artifact-runtime` 明确记为 `skipped`，`publish_eligible=false`，不能正式发布。带 `--artifact-dir` 时，先验证 Jenkins manifest、提交、Git tree、二进制/镜像归档 SHA256 和镜像 ID，再用该镜像检查非 root 启动、更新保留、backup 恢复与种子切换。缺依赖、执行失败、受保护测试跳过、源码中途变化均保留失败证据；不能手改 JSON 为通过。
 
-正式发布顺序：
+后续已获准执行相应测试与发布操作时，按以下顺序进行；未获准或未执行的验收不能跳过，也不能将本次迁移称为正式发布全链路通过：
 
 1. 完成二开清单核对、提交源码、本地源码测试，再按授权合入私库 `main`；选一个从未使用的 PK 标签并推送该标签。
 2. 在 Jenkins 选择 `ACTION=package`、`SOURCE_REF=refs/tags/该标签`。分支也可打候选，但不进入网页更新列表。标签包的 `BuildType=release` 仅表示它可接受完整验收，此时尚未发布。
@@ -245,4 +245,4 @@ docker compose -f /opt/sub2api-pk/docker-compose.json up -d --force-recreate --n
 
 先明确设置并核对 `STOP_GRACE_SECONDS`；更长的宽限期不代替排空证据。清除的仅是程序种子标记，下次启动会从所选镜像重新安装程序；应用数据卷、数据库和 Redis 保留。即使所选镜像与当前 Compose 中的镜像相同，这些步骤也会撤销网页更新并恢复镜像内的程序。
 
-现行用户要求：Jenkins 打包、本地电脑测试，不再使用 GitHub Actions 打包或测试；不在本地编译发行程序。新生成的临时测试文件与夹具用完删除，既有源码测试保留。历史报告保持原执行环境和结果，不改写为新流程验收。
+现行用户要求：后续采用 Jenkins 打包、本地电脑测试，不再使用 GitHub Actions 打包或测试；具体测试按当次明确授权执行。本次 Jenkins 迁移不运行任何本地构建或测试，未来也不在本地编译发行程序。新生成的临时测试文件与夹具用完删除，既有源码测试保留。历史报告保持原执行环境和结果，不改写为新流程验收。

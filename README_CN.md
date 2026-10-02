@@ -258,13 +258,14 @@ fast_mode = true
 
 ### 源码开发与打包
 
-PK 候选和正式发行物由 Jenkins 构建，测试在本地电脑运行，不再由 GitHub Actions 打包或测试。GitHub 私库、Release 与 GHCR 继续保存源码和发行物，原网页一键更新及版本回退保持可用。
+PK 候选和正式发行物由 Jenkins 构建；后续本地测试按当次任务明确授权执行，本次 Jenkins 迁移不运行任何本地构建或测试。不再由 GitHub Actions 打包或测试。GitHub 私库、Release 与 GHCR 继续保存源码和发行物，原网页一键更新及版本回退保持可用。
 
-克隆私库后，先按 [维护流程](PK_MAINTENANCE.md) 准备本机 Linux/WSL 的测试依赖，再按 [Jenkins 说明](deploy/jenkins/README.md) 打包；不在本机执行发行构建。
+后续获准执行本地测试时，克隆私库后先按 [维护流程](PK_MAINTENANCE.md) 准备本机 Linux/WSL 的测试依赖，再按 [Jenkins 说明](deploy/jenkins/README.md) 打包；不在本机执行发行构建。
 
 ```bash
 git clone https://github.com/pengkang0322/sub2api.git
 cd sub2api
+# 仅供后续明确授权本地测试的任务使用，本次迁移不运行。
 # 需要干净、已提交的工作区及维护文档所列本地依赖。
 python3 scripts/test-local.py
 # 下载 Jenkins 制品后，在本机验证同一制品。

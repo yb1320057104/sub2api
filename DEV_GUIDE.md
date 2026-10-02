@@ -1,6 +1,7 @@
 # sub2api 项目开发指南
 
 > 本文档记录项目环境配置、常见坑点和注意事项，供 Claude Code 和团队成员参考。
+> 本次 Jenkins 迁移不运行任何本地构建或测试。以下本地环境准备、测试命令及调试示例面向后续任务，必须符合当次明确授权；未来流程不覆盖当次禁令。
 
 ## 一、项目基本信息
 
@@ -45,12 +46,12 @@ npm install -g pnpm@9.15.9
 
 ### Jenkins 打包与本地验证
 
-GitHub Actions 不再执行本项目的打包或测试。当前入口为 [Jenkins 流水线](Jenkinsfile)、[配置说明](deploy/jenkins/README.md) 和 [维护流程](PK_MAINTENANCE.md)。
+GitHub Actions 不再执行本项目的打包或测试。后续本地验证按当次明确授权执行；本次迁移仅保留入口，不运行本地构建或测试。当前入口为 [Jenkins 流水线](Jenkinsfile)、[配置说明](deploy/jenkins/README.md) 和 [维护流程](PK_MAINTENANCE.md)。
 
 | 入口 | 执行位置 | 内容 |
 |----------|----------|----------|
 | `ACTION=package` | Jenkins 隔离构建节点 | 编译前后端，生成同一二进制的更新包与 Linux amd64 镜像，不运行测试、不部署生产 |
-| `scripts/test-local.py` / `.ps1` | 本地电脑 Linux/WSL | 源码回归、race、集成、lint、安全检查；下载制品后验证同一镜像的启动与持久化，输出提交及制品绑定的证据 |
+| `scripts/test-local.py` / `.ps1` | 后续获准时在本地电脑 Linux/WSL | 源码回归、race、集成、lint、安全检查；下载制品后验证同一镜像的启动与持久化，输出提交及制品绑定的证据 |
 | `ACTION=publish` + `PACKAGE_ID` | Jenkins | 核验本地完整证据、私库标签和 main 祖先关系，发布同一制品到私有正式 Release 与 GHCR，不重新编译 |
 
 ### 工具链与发布要求
@@ -59,7 +60,7 @@ GitHub Actions 不再执行本项目的打包或测试。当前入口为 [Jenkin
 - Jenkins 使用 Node 24、pnpm 9.15.9 和 `pnpm install --frozen-lockfile`，必须同步提交 `pnpm-lock.yaml`；本地依赖和安全检查要求见维护文档。
 - 正式发布先对已审阅的 `refs/tags/vX.Y.Z-pk.N` 打包，再下载该制品到本地验证。证据上传为 `/srv/jenkins-evidence/sub2api/{package_id}.json` 后才可执行 `publish`；不得用源码测试通过代替对应制品的运行时验收。
 
-### 本地测试命令
+### 后续获准时使用的本地测试命令
 
 ```bash
 # 在干净、已提交的仓库根目录执行完整本地验证
@@ -69,7 +70,7 @@ python3 scripts/test-local.py
 python3 scripts/test-local.py --artifact-dir /path/to/jenkins-package
 ```
 
-Windows 使用 `scripts/test-local.ps1`，由其调用本机 WSL Linux。局部测试可用于调试，但不能替代完整发布证据；测试所生成的临时文件用完删除，仓库原有回归测试保留。本机不执行发行构建。
+后续获准时，Windows 使用 `scripts/test-local.ps1` 调用本机 WSL Linux。获准的局部测试可用于调试，但不能替代完整发布证据；测试所生成的临时文件用完删除，仓库原有回归测试保留。本机不执行发行构建。
 
 ## 四、常见坑点 & 解决方案
 
@@ -233,7 +234,7 @@ git add ent/       # 生成的文件也要提交
 
 ### 坑 11：PR 提交前检查清单
 
-提交 PR 前务必本地验证：
+后续明确获准执行本地测试时，提交 PR 前完成以下验证；当次禁止或未执行时如实记录，不勾选通过，也不因此绕过合入/发布门禁：
 
 - [ ] `go test -tags=unit ./...` 通过
 - [ ] `go test -tags=integration ./...` 通过

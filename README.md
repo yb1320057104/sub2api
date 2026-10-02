@@ -232,14 +232,15 @@ Current PK releases support `linux/amd64`. Deployment requires read access to th
 
 ### Development and Packaging
 
-PK candidate and release artifacts are built in Jenkins. Tests run on the local computer; GitHub Actions no longer builds or tests this fork. The private GitHub repository, Releases, and GHCR remain the source and artifact stores, so the existing web updater and rollback flow continue to work.
+PK candidate and release artifacts are built in Jenkins. Future local testing must follow the explicit authorization for the task at hand; no local builds or tests are run during this Jenkins migration. GitHub Actions no longer builds or tests this fork. The private GitHub repository, Releases, and GHCR remain the source and artifact stores, so the existing web updater and rollback flow continue to work.
 
-Clone the private repository, then follow [the current maintenance workflow](PK_MAINTENANCE.md) for local Linux/WSL dependencies and [Jenkins setup](deploy/jenkins/README.md) for packaging. Do not run release builds on the local computer.
+For future tasks that authorize local testing, clone the private repository, then follow [the current maintenance workflow](PK_MAINTENANCE.md) for local Linux/WSL dependencies and [Jenkins setup](deploy/jenkins/README.md) for packaging. Do not run release builds on the local computer.
 
 ```bash
 git clone https://github.com/pengkang0322/sub2api.git
 cd sub2api
-# Run from a clean, committed checkout with the documented local dependencies.
+# Only for a future task that authorizes local tests; not for this migration.
+# Use a clean, committed checkout with the documented local dependencies.
 python3 scripts/test-local.py
 # After downloading the Jenkins package, validate that exact artifact locally.
 python3 scripts/test-local.py --artifact-dir /path/to/jenkins-package

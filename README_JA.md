@@ -233,14 +233,15 @@ Nginx はデフォルトでアンダースコアを含むヘッダー（例: `se
 
 ### 開発とパッケージ作成
 
-PK の候補版と正式リリースの成果物は Jenkins でビルドし、テストはローカル PC で実行します。GitHub Actions によるビルドとテストは使用しません。プライベート GitHub リポジトリ、Releases、GHCR には引き続きソースと成果物を保存するため、既存の Web 更新とバージョンのロールバックを利用できます。
+PK の候補版と正式リリースの成果物は Jenkins でビルドします。今後のローカルテストは各タスクで明示的に許可された範囲で実行し、今回の Jenkins 移行ではローカルのビルドとテストを一切実行しません。GitHub Actions によるビルドとテストは使用しません。プライベート GitHub リポジトリ、Releases、GHCR には引き続きソースと成果物を保存するため、既存の Web 更新とバージョンのロールバックを利用できます。
 
-プライベートリポジトリをクローンした後、[保守手順](PK_MAINTENANCE.md) に従ってローカル Linux/WSL のテスト環境を準備し、[Jenkins の説明](deploy/jenkins/README.md) に従ってパッケージを作成してください。ローカル PC ではリリース用ビルドを実行しません。
+今後ローカルテストが許可されたタスクでは、プライベートリポジトリをクローンした後、[保守手順](PK_MAINTENANCE.md) に従ってローカル Linux/WSL のテスト環境を準備し、[Jenkins の説明](deploy/jenkins/README.md) に従ってパッケージを作成してください。ローカル PC ではリリース用ビルドを実行しません。
 
 ```bash
 git clone https://github.com/pengkang0322/sub2api.git
 cd sub2api
 # 変更をコミット済みのクリーンな作業ツリーと、文書記載の依存ツールが必要です。
+# 今後ローカルテストが明示的に許可されたタスク向けです。今回の移行では実行しません。
 python3 scripts/test-local.py
 # Jenkins の成果物をダウンロードした後、同じ成果物をローカルで検証します。
 python3 scripts/test-local.py --artifact-dir /path/to/jenkins-package

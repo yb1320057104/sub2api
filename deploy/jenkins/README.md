@@ -2,6 +2,8 @@
 
 本目录把 PK-017 的打包迁到 Jenkins。GitHub 继续保存私有源码、正式 Release 和 GHCR 镜像；GitHub Actions 不再执行打包或测试。正式更新包仍使用原名称、SHA256 校验和正式 Release 属性，后台网页更新路径保持不变。
 
+本次 Jenkins 迁移不运行任何本地构建或测试。下文的本地验证步骤用于后续明确授权的任务；未来流程不能覆盖当次禁令，未执行的测试不得记为通过。
+
 ## 服务与任务
 
 控制器不执行构建，任务固定运行在 `pk-builder`。构建 agent 使用专用 Docker daemon，`DOCKER_HOST` 必须是独立 daemon 的 TCP 地址；不挂载生产主机 Docker socket。Agent 与专用 daemon 必须以相同绝对路径共享 `/home/jenkins/agent`，因为编译容器只挂载任务的 `source` 子目录。
@@ -32,7 +34,7 @@ Jenkins 的 Pipeline from SCM 当前固定从私库已审阅的维护分支 `cod
 ssh -N -L 18081:127.0.0.1:18081 root@<服务器IP>
 ```
 
-服务部署和候选打包不等于完整发布验证。专用发布令牌及本机 WSL 测试依赖尚未就绪；在本地完整证据和发布凭据补齐前，不将此安装记录描述为正式发布全链路已通过。
+服务部署和候选打包不等于完整发布验证；配置发布凭据也不代表已通过本地验收。本次迁移遵守本地构建/测试禁令，没有生成本地完整测试证据；只有后续按当次明确授权完成所需验收并满足发布凭据要求，才能执行正式发布。
 
 ## 首次安装与后续维护
 
@@ -88,7 +90,7 @@ docker compose -f compose.yaml ps
 
 1. 选择 `ACTION=package`。`SOURCE_REF` 填完整 `refs/heads/...`、40 位提交 SHA 或 `refs/tags/vX.Y.Z-pk.N`。分支/SHA生成 `candidate`；正式 PK 标签须位于私库 `main` 历史，生成 `BuildType=release` 的待验证包。标签打包本身不发布。
 2. Jenkins 显示 `PACKAGE_ID` 并归档 `output/`。下载此目录的文件：`manifest.json`、二进制 `.tar.gz`、Docker `.docker.tar.gz`、`checksums.txt`。Docker 镜像和更新归档来自同一次 Go 编译。
-3. 在本地电脑对同一 commit/tree 运行 `scripts/test-local.ps1` 或 `scripts/test-local.py`，将上述目录作为 `--artifact-dir`。本地执行源码完整套件和原镜像持久化验收；测试后清理临时文件和容器。
+3. 后续获准执行本地验证时，在本地电脑对同一 commit/tree 运行 `scripts/test-local.ps1` 或 `scripts/test-local.py`，将上述目录作为 `--artifact-dir`。本地执行源码完整套件和原镜像持久化验收；测试后清理临时文件和容器。
 4. 将通过的证据 JSON 上传为 `/srv/jenkins-evidence/sub2api/{package_id}.json`。JSON 须使用 `schema_version=1`、`tests_profile=pk-local-v1`、完整 commit/tree，并包含 `backend-unit`、`backend-integration`、`backend-race`、`backend-lint`、`frontend`、`shell`、`binance-proxy`、`release-helpers`、`security`、`artifact-runtime` 全部通过的记录。`artifact` 的 `package_id`、`binary_sha256`、`image_archive_sha256` 必须匹配。
 5. 选择 `ACTION=publish`，填写已有 `PACKAGE_ID`。系统复核产物校验、本地证据、私库状态、标签当前指向、main 祖先关系、未占用 Release/镜像版本和 GHCR 私有状态，然后发布原封不动的已测试镜像及二进制包，不重新编译。
 6. Release 先以 draft 上传资产，全部成功后才转为正式、非 prerelease、latest；随后推送同一镜像的 `latest`。正式 Release 保留 `sub2api_版本_linux_amd64.tar.gz` 与 `checksums.txt`，现有网页更新器可直接使用。发布不连接、重启或升级生产应用。
