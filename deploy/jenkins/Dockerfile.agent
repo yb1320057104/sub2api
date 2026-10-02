@@ -1,0 +1,10 @@
+FROM docker:29.8.1-cli AS docker-cli
+FROM jenkins/jenkins:2.580.1-jdk21
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends python3 ca-certificates curl git openssh-client xz-utils && rm -rf /var/lib/apt/lists/*
+COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
+COPY --from=docker-cli /usr/local/libexec/docker/cli-plugins /usr/local/libexec/docker/cli-plugins
+USER jenkins
+WORKDIR /home/jenkins/agent
+ENTRYPOINT ["/bin/sh", "-c"]
+CMD ["curl -fsS --retry 30 --retry-delay 2 http://controller:8080/jnlpJars/agent.jar -o /tmp/agent.jar && exec java -Xmx1g -jar /tmp/agent.jar -url http://controller:8080/ -name pk-builder -secret \"$(cat /run/secrets/agent-secret)\" -webSocket -workDir /home/jenkins/agent"]

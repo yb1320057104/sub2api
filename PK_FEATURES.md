@@ -10,6 +10,7 @@
 - 本次清点覆盖从该上游基线到私库 `23e5fe663338c86cd0cebbf2f688c8a75dd8c152` 的全部二开提交；应用发行参照 `v0.2.10-pk.7`，另登记本次新增的项目约束机制。此处是代码核对基线，不代表线上当前版本。
 - 以下 PK-001 至 PK-027 均为有效保护项。文件路径用于定位，不是完整修改白名单；所有新调用入口、迁移和旁路都要检查。
 - 每项说明“必须保持”的行为。文末另列验证入口与已知边界；测试存在、历史验证通过和本次候选通过是三件不同的事。
+- 2026-10-03 用户指定改为 Jenkins 构建、本地电脑测试，不再使用 GitHub Actions 打包或测试。下文历史 CI/云端通过记录仍只证明当时提交；现行入口与证据门禁以 PK-017 为准。
 
 ## 功能索引
 
@@ -31,7 +32,7 @@
 | PK-014 | 私库更新与恢复来源 | 私库/私有镜像、只读凭据、无官方回退路径 |
 | PK-015 | 更新下载和文件替换 | 资产授权、跨域去凭据、SHA256、重复更新固定路径 |
 | PK-016 | Docker网页更新持久化 | 数据卷可执行文件、种子哈希、镜像回退边界 |
-| PK-017 | 私有发行与部署入口 | 同一二进制、正式 Release、云端验证、amd64、文档 |
+| PK-017 | 私有发行与部署入口 | 同一二进制、Jenkins 打包、本地验证、正式 Release、amd64 |
 | PK-018 | 新实例启动并发保护 | 可跳过全局启动清理，继续清理过期槽位 |
 | PK-019 | 后台启动与停止交接 | 19个受控后台、普通文件激活、只启动一次、停止安全 |
 | PK-020 | 切换与恢复运维流程 | 保护端口/数据/密钥、请求排空、后台单实例交接 |
@@ -94,7 +95,7 @@
 - 自定义账号价格统计及模型价格文件回退使用原始 token；启用“将客户定价应用于账号统计”时使用转换后、客户倍率前的 `TotalCost`。不能在合并中把两个分支统一成另一种算法。
 - 入口：`backend/internal/service/billing_service.go`、`openai_gateway_usage.go` 中的 usage 构造、价格选择与账号统计分支。
 - 验证：原始长上下文恰好跨阶梯、转换倍率 0/小数/大于1、两种账号统计价格分支。现有用例不能代替所有模型价格及预留机制的场景验收。
-- 2026-10-02 上游新增 `gpt-6.1-sol` 的 272000 原始上下文阈值，继续使用 `InputContextTokens()` 选档；转换后 token 数量跨过阈值不得改变该判断。组合回归扩展在原有 `openai_gateway_usage_integrity_test.go`，由 GitHub Actions 执行。
+- 2026-10-02 上游新增 `gpt-6.1-sol` 的 272000 原始上下文阈值，继续使用 `InputContextTokens()` 选档；转换后 token 数量跨过阈值不得改变该判断。组合回归扩展在原有 `openai_gateway_usage_integrity_test.go`，现由本地测试入口执行。
 
 ## PK-005
 
@@ -162,7 +163,7 @@
 - 2026-10-02 下游兼容调查：原版 Sub2API 的 Responses 会忽略注释及 `response.created/in_progress/keepalive`；语义模式与可见内容模式判定不同，空语义事件不能保证所有下游识别。Chat 原始转发会对非 usage-only 的数据块记时。账号测试页的 `_` 是 `AccountTestModal.vue` 的 UI 光标，不是可被协议撤回的模型字符；不得据此宣称注入 `_` 后能无损替换正文。
 - 入口：`backend/internal/service/{openai_early_sse_heartbeat,openai_early_sse_space}.go`；`backend/internal/handler/{openai_gateway_handler,openai_chat_completions}.go`。
 - 验证：`TestPKEarlyHeartbeat_*`、`TestPKFirstResponse_DisabledHeartbeatStillRecordsBodyAndCopiesContext`，以及获准的隔离远端通过实际反代读取 SSE。
-- 空格扩展沿用 `openai_compact_sse_keepalive_test.go`：`TestPKEarlyHeartbeat_Space*` 覆盖 Chat 三帧、真实 Responses ID、terminal-only 正文/工具生命周期、快照字段、CRLF/分片、多行 data、短写、回退与取消。原 comment/ping 回归保留。新增用例由现有 CI/Release 的 `TestPKEarly` 选择器纳入；是否通过须核对本次提交的实际云端结果。
+- 空格扩展沿用 `openai_compact_sse_keepalive_test.go`：`TestPKEarlyHeartbeat_Space*` 覆盖 Chat 三帧、真实 Responses ID、terminal-only 正文/工具生命周期、快照字段、CRLF/分片、多行 data、短写、回退与取消。原 comment/ping 回归保留。新增用例由现有 CI/Release 的 `TestPKEarly` 选择器纳入；是否通过须核对本次提交的实际本地结果。
 
 ## PK-009
 
@@ -221,7 +222,7 @@
 - 保留 Ops 流错误/已提交标记；后到动态上游响应头已无法补发，这是提前响应的边界。
 - `Server-Timing` 中间件只在真实 `/api/v1/` UI 路径启用；伪造 UI 请求头不能在模型网关启用并产生并发写入冲突。
 - 入口：`backend/internal/service/{openai_early_sse_heartbeat,openai_early_sse_space}.go`、`backend/internal/handler/gateway_helper.go`、`backend/internal/server/middleware/server_timing.go`。
-- 验证：`TestPKEarlyHeartbeat_FastErrorKeepsHTTPStatusAndJSON`、`LateJSONErrorUsesProtocolTerminal`、`QueueOnlyLateJSONErrorUsesSSE`、`HeaderMutationDoesNotRaceTimer`、`CancellationStopsPendingTimer`、`StopRestoresWriterAndPendingHeaders`；云端 race 检查与 `TestServerTimingScopesAndRoleGate`。
+- 验证：`TestPKEarlyHeartbeat_FastErrorKeepsHTTPStatusAndJSON`、`LateJSONErrorUsesProtocolTerminal`、`QueueOnlyLateJSONErrorUsesSSE`、`HeaderMutationDoesNotRaceTimer`、`CancellationStopsPendingTimer`、`StopRestoresWriterAndPendingHeaders`；本地 race 检查与 `TestServerTimingScopesAndRoleGate`。
 
 ## PK-013
 
@@ -267,16 +268,19 @@
 - 同种子主程序缺失时，可恢复可执行普通 backup；拒绝 runtime 目录/程序/marker 符号链接，校验类型与可写性，同目录 staging 先发布程序再发布 marker。自定义启动命令保持原路径，不强制替换为应用启动。
 - 网页下载与“立即重启”分开，`restart: unless-stopped` 负责恢复进程；端口和反代配置不被网页更新修改。单进程重启会断流，不是自动热切。
 - 入口：`deploy/docker-entrypoint.sh`、各 Dockerfile、正式 Compose、`VersionBadge.vue`；运行库/资源/entrypoint 变化必须部署对应镜像。
-- 验证：私库 Release workflow 中容器启动、同种子保留、换种子恢复检查，以及隔离环境的重复更新/重启；必须确认运行程序版本，不能只看容器镜像标签。
+- 验证：本地 `artifact-runtime` 套件中容器启动、同种子保留、换种子恢复检查，以及隔离环境的重复更新/重启；必须确认运行程序版本，不能只看容器镜像标签。
 
 ## PK-017
 
 **私有发行与可用部署入口。** 引入：`85d690928`、`e67a95f2e`；文档：`23e5fe663`。
 
-- `PK Release` 在指定私库且为 private 时运行，手动选择已审阅且未复用的 PK 标签；同一构建二进制进入 Docker 镜像和 Release 归档。
-- 标签必须指向私库 `main` 历史内的目标提交，已有 Release 不覆盖；发布串行执行，镜像写入来源/版本/revision 标签并核对包私有性，使用 Actions 自身的 `GITHUB_TOKEN`。
+- Jenkins 从指定私库构建，手动选择已审阅的提交/分支或未复用的 PK 标签；同一构建二进制进入 Docker 镜像和 Release 归档。GitHub 保留私有源码、Release 和 GHCR 存储职责，不执行构建或测试。
+- 标签必须指向私库 `main` 历史内的目标提交，已有 Release 不覆盖；发布串行执行，镜像写入来源/版本/revision 标签并核对包私有性，通过独立 Jenkins 发布凭据授权，读取源码使用只读 deploy key；不复制开发者宽权限 token。缺发布凭据时可打包，但不得称为已发布。
 - Release 是正式发布而非 prerelease，带 `sub2api_版本_linux_amd64.tar.gz` 和 `checksums.txt`。当前仅发布 `linux/amd64`；Apple/arm64 必须先发布并验证相应私有镜像，不能替换成上游镜像。
-- 保留云端前端/后端构建、更新与账务/首字回归、部署脚本及持久化启动检查。feature 分支候选制品与正式 Release 分开，发布流程不自动部署生产。
+- 2026-10-03 用户明确要求迁移：Jenkins 承担前端/后端发行构建，本地电脑承担原有 unit/integration/race、lint、关键前端、部署脚本、币安网关、发布 helper、安全审计及镜像持久化检查。功能保护范围不随执行位置迁移而缩小；分支候选与正式 Release 分开，发布流程不自动部署生产。
+- 本地入口为 `scripts/test-local.ps1`（WSL）和 `scripts/test-local.py`（Linux）。报告 `local-validation.json` 采用 `pk-local-v1`，绑定完整 commit/tree、各套件真实结果与执行日志；缺依赖、命令失败、受保护测试被跳过或源码在验证过程中改变，均不得成为正式发布证据。
+- Jenkins 先打包，下载该包到本机后以 `--artifact-dir` 验证二进制/镜像哈希、非 root 启动、同种子保留网页更新、backup 恢复、换种子及返回原镜像恢复。正式发布要求完整十个套件通过，报告的 `artifact.package_id`、二进制 SHA256 与镜像归档 SHA256 均匹配已归档产物；发布复用该产物，不重新构建。仅源码验证通过或没有本地 Docker 时不得绕过此门禁。
+- 本地运行时只允许创建自动清理的测试卷和种子变更夹具，不编译发行程序、不使用生产数据库或数据卷。Apple 部署脚本沿用 fake runtime 回归，在 Linux 上执行不等于真实 macOS/Apple runtime 验收。
 - 2026-10-01 币安充值接入：私库 `codex/` 分支和原 `feat/` 分支均生成候选制品；正式发布前增加币安协议、余额事务与并发入账检查。前端 Axios 升至 1.20.0，修复旧 1.18.1 的七项 high 安全告警，保持原有 API 客户端与刷新令牌行为，不扩大审计豁免。
 - PK-025 接入时，CI 和正式发布增加独立网关检查，验证认证、香港地域、目标白名单、每次探测与固定节点、错误及超时；正式发布必须等待此检查通过。网关脚本随私库源码管理，服务器凭据单独保存。
 - 2026-10-02 上游同步分支 `sync/` 同样运行私库候选构建；候选版本从 `backend/cmd/server/VERSION` 读取并追加 `-pk.candidate`，仍不进入正式更新列表。前端关键回归增加上游充值优惠、金额组件、账号优先级、平台/配额及仪表盘测试，保留原有币安、首字与使用记录覆盖；TypeSafe 异步用量上下文回归加入候选和正式发布的 race 检查。
@@ -285,7 +289,7 @@
 - 被保留的脚本 API helper 仅接受本私库 Release 元数据端点，凭据经 stdin 注入，不接受任意 URL/重定向参数；source 后直接调用旧 downloader 也不能绕过停用。Apple restart 必须在停服务前验证显式私有 ARM 镜像配置，不能将 `latest` 当作已支持 ARM。
 - 管理员更新/回退/重启保留原认证、审计和系统操作锁；UI 在线升级仅面向正式 release build，候选不能冒充正式升级包。
 - [中文部署指南](deploy/PK_DEPLOYMENT_CN.md)、README、[私有镜像说明](deploy/DOCKER.md) 和 [维护文档](PK_MAINTENANCE.md) 随源码保存；新部署使用自己的数据/账号/密钥，程序没有固定服务器 IP 或域名限制。
-- 入口：`.github/workflows/{backend-ci,release}.yml`、Dockerfile、`deploy/` 下相关脚本、Compose 与文档。验证边界见下文，不能把“发布已完成”当成“线上已更新”。
+- 入口：`Jenkinsfile`、`deploy/jenkins/`、`scripts/test-local.{ps1,py}`、Dockerfile、`deploy/` 下相关脚本、Compose 与文档。验证边界见下文，不能把“发布已完成”当成“线上已更新”。
 
 ## PK-018
 
@@ -329,6 +333,7 @@
 - 本文件为唯一功能登记表。维护文档、PR模板和 `skills/pk-sub2api-maintenance/` 通过链接/工作区路径读取它，不复制多份可能过期的功能清单。
 - 新增二开在同一变更中添加 ID；扩展旧功能更新原 ID；合并上游逐个有效 ID 核对，未登记、未验证的受影响项不能合入/发布。
 - 2026-10-02 按用户要求强化每次合并的文本冲突和行为冲突检查，覆盖上游新增/替换入口；Git 无冲突不能替代核对。PK-007～PK-012 的三模式、配置、协议 ID/生命周期、真实计时、usage/工具、错误与换号必须整体审查，PR模板记录逐项依据。
+- 2026-10-03 按用户要求同步当前约束、维护流程、PR 模板与 PK-017：Jenkins 打包、本地电脑测试；历史云端报告不改写为本地执行，也不得继续引用旧禁令阻止已授权本地测试。
 - 已安装 skill 读取当前工作区约束和清单；更新仓库版 skill 时同步实际使用的安装副本。目录丢失从私库恢复，不靠旧记忆或功能标题重写项目。
 - 验证：静态核对 Git 跟踪、入口链接、登记条目与 diff、仓库/安装版 skill 一致性。此机制不等于 GitHub 分支保护或自动语义验证。
 
@@ -352,7 +357,7 @@
 - 新增轮询纳入 PK-019 启动门、停止等待及多实例查询互斥；普通支付、缓存转换、模型计费与首字行为不改变。
 - 2026-10-02 上游普通充值赠送/折扣仅使用 `payment_orders` 和普通支付报价，币安继续使用自己的倍率快照与独立事务，不叠加该赠送或折扣。新增上游两份 `241_*` 迁移与首包迁移文件名不同；迁移器按完整文件名和校验和跟踪，保留已发行迁移名称及内容。
 - 入口：`backend/internal/pkg/binancepay/`、`backend/internal/service/binance_recharge*.go`、`backend/internal/handler/binance_recharge*.go`、`backend/internal/server/routes/binance_recharge.go`、`backend/migrations/242_binance_recharge.sql` / `243_binance_recharge_multiplier.sql`，以及前端币安充值 API/类型、用户与管理页面和导航。
-- 验证：在已有支付协议测试、用户 repository 集成测试和支付前端测试中扩展 `TestPKBinance*` 场景；CI 与正式发布覆盖五位精度、倍率与8位舍入、配置缺省/更新保留、订单快照、旧数据迁移、签名/账单过滤、并发重复到账、多倍率统计、历史金额不复用、过期回查与权限。前端原有 `PaymentView.spec.ts` / `payment.spec.ts` 检查配置保存、兑换比例、订单金额与统计口径。仅在 GitHub Actions 执行，本地不运行构建或测试。模拟账单与真实 PostgreSQL 验证不等同于真实币安转账验收。
+- 验证：在已有支付协议测试、用户 repository 集成测试和支付前端测试中扩展 `TestPKBinance*` 场景；CI 与正式发布覆盖五位精度、倍率与8位舍入、配置缺省/更新保留、订单快照、旧数据迁移、签名/账单过滤、并发重复到账、多倍率统计、历史金额不复用、过期回查与权限。前端原有 `PaymentView.spec.ts` / `payment.spec.ts` 检查配置保存、兑换比例、订单金额与统计口径。现由本地测试入口执行，发行构建仅在 Jenkins 进行。模拟账单与真实 PostgreSQL 验证不等同于真实币安转账验收。
 - 倍率回归入口：原有 `backend/internal/service/wire_test.go` 的 `TestPKBinanceCreditMultiplierValidation`、`backend/internal/repository/user_repo_integration_test.go` 的 `TestPKBinanceMultiplierCreditsFullUSDTWithEightDecimalRounding` / `SnapshotSurvivesAccountChangesAndConcurrentChecks` / `RejectsOldSettlementAtomically`（后三项同 `TestPKBinanceMultiplier` 前缀），以及原有 `migrations_schema_integration_test.go` 的 `TestPKBinanceMultiplierMigrationPreservesLegacyDataAndDefaults`。保留既有重复入账、状态/权限和实时账单只读断言。
 - 边界：首版仅 UID 内部转账，不支持链上地址、订阅购买、原支付倍率/手续费、自动退款或邀请返利。有关联订单的异常展示为待核对；无归属到账流水保存在数据库，首版没有独立流水浏览或人工认领入账接口。与其他独立系统共用相同收款 UID 时，小数订单无法识别付款意图，应使用专用收款账户。历史金额占用记录必须保留，不得通过删除订单回收已使用报价。
 - 倍率迁移的回退边界：订单倍率在旧数据回填为1后移除数据库默认值，新程序必须显式保存快照；`system_amount` 由数据库按原金额和快照生成，已完成状态要求实际 `credited_amount` 与其一致。pk.9 及更早程序缺少新字段，新建会失败，旧结算 SQL 会被约束拒绝、整笔账务事务回滚；不能静默按1:1少加款。旧版本也不识别新的显示/统计口径，不能当作倍率功能可用的回退版本。迁移不会因程序回退撤销，恢复自助充值须使用支持本迁移的私库版本。
@@ -366,7 +371,7 @@
 - 展示的是使用记录中的实际消费，不按资金充值来源归属或过滤。页面提示明确包含所有充值渠道余额产生的消费，包括自助充值和手动充值；不得将这些数值标成“仅币安充值的消费”。
 - 默认每5秒自动刷新，可关闭或输入刷新秒数；切换页签/卸载后停止定时任务，刷新不得造成重叠请求堆积。保留现有手动刷新和筛选行为。
 - 复用 `frontend/src/views/admin/UsageView.vue` 的嵌入模式和 `frontend/src/components/admin/usage/AdminDailyUsage.vue`；原 `/admin/usage` 页面默认行为与 PK-010 管理员首字权限保持。
-- 验证：云端前端类型检查、既有使用记录测试及新增在已有测试文件中的嵌入/日期/刷新生命周期断言；不运行本地构建或测试。
+- 验证：本地前端类型检查、既有使用记录测试及新增在已有测试文件中的嵌入/日期/刷新生命周期断言；发行构建仅在 Jenkins 进行。
 
 ## PK-024
 
@@ -380,7 +385,7 @@
 - 账单与充值查收共享数据库 `api_locked_until` 租约及 `poll_token` 校验，跨实例互斥；账单另有 `bills_next_query_at` 冷却，到期订单优先查收。成功读账单不修改充值查收计划，币安限流则同步延后两类查询。
 - 开启 PK-025 后，每次实时账单操作先重新探测香港出口，再用同一出口校时并读取账单；探测失败不查询币安、不改余额，也不回退直连。
 - 入口：`backend/internal/pkg/binancepay/` 的账单查询、币安充值 service/handler/admin routes、前端 `BinanceLiveBills.vue` 与币安 API/类型和管理员菜单。
-- 验证：在原有支付协议和前端测试文件扩展账单收支/小数、日期校验、上限提示、只读权限用例，GitHub Actions 执行；真实账户账单可用性须在部署配置后核对。
+- 验证：在原有支付协议和前端测试文件扩展账单收支/小数、日期校验、上限提示、只读权限用例，由本地测试入口执行；真实账户账单可用性须在部署配置后核对。
 
 ## PK-025
 
@@ -395,7 +400,7 @@
 - 成功的随机令牌固定指向一个节点，有效期240秒。应用为本次操作创建独立 transport，校时和全部分页共享该出口，令牌仅放在 CONNECT 头；并发操作不得通过切换全局代理组互相改路由。固定出口中途失败则本次失败，下次操作重新探测。
 - 网关只接受经过认证且带有效令牌的 `CONNECT api.binance.com:443`。币安签名和 API 凭据在应用到币安的 TLS 内传输；拒绝其他目标、普通转发、无令牌或过期令牌。节点监听仅在本机，网关只绑定应用可达的私网地址，凭据和订阅保存在服务器受限文件中，不写入源码或日志。
 - 入口：`backend/internal/config/config.go`、`backend/internal/pkg/binancepay/{client,proxy_preflight,bills}.go`、`backend/internal/service/{wire,binance_recharge}.go`、`backend/cmd/server/wire_gen.go`、`deploy/binance-proxy/gateway.py`。固定节点及 systemd 运维见该目录说明和 `PK_MAINTENANCE.md`。
-- 验证：既有 `backend/internal/payment/crypto_test.go` 的 `TestPKBinanceProxyPreflight*` 覆盖真实模拟 CONNECT/TLS、分页固定出口、并发隔离、失败关闭和取消；既有配置测试覆盖文件读取、环境优先及非法配置。网关及配置验证在 CI 与正式发布工作流执行。全部构建测试在云端；生产只做公开币安时间接口及真实出口探测，不用模拟到账冒充真实转账。
+- 验证：既有 `backend/internal/payment/crypto_test.go` 的 `TestPKBinanceProxyPreflight*` 覆盖真实模拟 CONNECT/TLS、分页固定出口、并发隔离、失败关闭和取消；既有配置测试覆盖文件读取、环境优先及非法配置。网关及配置验证由本地测试入口执行，报告作为 Jenkins 正式发布门禁；生产只做公开币安时间接口及真实出口探测，不用模拟到账冒充真实转账。
 - 边界：地域依据 Cloudflare 当前看到的出口，节点名称不作为地域证明；公开时间接口成功不能代替收款账户 API 权限或真实转账验收。订阅节点凭据失效或出口变化时停止该节点使用，需更新服务器节点配置；没有直连兜底。
 
 ## PK-026
@@ -410,7 +415,7 @@
 - 扣减 `users.balance`、负值 `admin_balance` 原余额流水、扣费批次及逐条使用记录认领在同一数据库事务完成。余额不足整笔拒绝，不部分扣款；不改变累计充值、原模型费用、订阅/API Key/账号额度或上游 usage。成功提交后失效用户鉴权和余额缓存。
 - 扣费记录与去重证据独立保存，清理使用记录不能删除扣费证据。排行榜只统计仍保留的使用记录；数据库迁移不回扣历史余额，也不自动扣款。程序回退不撤销新增表或已完成扣款。
 - 入口：`backend/migrations/244_security_policy_ranking.sql`、`backend/internal/service/cyber_policy*.go`、管理员与普通用户使用记录 handler/routes、前端独立排行 API/页面和导航。自动禁用计数见 PK-027，不能混同为筛选日期内次数。
-- 验证：在已有后端 service/repository/handler 与前端回归文件扩展 `TestPKCyber*` 及排行场景，云端验证金额、权限、日期边界、并发扣款、重试、重叠区间、余额不足回滚与刷新生命周期。当前变更的实际结果见[发布核对记录](docs/PK_SHAME_LEADERBOARD_REVIEW.md)；本地不运行构建或测试，不新增遗留测试文件。
+- 验证：在已有后端 service/repository/handler 与前端回归文件扩展 `TestPKCyber*` 及排行场景，本地验证金额、权限、日期边界、并发扣款、重试、重叠区间、余额不足回滚与刷新生命周期。当前变更的实际结果见[发布核对记录](docs/PK_SHAME_LEADERBOARD_REVIEW.md)；不在本地编译发行程序，不新增遗留临时测试文件。
 
 ## PK-027
 
@@ -423,7 +428,7 @@
 - 管理员从已有用户管理手动把 `disabled` 改为 `active` 时，按 `reset_on_manual_enable` 决定清零或保留累计次数。清零只重置自动禁用计数，不删除原使用记录、不改变排行榜历史或扣费去重。保留计数时，下一条安全策略记录可能再次触发禁用。
 - 复用已有用户状态变更的鉴权失效 outbox，事务提交后由既有 worker 广播失效并重试；不新增后台服务。禁用阻止随后鉴权的新请求，不主动中止已经开始的请求；usage 异步入库及缓存广播存在短暂延迟，不承诺恰好只允许阈值数量的并发请求。
 - 入口：`backend/migrations/245_cyber_policy_auto_disable.sql` 的使用记录/用户状态触发器、PK-026 管理员设置和原用户管理解禁流程；既有鉴权失效 outbox/worker 继续受原启动和停止约束保护。
-- 验证：在既有 repository integration 文件扩展 `TestPKCyber*`，覆盖阈值、默认关闭、管理员豁免、并发插入、重复写入、手动解禁两种重计模式和鉴权 outbox；仅在 GitHub Actions 执行。迁移不撤销已禁用状态，旧版回退仍受数据库触发器约束，须先核对已保存开关及管理员可操作入口。
+- 验证：在既有 repository integration 文件扩展 `TestPKCyber*`，覆盖阈值、默认关闭、管理员豁免、并发插入、重复写入、手动解禁两种重计模式和鉴权 outbox；现由本地测试入口执行。迁移不撤销已禁用状态，旧版回退仍受数据库触发器约束，须先核对已保存开关及管理员可操作入口。
 
 ## 验证入口与现有边界
 
@@ -433,14 +438,14 @@
 |---|---|---|
 | PK-001～006 | `backend/internal/service/openai_gateway_usage_integrity_test.go` 中 `TestPKCacheConversion*` | 覆盖设置、公式及 JSON/SSE 代表场景；不是所有协议端到端验证 |
 | PK-007 | `setting_service_update_test.go`、`setting_handler_partial_payload_test.go`、`SettingsView.spec.ts`、`api_contract_test.go` | 包含配置链、局部保存、错误与前端换算 |
-| PK-008～012 | `openai_compact_sse_keepalive_test.go`、handler context、DTO、usage repo、channel monitor、Server-Timing 测试 | unit/race 与数据库 integration 分开；候选须检查对应 SHA 的实际 CI |
+| PK-008～012 | `openai_compact_sse_keepalive_test.go`、handler context、DTO、usage repo、channel monitor、Server-Timing 测试 | unit/race 与数据库 integration 分开；候选须检查对应 commit/tree 的本地报告 |
 | PK-010 UI | `frontend/src/components/admin/usage/__tests__/UsageTable.spec.ts` | 币安/每日消费接入时纳入 `FRONTEND_CRITICAL_VITEST`，与 `UsageView.spec.ts` 一同验证嵌入模式和原上游首字权限 |
 | PK-013～015 | `update_service_test.go`、`github_release_service_test.go` | 使用更新器自身 PK 修订、授权、路径及校验测试 |
-| PK-016～017 | `.github/workflows/release.yml`、现有 `deploy/tests/` 和候选制品流程 | 发布构建不等于生产已部署；测试清单/矩阵改变时同步核查 |
+| PK-016～017 | `Jenkinsfile`、`scripts/test-local.py`、现有 `deploy/tests/` 和候选制品流程 | 发布构建不等于生产已部署；测试清单/矩阵改变时同步核查 |
 | PK-018～019 | `concurrency_service_test.go`、`wire_test.go`、`batch_image_cleanup_test.go` | 需要门控/停止并发行为证据，不能仅搜索到 env 键即认为有效 |
-| PK-020～021 | 维护流程、固定 commit 的隔离验收和静态文档核对 | 不运行本地构建测试；不把历史线上/探测报告当作本次新代码验证 |
+| PK-020～021 | 维护流程、固定 commit 的隔离验收和静态文档核对 | 本地测试与 Jenkins 构建分开；不把历史线上/探测报告当作本次新代码验证 |
 
-正式 Release 的 unit/race 选择不会执行数据库 integration 的 `TestPKUsageFirstResponsePersistence`；该项由常规 CI 的 integration 阶段覆盖。前端 Release 构建也不能代替 UI 测试。有关功能修改时，必须检查真实执行列表并在云端补足受影响验证，不能只列出测试名。
+本地 `backend-integration` 套件执行数据库 integration 的 `TestPKUsageFirstResponsePersistence`，且报告生成器要求该测试实际通过；`backend-race` 保留旧候选/Release 选择器及 PostgreSQL 15 专项。Jenkins 前端发行构建不能代替本地 `frontend` 套件。有关功能修改时，必须检查真实执行列表并在本机补足受影响验证，不能只列出测试名；已登记但未覆盖的业务路径仍须独立验收。
 
 ### 已知行为边界
 

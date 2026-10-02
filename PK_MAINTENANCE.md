@@ -2,6 +2,40 @@
 
 新服务器从零安装请先看 [PK版中文部署指南](deploy/PK_DEPLOYMENT_CN.md)。本文用于已有部署维护、合并上游、发布、迁移和恢复。
 
+自 2026-10-03 用户明确调整后，**Jenkins 负责打包，本地电脑负责测试；不再使用 GitHub Actions 打包或测试。** GitHub 私库、私有 Release 和 GHCR 继续保存源码与发行物。本文和历史报告中的旧云端通过记录只证明当时提交，不代表新流程或新提交已经验收。
+
+## 本地测试与 Jenkins 打包
+
+Jenkins 的安装、凭据、任务参数和制品目录见 [Jenkins 运维说明](deploy/jenkins/README.md)。发行构建只在 Jenkins 执行；本地测试会编译 Go 测试程序并创建可清理的测试夹具，不运行应用发行构建。
+
+本机需要 WSL 2 Linux 发行版（或直接使用本机 Linux）、Go 1.27.0、Node.js 24、pnpm 9、Python 3.12+、PyYAML 6.0.3、GNU make、Bash/POSIX 工具、GCC、golangci-lint 2.13.x 和 govulncheck。Docker 必须运行在本机、使用 Linux amd64 容器，提供 Docker Compose 插件及可用的本地 Unix socket；Windows 可使用已启用对应 WSL 发行版集成的 Docker Desktop。WSL 空壳、Windows 版 Go/Node 或远程 Docker 不满足要求。依赖下载需要可访问 Go/npm/PyPI、容器仓库和漏洞数据库。
+
+PostgreSQL/Redis 由原有 Testcontainers 测试自动建立隔离容器：常规 PostgreSQL 为 `postgres:18.1-alpine3.23`、Redis 为 `redis:8.4-alpine`，币安与自动禁用 race 专项另跑 `postgres:15-alpine`。不连接生产数据库，不需要复制生产 `.env` 或密钥。原有可选真实模型、TLS 抓包与插件测试并未因此变为全覆盖；默认仍不执行这些额外验收，报告列出 Go 跳过项，受保护 `TestPK*` 被跳过会失败。
+
+在干净且已提交的私库 checkout 中运行：
+
+```powershell
+# Windows：由本机 WSL 执行；可用 -Distribution 选择发行版。
+.\scripts\test-local.ps1
+# Jenkins 已打包并下载、解包制品后，执行完整发布验收。
+.\scripts\test-local.ps1 -ArtifactDirectory C:\path\to\jenkins-package
+```
+
+本机 Linux 的等价入口为 `python3 scripts/test-local.py --artifact-dir /path/to/jenkins-package`。输出默认写入本机临时目录下新建的 `sub2api-local-validation/时间-随机值/`，也可指定 `-OutputDirectory` / `--output-dir`，该目录必须位于仓库外且尚不存在。保留其中 `local-validation.json` 与套件日志作为验收证据，不能只复制控制台最后一行。
+
+完整发布验收包含 `backend-unit`、`backend-integration`、`backend-race`、`backend-lint`、`frontend`、`shell`、`binance-proxy`、`release-helpers`、`security`、`artifact-runtime` 十项。前端沿用 `Makefile` 的全部关键 Vitest、lint 和类型检查；Go 保留旧候选/正式发行 race 选择器与常规 integration，网关原内联断言继续执行。原 Apple 部署测试使用 fake runtime；本地 Linux 为其临时适配 BSD stat 和 plutil 的文件权限/JSON 读取，不把它称为实际 macOS 或 Apple 容器验收。临时适配器、审计文件、测试卷及种子变更夹具用完删除，原有回归文件保留。
+
+只执行源码测试时，`artifact-runtime` 明确记为 `skipped`，`publish_eligible=false`，不能正式发布。带 `--artifact-dir` 时，先验证 Jenkins manifest、提交、Git tree、二进制/镜像归档 SHA256 和镜像 ID，再用该镜像检查非 root 启动、更新保留、backup 恢复与种子切换。缺依赖、执行失败、受保护测试跳过、源码中途变化均保留失败证据；不能手改 JSON 为通过。
+
+正式发布顺序：
+
+1. 完成二开清单核对、提交源码、本地源码测试，再按授权合入私库 `main`；选一个从未使用的 PK 标签并推送该标签。
+2. 在 Jenkins 选择 `ACTION=package`、`SOURCE_REF=refs/tags/该标签`。分支也可打候选，但不进入网页更新列表。标签包的 `BuildType=release` 仅表示它可接受完整验收，此时尚未发布。
+3. 下载该 Jenkins 包，在本机运行完整 `--artifact-dir` 验收，确认 `local-validation.json` 的十项均通过且 `publish_eligible=true`。
+4. 将原始报告按 manifest 中的 `package_id` 命名为 `/srv/jenkins-evidence/sub2api/{package_id}.json`，经管理通道上传到 Jenkins 服务器。该目录由管理员维护，构建容器不挂载；同时保留原始日志。报告不是可自行批准的空表，必须来源于实际本机执行。
+5. Jenkins 选择 `ACTION=publish`、对应 `PACKAGE_ID`。任务检查本地报告、同一提交和同一归档哈希，再发布已验证的二进制与镜像，不重新编译。缺少独立发布凭据或任何检查未通过即停止，不降级为 GitHub Actions。
+6. 核对私有正式 Release、`checksums.txt` 与 GHCR 镜像。发布不连接应用进行升级；线上部署仍按当次明确授权执行。
+
 ## 仓库与当前基线
 
 - 私有仓库：<https://github.com/pengkang0322/sub2api>，本地 remote 为 `origin`。
@@ -87,15 +121,9 @@ New API 的 HTTP/SSE 路径在首个非空 data 帧到达时记录首字，因�
 
 现有 SSE comment 心跳可以让客户端收到字节，但下游 Sub2API 的协议解析会忽略 comment，因此不能保证触发下游首字统计。协议语义事件和可见文本也采用不同判定：无正文的有效事件可能被部分通道计作首事件，检查可见输出的通道仍会等待真实文本。当前 ping 方案已通过云端首字、错误、换号和正文完整性回归；用户实际下游链路仍需更新后验收，不将这些回归视为所有接收端普遍兼容的证明。
 
-版本格式为 `上游版本-pk.修订号`，每次先查私库已用标签再递增。已发布的 `0.2.11-pk.1` 包含 comment/ping；新增 space 模式按用户要求准备 `0.2.11-pk.2`，必须通过该提交的云端检查后才正式发布，实际完成状态以私库 Release 为准。页面追加 ` PK出版`，中文不进入机器版本号。以下发布标签仅为格式示例，不能复用。
+版本格式为 `上游版本-pk.修订号`，每次先查私库已用标签再递增；页面追加 ` PK出版`，中文不进入机器版本号。已发布的 `0.2.11-pk.1` 包含 comment/ping；之后的 space 扩展和历次云端回归属于对应历史版本记录，不代表当前提交已通过。
 
-1. 核对改动并提交到 `main`。
-2. 为该提交创建一个从未使用的新标签，例如 `v0.2.10-pk.1`，只推送该标签。
-3. 在 GitHub Actions 的 **PK Release** 中输入该标签并手动执行。
-4. 云端执行前端构建、更新模块检查、后端编译和 Docker 启动检查。
-5. 同一个二进制同时用于 `ghcr.io/pengkang0322/sub2api:0.2.10-pk.1` 和 Release 的 `sub2api_0.2.10-pk.1_linux_amd64.tar.gz`；Release 包含 `checksums.txt`。
-6. Release 设为正式发布，尽管标签中含有 `-pk.N`。只发布镜像而没有二进制和校验文件不能用于网页更新。
-7. 发布不会连接生产服务器，也不会自动替换线上容器。部署按当时明确授权执行；2026-09-30 本次最终按用户允许硬切断流的授权完成。以后新的部署仍须核对当时的请求范围，不把历史授权当作永久许可。
+现行发布按本文开头“本地测试与 Jenkins 打包”的步骤执行。正式 Release 必须是非 prerelease，包含 `sub2api_版本_linux_amd64.tar.gz` 和 `checksums.txt`；同一二进制还必须用于 `ghcr.io/pengkang0322/sub2api:版本`。只发布镜像而没有二进制和校验文件不能用于网页更新。Jenkins `package` 成功只表示得到候选制品，完整本地验收与 `publish` 成功后才是正式发布。
 
 当前发布目标为生产服务器对应的 `linux/amd64`。其他架构须先扩展发布矩阵。
 
@@ -119,7 +147,7 @@ New API 的 HTTP/SSE 路径在首个非空 data 帧到达时记录首字，因�
 
 - 网页更新：`UPDATE_GITHUB_TOKEN` 使用仅允许 `pengkang0322/sub2api`、`Contents: read` 的 fine-grained token；通过服务器环境配置注入。
 - Docker 拉取：登录 `ghcr.io`，使用可读取此镜像的凭据；GitHub Packages 的经典 token 需要 `read:packages`。
-- Actions 发布使用内置 `GITHUB_TOKEN`，不保存服务器密码。
+- Jenkins 源码读取使用本私库只读 deploy key。正式发布使用独立发布凭据，具备本私库 Release 写入与 GHCR 包写入权限，按 Jenkins 运维说明保存；不把开发者宽权限 token 或服务器密码复制进源码/日志。没有发布凭据时仅能打包，不能称为发布完成。
 - `.env.pk` 已加入忽略列表；`deploy/.env.pk.example` 仅含空凭据示例。绝不把真实 token、数据库配置或服务器密码写入仓库。
 
 网页更新与回退仅检查本私库。资产 API 带授权，跳转到 GitHub CDN 时删除授权头；所有归档必须通过 SHA256 校验。更新缓存带仓库标识，旧官方缓存不能用于安装。
@@ -139,7 +167,7 @@ git merge --no-ff v0.2.11
 
 要合并作者某个分支，可先 fetch 该分支，再在独立 `sync/` 分支合并相应 `upstream/分支名`。不要用整目录覆盖、`reset --hard upstream/main`、强制推送或 `push --mirror` 更新自己的仓库。
 
-即便 Git 自动合并没有冲突，也必须按 [项目约束](PROJECT_CONSTRAINTS.md) 逐项核对 [当前二开清单](PK_FEATURES.md) 的全部有效 ID，并在同一变更中完成新增/扩展登记。尤其不能只保留 4 个新增文件而丢掉协议出口接入点。解决冲突后先发 PR，在 GitHub 云端检查；确认通过再合入 `main` 并发布新的 PK 版本。生产部署按当时的明确授权范围执行。
+即便 Git 自动合并没有冲突，也必须按 [项目约束](PROJECT_CONSTRAINTS.md) 逐项核对 [当前二开清单](PK_FEATURES.md) 的全部有效 ID，并在同一变更中完成新增/扩展登记。尤其不能只保留 4 个新增文件而丢掉协议出口接入点。解决冲突后先发 PR，在本机验证该提交并保留报告；确认通过再按授权合入 `main`。新的 PK 版本由 Jenkins 打包、在本地验证同一制品后发布。生产部署按当时的明确授权范围执行。
 
 本次已合入上游 `v0.2.11`（`96f4c115c9749078f90cbf210a01d39baf3f53b6`），并按全部有效 PK ID 核对行为。上游新增的 `billing.inflight_reservation.enabled` 默认开启，在请求准入时估算费用并预留余额。预估值不等于 PK 缓存转换后的最终账单，实际 usage、扣费和各额度继续保持 PK-001～006 的口径。业务提交 `4077ebaf` 的 unit/integration、预留及组合计费 race、候选构建已通过，详见合并核对；这些证据不代替生产链路或混合版本蓝绿验收。本次未进行线上变更。
 
@@ -149,7 +177,7 @@ git merge --no-ff v0.2.11
 
 ### 1. 固定版本、备份与兼容性
 
-- 从私库选择已通过云端检查的明确 PK 标签，记录镜像 digest、Release 校验值、旧镜像 digest 和实际运行程序版本。恢复也只使用私库的提交、Release 或 GHCR 镜像；私库不可用时保留当前服务。
+- 从私库选择已通过对应本地完整验收并经 Jenkins 发布的明确 PK 标签，记录镜像 digest、Release 校验值、旧镜像 digest 和实际运行程序版本。恢复也只使用私库的提交、Release 或 GHCR 镜像；私库不可用时保留当前服务。
 - 备份数据库、应用数据、Compose/.env 和代理配置。保留线上原有的 Compose 参数、网络、密钥及数据服务，不执行整套 `down/up`。
 - 证明新旧程序可以同时使用相同数据库结构和 Redis 键；确认启动迁移对旧程序兼容。版本号相近、`/health` 为 200 都不能代替此检查。本次 0.2.11 候选已包含默认开启的余额并发预留；旧实例不会登记新机制的请求预留，混合版本期间不能假定预留覆盖全部在途请求。部署前须验证共享余额缓存、请求预留及异步计费释放的兼容性，不能将本次源码合并当作已完成蓝绿验收。
 - 两实例使用相同 DB、Redis DB、JWT 和加密密钥。不要另建 Redis 绕开并发问题，那会分离限流、账户调度和认证状态。
@@ -215,4 +243,4 @@ docker compose -f /opt/sub2api-pk/docker-compose.json up -d --force-recreate --n
 
 先明确设置并核对 `STOP_GRACE_SECONDS`；更长的宽限期不代替排空证据。清除的仅是程序种子标记，下次启动会从所选镜像重新安装程序；应用数据卷、数据库和 Redis 保留。即使所选镜像与当前 Compose 中的镜像相同，这些步骤也会撤销网页更新并恢复镜像内的程序。
 
-用户要求：不运行任何本地构建或测试；新生成的临时测试文件用完删除。本流程的构建和检查在 GitHub Actions 执行，既有源码测试保留。
+现行用户要求：Jenkins 打包、本地电脑测试，不再使用 GitHub Actions 打包或测试；不在本地编译发行程序。新生成的临时测试文件与夹具用完删除，既有源码测试保留。历史报告保持原执行环境和结果，不改写为新流程验收。
