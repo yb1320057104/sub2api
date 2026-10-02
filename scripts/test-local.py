@@ -52,13 +52,29 @@ def sha256(path):
 class Runner:
     def __init__(self, output):
         self.output = output
-        self.env = dict(os.environ, CI="true", CGO_ENABLED="1", PYTHONDONTWRITEBYTECODE="1")
-        # Match CI's default coverage: real paid-provider and optional capture
-        # tests remain opt-in and must not inherit a developer's live keys.
-        for key in ("OPENAI_API_KEY", "TYPESAFE_LIVE_TEST", "TYPESAFE_API_KEY",
-                    "TLSFINGERPRINT_NETWORK_TESTS", "TLSFINGERPRINT_CAPTURE_URL",
-                    "SUB2API_TEST_POSTGRES_IMAGE", "SUB2API_TEST_PLUGIN_PACKAGE"):
-            self.env.pop(key, None)
+        # Inherit tool locations, local Docker access, caches and download
+        # settings only. Do not copy application configuration or live keys.
+        # In particular PROMPT_AUDIT_TEST_POSTGRES_DSN enables untagged tests
+        # that TRUNCATE the supplied database; PROMPT_AUDIT_TEST_REDIS_ADDR
+        # and TEST_REDIS_URL also connect directly to externally supplied data
+        # services. Those variables must never enter this standard profile.
+        tool_environment = {
+            "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "TMP", "TEMP",
+            "LANG", "LANGUAGE", "TZ", "XDG_RUNTIME_DIR", "XDG_CONFIG_HOME",
+            "XDG_CACHE_HOME", "XDG_DATA_HOME", "DOCKER_HOST", "DOCKER_CONTEXT",
+            "DOCKER_CONFIG", "DOCKER_API_VERSION", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH",
+            "GOPATH", "GOCACHE", "GOMODCACHE", "GOPROXY", "GOSUMDB", "GOPRIVATE",
+            "GONOPROXY", "GONOSUMDB", "SSL_CERT_FILE", "SSL_CERT_DIR",
+            "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+            "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+        }
+        self.env = {key: value for key, value in os.environ.items()
+                    if key in tool_environment or key.startswith("LC_")}
+        # Ignore go env -w and ancestor go.work files; prevent inherited flags
+        # from enabling e2e/live tags, selecting tests, or replacing the toolchain.
+        self.env.update(CI="true", CGO_ENABLED="1", PYTHONDONTWRITEBYTECODE="1",
+                        GOENV="off", GOWORK="off", GOFLAGS="", GOTOOLCHAIN="local",
+                        GOOS="linux", GOARCH="amd64", GOAMD64="v1", CC="gcc", CXX="g++")
         self.results = []
         self.current = None
         self.log = None
@@ -155,6 +171,9 @@ class Runner:
         info = json.loads(self.run(["docker", "info", "--format", "{{json .}}"]))
         if info.get("OSType") != "linux" or info.get("Architecture") not in ("x86_64", "amd64"):
             raise RuntimeError("Local Docker must run Linux amd64 containers")
+        # Pin the verified local endpoint for Testcontainers too, so a user's
+        # ~/.testcontainers.properties cannot select a different Docker host.
+        self.env["DOCKER_HOST"] = context if self.env.get("DOCKER_CONTEXT") else (docker_host or context)
         self.run(["docker", "compose", "version"])
         # The repository harness supplies isolated PostgreSQL/Redis containers.
         # CI=true makes missing Docker fail rather than silently skip integration.

@@ -231,46 +231,22 @@ Nginx はデフォルトでアンダースコアを含むヘッダー（例: `se
 - **空の環境への新規デプロイ:** [PK デプロイガイド（中国語）](deploy/PK_DEPLOYMENT_CN.md) に従い、Docker Compose、認証、設定、動作確認を進めてください。
 - **既存サービスの移行・復旧:** [PK_MAINTENANCE.md](PK_MAINTENANCE.md) に従い、既存のデータベース、アプリケーションデータ、秘密情報を保持してください。
 
-### ソースからビルド
+### 開発とパッケージ作成
 
-プライベートリポジトリへのアクセス権を取得したうえで、開発やカスタマイズのためにソースからビルドできます。正式な PK リリースは、プライベートリポジトリの **PK Release** GitHub Actions ワークフローでビルド・公開されます。
+PK の候補版と正式リリースの成果物は Jenkins でビルドし、テストはローカル PC で実行します。GitHub Actions によるビルドとテストは使用しません。プライベート GitHub リポジトリ、Releases、GHCR には引き続きソースと成果物を保存するため、既存の Web 更新とバージョンのロールバックを利用できます。
 
-#### 前提条件
-
-- Go 1.21+
-- Node.js 18+
-- PostgreSQL 15+
-- Redis 7+
-
-#### ビルド手順
+プライベートリポジトリをクローンした後、[保守手順](PK_MAINTENANCE.md) に従ってローカル Linux/WSL のテスト環境を準備し、[Jenkins の説明](deploy/jenkins/README.md) に従ってパッケージを作成してください。ローカル PC ではリリース用ビルドを実行しません。
 
 ```bash
-# 1. リポジトリをクローン
 git clone https://github.com/pengkang0322/sub2api.git
 cd sub2api
-
-# 2. pnpm をインストール（未インストールの場合）
-npm install -g pnpm
-
-# 3. フロントエンドをビルド
-cd frontend
-pnpm install
-pnpm run build
-# 出力先: ../backend/internal/web/dist/
-
-# 4. フロントエンドを組み込んだバックエンドをビルド
-cd ../backend
-VERSION="$(./scripts/resolve-version.sh)"
-go build -tags embed -ldflags="-X main.Version=${VERSION}" -o sub2api ./cmd/server
-
-# 5. 設定ファイルを作成
-cp ../deploy/config.example.yaml ./config.yaml
-
-# 6. 設定を編集
-nano config.yaml
+# 変更をコミット済みのクリーンな作業ツリーと、文書記載の依存ツールが必要です。
+python3 scripts/test-local.py
+# Jenkins の成果物をダウンロードした後、同じ成果物をローカルで検証します。
+python3 scripts/test-local.py --artifact-dir /path/to/jenkins-package
 ```
 
-> **注意:** `-tags embed` フラグはフロントエンドをバイナリに組み込みます。このフラグがない場合、バイナリはフロントエンド UI を提供しません。
+Windows では `scripts/test-local.ps1` を使用し、ローカルの WSL Linux で検証します。Jenkins はソースと実行時の検証を通過した同一の成果物だけを正式公開します。以下のアプリケーション設定は隔離したデプロイ環境向けです。ローカルテストは専用の PostgreSQL/Redis コンテナを作成します。
 
 **`config.yaml` の主要設定:**
 

@@ -256,46 +256,22 @@ fast_mode = true
 - **全新空环境部署：** 按 [PK 中文部署指南](deploy/PK_DEPLOYMENT_CN.md) 完成 Docker Compose、授权、配置和验证。
 - **已有服务迁移或恢复：** 按 [PK_MAINTENANCE.md](PK_MAINTENANCE.md) 操作，保留原数据库、应用数据和密钥。
 
-### 源码编译
+### 源码开发与打包
 
-取得私有仓库授权后，可按以下步骤进行源码开发或定制。正式 PK 版本由私有仓库的 **PK Release** GitHub Actions 工作流构建和发布。
+PK 候选和正式发行物由 Jenkins 构建，测试在本地电脑运行，不再由 GitHub Actions 打包或测试。GitHub 私库、Release 与 GHCR 继续保存源码和发行物，原网页一键更新及版本回退保持可用。
 
-#### 前置条件
-
-- Go 1.21+
-- Node.js 18+
-- PostgreSQL 15+
-- Redis 7+
-
-#### 编译步骤
+克隆私库后，先按 [维护流程](PK_MAINTENANCE.md) 准备本机 Linux/WSL 的测试依赖，再按 [Jenkins 说明](deploy/jenkins/README.md) 打包；不在本机执行发行构建。
 
 ```bash
-# 1. 克隆仓库
 git clone https://github.com/pengkang0322/sub2api.git
 cd sub2api
-
-# 2. 安装 pnpm（如果还没有安装）
-npm install -g pnpm
-
-# 3. 编译前端
-cd frontend
-pnpm install
-pnpm run build
-# 构建产物输出到 ../backend/internal/web/dist/
-
-# 4. 编译后端（嵌入前端）
-cd ../backend
-VERSION="$(./scripts/resolve-version.sh)"
-go build -tags embed -ldflags="-X main.Version=${VERSION}" -o sub2api ./cmd/server
-
-# 5. 创建配置文件
-cp ../deploy/config.example.yaml ./config.yaml
-
-# 6. 编辑配置
-nano config.yaml
+# 需要干净、已提交的工作区及维护文档所列本地依赖。
+python3 scripts/test-local.py
+# 下载 Jenkins 制品后，在本机验证同一制品。
+python3 scripts/test-local.py --artifact-dir /path/to/jenkins-package
 ```
 
-> **注意：** `-tags embed` 参数会将前端嵌入到二进制文件中。不使用此参数编译的程序将不包含前端界面。
+Windows 使用 `scripts/test-local.ps1` 调用本机 WSL Linux。Jenkins 正式发布只复用通过源码及运行时验收的同一制品。以下应用配置用于隔离部署环境；本地测试会自动创建自己的 PostgreSQL/Redis 容器。
 
 **`config.yaml` 关键配置：**
 

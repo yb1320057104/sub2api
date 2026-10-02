@@ -6,11 +6,68 @@
 
 控制器不执行构建，任务固定运行在 `pk-builder`。构建 agent 使用专用 Docker daemon，`DOCKER_HOST` 必须是独立 daemon 的 TCP 地址；不挂载生产主机 Docker socket。Agent 与专用 daemon 必须以相同绝对路径共享 `/home/jenkins/agent`，因为编译容器只挂载任务的 `source` 子目录。
 
-Jenkins 的 Pipeline from SCM 固定从私库已审阅的 `main` 读取根目录 `Jenkinsfile`。不能将任务的流水线 SCM 分支改成用户输入的 `SOURCE_REF`。有权修改任务或私库 `main` 的人等同拥有该任务的发布权限。
+Jenkins 的 Pipeline from SCM 当前固定从私库已审阅的维护分支 `codex/jenkins-build` 读取根目录 `Jenkinsfile`，对应任务为 `sub2api-package`。本变更合入 `main` 后，再将任务的 SCM 分支切换到已审阅的 `main`。不能将流水线 SCM 分支改成用户输入的 `SOURCE_REF`；该参数只选择被打包的源码。有权修改任务或其可信 SCM 分支的人等同拥有该任务的发布权限。正式发行标签仍必须属于私库 `main` 历史，与流水线暂用维护分支无关。
 
 需要 Git、Pipeline、Credentials Binding 插件及 agent 的 Python 3.11+、Bash、Git、Docker CLI、gzip/tar。Node 24、pnpm 9.15.9 和 `backend/go.mod` 指定的 Go 工具链由隔离编译容器提供。编译容器不挂载凭据、流水线代码、历史产物、测试证据或生产数据，也不挂载 Docker socket。默认每个编译容器最多 2 CPU / 4 GiB，可通过 agent 的 `PK_BUILD_CPUS`、`PK_BUILD_MEMORY` 调整。
 
 任务不运行 `go test`、Vitest 或应用程序。前端执行 `vue-tsc -b` 和 `vite build`，避免 `pnpm run build` 内置的 Vitest；相应翻译回归保留在本地测试套件。
+
+## 当前服务器部署
+
+2026-10-03 的安装目录为 `/opt/pk-jenkins`。基础设施源文件为本目录的 `compose.yaml`、`Dockerfile.controller`、`Dockerfile.agent`、`plugins.txt` 和 `bootstrap.groovy`，随私库保存。
+
+| 组件 | 当前配置 |
+|---|---|
+| Jenkins controller | `2.580.1` / Java 21，执行器数为 0，禁止匿名访问 |
+| 管理入口 | 仅监听服务器 `127.0.0.1:18081`，不开放公网 Jenkins 端口 |
+| 构建 agent | `pk-builder`，1 个执行器，通过 WebSocket 连接 controller |
+| 专用 Docker daemon | `docker:29.8.1-dind`，内部 TLS `2376`，独立构建网络及 Docker 数据卷 |
+| controller 持久化 | `/opt/pk-jenkins/controller` → `/var/jenkins_home` |
+| agent 工作区 | `/opt/pk-jenkins/agent` → `/home/jenkins/agent`，与专用 daemon 共享同一路径 |
+| 管理员凭据 | 用户名 `admin`；密码仅保存在服务器 `/opt/pk-jenkins/bootstrap/admin-password`，不进入仓库或日志 |
+
+从本机通过 SSH 转发访问管理页，保持该 SSH 会话运行，然后打开 `http://127.0.0.1:18081`：
+
+```sh
+ssh -N -L 18081:127.0.0.1:18081 root@<服务器IP>
+```
+
+服务部署和候选打包不等于完整发布验证。专用发布令牌及本机 WSL 测试依赖尚未就绪；在本地完整证据和发布凭据补齐前，不将此安装记录描述为正式发布全链路已通过。
+
+## 首次安装与后续维护
+
+以下首次安装步骤只用于空的 Jenkins 环境；已有安装应使用下方维护步骤，保留账号、凭据、任务和数据。所有命令在服务器执行，不在本机进行基础设施或应用构建。
+
+1. 从可信私库检出上述基础设施文件，将 Compose、两个 Dockerfile 和 `plugins.txt` 放到 `/opt/pk-jenkins`。构建目录的 `.dockerignore` 须只允许 Dockerfile 与 `plugins.txt` 进入构建上下文，排除 bootstrap、controller、agent 等数据目录。建立 controller、agent、bootstrap 和两个产物/证据目录；controller 与 agent 由容器用户 `1000:1000` 读写，证据目录由管理员写入、容器用户只读。
+2. 在服务器安全配置 `bootstrap/admin-password` 和 `bootstrap/github-read`（仅此私库的只读 deploy key），文件设为 `1000:1000`、`0400`；bootstrap 目录须允许该用户遍历。把 `bootstrap.groovy` 安装到 `controller/init.groovy.d/`。不把真实凭据放入构建上下文或 Git。
+3. 将已核对 GitHub 官方主机指纹的 `known_hosts` 分别安装到 `controller/.ssh/known_hosts` 和 `agent/.ssh/known_hosts`，目录 `0700`、文件 `0600`、属主 `1000:1000`。Compose 将 agent 的 `.ssh` 额外挂载到 `/var/jenkins_home/.ssh`，以匹配镜像中 SSH 使用的用户主目录；只放在 agent 工作目录而缺少此挂载会导致主机密钥验证失败。
+4. 先启动 controller 和专用 daemon，等待首次初始化生成 `controller/.pk-agent-secret`，再由 root 安装 agent 所需的只读 secret，最后启动 agent：
+
+```sh
+cd /opt/pk-jenkins
+docker compose -f compose.yaml build controller agent
+docker compose -f compose.yaml up -d controller docker
+# 确认 controller 初始化成功且以下源文件已生成，再执行：
+test -s /opt/pk-jenkins/controller/.pk-agent-secret
+install -o 1000 -g 1000 -m 0400 \
+  /opt/pk-jenkins/controller/.pk-agent-secret \
+  /opt/pk-jenkins/bootstrap/agent-secret
+docker compose -f compose.yaml up -d agent
+docker compose -f compose.yaml ps
+```
+
+确认管理页要求登录、controller 执行器为 0、`pk-builder` 在线，且任务从固定可信维护分支加载流水线。首次 bootstrap 通过 `controller/.pk-bootstrap-complete` 标记防止重复初始化；不要删除该标记来修改现有账号、凭据或任务。首次生成的 controller 内部 agent secret 和 provisioning token 同样按敏感文件保管。
+
+后续重建先等待当前 Jenkins 任务结束，备份 controller、bootstrap、产物仓库和本地测试证据，并保留专用 daemon 的命名数据卷及 TLS 证书卷。从私库复制已审阅的基础设施文件后，在服务器执行：
+
+```sh
+cd /opt/pk-jenkins
+docker compose -f compose.yaml build controller agent
+docker compose -f compose.yaml up -d --no-deps controller agent
+docker compose -f compose.yaml ps
+```
+
+需要升级专用 daemon 时，另行核对 `compose.yaml` 中的 Docker 版本并在无构建运行时更新 `docker` 服务，随后确认 agent 的 TLS 连接恢复。普通重建不重新初始化 Jenkins、不重建 deploy key，也不复制新的管理员密码覆盖现有账号。若更换了 controller 数据导致 agent 身份重新生成，按首次安装中的 root 安装步骤更新 `bootstrap/agent-secret` 后重建 agent。不要执行 `down -v` 或删除 controller/产物目录作为升级步骤；这些操作会破坏可恢复状态。本 Compose 只管理 Jenkins 基础设施，不能替代或操作生产应用的 Compose。
 
 ## 凭据和目录
 
@@ -20,7 +77,7 @@ Jenkins 的 Pipeline from SCM 固定从私库已审阅的 `main` 读取根目录
 | `pk-github-publish` | Secret text | 仅此私库 `Contents: write` 的发布令牌；仅 publish 阶段读取 |
 | `pk-ghcr-publish` | Username/password | 用户名与 GHCR 包读写令牌；仅 publish 阶段读取 |
 
-发布凭据未配置不影响 package。不要用生产服务器密码或开发者宽权限令牌替代它们。GitHub SSH 主机密钥在 agent 的 known_hosts 中预先核验和配置。
+发布凭据未配置不影响 package。不要用生产服务器密码或开发者宽权限令牌替代它们。GitHub SSH 主机密钥按上述步骤在 controller 和 agent 两侧预先核验和配置。
 
 - `/srv/jenkins-packages/sub2api`：只由 Jenkins 控制脚本写入的产物仓库，seal 后文件只读，按 `构建号-提交前12位` 存放，现有 ID 不覆盖。
 - `/srv/jenkins-evidence/sub2api`：由管理员上传本地测试结果，挂载到 agent 时只读。命名为 `{package_id}.json`，编译容器不可见。

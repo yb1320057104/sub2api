@@ -230,46 +230,22 @@ Current PK releases support `linux/amd64`. Deployment requires read access to th
 - **Fresh deployment in an empty environment:** Follow the [PK deployment guide (Chinese)](deploy/PK_DEPLOYMENT_CN.md) for Docker Compose, authorization, configuration, and verification.
 - **Migration or recovery of an existing service:** Follow [PK_MAINTENANCE.md](PK_MAINTENANCE.md) and preserve the existing database, application data, and secrets.
 
-### Build from Source
+### Development and Packaging
 
-Build and run from source code for authorized development or customization. Official PK releases are built and published by the private repository's **PK Release** GitHub Actions workflow.
+PK candidate and release artifacts are built in Jenkins. Tests run on the local computer; GitHub Actions no longer builds or tests this fork. The private GitHub repository, Releases, and GHCR remain the source and artifact stores, so the existing web updater and rollback flow continue to work.
 
-#### Prerequisites
-
-- Go 1.21+
-- Node.js 18+
-- PostgreSQL 15+
-- Redis 7+
-
-#### Build Steps
+Clone the private repository, then follow [the current maintenance workflow](PK_MAINTENANCE.md) for local Linux/WSL dependencies and [Jenkins setup](deploy/jenkins/README.md) for packaging. Do not run release builds on the local computer.
 
 ```bash
-# 1. Clone the repository
 git clone https://github.com/pengkang0322/sub2api.git
 cd sub2api
-
-# 2. Install pnpm (if not already installed)
-npm install -g pnpm
-
-# 3. Build frontend
-cd frontend
-pnpm install
-pnpm run build
-# Output will be in ../backend/internal/web/dist/
-
-# 4. Build backend with embedded frontend
-cd ../backend
-VERSION="$(./scripts/resolve-version.sh)"
-go build -tags embed -ldflags="-X main.Version=${VERSION}" -o sub2api ./cmd/server
-
-# 5. Create configuration file
-cp ../deploy/config.example.yaml ./config.yaml
-
-# 6. Edit configuration
-nano config.yaml
+# Run from a clean, committed checkout with the documented local dependencies.
+python3 scripts/test-local.py
+# After downloading the Jenkins package, validate that exact artifact locally.
+python3 scripts/test-local.py --artifact-dir /path/to/jenkins-package
 ```
 
-> **Note:** The `-tags embed` flag embeds the frontend into the binary. Without this flag, the binary will not serve the frontend UI.
+On Windows use `scripts/test-local.ps1`, which runs the checks in a local WSL Linux distribution. Jenkins publishes only the exact package whose source and runtime checks passed. Application configuration below applies to isolated deployment environments; local tests create their own PostgreSQL/Redis containers.
 
 **Key configuration in `config.yaml`:**
 

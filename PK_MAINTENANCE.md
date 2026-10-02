@@ -8,6 +8,8 @@
 
 Jenkins 的安装、凭据、任务参数和制品目录见 [Jenkins 运维说明](deploy/jenkins/README.md)。发行构建只在 Jenkins 执行；本地测试会编译 Go 测试程序并创建可清理的测试夹具，不运行应用发行构建。
 
+按用户要求，Jenkins 只监听服务器 `127.0.0.1:18081`，不开放公网端口，由用户配置域名反向代理。原网页一键更新和回退继续读取本私库正式 Release；迁移不会把网页更新改成访问 Jenkins，也不会取消原授权下载和 SHA256 校验。
+
 本机需要 WSL 2 Linux 发行版（或直接使用本机 Linux）、Go 1.27.0、Node.js 24、pnpm 9、Python 3.12+、PyYAML 6.0.3、GNU make、Bash/POSIX 工具、GCC、golangci-lint 2.13.x 和 govulncheck。Docker 必须运行在本机、使用 Linux amd64 容器，提供 Docker Compose 插件及可用的本地 Unix socket；Windows 可使用已启用对应 WSL 发行版集成的 Docker Desktop。WSL 空壳、Windows 版 Go/Node 或远程 Docker 不满足要求。依赖下载需要可访问 Go/npm/PyPI、容器仓库和漏洞数据库。
 
 PostgreSQL/Redis 由原有 Testcontainers 测试自动建立隔离容器：常规 PostgreSQL 为 `postgres:18.1-alpine3.23`、Redis 为 `redis:8.4-alpine`，币安与自动禁用 race 专项另跑 `postgres:15-alpine`。不连接生产数据库，不需要复制生产 `.env` 或密钥。原有可选真实模型、TLS 抓包与插件测试并未因此变为全覆盖；默认仍不执行这些额外验收，报告列出 Go 跳过项，受保护 `TestPK*` 被跳过会失败。

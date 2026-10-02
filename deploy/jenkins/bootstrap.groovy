@@ -20,6 +20,7 @@ def marker = new File(j.rootDir, '.pk-bootstrap-complete')
 if (marker.exists()) return
 j.setNumExecutors(0)
 j.setSlaveAgentPort(-1)
+jenkins.model.JenkinsLocationConfiguration.get().setUrl('http://127.0.0.1:18081/')
 def realm = new HudsonPrivateSecurityRealm(false)
 def admin = realm.createAccount('admin', new File('/run/bootstrap/admin-password').text.trim())
 j.setSecurityRealm(realm)

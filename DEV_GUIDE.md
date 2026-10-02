@@ -7,7 +7,7 @@
 | 项目 | 说明 |
 |------|------|
 | **上游仓库** | Wei-Shaw/sub2api |
-| **Fork 仓库** | bayma888/sub2api-bmai |
+| **PK 私有仓库** | pengkang0322/sub2api |
 | **技术栈** | Go 后端 (Ent ORM + Gin) + Vue3 前端 (pnpm) |
 | **数据库** | PostgreSQL 16 + Redis |
 | **包管理** | 后端: go modules, 前端: **pnpm**（不是 npm） |
@@ -34,43 +34,42 @@
 ### 开发工具
 
 ```bash
-# golangci-lint（CI 用 v2.13，本地建议装同一版以免版本差异带来的噪音）
+# golangci-lint（本地验证使用 v2.13）
 go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13
 
 # pnpm (前端包管理)
-npm install -g pnpm
+npm install -g pnpm@9.15.9
 ```
 
 ## 三、CI/CD 流水线
 
-### GitHub Actions Workflows
+### Jenkins 打包与本地验证
 
-| Workflow | 触发条件 | 检查内容 |
+GitHub Actions 不再执行本项目的打包或测试。当前入口为 [Jenkins 流水线](Jenkinsfile)、[配置说明](deploy/jenkins/README.md) 和 [维护流程](PK_MAINTENANCE.md)。
+
+| 入口 | 执行位置 | 内容 |
 |----------|----------|----------|
-| **backend-ci.yml** | push, pull_request | 单元测试 + 集成测试 + golangci-lint v2.13 |
-| **security-scan.yml** | push, pull_request, 每周一 | govulncheck + gosec + pnpm audit |
-| **release.yml** | tag `v*` | 构建发布（PR 不触发） |
+| `ACTION=package` | Jenkins 隔离构建节点 | 编译前后端，生成同一二进制的更新包与 Linux amd64 镜像，不运行测试、不部署生产 |
+| `scripts/test-local.py` / `.ps1` | 本地电脑 Linux/WSL | 源码回归、race、集成、lint、安全检查；下载制品后验证同一镜像的启动与持久化，输出提交及制品绑定的证据 |
+| `ACTION=publish` + `PACKAGE_ID` | Jenkins | 核验本地完整证据、私库标签和 main 祖先关系，发布同一制品到私有正式 Release 与 GHCR，不重新编译 |
 
-### CI 要求
+### 工具链与发布要求
 
-- Go 版本必须是 **1.27.0**：三个 workflow 都用 `go-version-file: backend/go.mod` 取版本，随后硬断言 `go version | grep -q 'go1.27.0'`。升级 Go 时要同时改 `backend/go.mod`、`backend-ci.yml`（两处）、`release.yml`、`security-scan.yml` 里的这句断言，**以及三个 Dockerfile 里的 Go 构建镜像**（`Dockerfile` / `deploy/Dockerfile` 的 `ARG GOLANG_IMAGE`、`backend/Dockerfile` 的 `FROM golang:`）。前者漏了 CI 会在版本校验步骤直接失败；**后者漏了 CI 不会报，而是等到有人用这些 Dockerfile 构建时才失败**（`go.mod requires go >= X (running Y; GOTOOLCHAIN=local)`）。
-- 前端使用 `pnpm install --frozen-lockfile`，必须提交 `pnpm-lock.yaml`
+- Go 版本以 `backend/go.mod` 为准，当前为 **1.27.0**。Jenkins 从该文件选择编译镜像，本地测试工具链必须匹配。升级时同时核对 `scripts/test-local.py` 和所有 Dockerfile 的 Go 镜像，避免其他受支持入口仍使用旧工具链。
+- Jenkins 使用 Node 24、pnpm 9.15.9 和 `pnpm install --frozen-lockfile`，必须同步提交 `pnpm-lock.yaml`；本地依赖和安全检查要求见维护文档。
+- 正式发布先对已审阅的 `refs/tags/vX.Y.Z-pk.N` 打包，再下载该制品到本地验证。证据上传为 `/srv/jenkins-evidence/sub2api/{package_id}.json` 后才可执行 `publish`；不得用源码测试通过代替对应制品的运行时验收。
 
 ### 本地测试命令
 
 ```bash
-# 后端单元测试
-cd backend && go test -tags=unit ./...
+# 在干净、已提交的仓库根目录执行完整本地验证
+python3 scripts/test-local.py
 
-# 后端集成测试
-cd backend && go test -tags=integration ./...
-
-# 代码质量检查
-cd backend && golangci-lint run ./...
-
-# 前端依赖安装（必须用 pnpm）
-cd frontend && pnpm install
+# 下载 Jenkins 制品后，验证同一制品并生成可用于正式发布的完整证据
+python3 scripts/test-local.py --artifact-dir /path/to/jenkins-package
 ```
+
+Windows 使用 `scripts/test-local.ps1`，由其调用本机 WSL Linux。局部测试可用于调试，但不能替代完整发布证据；测试所生成的临时文件用完删除，仓库原有回归测试保留。本机不执行发行构建。
 
 ## 四、常见坑点 & 解决方案
 

@@ -89,4 +89,4 @@ WantedBy=multi-user.target
 
 `SIGTERM/SIGINT` 停止接收新请求，给已建立连接最多 5 秒排空，再关闭连接并等待探测线程退出。脚本只记录启动、停止或固定启动失败提示，不记录认证、令牌、签名 URL、请求体或原始异常。
 
-测试在云端或获准的隔离远端执行。仓库无需新增测试文件；可导入 `GatewayState` 和 `GatewayServer`，用 loopback 假 listener 验证协议，或替换 `probe_response` 验证香港地区和币安响应判定。生产实现始终开启 TLS 主机名和证书验证。
+测试在本地电脑 Linux/WSL 执行，入口为仓库根目录的 `scripts/test-local.py` 或 Windows 的 `scripts/test-local.ps1`；其中 `binance-proxy` 套件保留认证、固定出口、香港地域、失败关闭及超时回归，并将结果写入本地验证证据。Jenkins 负责打包和核验证据后发布，不运行网关测试。无需新增测试文件；调试时可导入 `GatewayState` 和 `GatewayServer`，用 loopback 假 listener 验证协议，或替换 `probe_response` 验证香港地区和币安响应判定。新生成的临时测试文件用完删除，生产实现始终开启 TLS 主机名和证书验证。完整流程见 [Jenkins 说明](../jenkins/README.md) 和 [维护文档](../../PK_MAINTENANCE.md)。

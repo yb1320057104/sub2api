@@ -42,6 +42,7 @@ services:
       DOCKER_CERT_PATH: /certs/client
     volumes:
       - /opt/pk-jenkins/agent:/home/jenkins/agent
+      - /opt/pk-jenkins/agent/.ssh:/var/jenkins_home/.ssh:ro
       - /srv/jenkins-packages/sub2api:/srv/jenkins-packages/sub2api
       - /srv/jenkins-evidence/sub2api:/srv/jenkins-evidence/sub2api:ro
       - docker-certs:/certs/client:ro

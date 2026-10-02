@@ -21,13 +21,17 @@
 
 ## 发布
 
-仅在当前请求包含发布时执行本节。读取私库当前 `.github/workflows/release.yml`；推送、PR、标签、正式发布和后续工作流的触发链均应核实，确认不会引发未授权的生产部署。最初流程为手动 **PK Release**，输入已经推送、审阅过的标签，例如 `v0.2.10-pk.2`。不要把例子当成当前最新版。
+仅在当前请求包含发布时执行本节。读取私库当前 `Jenkinsfile`、`deploy/jenkins/README.md` 和 `PK_MAINTENANCE.md`；核实推送、PR、标签、打包与正式发布的触发链，确认不会引发未授权的生产部署。自 2026-10-03 按用户要求由 Jenkins 打包、本地电脑测试，GitHub Actions 不再执行这两项工作。Jenkins 仅在 `127.0.0.1:18081` 监听，用户自行配置域名反代；不要开放公网端口。
 
 版本为 `上游版本-pk.修订号`；相同上游版本继续递增修订号，不复用已使用的标签。页面在机器版本后追加 `PK出版`，不能把中文写入机器版本。
 
 同一构建产出的二进制必须同时进入镜像与更新归档，Release 必须带对应平台的 `sub2api_版本_linux_amd64.tar.gz` 和 `checksums.txt`。只有镜像不能支持网页一键更新。PK Release 为正式发布，不能被 GitHub 标为 prerelease 后又期望 `/releases/latest` 找到它。
 
-在 GitHub 云端检查前端、Go 更新模块和持久化启动；等待结果，失败就修复对应问题，未通过的版本不能称为可上线。最初的发布工作流不自动更新生产；以后必须查看当时实际工作流，不能沿用这个历史结论。仅供核对的候选使用 CI 制品或草稿，不把正式 latest Release 当成不会影响更新列表的候选。
+Jenkins 以 `ACTION=package`、`SOURCE_REF=refs/tags/已审阅的新标签` 生成待验收包；分支生成候选包。下载该包，在本机以 `scripts/test-local.ps1 -ArtifactDirectory ...` 或 `python3 scripts/test-local.py --artifact-dir ...` 执行源码与镜像持久化完整验收。缺 WSL/Docker/工具或套件失败时明确报告，不把打包成功写成测试通过。
+
+本地报告必须绑定相同 commit/tree、package_id、二进制和镜像归档 SHA256，十个套件全部通过；按 `{package_id}.json` 上传到 `/srv/jenkins-evidence/sub2api/`。Jenkins `ACTION=publish`、`PACKAGE_ID=...` 校验报告后复用原制品发布，不重新构建。只有源码测试、未跑 artifact-runtime 或缺发布凭据时不可正式发布。候选包不进入正式 latest 更新列表；发布不自动更新生产。
+
+原网页一键更新能力必须保留：正式 Release 继续是私有仓库中的非 prerelease，带既有名称的二进制归档与 `checksums.txt`；前后端更新 API、凭据来源、回退和 SHA256 校验行为不因迁移 Jenkins 改变。历史云端验收报告保留原记录，不改写为本次本地验证。
 
 确认源码仓库和 GHCR 包各自的 private 状态；两者可见性独立。镜像版本必须匹配服务器架构。初始服务器为 x86_64，最初仅发布 linux/amd64；不要推断 Apple/arm64 已支持。
 
@@ -35,7 +39,7 @@
 
 - 网页 Release 下载：运行环境的 `UPDATE_GITHUB_TOKEN`，优先只针对该私库的 Contents:read fine-grained token。
 - 宿主机拉镜像：单独登录 GHCR，使用具备 read:packages 的适用凭据；不要把网页 token 当成已登录 Docker。
-- Actions 自身用 GITHUB_TOKEN 发布；创建工作流需要相应 GitHub 授权。
+- Jenkins 读取源码使用只读 deploy key；正式发布使用独立的私库 Release 写入和 GHCR 包写入凭据，缺少时阻止发布，不复制开发者宽权限 token。
 - 将凭据放到受保护的服务器环境或秘密存储，不进仓库、不进 skill、不打印值。缺少授权时明确所需权限，继续能独立完成的工作。
 
 ## 网页一键更新与重启
