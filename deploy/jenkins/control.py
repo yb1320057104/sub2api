@@ -213,8 +213,11 @@ def seal() -> None:
         shutil.copytree(output, staged)
         for file in staged.iterdir():
             file.chmod(0o440)
-        staged.chmod(0o550)
+        # Moving a directory between parents updates its '..' entry. Keep it
+        # owner-writable until the rename completes, then seal the final path.
+        staged.chmod(0o750)
         staged.rename(destination)
+        destination.chmod(0o550)
     print("PACKAGE_ID=" + data["package_id"])
     print("Download the artifacts, run local validation, then upload the matching evidence before publish.")
 

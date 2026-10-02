@@ -1,4 +1,4 @@
-// Configure this job from the reviewed private main branch, never from SOURCE_REF.
+// Load from a fixed reviewed private pipeline branch, never from SOURCE_REF.
 // The controller runs no builds. pk-builder uses a dedicated build Docker daemon.
 pipeline {
     agent { label 'pk-builder' }
