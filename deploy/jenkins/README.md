@@ -28,6 +28,12 @@ Jenkins 的 Pipeline from SCM 当前固定从私库已审阅的维护分支 `cod
 | agent 工作区 | `/opt/pk-jenkins/agent` → `/home/jenkins/agent`，与专用 daemon 共享同一路径 |
 | 管理员凭据 | 用户名 `admin`；密码仅保存在服务器 `/opt/pk-jenkins/bootstrap/admin-password`，不进入仓库或日志 |
 
+本次配置结果：`sub2api-package #3` 已成功，使用私库 `main` 的 `5273f30cb2ee5903c9c6acbd504755c7b0b0505c`，产物 ID 为 `3-5273f30cb2ee`（`0.2.12-pk.candidate.3`）。二进制归档、镜像归档、SHA256 和 manifest 已归档并保存到独立产物目录。没有创建正式发行版本。
+
+三项凭据均已配置。Release 令牌仅授权此私库的 Contents 读写；GHCR 令牌只有 `write:packages`（包含读取），没有 `repo` 权限。服务器端已核验私库文件读取、镜像包私有状态和 GHCR 认证。两项发布令牌均在北京时间 **2027-01-01** 到期；到期前应在原凭据 ID 下替换。认证核验不等于正式发布的完整动态验证。
+
+用户配置反代时，上游填 `http://127.0.0.1:18081`，保留 Host、X-Forwarded-Proto/For 并启用 WebSocket。当前服务器的 OpenResty 使用 host 网络，可直接连接该地址。配置域名后，将 Jenkins「Manage Jenkins → System → Jenkins URL」改成最终 HTTPS 域名；不需要开放 `18081` 公网端口。
+
 从本机通过 SSH 转发访问管理页，保持该 SSH 会话运行，然后打开 `http://127.0.0.1:18081`：
 
 ```sh
@@ -59,6 +65,8 @@ docker compose -f compose.yaml ps
 ```
 
 确认管理页要求登录、controller 执行器为 0、`pk-builder` 在线，且任务从固定可信维护分支加载流水线。首次 bootstrap 通过 `controller/.pk-bootstrap-complete` 标记防止重复初始化；不要删除该标记来修改现有账号、凭据或任务。首次生成的 controller 内部 agent secret 和 provisioning token 同样按敏感文件保管。
+
+首次配置完成后应撤销管理员的 `local-provisioning` 临时 API token 并删除 `.pk-provisioning-token` 明文文件；保留实际 agent 使用的 secret。临时本机管理隧道在收尾时关闭，不作为持久服务。
 
 后续重建先等待当前 Jenkins 任务结束，备份 controller、bootstrap、产物仓库和本地测试证据，并保留专用 daemon 的命名数据卷及 TLS 证书卷。从私库复制已审阅的基础设施文件后，在服务器执行：
 
