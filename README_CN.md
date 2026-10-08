@@ -256,6 +256,8 @@ fast_mode = true
 - **全新空环境部署：** 按 [PK 中文部署指南](deploy/PK_DEPLOYMENT_CN.md) 完成 Docker Compose、授权、配置和验证。
 - **已有服务迁移或恢复：** 按 [PK_MAINTENANCE.md](PK_MAINTENANCE.md) 操作，保留原数据库、应用数据和密钥。
 
+合入 v0.2.14 后，全新安装时管理员邮箱或密码留空会随机生成，可从首次启动日志中的 `Generated admin` 获取。显式填写时，邮箱须符合登录格式，密码须为 8–72 字节；已有用户和管理员凭据保持不变。
+
 ### 源码开发与打包
 
 PK 候选和正式发行物由 Jenkins 构建；后续本地测试按当次任务明确授权执行，本次 Jenkins 迁移不运行任何本地构建或测试。不再由 GitHub Actions 打包或测试。GitHub 私库、Release 与 GHCR 继续保存源码和发行物，原网页一键更新及版本回退保持可用。
@@ -375,29 +377,11 @@ Invalid base URL: invalid url scheme: http
 - 强制仅允许 TLS 出站
 - 在反向代理层移除敏感响应头
 
-#### ⚠️ 重要：创建管理员账号
+#### 创建管理员账号
 
-初始管理员账号**只能通过 setup 向导创建**（首次启动时访问 `http://<host>:8080`）。`config.yaml` 中的 `default.admin_email` / `default.admin_password` 字段**不会被用来创建管理员**——它们只是出于历史原因保留在模板里。
+初始管理员在首次初始化（Web/CLI 向导或 `AUTO_SETUP`）期间创建，仅在数据库没有用户时执行。PK Docker Compose 使用 `AUTO_SETUP` 和 `ADMIN_EMAIL` / `ADMIN_PASSWORD`，具体见 [PK 部署指南](deploy/PK_DEPLOYMENT_CN.md)。`config.yaml` 中历史保留的 `default.admin_email` / `default.admin_password` 不用于创建管理员。
 
-由于上面第 5 步预先创建了 `config.yaml`，**setup 向导在首次启动时会被跳过**：服务检测到 config 已存在，会直接进入正常模式，此时 `users` 表为空，首次登录会返回 `invalid email or password`。
-
-**创建管理员的两种方式：**
-
-1. **推荐——让向导自动生成 `config.yaml`：** 跳过上面的第 5 步（不要执行 `cp`）。直接运行 `./sub2api`，访问 `http://localhost:8080`，向导会引导你完成数据库、Redis 和管理员账号配置，并自动写出 `config.yaml`。
-
-2. **如果你已经创建了 `config.yaml`：** 首次启动前先把它临时移走以触发向导，完成后再恢复：
-   ```bash
-   mv config.yaml config.yaml.bak
-   ./sub2api        # 向导在 http://localhost:8080 启动，并生成新的 config.yaml
-   # 向导完成后 Ctrl+C 停服，再恢复你的配置：
-   mv config.yaml.bak config.yaml
-   ./sub2api        # 重启进入正常模式，用刚创建的管理员登录
-   ```
-
-```bash
-# 6. 运行应用
-./sub2api
-```
+手动运行二进制且未开启 `AUTO_SETUP` 时，已有 `config.yaml` 会跳过 Web 向导，应先完成初始化再正常启动。恢复已有部署时保留原配置和凭据；修改初始化环境变量不能重置现有管理员。
 
 #### HTTP/2 (h2c) 与 HTTP/1.1 回退
 

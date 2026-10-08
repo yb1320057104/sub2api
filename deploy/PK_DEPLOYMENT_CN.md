@@ -76,6 +76,8 @@ nano .env
 
 每个密码/密钥分别运行一次 `openssl rand -hex 32`，将结果填入对应行。保管 `.env`，不要上传到 Git 或发送到公开日志。已有部署恢复时使用原密钥；首次初始化后，仅修改 `ADMIN_PASSWORD` 环境变量不会重置现有管理员密码。
 
+合入上游 v0.2.14 后的新版本，全新初始化时显式填写的管理员邮箱须通过登录邮箱校验，密码须为 8–72 字节（不是字符数）；留空的邮箱或密码会随机生成，可从首次启动日志中的 `Generated admin` 获取。已有用户时跳过管理员创建，不因旧环境变量不符合新校验而重建账号或修改凭据。本文旧版本示例不代表已包含这项修复，部署时以所选私有 Release 的说明为准。
+
 同时检查模板中的数据库资源参数：示例 `POSTGRES_SHARED_BUFFERS=1GB`、`POSTGRES_MAX_CONNECTIONS=1024`、`DATABASE_MAX_OPEN_CONNS=256`，应按新服务器的内存和并发需求调整，不能将它们视为适合所有机器的最低配置。
 
 `SERVER_PORT` 控制宿主机映射端口，容器内仍为 `8080`。保留模板中的 `SUB2API_DOCKER_SELF_UPDATE=true`、`restart: unless-stopped` 和 `/app/data` 持久化卷，网页更新依赖这些配置。单实例首次安装沿用模板，不设置蓝绿流程专用的后台激活文件。
@@ -145,4 +147,4 @@ ssh -L 18080:127.0.0.1:8080 你的SSH用户@你的服务器地址
 | 心跳到达客户端仍慢 | 实际域名链路的流式缓冲、CDN 和客户端读取方式 |
 | 新设置没有出现 | 运行版本是否已更新并重启；刷新浏览器页面 |
 
-原 `install.sh`、`docker-deploy.sh` 安装入口在 PK版已停用。正式构建和发布由私库 Actions 完成；合并原作者更新、保护二开功能的流程见 [PK_MAINTENANCE.md](../PK_MAINTENANCE.md)。
+原 `install.sh`、`docker-deploy.sh` 安装入口在 PK版已停用。候选及正式发行构建只在 Jenkins 进行，正式发布要求绑定同一提交及制品的本地验收报告；本地测试按当次明确授权执行。合并原作者更新、保护二开功能的流程见 [PK_MAINTENANCE.md](../PK_MAINTENANCE.md)。

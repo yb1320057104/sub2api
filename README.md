@@ -230,6 +230,8 @@ Current PK releases support `linux/amd64`. Deployment requires read access to th
 - **Fresh deployment in an empty environment:** Follow the [PK deployment guide (Chinese)](deploy/PK_DEPLOYMENT_CN.md) for Docker Compose, authorization, configuration, and verification.
 - **Migration or recovery of an existing service:** Follow [PK_MAINTENANCE.md](PK_MAINTENANCE.md) and preserve the existing database, application data, and secrets.
 
+With the v0.2.14 bootstrap changes, a fresh installation generates a random administrator login email and password when their environment values are empty; retrieve generated values from the first-start logs (`Generated admin`). Explicit credentials must use a valid login email and a password of 8–72 bytes. Existing users and administrator credentials are preserved.
+
 ### Development and Packaging
 
 PK candidate and release artifacts are built in Jenkins. Future local testing must follow the explicit authorization for the task at hand; no local builds or tests are run during this Jenkins migration. GitHub Actions no longer builds or tests this fork. The private GitHub repository, Releases, and GHCR remain the source and artifact stores, so the existing web updater and rollback flow continue to work.
@@ -408,29 +410,11 @@ takes effect without enabling `mode_router_v2_enabled`. Keep the setting in the
 deployment's persisted `.env` or `config.yaml`, rather than inside a running
 container, so it is read again after an image update or container recreation.
 
-#### ⚠️ Important: Creating the Admin Account
+#### Creating the Admin Account
 
-The initial admin account is **only created via the setup wizard** (served at `http://<host>:8080` on first run). The `default.admin_email` / `default.admin_password` fields in `config.yaml` are **not used** to create it — they exist in the template for historical reasons.
+The initial administrator is created during setup (Web/CLI wizard or `AUTO_SETUP`), only when the database has no users. PK Docker Compose uses `AUTO_SETUP` with `ADMIN_EMAIL` / `ADMIN_PASSWORD`; follow the [PK deployment guide](deploy/PK_DEPLOYMENT_CN.md). The historical `default.admin_email` / `default.admin_password` fields in `config.yaml` do not create an administrator.
 
-Because step 5 above pre-creates `config.yaml`, the setup wizard will be **skipped on first run**: the server detects an existing config and boots straight into normal mode with an empty `users` table, so the first login attempt fails with `invalid email or password`.
-
-**Two ways to create the admin account:**
-
-1. **Recommended — let the wizard generate `config.yaml`:** Skip step 5 (do not run the `cp`). Start `./sub2api` directly; the setup wizard at `http://localhost:8080` walks you through database, Redis, and admin account setup, then writes `config.yaml` for you.
-
-2. **If you already created `config.yaml`:** Temporarily move it aside so the wizard can trigger on first run, then restore it afterwards:
-   ```bash
-   mv config.yaml config.yaml.bak
-   ./sub2api        # wizard runs at http://localhost:8080 and writes a fresh config.yaml
-   # stop the server (Ctrl+C) once the wizard completes, then restore your config:
-   mv config.yaml.bak config.yaml
-   ./sub2api        # restart in normal mode and log in with the admin you just created
-   ```
-
-```bash
-# 6. Run the application
-./sub2api
-```
+For a manual binary installation without `AUTO_SETUP`, an existing `config.yaml` skips the Web wizard. Complete initial setup before normal startup; preserve existing configuration and credentials when recovering a deployment. Changing bootstrap environment variables does not reset an existing administrator.
 
 #### Development Mode
 
