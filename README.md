@@ -234,21 +234,18 @@ With the v0.2.14 bootstrap changes, a fresh installation generates a random admi
 
 ### Development and Packaging
 
-PK candidate and release artifacts are built in Jenkins. Future local testing must follow the explicit authorization for the task at hand; no local builds or tests are run during this Jenkins migration. GitHub Actions no longer builds or tests this fork. The private GitHub repository, Releases, and GHCR remain the source and artifact stores, so the existing web updater and rollback flow continue to work.
+Source validation must pass before committing and pushing changes. The default is an isolated environment on the user's designated test server; local Linux/WSL remains supported. This supersedes the earlier migration test restriction. Jenkins builds all candidate/release artifacts; GitHub Actions does not build or test this fork. Production data and services are excluded from source tests.
 
-For future tasks that authorize local testing, clone the private repository, then follow [the current maintenance workflow](PK_MAINTENANCE.md) for local Linux/WSL dependencies and [Jenkins setup](deploy/jenkins/README.md) for packaging. Do not run release builds on the local computer.
+Follow [the maintenance workflow](PK_MAINTENANCE.md) to stage the complete tested tree, preserve the nine-suite `pk-source-v2` report and original logs, then commit that same tree and bind evidence to the final commit. Reports must name the actual execution environment; server results must not be described as local tests. Credentials stay in ignored local configuration, never in source or documentation.
 
 ```bash
-git clone https://github.com/pengkang0322/sub2api.git
-cd sub2api
-# Only for a future task that authorizes local tests; not for this migration.
-# Use a clean, committed checkout with the documented local dependencies.
-python3 scripts/test-local.py
-# After downloading the Jenkins package, validate that exact artifact locally.
-python3 scripts/test-local.py --artifact-dir /path/to/jenkins-package
+# After reviewing and staging all intended changes; see the setup requirements.
+python -B scripts/test-server.py
+# Commit only after the full report passes, then bind it to that exact commit.
+python -B scripts/test-local.py --bind-commit HEAD --report /path/to/local-validation.json --publish-evidence
 ```
 
-On Windows use `scripts/test-local.ps1`, which runs the checks in a local WSL Linux distribution. Jenkins publishes only the exact package whose source and runtime checks passed. Application configuration below applies to isolated deployment environments; local tests create their own PostgreSQL/Redis containers.
+For optional local validation use `scripts/test-local.ps1` on Windows/WSL or `python3 scripts/test-local.py` on Linux. Every final merge/tag commit needs its own bound note under `refs/notes/pk-source-validation`; a matching tree on another commit is insufficient. Jenkins defaults to `ACTION=release` with a formal `vX.Y.Z-pk.N` tag in private `main` history, rejects `COMMIT_SHA` overrides, verifies source evidence, then builds once, runs eleven isolated artifact checks, seals and publishes the same package. The private formal Release retains its update archive and `checksums.txt` for the existing web updater. Publishing does not update production. Manual `package`/`publish` and legacy same-artifact validation remain available; see [Jenkins instructions](deploy/jenkins/README.md). Do not compile release artifacts locally.
 
 **Key configuration in `config.yaml`:**
 

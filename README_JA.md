@@ -235,21 +235,18 @@ v0.2.14 の初期設定では、新規インストール時に管理者メール
 
 ### 開発とパッケージ作成
 
-PK の候補版と正式リリースの成果物は Jenkins でビルドします。今後のローカルテストは各タスクで明示的に許可された範囲で実行し、今回の Jenkins 移行ではローカルのビルドとテストを一切実行しません。GitHub Actions によるビルドとテストは使用しません。プライベート GitHub リポジトリ、Releases、GHCR には引き続きソースと成果物を保存するため、既存の Web 更新とバージョンのロールバックを利用できます。
+ソースの全検証に合格してからコミットと push を行います。既定ではユーザー指定のテストサーバー上の隔離環境を使い、ローカル Linux/WSL も利用できます。この許可は以前の移行時のテスト禁止に優先します。候補版・正式版のビルドは Jenkins のみで行い、GitHub Actions は使用しません。ソーステストは本番データや本番サービスに接続しません。
 
-今後ローカルテストが許可されたタスクでは、プライベートリポジトリをクローンした後、[保守手順](PK_MAINTENANCE.md) に従ってローカル Linux/WSL のテスト環境を準備し、[Jenkins の説明](deploy/jenkins/README.md) に従ってパッケージを作成してください。ローカル PC ではリリース用ビルドを実行しません。
+[保守手順](PK_MAINTENANCE.md) に従って変更全体をステージし、9 スイートの `pk-source-v2` レポートと元のログを保存します。合格した同一 tree をコミットし、最終 commit に証拠を関連付けます。実際の実行環境を記録し、サーバーの結果をローカル実行と表現しません。認証情報は Git 対象外のローカル設定に保存し、ソースや文書には含めません。
 
 ```bash
-git clone https://github.com/pengkang0322/sub2api.git
-cd sub2api
-# 変更をコミット済みのクリーンな作業ツリーと、文書記載の依存ツールが必要です。
-# 今後ローカルテストが明示的に許可されたタスク向けです。今回の移行では実行しません。
-python3 scripts/test-local.py
-# Jenkins の成果物をダウンロードした後、同じ成果物をローカルで検証します。
-python3 scripts/test-local.py --artifact-dir /path/to/jenkins-package
+# 変更を確認して全体をステージします。環境の準備は保守手順を参照。
+python -B scripts/test-server.py
+# 全検証の合格後にコミットし、その最終 commit の notes を公開します。
+python -B scripts/test-local.py --bind-commit HEAD --report /path/to/local-validation.json --publish-evidence
 ```
 
-Windows では `scripts/test-local.ps1` を使用し、ローカルの WSL Linux で検証します。Jenkins はソースと実行時の検証を通過した同一の成果物だけを正式公開します。以下のアプリケーション設定は隔離したデプロイ環境向けです。ローカルテストは専用の PostgreSQL/Redis コンテナを作成します。
+ローカル検証を選ぶ場合は Windows/WSL の `scripts/test-local.ps1` または Linux の `python3 scripts/test-local.py` を使います。最終マージ/tag commit 自身に `refs/notes/pk-source-validation` の証拠が必要で、別 commit の tree が同じだけでは不十分です。Jenkins の既定 `ACTION=release` はプライベート main の履歴に含まれる正式 `vX.Y.Z-pk.N` タグを要求し、COMMIT_SHA の上書きを拒否します。ソース証拠を確認して一度だけビルドし、11 項目の隔離実行時検証、封印、同一成果物の公開を行います。正式 Release の更新アーカイブと `checksums.txt` は既存 Web 更新・ロールバックと互換性を保ち、公開だけでは本番を更新しません。旧手動 package/publish も利用できます。[Jenkins の説明](deploy/jenkins/README.md) を参照し、ローカルでリリース用ビルドは行わないでください。
 
 **`config.yaml` の主要設定:**
 

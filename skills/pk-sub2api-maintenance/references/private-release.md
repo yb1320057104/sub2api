@@ -21,7 +21,7 @@
 
 ## 发布
 
-仅在当前请求包含发布时执行本节。读取私库当前 `Jenkinsfile`、`deploy/jenkins/README.md` 和 `PK_MAINTENANCE.md`；核实推送、PR、标签、打包与正式发布的触发链，确认不会引发未授权的生产部署。自 2026-10-03 按用户要求由 Jenkins 打包，后续本地电脑测试按当次明确授权执行，GitHub Actions 不再执行这两项工作。本次 Jenkins 迁移不运行任何本地构建或测试；未来流程不覆盖当次禁令，也不降低发布验收门禁。Jenkins 仅在 `127.0.0.1:18081` 监听，用户自行配置域名反代；不要开放公网端口。
+仅在当前请求包含发布时执行本节。读取私库当前 `Jenkinsfile`、`deploy/jenkins/README.md` 和 `PK_MAINTENANCE.md`；核实提交、notes、PR、标签与正式发布的触发链，确认不会引发未授权的生产部署。2026-10-08 最新授权取代此前本次测试禁令：默认先完整源码测试通过再提交和推送，Jenkins 一次 release 完成发行构建、同制品运行时验收与私库发布。GitHub Actions 不打包或测试，本地不编译发行程序。Jenkins 仅监听 `127.0.0.1:18081`，用户自行配置域名反代，不开放公网端口。
 
 版本为 `上游版本-pk.修订号`；当前版本完成既定合入/发行后，规划同一上游版本的下一次发行时才核对标签并递增修订号；未发布版本内的修复和重新打包不递增，不复用已使用的标签。页面在机器版本后追加 `PK出版`，不能把中文写入机器版本。
 
@@ -33,13 +33,27 @@
 
 ### 每次正式发布的执行顺序
 
-固定顺序为 **`package` → 本地验收并上传报告 → `publish` → 网页更新**。仅要求试打包时停在第一步；用户要求正式发布时也不能跳过中间的验收。GitHub 保存源码、Release 和私有镜像，不承担打包或测试。
+默认顺序为 **提交前源码测试 → 提交并绑定最终 commit 的 notes → 一次 Jenkins `release` → 按授权网页更新**。GitHub 保存源码、验收 notes、Release 和私有镜像，不承担打包或测试。
 
-1. **运行 `package`。** Jenkins 任务 `sub2api-package` 选择 `ACTION=package`，在 `SOURCE_REF` 的可搜索下拉列表选择已审阅的新标签 `vX.Y.Z-pk.N`，`COMMIT_SHA`、`PACKAGE_ID` 留空。只有属于私库 `main` 历史的正式标签才生成 `build_type=release` 的待验收包；标签打包本身不会发布。列表使用 Git Parameter `PT_BRANCH_TAG`，默认 `origin/main`；`origin/codex/vX.Y.Z-pk.N` 等分支即使按版本命名也只生成候选包。填写 40 位小写 `COMMIT_SHA` 会覆盖下拉选择，同样只生成候选。候选包不能直接转为正式发布，需按正式标签重新打包和验收。选择源码不改变可信流水线的 SCM 分支。
-2. **记录并下载同一次制品。** 等待打包成功，记录 `PACKAGE_ID`（构建号-提交前12位），下载 `output/` 中的 `manifest.json`、二进制 `.tar.gz`、镜像 `.docker.tar.gz` 和 `checksums.txt`。封存来源为 `/srv/jenkins-packages/sub2api/{PACKAGE_ID}/`，不能混用不同构建的文件或凭版本名猜测 ID。
-3. **本地验收并上传报告。** 按当次授权在与制品相同 commit/tree 的干净源码目录执行 Windows `scripts/test-local.ps1 -ArtifactDirectory <制品目录> -OutputDirectory <报告目录>`，或 Linux `python3 scripts/test-local.py --artifact-dir <制品目录> --output-dir <报告目录>`；报告目录必须位于源码目录之外。核对生成的 `local-validation.json`：`schema_version=1`、`tests_profile=pk-local-v1`、`status=passed`、`publish_eligible=true`，repository/commit/tree 与制品一致，十个套件（含 `artifact-runtime`）全部通过，artifact 中的 `package_id`、`binary_sha256`、`image_archive_sha256` 均匹配。将此报告上传并命名为 `/srv/jenkins-evidence/sub2api/{PACKAGE_ID}.json`。未传制品目录时，源码测试可能显示 `passed` 但 `publish_eligible=false`，仍不可发布。缺工具、套件失败或当次禁止测试时如实记录，不伪造报告、不跳过验收；测试生成的临时文件用完删除，保留原有回归文件。
-4. **运行 `publish`。** 选择 `ACTION=publish`，填写刚才已验收的 `PACKAGE_ID`；此操作不使用 `SOURCE_REF` 或 `COMMIT_SHA`。Jenkins 复核制品、报告、私库状态、标签指向、`main` 祖先关系及版本未被占用后，复用原镜像与二进制归档发布到私有 GHCR/Release，不重新编译。确认 Release 资产完整、已转为正式非 prerelease/latest，并核对版本镜像与 `latest` 状态；不能仅凭开始执行或出现草稿称为成功。
-5. **按授权执行网页更新。** 正式发布成功后，原网页更新入口才能发现该版本；用户可再在网页执行更新。`publish` 不连接、升级或重启生产应用；发布完成和线上升级须分别记录。
+1. **验证完整暂存源码。** 检查范围后将源码全部 `git add` 暂存，不能有未解决冲突、未暂存改动或非忽略未跟踪文件。默认运行控制端 `python -B scripts/test-server.py`，在用户指定服务器隔离环境验证；本机 Linux/WSL 仍可运行原 test-local 入口。报告 `local-validation.json` 为 schema2 / `pk-source-v2`，独立 preflight 和九套件全通过、`source_eligible=true`、前后 tree/快照一致；远端注明 `execution_environment=server-isolated`，不能写成本机通过。保留仓库外原报告及相邻日志 SHA256，个别诊断不合格。
+2. **提交同一 tree 并绑定。** 测试通过后才提交相同 tree，在干净最终 HEAD 执行 `python -B scripts/test-local.py --bind-commit HEAD --report /path/to/local-validation.json --publish-evidence`。此绑定可在 Windows Python 运行，不需 WSL。保留真实环境、执行时间和 base_commit，验证其为最终提交祖先；推送代码及 `refs/notes/pk-source-validation`，不强制改写 notes。合入/正式 tag 指向的新 commit 本身须有报告，即使 tree 一样也需重新绑定；tree 改变须重新测试。环境不可用或失败时保留改动，不提交、合入或发布。
+3. **选择一次正式 release。** Jenkins `sub2api-package` 默认 `ACTION=release`，`SOURCE_REF` 选择未占用的正式 `vX.Y.Z-pk.N`（规范化为 `refs/tags/...`），COMMIT_SHA 和 PACKAGE_ID 留空。标签 commit 必须在私库 main 历史内且有匹配 notes；分支/SHA 不允许 release，禁止 COMMIT_SHA 覆盖，不改变可信 SCM 分支。
+4. **核对同次证据及制品。** Jenkins 显式 fetch notes，校验最终 commit/tree、base 祖先、九套件结果，并保全 `source-validation.json`、SHA256 和 notes 出处；随后 build → inventory → 专用 daemon runtime → seal → publish。运行时 `pk-artifact-v2` 十一项检查绑定 package_id、归档/二进制/镜像 SHA256，容器不连接生产或发布凭据。源码证据或 runtime 失败均不发布。成功后原制品封存于 `/srv/jenkins-packages/sub2api/{PACKAGE_ID}/`，发布不重编译；不混用不同构建文件。
+5. **确认正式发布与网页更新。** 核对私有正式非 prerelease Release、二进制归档、checksums.txt、版本镜像与 latest。网页入口此时可发现版本；是否执行更新按当前授权。release/publish 不升级或重启生产，发布完成与线上升级分别记录。
+
+### 旧手动流程兼容
+
+用户只要求试打包时显式选 `ACTION=package`，保留原六项基础制品。SOURCE_REF 可选分支/正式标签，40 位小写 COMMIT_SHA 只在 package 覆盖选择；分支和 SHA 生成 candidate，不进入网页正式更新。正式 tag 必须属于 main，得到待验收 release 包，package 本身不发布。
+
+旧手动正式流程仍为 package → 下载同包 → 本地 `--artifact-dir` → 上传报告 → publish。在干净的相同 commit/tree 执行 `scripts/test-local.ps1 -ArtifactDirectory <制品目录>` 或 `python3 scripts/test-local.py --artifact-dir <制品目录>`，生成旧 `pk-local-v1` 十套件报告（含 artifact-runtime），须 `publish_eligible=true` 且 package_id、binary_sha256、image_archive_sha256 匹配。将原报告上传 `/srv/jenkins-evidence/sub2api/{PACKAGE_ID}.json`，再 `ACTION=publish` 指定 PACKAGE_ID，发布原包而不重编译。候选包不能直接改成正式版。
+
+新 release 流程已验收封存、但尚未对外发布的包也可用 publish。此时使用封存的源码/运行时证据，不能凭后来变动的 notes 或手填通过值放行。入口和文档不代表动态验收完成，报告和套件日志必须来自真实环境执行。测试生成临时文件及夹具用完删除，仓库原有回归保留。
+
+### 服务器隔离源码验证
+
+控制端入口为 `python -B scripts/test-server.py`，可用 `--output-dir` 指定仓库外新建的绝对报告目录。需要 Python 3.12+/Paramiko 和预先核验的 `~/.ssh/known_hosts`；Windows 可直接运行及绑定报告，无需 WSL。未知或不符的主机指纹失败，不能自动信任。凭据默认位于 `.codex/servers/sub2api-test.json`，必须被 Git 忽略且未跟踪，目标限用户授权的测试服务器；不在 skill/文档/普通日志填写密码，也不把 SSH 凭据上传到测试容器。
+
+服务器先用已审阅的 `deploy/jenkins/Dockerfile.source-tests` 一次构建工具镜像 `pk-source-tests:20261008`，这不是应用发行编译。入口仅上传 HEAD Git bundle 和暂存树 Git 对象包；远端解包后直接恢复暂存树，保留原始 blob、文件 mode、tree 和 base HEAD，不重新 `git add` 规范化或生成临时 commit。每轮在 `/srv/pk-source-validation/runs/<运行ID>` 建独立 UUID 的 privileged DinD 环境，8 CPU/16 GiB，只挂本轮目录，不挂宿主 socket、生产数据/卷或凭据，不共用宿主网络/PID。源码及 PostgreSQL/Redis 测试对象隔离，不能重启/操作生产服务。完成后自动回传原报告与日志、删除本轮容器/匿名 daemon 卷/远端目录；清理失败如实报告，不扩大删除范围。具体准备步骤以当前工作区 `PK_MAINTENANCE.md` 为准。
 
 发布部分失败可能已占用版本或留下草稿，先核查日志、Release 与镜像状态，保留原制品及证据，不盲目覆盖重试或重建包。若版本已占用，按维护文档处理；需要改用未占用的新 PK 修订时，重新走该版本的打包和验收流程。若正式 Release 已完成而仅镜像 `latest` 失败，先核对再处理该移动标签，不把已经发布的版本重新打包覆盖。
 

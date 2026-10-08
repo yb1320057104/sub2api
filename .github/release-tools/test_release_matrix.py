@@ -1,4 +1,6 @@
 import argparse
+import copy
+import gzip
 import hashlib
 import importlib.util
 import io
@@ -18,6 +20,12 @@ ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location('release_matrix', Path(__file__).with_name('release_matrix.py'))
 release = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(release)
+control_spec = importlib.util.spec_from_file_location('jenkins_control', ROOT / 'deploy/jenkins/control.py')
+control = importlib.util.module_from_spec(control_spec)
+control_spec.loader.exec_module(control)
+runtime_spec = importlib.util.spec_from_file_location('jenkins_runtime', ROOT / 'deploy/jenkins/verify-runtime.py')
+runtime = importlib.util.module_from_spec(runtime_spec)
+runtime_spec.loader.exec_module(runtime)
 
 
 class ReleaseMatrixTest(unittest.TestCase):
@@ -185,6 +193,333 @@ class ReleaseMatrixTest(unittest.TestCase):
                     self.assertIn('fixturehub/sub2api:9.8', log)
                     self.assertIn('ghcr.io/exampleowner/sub2api:9', log)
 
+
+
+class JenkinsValidationTest(unittest.TestCase):
+    """Fail closed before publishing when a source or artifact binding changes."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.directory = Path(self.temp.name)
+        self.data = {
+            'repository': control.REPOSITORY, 'commit': 'a' * 40, 'tree': 'b' * 40,
+            'package_id': '5-' + 'a' * 12, 'version': '9.8.7-pk.1',
+            'binary_sha256': 'c' * 64, 'binary_archive_sha256': 'd' * 64,
+            'image_archive_sha256': 'e' * 64, 'image_id': 'sha256:' + 'f' * 64,
+            'source_notes_ref': control.NOTES_REF, 'source_notes_commit': 'd' * 40,
+            'source_note_blob': 'e' * 40, 'validation_profile': control.VALIDATION_PROFILE,
+        }
+        snapshot = {'head': 'c' * 40, 'tree': self.data['tree'], 'worktree_matches_index': True, 'status': 'M staged'}
+        self.source = {
+            **{key: self.data[key] for key in ('repository', 'commit', 'tree')},
+            'schema_version': 2, 'tests_profile': 'pk-source-v2', 'status': 'passed',
+            'execution_environment': 'server-isolated',
+            'source_eligible': True, 'bound_at': '2026-10-08T00:00:00Z', 'base_commit': 'c' * 40,
+            'workspace_before': copy.deepcopy(snapshot), 'workspace_after': copy.deepcopy(snapshot),
+            'preflight': self.suite('preflight'),
+            'suites': [self.suite(name) for name in sorted(control.SOURCE_SUITES)],
+        }
+        self.save_source()
+        self.runtime = {
+            **{key: self.data[key] for key in ('repository', 'commit', 'tree', 'package_id', 'version',
+                'binary_sha256', 'binary_archive_sha256', 'image_archive_sha256', 'image_id', 'source_validation_sha256')},
+            'schema_version': 2, 'tests_profile': 'pk-artifact-v2', 'status': 'passed',
+            'checks': [dict(name=name, status='passed', exit_code=0) for name in sorted(control.RUNTIME_CHECKS)],
+        }
+        self.save_runtime()
+
+    @staticmethod
+    def suite(name):
+        return dict(name=name, status='passed', exit_code=0, commands=['fixture command'], log_sha256='f' * 64)
+
+    def save_source(self):
+        control.write_json(self.directory / 'source-validation.json', self.source)
+        self.data['source_validation_sha256'] = control.sha256(self.directory / 'source-validation.json')
+
+    def save_runtime(self):
+        control.write_json(self.directory / 'artifact-validation.json', self.runtime)
+        self.data['artifact_validation_sha256'] = control.sha256(self.directory / 'artifact-validation.json')
+
+    def test_release_requires_formal_tag_without_commit_override(self):
+        env = {'ACTION': 'release', 'PK_REPOSITORY': control.REPOSITORY, 'PK_IMAGE': control.IMAGE,
+               'SOURCE_REF': 'refs/tags/v9.8.7-pk.1', 'COMMIT_SHA': ''}
+        with patch.dict(os.environ, env, clear=True):
+            control.parameters()
+            for ref in ('refs/heads/main', 'a' * 40, 'refs/tags/v9.8.7', 'refs/tags/v9.8.7-pk.candidate.5'):
+                with self.subTest(ref=ref), patch.dict(os.environ, SOURCE_REF=ref):
+                    with self.assertRaises(RuntimeError):
+                        control.parameters()
+            with patch.dict(os.environ, COMMIT_SHA='a' * 40):
+                with self.assertRaises(RuntimeError):
+                    control.parameters()
+        with patch.dict(os.environ, {**env, 'ACTION': 'package', 'SOURCE_REF': 'refs/heads/main'}, clear=True):
+            control.parameters()
+
+    def test_source_report_must_be_complete_passed_and_bound(self):
+        control.source_evidence(self.source, self.data)
+        changes = [dict(commit='f' * 40), dict(tree='f' * 40), dict(repository='other/repo'),
+                   dict(status='failed'), dict(source_eligible=False), dict(bound_at=None),
+                   dict(execution_environment='unknown'),
+                   dict(tests_profile='pk-local-v1'), dict(base_commit=''), dict(suites=self.source['suites'][:-1]),
+                   dict(suites=[self.source['suites'][0]] * 9), dict(preflight=self.suite('wrong'))]
+        for change in changes:
+            with self.subTest(change=list(change)), self.assertRaises(RuntimeError):
+                control.source_evidence({**self.source, **change}, self.data)
+
+    def test_skipped_failed_or_empty_source_commands_cannot_pass(self):
+        for target in ('preflight', 'suite'):
+            for change in (dict(status='skipped'), dict(exit_code=1), dict(exit_code=False), dict(commands=[]),
+                           dict(log_sha256=''), dict(skipped_tests=['TestPKUsageFirstResponsePersistence'])):
+                proof = copy.deepcopy(self.source)
+                (proof['preflight'] if target == 'preflight' else proof['suites'][0]).update(change)
+                with self.subTest(target=target, change=change), self.assertRaises(RuntimeError):
+                    control.source_evidence(proof, self.data)
+
+    def test_changed_workspace_cannot_be_bound_to_tested_tree(self):
+        proof = copy.deepcopy(self.source)
+        proof['workspace_after']['tree'] = 'f' * 40
+        with self.assertRaises(RuntimeError):
+            control.source_evidence(proof, self.data)
+        for key in ('commit', 'tree', 'status'):
+            def fake_git(*args):
+                if args == ('status', '--porcelain'):
+                    return ' M changed.py' if key == 'status' else ''
+                field = 'tree' if args[-1] == 'HEAD^{tree}' else 'commit'
+                return 'f' * 40 if key == field else self.data[field]
+            with self.subTest(key=key), patch.object(control, 'git', side_effect=fake_git), self.assertRaises(RuntimeError):
+                control.verify_source_checkout(self.data)
+
+    def test_sealed_source_and_runtime_reports_are_accepted_together(self):
+        control.package_evidence(self.directory, self.data)
+
+    def test_missing_or_changed_sealed_report_is_rejected(self):
+        for filename in ('source-validation.json', 'artifact-validation.json'):
+            path = self.directory / filename
+            original = path.read_bytes()
+            for replacement in (None, original + b' '):
+                if replacement is None:
+                    path.unlink()
+                else:
+                    path.write_bytes(replacement)
+                with self.subTest(filename=filename, missing=replacement is None), self.assertRaises(RuntimeError):
+                    control.package_evidence(self.directory, self.data)
+                path.write_bytes(original)
+
+    def test_runtime_must_match_all_source_and_artifact_bindings(self):
+        for key in ('repository', 'commit', 'tree', 'package_id', 'version', 'binary_sha256',
+                    'binary_archive_sha256', 'image_archive_sha256', 'image_id', 'source_validation_sha256'):
+            original = self.runtime[key]
+            self.runtime[key] = 'different'
+            self.save_runtime()
+            with self.subTest(key=key), self.assertRaises(RuntimeError):
+                control.package_evidence(self.directory, self.data)
+            self.runtime[key] = original
+
+    def test_runtime_requires_cleanup_and_every_unique_check(self):
+        original = copy.deepcopy(self.runtime)
+        for changes in (dict(status='failed'), dict(checks=self.runtime['checks'][:-1]),
+                        dict(checks=[self.runtime['checks'][0]] * len(control.RUNTIME_CHECKS)),
+                        dict(checks=[dict(item, status='failed') if item['name'] == 'cleanup' else item
+                                     for item in self.runtime['checks']])):
+            self.runtime = {**copy.deepcopy(original), **changes}
+            self.save_runtime()
+            with self.subTest(changes=list(changes)), self.assertRaises(RuntimeError):
+                control.package_evidence(self.directory, self.data)
+
+    def test_candidate_never_reaches_release_api(self):
+        with patch.object(control, 'request') as api:
+            with self.assertRaises(RuntimeError):
+                control.release_ready(dict(self.data, build_type='candidate'))
+            api.assert_not_called()
+
+
+class JenkinsRuntimeTest(unittest.TestCase):
+    """Check archive identity chains and isolation without a Docker daemon."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix='pk-runtime-fixture-')
+        self.addCleanup(self.temp.cleanup)
+        self.directory = Path(self.temp.name)
+
+    @staticmethod
+    def encode(value):
+        return json.dumps(value, separators=(',', ':')).encode()
+
+    def archive(self, *, oci=True, bad_attestation=False, binary_mode=0o555, inline_attestation=False):
+        self.files, self.paths = {}, {}
+        binary = b'PK fixture binary; never executed'
+        self.data = {'commit': 'a' * 40, 'version': '9.8.7-pk.1',
+                     'image_tag': 'ghcr.io/' + runtime.REPOSITORY + ':9.8.7-pk.1',
+                     'image_archive': 'image.tar.gz', 'binary_sha256': hashlib.sha256(binary).hexdigest()}
+        layer_stream = io.BytesIO()
+        with tarfile.open(fileobj=layer_stream, mode='w') as layer:
+            member = tarfile.TarInfo('app/sub2api')
+            member.size, member.mode = len(binary), binary_mode
+            member.uid = member.gid = 0
+            layer.addfile(member, io.BytesIO(binary))
+        layer_bytes = layer_stream.getvalue()
+
+        def blob(payload, media_type, label):
+            checksum = hashlib.sha256(payload).hexdigest()
+            name = 'blobs/sha256/' + checksum
+            self.files[name] = payload
+            self.paths[label] = name
+            return {'mediaType': media_type, 'digest': 'sha256:' + checksum, 'size': len(payload)}
+
+        layer = blob(gzip.compress(layer_bytes, mtime=0), 'application/vnd.oci.image.layer.v1.tar+gzip', 'layer')
+        config_type = 'application/vnd.oci.image.config.v1+json'
+        manifest_type = 'application/vnd.oci.image.manifest.v1+json'
+        index_type = 'application/vnd.oci.image.index.v1+json'
+        config = blob(self.encode({
+            'os': 'linux', 'architecture': 'amd64',
+            'config': {'Labels': {
+                'org.opencontainers.image.source': 'https://github.com/' + runtime.REPOSITORY,
+                'org.opencontainers.image.version': self.data['version'],
+                'org.opencontainers.image.revision': self.data['commit']},
+                'Entrypoint': ['/app/docker-entrypoint.sh'], 'Cmd': ['/app/sub2api'],
+                'Env': ['SUB2API_DOCKER_SELF_UPDATE=true']},
+            'rootfs': {'type': 'layers', 'diff_ids': ['sha256:' + hashlib.sha256(layer_bytes).hexdigest()]},
+        }), config_type, 'config')
+        self.data['image_id'] = config['digest']
+        self.files['manifest.json'] = self.encode([{'Config': self.paths['config'],
+            'RepoTags': [self.data['image_tag']], 'Layers': [self.paths['layer']]}])
+        if oci:
+            image = blob(self.encode({'schemaVersion': 2, 'mediaType': manifest_type,
+                                     'config': config, 'layers': [layer]}), manifest_type, 'image')
+            image['platform'] = {'os': 'linux', 'architecture': 'amd64'}
+            attestation_config = blob(b'{}', 'application/vnd.oci.empty.v1+json', 'attestation_config')
+            attestation_config['data'] = 'e30='
+            if inline_attestation:
+                del self.files[self.paths['attestation_config']]
+            attestation_layer = blob(b'{"predicateType":"fixture"}', 'application/vnd.in-toto+json', 'attestation_layer')
+            attestation = blob(self.encode({'schemaVersion': 2, 'mediaType': manifest_type,
+                                           'config': attestation_config, 'layers': [attestation_layer]}),
+                               manifest_type, 'attestation')
+            attestation.update(platform={'os': 'unknown', 'architecture': 'unknown'}, annotations={
+                'vnd.docker.reference.type': 'attestation-manifest',
+                'vnd.docker.reference.digest': 'sha256:' + 'f' * 64 if bad_attestation else image['digest'],
+            })
+            root = blob(self.encode({'schemaVersion': 2, 'mediaType': index_type,
+                                     'manifests': [image, attestation]}), index_type, 'root')
+            self.data['image_id'] = root['digest']
+            root['annotations'] = {'io.containerd.image.name': self.data['image_tag'],
+                                   'org.opencontainers.image.ref.name': self.data['version']}
+            self.files['index.json'] = self.encode({'schemaVersion': 2, 'mediaType': index_type, 'manifests': [root]})
+        self.write_archive()
+        validator = runtime.Validator(self.directory, {'checks': []})
+        validator.data = dict(self.data)
+        return validator
+
+    def write_archive(self):
+        with tarfile.open(self.directory / self.data['image_archive'], 'w:gz') as archive:
+            for name, payload in self.files.items():
+                member = tarfile.TarInfo(name)
+                member.size = len(payload)
+                archive.addfile(member, io.BytesIO(payload))
+
+    def test_classic_config_and_docker29_index_identities_are_verified(self):
+        for oci in (False, True):
+            with self.subTest(oci=oci):
+                self.archive(oci=oci).provenance()
+
+    def test_recorded_image_identity_cannot_be_ignored(self):
+        for oci in (False, True):
+            validator = self.archive(oci=oci)
+            validator.data['image_id'] = 'sha256:' + 'f' * 64
+            with self.subTest(oci=oci), self.assertRaises(RuntimeError):
+                validator.provenance()
+
+    def test_buildkit_empty_attestation_config_can_be_authenticated_inline(self):
+        self.archive(inline_attestation=True).provenance()
+
+    def test_oci_root_layers_and_attestation_blobs_are_authenticated(self):
+        for label in ('root', 'layer', 'attestation_layer'):
+            validator = self.archive()
+            path = self.paths[label]
+            self.files[path] = bytes([self.files[path][0] ^ 1]) + self.files[path][1:]
+            self.write_archive()
+            with self.subTest(label=label), self.assertRaisesRegex(RuntimeError, 'digest mismatch'):
+                validator.provenance()
+
+    def test_oci_descriptor_size_and_compatibility_paths_must_match(self):
+        validator = self.archive()
+        index = json.loads(self.files['index.json'])
+        index['manifests'][0]['size'] += 1
+        self.files['index.json'] = self.encode(index)
+        self.write_archive()
+        with self.assertRaisesRegex(RuntimeError, 'size mismatch'):
+            validator.provenance()
+        validator = self.archive()
+        compatibility = json.loads(self.files['manifest.json'])
+        self.files['alias-config.json'] = self.files[self.paths['config']]
+        compatibility[0]['Config'] = 'alias-config.json'
+        self.files['manifest.json'] = self.encode(compatibility)
+        self.write_archive()
+        with self.assertRaisesRegex(RuntimeError, 'packaged image config'):
+            validator.provenance()
+
+    def test_attestation_cannot_refer_to_another_image(self):
+        with self.assertRaisesRegex(RuntimeError, 'Attestation refers'):
+            self.archive(bad_attestation=True).provenance()
+
+    def test_binary_digest_and_permissions_remain_protected(self):
+        validator = self.archive()
+        validator.data['binary_sha256'] = 'f' * 64
+        with self.assertRaisesRegex(RuntimeError, 'exact update binary'):
+            validator.provenance()
+        with self.assertRaisesRegex(RuntimeError, 'root-owned and read-only'):
+            self.archive(binary_mode=0o755).provenance()
+
+    def test_container_isolation_and_default_entrypoint_capabilities(self):
+        validator = self.archive()
+        for default_user in (False, True):
+            with patch.object(validator, 'docker', return_value='created') as docker:
+                validator.create('sh', '-ec', 'test "$(id -u)" = 1000', default_user=default_user)
+                command = docker.call_args.args
+            for flag in ('--network=none', '--cap-drop=ALL', '--security-opt=no-new-privileges', '--read-only', '--no-healthcheck'):
+                self.assertIn(flag, command)
+            added = {flag for flag in command if flag.startswith('--cap-add=')}
+            self.assertEqual(added, {'--cap-add=CHOWN', '--cap-add=SETUID', '--cap-add=SETGID'} if default_user else set())
+            self.assertEqual('--user=1000:1000' in command, not default_user)
+            self.assertIn('type=volume,src=' + validator.volume + ',dst=/app/data', command)
+
+    def test_fixture_changes_seed_without_running_or_building(self):
+        validator = self.archive()
+        validator.data['binary_archive'] = 'binary.tar.gz'
+        with tarfile.open(self.directory / 'binary.tar.gz', 'w:gz') as archive:
+            member = tarfile.TarInfo('sub2api')
+            member.size, member.mode = 5, 0o555
+            archive.addfile(member, io.BytesIO(b'image'))
+        calls = []
+        def docker(*args, **kwargs):
+            calls.append(args)
+            if args[0] == 'image':
+                return 'sha256:' + 'a' * 64
+            if args[0] == 'cp':
+                self.assertTrue(Path(args[1]).is_file())
+            return 'created'
+        with patch.object(validator, 'docker', side_effect=docker):
+            self.assertEqual(validator.fixture_image(), 'sha256:' + 'a' * 64)
+        self.assertEqual([args[0] for args in calls], ['create', 'cp', 'commit', 'image', 'rm'])
+        self.assertFalse(validator.containers)
+        self.assertNotIn('--mount', calls[0])
+
+    def test_cleanup_keeps_trying_and_never_removes_original_image(self):
+        validator = self.archive()
+        validator.docker_started = validator.volume_created = validator.fixture_created = True
+        validator.containers = ['pk-owned-one', 'pk-owned-two']
+        calls = []
+        def docker(*args, **kwargs):
+            calls.append(args)
+            if args[-1] == 'pk-owned-one':
+                raise RuntimeError('fixture cleanup error')
+            return ''
+        with patch.object(validator, 'docker', side_effect=docker), self.assertRaisesRegex(RuntimeError, 'Runtime cleanup failed'):
+            validator.cleanup()
+        self.assertEqual(calls, [('rm', '--force', 'pk-owned-one'), ('rm', '--force', 'pk-owned-two'),
+                                 ('image', 'rm', '--force', validator.fixture), ('volume', 'rm', validator.volume)])
+        self.assertFalse(any(validator.data['image_id'] in args for args in calls))
 
 
 if __name__ == '__main__':

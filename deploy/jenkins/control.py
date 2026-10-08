@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Trusted Jenkins packaging metadata, local-evidence gate and private publisher.
+"""Trusted Jenkins packaging metadata, validation gates and private publisher.
 
 Load from the reviewed pipeline checkout, never from parameter-selected source.
 No test or application process is executed by this script.
@@ -30,6 +30,14 @@ REQUIRED_SUITES = {
     "backend-unit", "backend-integration", "backend-race", "backend-lint",
     "frontend", "shell", "binance-proxy", "release-helpers", "security",
     "artifact-runtime",
+}
+SOURCE_SUITES = REQUIRED_SUITES - {"artifact-runtime"}
+NOTES_REF = "refs/notes/pk-source-validation"
+VALIDATION_PROFILE = "pk-source-artifact-v2"
+RUNTIME_CHECKS = {
+    "artifact-integrity", "image-provenance", "image-loaded", "binary-identity",
+    "runtime-nonroot", "same-seed-preservation", "interrupted-update-recovery",
+    "fixture-preparation", "changed-seed-replacement", "original-image-rollback", "cleanup",
 }
 
 
@@ -92,15 +100,19 @@ def token() -> str:
 
 
 def parameters() -> None:
-    action = os.environ.get("ACTION", "package")
-    require(action in {"package", "publish"}, "Unknown Jenkins action")
+    action = os.environ.get("ACTION", "release")
+    require(action in {"release", "package", "publish"}, "Unknown Jenkins action")
     require(os.environ.get("PK_REPOSITORY") == REPOSITORY, "Only the protected private repository is supported")
     require(os.environ.get("PK_IMAGE") == IMAGE, "Only the protected private image is supported")
-    if action == "package":
+    if action in {"release", "package"}:
         ref = os.environ.get("SOURCE_REF", "")
         require(bool(re.fullmatch(r"[0-9a-f]{40}|refs/(heads|tags)/[A-Za-z0-9._/-]+", ref)),
                 "SOURCE_REF must be a full SHA or refs/heads/... or refs/tags/...")
         require(".." not in ref and "//" not in ref and not ref.endswith(("/", ".lock")), "Invalid Git ref")
+        if action == "release":
+            require(not os.environ.get("COMMIT_SHA", "").strip(), "release does not accept a COMMIT_SHA override")
+            require(bool(re.fullmatch("refs/tags/" + TAG_PATTERN, ref)),
+                    "release requires a formal vX.Y.Z-pk.N tag; branches and candidate packages cannot publish")
     else:
         require(bool(re.fullmatch(PACKAGE_PATTERN, os.environ.get("PACKAGE_ID", ""))), "Invalid package ID")
 
@@ -147,6 +159,21 @@ def prepare() -> None:
         "image_archive": f"sub2api_{version}_linux_amd64.docker.tar.gz",
         "validation": "Pending local source and artifact-runtime tests; this package is not published",
     }
+    if os.environ.get("ACTION") == "release":
+        # Notes travel with the private source fetch, outside the source tree so
+        # recording the actual tested commit does not change that tested tree.
+        note_blob = git("notes", "--ref=" + NOTES_REF, "list", commit)
+        require(bool(re.fullmatch(r"[0-9a-f]{40}", note_blob)), "Missing source-validation note for this commit")
+        raw = subprocess.check_output(["git", "cat-file", "blob", note_blob], cwd="source")
+        proof = json.loads(raw)
+        source_evidence(proof, manifest)
+        git("merge-base", "--is-ancestor", proof["base_commit"], commit)
+        (output / "source-validation.json").write_bytes(raw)
+        manifest.update(validation_profile=VALIDATION_PROFILE,
+                        source_validation_sha256=sha256(output / "source-validation.json"),
+                        source_notes_ref=NOTES_REF, source_notes_commit=git("rev-parse", NOTES_REF),
+                        source_note_blob=note_blob,
+                        validation="Pre-commit source passed; exact-artifact Jenkins validation pending")
     write_json(output / "manifest.json", manifest)
     print(f"Packaging {commit} as {version}; no GitHub Actions build or production deployment")
 
@@ -165,6 +192,7 @@ def manifest(directory: Path) -> dict:
     require(data.get("image_tag") == IMAGE + ":" + version, "Unexpected package image")
     require(data.get("binary_archive") == f"sub2api_{version}_linux_amd64.tar.gz", "Unexpected binary archive name")
     require(data.get("image_archive") == f"sub2api_{version}_linux_amd64.docker.tar.gz", "Unexpected image archive name")
+    require(data.get("validation_profile") in (None, VALIDATION_PROFILE), "Unsupported package validation profile")
     return data
 
 
@@ -195,7 +223,8 @@ def package_path(package_id: str) -> Path:
     return path
 
 
-def seal() -> None:
+def inventory() -> None:
+    """Record build outputs before running the exact-artifact checks."""
     output = Path("output")
     data = manifest(output)
     for key in ("binary_archive", "image_archive"):
@@ -205,6 +234,24 @@ def seal() -> None:
     (output / "checksums.txt").write_text(data["binary_archive_sha256"] + "  " + data["binary_archive"] + "\n")
     write_json(output / "manifest.json", data)
     verify_artifacts(output, data)
+
+
+def verify_source_checkout(data: dict) -> None:
+    require(git("rev-parse", "HEAD") == data["commit"] and git("rev-parse", "HEAD^{tree}") == data["tree"],
+            "Source commit or tree changed during packaging")
+    require(not git("status", "--porcelain"), "Packaging modified the validated source checkout")
+
+
+def seal() -> None:
+    output = Path("output")
+    data = manifest(output)
+    verify_artifacts(output, data)
+    verify_source_checkout(data)
+    if data.get("validation_profile") == VALIDATION_PROFILE:
+        data["artifact_validation_sha256"] = sha256(output / "artifact-validation.json")
+        package_evidence(output, data)
+        data["validation"] = "Pre-commit source and Jenkins exact-artifact validation passed"
+        write_json(output / "manifest.json", data)
     destination = package_path(data["package_id"])
     require(not destination.exists(), "A package ID may never be overwritten")
     # A hidden sibling is renamed only after all artifact copies are complete.
@@ -219,7 +266,10 @@ def seal() -> None:
         staged.rename(destination)
         destination.chmod(0o550)
     print("PACKAGE_ID=" + data["package_id"])
-    print("Download the artifacts, run local validation, then upload the matching evidence before publish.")
+    if data.get("validation_profile") == VALIDATION_PROFILE:
+        print("Source and exact-artifact evidence sealed; the same package is ready for the private release gate.")
+    else:
+        print("Manual package: complete legacy local source/runtime validation before publish.")
 
 
 def restore() -> None:
@@ -232,6 +282,59 @@ def restore() -> None:
     Path("output").chmod(0o750)
     for file in Path("output").iterdir():
         file.chmod(0o640)
+
+
+def source_evidence(proof: dict, data: dict) -> None:
+    require(isinstance(proof, dict) and proof.get("schema_version") == 2
+            and proof.get("tests_profile") == "pk-source-v2", "Unsupported source validation profile")
+    for key in ("repository", "commit", "tree"):
+        require(proof.get(key) == data[key], f"Source evidence does not match package {key}")
+    require(proof.get("status") == "passed" and proof.get("source_eligible") is True,
+            "Pre-commit source validation did not pass")
+    require(proof.get("execution_environment") in {"local", "server-isolated"}, "Unknown source test environment")
+    require(isinstance(proof.get("bound_at"), str) and bool(proof["bound_at"]), "Source report is not bound to a commit")
+    require(bool(re.fullmatch(r"[0-9a-f]{40}", str(proof.get("base_commit", "")))), "Invalid tested base commit")
+    before, after = proof.get("workspace_before"), proof.get("workspace_after")
+    require(isinstance(before, dict) and before == after and before.get("tree") == data["tree"]
+            and before.get("head") == proof["base_commit"] and before.get("worktree_matches_index") is True,
+            "Source evidence does not prove a stable tested tree")
+    suites = proof.get("suites")
+    require(isinstance(suites, list) and len(suites) == len(SOURCE_SUITES)
+            and all(isinstance(suite, dict) for suite in suites), "Source evidence must contain nine suites")
+    require({suite.get("name") for suite in suites} == SOURCE_SUITES, "Source suites are missing or duplicated")
+    preflight = proof.get("preflight")
+    require(isinstance(preflight, dict) and preflight.get("name") == "preflight", "Missing source preflight")
+    for suite in [preflight, *suites]:
+        require(suite.get("status") == "passed" and type(suite.get("exit_code")) is int
+                and suite["exit_code"] == 0 and isinstance(suite.get("commands"), list) and bool(suite["commands"]),
+                "Source suite failed, skipped, or has no commands: " + str(suite.get("name")))
+        require(bool(re.fullmatch(r"[0-9a-f]{64}", str(suite.get("log_sha256", "")))), "Missing source log digest")
+        require(not any(str(name).startswith("TestPK") for name in suite.get("skipped_tests", [])),
+                "Protected source tests were skipped")
+
+
+def package_evidence(directory: Path, data: dict) -> None:
+    """Validate the source and runtime reports sealed alongside this exact package."""
+    require(data.get("source_notes_ref") == NOTES_REF, "Unexpected source evidence notes ref")
+    for field in ("source_notes_commit", "source_note_blob"):
+        require(bool(re.fullmatch(r"[0-9a-f]{40}", str(data.get(field, "")))), "Missing source note provenance")
+    for filename, field in (("source-validation.json", "source_validation_sha256"),
+                            ("artifact-validation.json", "artifact_validation_sha256")):
+        require(sha256(directory / filename) == data.get(field), "Sealed validation report changed: " + filename)
+    source_evidence(json.loads((directory / "source-validation.json").read_bytes()), data)
+    proof = json.loads((directory / "artifact-validation.json").read_bytes())
+    require(isinstance(proof, dict) and proof.get("schema_version") == 2
+            and proof.get("tests_profile") == "pk-artifact-v2" and proof.get("status") == "passed",
+            "Jenkins artifact validation did not pass")
+    for key in ("repository", "commit", "tree", "package_id", "binary_sha256", "binary_archive_sha256",
+                "image_archive_sha256", "image_id", "version", "source_validation_sha256"):
+        require(proof.get(key) == data[key], f"Jenkins runtime evidence does not match package {key}")
+    checks = proof.get("checks")
+    require(isinstance(checks, list) and len(checks) == len(RUNTIME_CHECKS)
+            and all(isinstance(check, dict) for check in checks), "Missing Jenkins runtime checks")
+    require({check.get("name") for check in checks} == RUNTIME_CHECKS, "Jenkins runtime checks are missing or duplicated")
+    require(all(check.get("status") == "passed" and type(check.get("exit_code")) is int
+                and check["exit_code"] == 0 for check in checks), "Jenkins runtime check failed or was skipped")
 
 
 def evidence(data: dict) -> dict:
@@ -276,10 +379,13 @@ def release_ready(data: dict) -> None:
 def ready() -> None:
     data = manifest(Path("output"))
     verify_artifacts(Path("output"), data)
-    proof = evidence(data)
+    if data.get("validation_profile") == VALIDATION_PROFILE:
+        package_evidence(Path("output"), data)
+    else:
+        proof = evidence(data)
+        write_json(Path("output/local-test-evidence.json"), proof)
     release_ready(data)
-    write_json(Path("output/local-test-evidence.json"), proof)
-    print("Local source and exact-artifact validation passed; private tag and main ancestry verified.")
+    print("Source and exact-artifact validation passed; private tag and main ancestry verified.")
 
 
 def package_registry_ready(data: dict, credential: str) -> None:
@@ -330,7 +436,7 @@ def publish() -> None:
     # Loading an image does not execute its entrypoint or application code.
     command("docker", "load", "--input", str(Path("output") / data["image_archive"]), capture=False)
     image_id = command("docker", "image", "inspect", data["image_tag"], "--format", "{{.Id}}")
-    require(image_id == data["image_id"], "Loaded image digest does not match locally tested image")
+    require(image_id == data["image_id"], "Loaded image digest does not match tested image")
     with tempfile.TemporaryDirectory(prefix="pk-registry-") as config:
         environment = dict(os.environ, DOCKER_CONFIG=config)
         command("docker", "login", "ghcr.io", "--username", registry_user, "--password-stdin",
@@ -339,15 +445,20 @@ def publish() -> None:
         package = request("/users/pengkang0322/packages/container/sub2api", token=registry_token)
         require(package.get("visibility") == "private", "GHCR package privacy changed; refuse release")
         tag = "v" + data["version"]
+        validation = ("Pre-commit source tests and Jenkins exact-artifact runtime validation passed. "
+                      if data.get("validation_profile") == VALIDATION_PROFILE else
+                      "Local source and exact-artifact runtime validation passed. ")
         notes = (f"PK出版。\n\nSource: `{data['commit']}`\nImage: `{data['image_tag']}`\n"
                  f"Binary SHA256: `{data['binary_sha256']}`\nJenkins package: `{data['package_id']}`\n\n"
-                 "Built by Jenkins; local source and exact-artifact runtime validation passed. "
+                 "Built by Jenkins; " + validation +
                  "The update archive and image contain the same binary. Publishing does not deploy production.")
         release = request("/repos/" + REPOSITORY + "/releases", method="POST", token=credential,
                           data={"tag_name": tag, "target_commitish": data["commit"],
                                 "name": data["version"] + " PK出版", "body": notes,
                                 "draft": True, "prerelease": False})
-        for name in (data["binary_archive"], "checksums.txt", "manifest.json", "local-test-evidence.json"):
+        reports = (["source-validation.json", "artifact-validation.json"]
+                   if data.get("validation_profile") == VALIDATION_PROFILE else ["local-test-evidence.json"])
+        for name in [data["binary_archive"], "checksums.txt", "manifest.json", *reports]:
             upload_asset(release["id"], Path("output") / name, credential)
         released = request("/repos/" + REPOSITORY + "/releases/" + str(release["id"]),
                            method="PATCH", token=credential,
@@ -360,7 +471,7 @@ def publish() -> None:
 
 
 if __name__ == "__main__":
-    operations = {"parameters": parameters, "prepare": prepare, "seal": seal, "restore": restore,
+    operations = {"parameters": parameters, "prepare": prepare, "inventory": inventory, "seal": seal, "restore": restore,
                   "ready": ready, "publish": publish}
     try:
         require(len(sys.argv) == 2 and sys.argv[1] in operations, "Unknown control operation")

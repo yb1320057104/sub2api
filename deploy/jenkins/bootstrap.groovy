@@ -49,7 +49,7 @@ def scm = new GitSCM([new UserRemoteConfig('git@github.com:pengkang0322/sub2api.
   [new BranchSpec('*/codex/jenkins-build')], false, [], null, null, [])
 def job = j.createProject(WorkflowJob, 'sub2api-package')
 job.setDefinition(new CpsScmFlowDefinition(scm, 'Jenkinsfile'))
-job.setDescription('Jenkins builds only. Local test evidence is required before publishing the exact package to the private GitHub Release and GHCR. No production deployment.')
+job.setDescription('Isolated source tests precede commits. release verifies their Git notes, builds once, validates the exact artifacts and publishes to private GitHub Release/GHCR. No production deployment.')
 job.save()
 j.save()
 marker.text = 'Provisioned with anonymous access disabled and zero controller executors.\n'

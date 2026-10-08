@@ -260,21 +260,18 @@ fast_mode = true
 
 ### 源码开发与打包
 
-PK 候选和正式发行物由 Jenkins 构建；后续本地测试按当次任务明确授权执行，本次 Jenkins 迁移不运行任何本地构建或测试。不再由 GitHub Actions 打包或测试。GitHub 私库、Release 与 GHCR 继续保存源码和发行物，原网页一键更新及版本回退保持可用。
+先完整源码测试通过，再提交和推送。默认使用用户指定测试服务器的隔离环境，本机 Linux/WSL 仍可用；此授权取代早前迁移测试禁令。候选和正式发行构建只在 Jenkins 进行，GitHub Actions 不打包或测试，源码测试不连接生产数据或影响生产服务。
 
-后续获准执行本地测试时，克隆私库后先按 [维护流程](PK_MAINTENANCE.md) 准备本机 Linux/WSL 的测试依赖，再按 [Jenkins 说明](deploy/jenkins/README.md) 打包；不在本机执行发行构建。
+按 [维护流程](PK_MAINTENANCE.md) 完整暂存待测 tree，保留九套件 `pk-source-v2` 报告与原日志；通过后提交相同 tree，再绑定最终 commit。报告注明真实执行环境，服务器通过不写成本机通过。凭据只保存在 Git 忽略的本机配置中，不进入源码或文档。
 
 ```bash
-git clone https://github.com/pengkang0322/sub2api.git
-cd sub2api
-# 仅供后续明确授权本地测试的任务使用，本次迁移不运行。
-# 需要干净、已提交的工作区及维护文档所列本地依赖。
-python3 scripts/test-local.py
-# 下载 Jenkins 制品后，在本机验证同一制品。
-python3 scripts/test-local.py --artifact-dir /path/to/jenkins-package
+# 先核对并完整暂存本次变更；环境准备见维护文档。
+python -B scripts/test-server.py
+# 完整报告通过后才提交，再绑定该最终 commit 并发布私库 notes。
+python -B scripts/test-local.py --bind-commit HEAD --report /path/to/local-validation.json --publish-evidence
 ```
 
-Windows 使用 `scripts/test-local.ps1` 调用本机 WSL Linux。Jenkins 正式发布只复用通过源码及运行时验收的同一制品。以下应用配置用于隔离部署环境；本地测试会自动创建自己的 PostgreSQL/Redis 容器。
+可选本机验证使用 Windows/WSL `scripts/test-local.ps1` 或 Linux `python3 scripts/test-local.py`。最终合入/标签 commit 本身必须有 `refs/notes/pk-source-validation` 绑定报告，不能仅凭另一 commit 的 tree 相同放行。Jenkins 默认 `ACTION=release` 选择属于私库 main 历史的正式 `vX.Y.Z-pk.N` 标签，禁止 COMMIT_SHA 覆盖；核验源码证据后一次构建、完成十一项隔离制品检查、封存并发布原包。私有正式 Release 保留更新归档与 `checksums.txt`，原网页一键更新及回退可继续使用；发布不自动升级生产。旧手动 package/publish 与同包验收仍兼容，见 [Jenkins 说明](deploy/jenkins/README.md)。不在本机编译发行程序。
 
 **`config.yaml` 关键配置：**
 

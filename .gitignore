@@ -169,3 +169,4 @@ issues/
 /scripts/*
 !/scripts/test-local.py
 !/scripts/test-local.ps1
+!/scripts/test-server.py

@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Run the former CI checks on the developer's Linux/WSL computer.
+"""Validate staged source locally, then bind its evidence to the resulting commit.
 
-No application release is compiled here. Go may compile test binaries. Docker
-creates one disposable seed-change fixture; it is never published.
+The default pk-source-v2 profile runs the nine source suites before committing.
+No application release is compiled here. Go may compile test binaries. The
+optional legacy --artifact-dir profile also checks a downloaded Jenkins package
+and creates one disposable seed-change fixture; it is never published.
 """
 
 import argparse
@@ -23,11 +25,12 @@ import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 REPOSITORY = "pengkang0322/sub2api"
-SUITES = (
+SOURCE_SUITES = (
     "backend-unit", "backend-integration", "backend-race", "backend-lint",
     "frontend", "shell", "binance-proxy", "release-helpers", "security",
-    "artifact-runtime",
 )
+SUITES = (*SOURCE_SUITES, "artifact-runtime")
+NOTES_REF = "refs/notes/pk-source-validation"
 RACE_PATTERN = (
     "Test(PKCyber|PKEarly|PKFirstResponse|PKUsage|PKSystemOne|PKCacheConversion|"
     "PKChannelMonitor|StreamEarlyHeartbeat|UpdateSettingsEarlyHeartbeat|"
@@ -49,9 +52,162 @@ def sha256(path):
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
+def workspace_snapshot(*, clean=False):
+    """Identify the actual staged input and reject files outside that input."""
+    if git("ls-files", "--unmerged"):
+        raise RuntimeError("Resolve all merge conflicts before validation")
+    # These flags make git diff/status trust the index without reading a file.
+    # Refuse them so the source actually executed must match the recorded tree.
+    entries = git("ls-files", "-v", "-z").split("\0")
+    if any(entry and (entry[0].islower() or entry[0] == "S") for entry in entries):
+        raise RuntimeError("Remove assume-unchanged/skip-worktree flags before validation")
+    if git("diff", "--name-only", "--no-ext-diff", "--ignore-submodules=none"):
+        raise RuntimeError("Stage every source change before validation; unstaged changes are not allowed")
+    if git("ls-files", "--others", "--exclude-standard"):
+        raise RuntimeError("Stage or remove non-ignored untracked files before validation")
+    status = git("status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none")
+    if clean and status:
+        raise RuntimeError("A clean checkout is required to bind evidence or validate a Jenkins artifact")
+    return {"head": git("rev-parse", "HEAD"), "tree": git("write-tree"),
+            "worktree_matches_index": True, "status": status}
+
+
+def write_report(path, report):
+    # Replace atomically, keeping the previous report if serialization fails.
+    data = json.dumps(report, indent=2) + "\n"
+    temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
+    try:
+        temporary.write_text(data, encoding="utf-8")
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def validate_source_report(report, path):
+    if (report.get("schema_version") != 2 or report.get("tests_profile") != "pk-source-v2"
+            or report.get("repository") != REPOSITORY or report.get("status") != "passed"
+            or report.get("source_eligible") is not True
+            or report.get("execution_environment") not in ("local", "server-isolated")):
+        raise RuntimeError("Only a passed pk-source-v2 source report can be bound")
+    for field in ("tree", "base_commit"):
+        if not re.fullmatch(r"[0-9a-f]{40}", str(report.get(field, ""))):
+            raise RuntimeError("Invalid source report field: " + field)
+    before, after = report.get("workspace_before"), report.get("workspace_after")
+    if (not isinstance(before, dict) or before != after
+            or before.get("tree") != report["tree"] or before.get("head") != report["base_commit"]
+            or before.get("worktree_matches_index") is not True):
+        raise RuntimeError("Source report does not prove a stable staged tree")
+    suites = report.get("suites", [])
+    if not isinstance(suites, list) or len(suites) != len(SOURCE_SUITES):
+        raise RuntimeError("Source report must contain exactly the nine source suites")
+    if {suite.get("name") for suite in suites if isinstance(suite, dict)} != set(SOURCE_SUITES):
+        raise RuntimeError("Source report has missing or duplicate suites")
+    preflight = report.get("preflight")
+    if not isinstance(preflight, dict) or preflight.get("name") != "preflight":
+        raise RuntimeError("Source report is missing preflight evidence")
+    for suite in [preflight, *suites]:
+        if suite.get("status") != "passed" or suite.get("exit_code") != 0 or not suite.get("commands"):
+            raise RuntimeError("Source suite failed, was skipped, or has no commands: " + str(suite.get("name")))
+        name = suite.get("log")
+        if not isinstance(name, str) or name != suite["name"] + ".log":
+            raise RuntimeError("Invalid source evidence log filename")
+        log = (path.parent / name).resolve()
+        if log.parent != path.parent or not log.is_file() or sha256(log) != suite.get("log_sha256"):
+            raise RuntimeError("Original source evidence log is missing or changed: " + name)
+        if any(name.startswith("TestPK") for name in suite.get("skipped_tests", [])):
+            raise RuntimeError("Protected source tests were skipped")
+
+
+def publish_evidence(commit, path):
+    """Publish append-only evidence through the private repository's notes ref."""
+    allowed = {"https://github.com/" + REPOSITORY, "https://github.com/" + REPOSITORY + ".git",
+               "git@github.com:" + REPOSITORY, "git@github.com:" + REPOSITORY + ".git",
+               "ssh://git@github.com/" + REPOSITORY, "ssh://git@github.com/" + REPOSITORY + ".git"}
+    for args in (("remote", "get-url", "--all", "origin"),
+                 ("remote", "get-url", "--push", "--all", "origin")):
+        urls = git(*args).splitlines()
+        if not urls or any(url not in allowed for url in urls):
+            raise RuntimeError("Evidence may only be fetched/pushed through the configured private origin")
+    local = subprocess.run(["git", "rev-parse", "--verify", "--quiet", NOTES_REF], cwd=ROOT,
+                           capture_output=True, text=True)
+    if local.returncode not in (0, 1):
+        raise RuntimeError("Cannot inspect local source evidence notes")
+    local_oid = local.stdout.strip() if local.returncode == 0 else None
+    remote = git("ls-remote", "--refs", "origin", NOTES_REF)
+    if remote:
+        git("fetch", "--no-tags", "origin", NOTES_REF)
+        remote_oid = git("rev-parse", "FETCH_HEAD")
+        if local_oid is None:
+            git("update-ref", NOTES_REF, remote_oid, "0" * 40)
+        elif local_oid != remote_oid:
+            forward = subprocess.run(["git", "merge-base", "--is-ancestor", local_oid, remote_oid], cwd=ROOT)
+            if forward.returncode == 0:
+                git("update-ref", NOTES_REF, remote_oid, local_oid)
+            else:
+                contains = subprocess.run(["git", "merge-base", "--is-ancestor", remote_oid, local_oid], cwd=ROOT)
+                if forward.returncode != 1 or contains.returncode != 0:
+                    raise RuntimeError("Local and private source evidence notes diverged; reconcile without force-pushing")
+    existing = subprocess.run(["git", "notes", "--ref=" + NOTES_REF, "show", commit], cwd=ROOT,
+                              capture_output=True, text=True)
+    if existing.returncode == 0:
+        if existing.stdout.rstrip("\n") != path.read_text(encoding="utf-8").rstrip("\n"):
+            raise RuntimeError("This commit already has different source evidence; existing notes will not be overwritten")
+    else:
+        # No --force: a concurrent or pre-existing note fails instead of being replaced.
+        git("notes", "--ref=" + NOTES_REF, "add", "-F", str(path), commit)
+    git("push", "origin", NOTES_REF + ":" + NOTES_REF)
+    print("Published source evidence: " + NOTES_REF + " @ " + commit)
+
+
+def bind_commit(revision, path, publish):
+    path = path.resolve()
+    if path == ROOT or ROOT in path.parents:
+        raise RuntimeError("Evidence must be outside the repository")
+    report = json.loads(path.read_text(encoding="utf-8"))
+    validate_source_report(report, path)
+    snapshot = workspace_snapshot(clean=True)
+    commit = git("rev-parse", "--verify", "--end-of-options", revision + "^{commit}")
+    if snapshot["head"] != commit:
+        raise RuntimeError("Bind the checked-out HEAD commit so clean-workspace verification covers the result")
+    if git("rev-parse", commit + "^{tree}") != report["tree"] or snapshot["tree"] != report["tree"]:
+        raise RuntimeError("The commit differs from the tested tree; rerun source validation")
+    ancestor = subprocess.run(["git", "merge-base", "--is-ancestor", report["base_commit"], commit], cwd=ROOT)
+    if ancestor.returncode != 0:
+        raise RuntimeError("The tested base commit must be an ancestor of the bound commit")
+    previous = report.get("commit")
+    if previous is not None:
+        if not re.fullmatch(r"[0-9a-f]{40}", str(previous)) or not report.get("bound_at"):
+            raise RuntimeError("The existing source evidence binding is invalid")
+        if previous != commit:
+            # A history-preserving PR merge may create a new commit with exactly
+            # the tested tree. Reuse the real execution evidence while retaining
+            # the earlier binding; never rewrite the earlier commit's Git note.
+            if git("rev-parse", "--verify", "--end-of-options", previous + "^{commit}") != previous:
+                raise RuntimeError("The previously bound commit is not available")
+            if git("rev-parse", previous + "^{tree}") != report["tree"]:
+                raise RuntimeError("The previously bound commit differs from the tested tree")
+            previous_ancestor = subprocess.run(["git", "merge-base", "--is-ancestor", previous, commit], cwd=ROOT)
+            if previous_ancestor.returncode != 0:
+                raise RuntimeError("The previously bound commit must be an ancestor of the new binding")
+            history = report.setdefault("previous_bindings", [])
+            if not isinstance(history, list):
+                raise RuntimeError("Invalid source evidence binding history")
+            history.append({"commit": previous, "bound_at": report["bound_at"]})
+            report.update(commit=commit, bound_at=now())
+    else:
+        report.update(commit=commit, bound_at=now())
+    write_report(path, report)
+    print("Bound source evidence: " + str(path) + " @ " + commit)
+    if publish:
+        publish_evidence(commit, path)
+    return 0
+
+
 class Runner:
-    def __init__(self, output):
+    def __init__(self, output, *, clean_required=False, execution_environment="local"):
         self.output = output
+        self.clean_required = clean_required
+        self.execution_environment = execution_environment
         # Inherit tool locations, local Docker access, caches and download
         # settings only. Do not copy application configuration or live keys.
         # In particular PROMPT_AUDIT_TEST_POSTGRES_DSN enables untagged tests
@@ -75,6 +231,11 @@ class Runner:
         self.env.update(CI="true", CGO_ENABLED="1", PYTHONDONTWRITEBYTECODE="1",
                         GOENV="off", GOWORK="off", GOFLAGS="", GOTOOLCHAIN="local",
                         GOOS="linux", GOARCH="amd64", GOAMD64="v1", CC="gcc", CXX="g++")
+        if execution_environment == "server-isolated":
+            # Tests and their private DinD daemon share this container's network
+            # namespace. Testcontainers must reach mapped ports here, not infer
+            # the outer host's gateway from /.dockerenv.
+            self.env["TESTCONTAINERS_HOST_OVERRIDE"] = "127.0.0.1"
         self.results = []
         self.current = None
         self.log = None
@@ -140,11 +301,12 @@ class Runner:
                 print(f"{name}: FAILED: {error}", file=sys.stderr, flush=True)
             finally:
                 self.current["finished_at"] = now()
+        self.current["log_sha256"] = sha256(self.output / self.current["log"])
         return self.current["status"] == "passed"
 
     def preflight(self):
         if sys.platform != "linux":
-            raise RuntimeError("Use local Linux or WSL 2, not native Windows or a remote test server")
+            raise RuntimeError("Use Linux/WSL 2 or an explicitly authorized isolated Linux test server; native Windows is unsupported")
         if sys.version_info < (3, 12):
             raise RuntimeError("Python 3.12+ is required")
         for tool in ("git", "go", "node", "pnpm", "gcc", "docker", "make", "bash", "sh",
@@ -164,10 +326,10 @@ class Runner:
         self.run(["govulncheck", "-version"])
         docker_host = self.env.get("DOCKER_HOST", "")
         if docker_host and not docker_host.startswith("unix://"):
-            raise RuntimeError("DOCKER_HOST must use a local Unix socket; remote Docker is not local validation")
+            raise RuntimeError("DOCKER_HOST must use this execution environment's Unix socket, not a remote Docker daemon")
         context = self.run(["docker", "context", "inspect", "--format", "{{.Endpoints.docker.Host}}"]).strip()
         if not context.startswith("unix://"):
-            raise RuntimeError("Docker context must use the local Linux/WSL Unix socket")
+            raise RuntimeError("Docker context must use this Linux execution environment's Unix socket")
         info = json.loads(self.run(["docker", "info", "--format", "{{json .}}"]))
         if info.get("OSType") != "linux" or info.get("Architecture") not in ("x86_64", "amd64"):
             raise RuntimeError("Local Docker must run Linux amd64 containers")
@@ -177,8 +339,7 @@ class Runner:
         self.run(["docker", "compose", "version"])
         # The repository harness supplies isolated PostgreSQL/Redis containers.
         # CI=true makes missing Docker fail rather than silently skip integration.
-        if git("status", "--porcelain=v1", "--untracked-files=all"):
-            raise RuntimeError("Commit source changes first; a clean checkout is required for SHA-bound evidence")
+        workspace_snapshot(clean=self.clean_required)
 
     def go(self, args, *, env=None, required=()):
         self.run(["go", "test", "-json", "-count=1", *args], ROOT / "backend",
@@ -331,21 +492,41 @@ print(json.dumps(value, separators=(",", ":")) if sys.argv[3] == "json" else val
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--artifact-dir", type=Path, help="Downloaded Jenkins package containing manifest.json")
+    parser.add_argument("--artifact-dir", type=Path, help="Use legacy pk-local-v1 to also validate a downloaded Jenkins package")
     parser.add_argument("--output-dir", type=Path, help="New output directory outside the source checkout")
+    parser.add_argument("--bind-commit", metavar="REVISION", help="Bind a passed source report to the matching clean HEAD commit")
+    parser.add_argument("--report", type=Path, help="Existing local-validation.json to bind (with its original sibling logs)")
+    parser.add_argument("--publish-evidence", action="store_true", help="With --bind-commit, push the bound report as private Git notes")
+    parser.add_argument("--execution-environment", choices=("local", "server-isolated"), default="local",
+                        help="Record the authorized source-test location; server-isolated requires its own Unix-socket Docker daemon")
     args = parser.parse_args()
+    if args.bind_commit:
+        if not args.report or args.artifact_dir or args.output_dir:
+            parser.error("--bind-commit requires --report and cannot be combined with test output/artifact options")
+        return bind_commit(args.bind_commit, args.report, args.publish_evidence)
+    if args.report or args.publish_evidence:
+        parser.error("--report and --publish-evidence require --bind-commit")
     output = (args.output_dir or Path(tempfile.gettempdir()) / "sub2api-local-validation" /
               (dt.datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8])).resolve()
     if output == ROOT or ROOT in output.parents:
         parser.error("Output must be outside the repository so it cannot change the tested tree")
     output.mkdir(parents=True, exist_ok=False)
     os.chdir(ROOT)
-    commit, tree = git("rev-parse", "HEAD"), git("rev-parse", "HEAD^{tree}")
-    report = {"schema_version": 1, "tests_profile": "pk-local-v1", "repository": REPOSITORY,
-              "commit": commit, "tree": tree, "status": "failed", "started_at": now()}
-    runner = Runner(output)
+    legacy = args.artifact_dir is not None
+    report = {"schema_version": 1 if legacy else 2,
+              "tests_profile": "pk-local-v1" if legacy else "pk-source-v2", "repository": REPOSITORY,
+              "commit": None, "tree": None, "status": "failed", "started_at": now(),
+              "execution_environment": args.execution_environment}
+    runner = Runner(output, clean_required=legacy, execution_environment=args.execution_environment)
     try:
+        before = workspace_snapshot(clean=legacy)
+        commit, tree = before["head"], before["tree"]
+        report.update(tree=tree, base_commit=commit, workspace_before=before)
+        if legacy:
+            report["commit"] = commit
         ready = runner.suite("preflight", runner.preflight)
+        if not legacy:
+            report["preflight"] = runner.results.pop()
         if ready:
             runner.suite("backend-unit", lambda: runner.go(["-tags", "unit", "./..."]))
             runner.suite("backend-integration", lambda: runner.go(["-tags", "integration", "./..."],
@@ -357,22 +538,45 @@ def main():
             runner.suite("binance-proxy", lambda: runner.run([sys.executable, "-B", "-c", GATEWAY_CHECKS]))
             runner.suite("release-helpers", runner.release_helpers)
             runner.suite("security", runner.security)
-            if args.artifact_dir:
+            if legacy:
                 runner.suite("artifact-runtime", lambda: runner.runtime(args.artifact_dir.resolve(), commit, tree))
-            else:
-                runner.results.append({"name": "artifact-runtime", "status": "skipped", "exit_code": None,
-                                       "commands": [], "reason": "No --artifact-dir; not eligible for publication"})
-            if git("rev-parse", "HEAD") != commit or git("rev-parse", "HEAD^{tree}") != tree or git("status", "--porcelain=v1", "--untracked-files=all"):
-                report["error"] = "Source changed during validation; evidence cannot be used"
-            elif all(item["status"] == "passed" or
-                     (item["name"] == "artifact-runtime" and item["status"] == "skipped") for item in runner.results):
+            if all(item["status"] == "passed" for item in runner.results):
                 report["status"] = "passed"
+    except Exception as error:
+        report["error"] = str(error)
+        print("Validation failed: " + str(error), file=sys.stderr)
     finally:
-        report.update(finished_at=now(), suites=runner.results, artifact=runner.artifact)
-        report["publish_eligible"] = report["status"] == "passed" and runner.artifact is not None
-        (output / "local-validation.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        try:
+            report["workspace_after"] = workspace_snapshot(clean=legacy)
+            if report.get("workspace_before") != report["workspace_after"]:
+                raise RuntimeError("Source HEAD, staged tree, or workspace changed during validation")
+        except Exception as error:
+            report.update(status="failed", error="Evidence cannot be used: " + str(error))
+        expected = SUITES if legacy else SOURCE_SUITES
+        completed = {item["name"] for item in runner.results}
+        for name in expected:
+            if name not in completed:
+                runner.results.append({"name": name, "status": "skipped", "exit_code": None,
+                                       "commands": [], "reason": "Validation did not reach this suite"})
+        report.update(finished_at=now(), suites=runner.results)
+        if legacy:
+            report.update(artifact=runner.artifact,
+                          publish_eligible=report["status"] == "passed" and runner.artifact is not None)
+        else:
+            report["source_eligible"] = report["status"] == "passed"
+            if report["source_eligible"]:
+                try:
+                    validate_source_report(report, output / "local-validation.json")
+                except Exception as error:
+                    report.update(status="failed", source_eligible=False,
+                                  error="Evidence cannot be used: " + str(error))
+        write_report(output / "local-validation.json", report)
         print("Evidence: " + str(output / "local-validation.json"))
-        print("Status: " + report["status"] + "; publish_eligible=" + str(report["publish_eligible"]))
+        eligibility = "publish_eligible" if legacy else "source_eligible"
+        print("Status: " + report["status"] + "; " + eligibility + "=" + str(report[eligibility]))
+        if not legacy and report["source_eligible"]:
+            print("Commit this exact staged tree, then run --bind-commit HEAD --report " +
+                  shlex.quote(str(output / "local-validation.json")) + " --publish-evidence")
     return 0 if report["status"] == "passed" else 1
 
 
@@ -632,4 +836,8 @@ unittest.main(verbosity=2)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:
+        print("ERROR: " + str(error), file=sys.stderr)
+        sys.exit(1)

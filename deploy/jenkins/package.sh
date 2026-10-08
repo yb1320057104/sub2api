@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Compilation and packaging only. All regression and runtime tests run locally.
+# Compilation and packaging only. Source tests run before committing;
+# the release pipeline checks these exact artifacts before sealing/publication.
 set -euo pipefail
 set +x
 root=$(pwd -P)
@@ -42,7 +43,7 @@ test -f "$source_dir/sub2api" && test ! -L "$source_dir/sub2api"
 tar -C "$source_dir" -czf "$output_dir/$(read_manifest binary_archive)" sub2api
 
 # Reuse the protected packaging recipe and the exact compiled binary.
-# No application process is started on the build server.
+# The later runtime stage starts only isolated --version/persistence fixtures.
 docker build --platform linux/amd64 \
     --file "$root/pipeline/Dockerfile.goreleaser" \
     --label "org.opencontainers.image.source=https://github.com/$PK_REPOSITORY" \
@@ -53,3 +54,8 @@ docker image inspect "$image_tag" --format '{{.Id}}' > "$output_dir/image-id.txt
 docker save "$image_tag" | gzip -1 > "$output_dir/$(read_manifest image_archive)"
 python3 -c 'import hashlib,pathlib,sys; p=pathlib.Path(sys.argv[1]); print(hashlib.file_digest(p.open("rb"), "sha256").hexdigest())' \
     "$source_dir/sub2api" > "$output_dir/binary-sha256.txt"
+rm -- "$source_dir/sub2api"
+
+# Vite clears its output directory, including this tracked empty placeholder.
+# Restore only that packaging artifact; seal rejects every other source change.
+git -C "$source_dir" restore --source=HEAD -- backend/internal/web/dist/.keep
