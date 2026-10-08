@@ -276,6 +276,8 @@
 
 **私有发行与可用部署入口。** 引入：`85d690928`、`e67a95f2e`；文档：`23e5fe663`。
 
+- 2026-10-08 Jenkins 缓存与打包清理修复：npm/npx、pnpm 内容存储、Go modules/build 使用专用 daemon 的持久命名卷，按 `release` / `manual-release` / `candidate`、工具链、平台及 UID/GID 分隔，不缓存项目 `node_modules`、发行结果或测试证明。卷身份与 local driver/无外部挂载选项必须核对；初始化只修改挂载根目录属主，构建仍非 root 且不挂凭据、socket 或生产数据。保留 frozen lockfile、pnpm 完整性与复制导入/禁用 side-effects cache、Go module verify 及 readonly 编译。首次冷缓存仍下载，后续仅复用有效内容。清理阶段仅恢复 HEAD 已跟踪的 `.keep`，不因源码本就没有该占位而失败，真实 Git 错误仍终止，其他源码变更继续由 seal 拒绝。既有 `test_release_matrix.py` 增加真实临时 Git 场景，覆盖占位不存在/被删、其他变更保留和恢复失败；缓存复用需另用两份干净源码及第二轮断网进行实际验证。
+
 - Jenkins 从指定私库构建，手动选择已审阅的提交/分支或未复用的 PK 标签；同一构建二进制进入 Docker 镜像和 Release 归档。GitHub 保留私有源码、Release 和 GHCR 存储职责，不执行构建或测试。
 - `SOURCE_REF` 保留 Git Parameter `PT_BRANCH_TAG` 可搜索分支/标签选择，分支值为 `origin/分支名`，正式标签为 `vX.Y.Z-pk.N`，统一规范化为完整 ref。2026-10-08 默认动作改为 `ACTION=release`：必须选择正式 `refs/tags/vX.Y.Z-pk.N`、属于私库 `main` 历史且版本未占用，拒绝 `COMMIT_SHA` 覆盖；列表中的默认分支不能直接发布。`ACTION=package` 保留分支及 40 位小写 SHA 候选打包、正式标签手动打包，`COMMIT_SHA` 只在该动作覆盖源码选择。候选不进入正式更新列表，被打包源码不得改变加载可信流水线的 SCM 分支。
 - 按 2026-10-03 用户追加要求，Jenkins 仅监听服务器 `127.0.0.1:18081`，不开放公网端口；域名反向代理由用户配置。原网页一键更新、版本回退、私库授权下载和 SHA256 校验能力必须保留，迁移只改变构建与验证执行位置。

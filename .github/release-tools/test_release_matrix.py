@@ -334,6 +334,121 @@ class JenkinsValidationTest(unittest.TestCase):
             api.assert_not_called()
 
 
+class JenkinsPackageCleanupTest(unittest.TestCase):
+    """Exercise the packaging cleanup against real, disposable Git histories."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix='pk-package-cleanup-')
+        self.addCleanup(self.temp.cleanup)
+        self.source = Path(self.temp.name) / 'source with spaces'
+        self.source.mkdir()
+        self.env = {key: value for key, value in os.environ.items() if not key.startswith('GIT_')}
+        self.env.update(GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull, GIT_TERMINAL_PROMPT='0')
+        self.git('init', '--quiet', '--template=')
+        (self.source / 'backend').mkdir()
+        self.other = self.source / 'backend/source.go'
+        self.staged = self.source / 'backend/staged.go'
+        self.other.write_bytes(b'package fixture\n// original source\n')
+        self.staged.write_bytes(b'package fixture\n// original staged source\n')
+        self.git('add', '--', 'backend/source.go', 'backend/staged.go')
+        self.git('commit', '--quiet', '-m', 'Fixture without a placeholder')
+        self.placeholder = self.source / 'backend/internal/web/dist/.keep'
+        self.placeholder_bytes = b'original tracked placeholder\n'
+
+    def git(self, *arguments):
+        return subprocess.run(
+            ['git', '-c', 'user.name=PK cleanup fixture', '-c', 'user.email=fixture@example.invalid',
+             '-c', 'commit.gpgsign=false', '-c', 'core.autocrlf=false', *arguments],
+            cwd=self.source, env=self.env, check=True, capture_output=True, text=True,
+        ).stdout.strip()
+
+    def track_placeholder(self):
+        self.placeholder.parent.mkdir(parents=True)
+        self.placeholder.write_bytes(self.placeholder_bytes)
+        self.git('add', '--', 'backend/internal/web/dist/.keep')
+        self.git('commit', '--quiet', '-m', 'Fixture with a tracked placeholder')
+
+    def cleanup(self):
+        script = (ROOT / 'deploy/jenkins/package.sh').read_text()
+        marker = '# Vite clears'
+        self.assertEqual(script.count(marker), 1, 'Keep one explicit packaging cleanup boundary')
+        section = script[script.index(marker):]
+        # Execute the actual production section, never the Docker/build stages or a copy of its logic.
+        return subprocess.run(
+            ['bash', '-c', 'set -euo pipefail\nsource_dir=$1\n' + section,
+             'pk-package-cleanup', str(self.source)],
+            cwd=self.source, env=self.env, capture_output=True, text=True,
+        )
+
+    def test_absent_placeholder_succeeds_without_creating_or_overwriting_it(self):
+        head = self.git('rev-parse', 'HEAD')
+        result = self.cleanup()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.placeholder.exists())
+        self.assertFalse(self.placeholder.parent.exists())
+        self.assertEqual(self.git('status', '--porcelain'), '')
+        self.assertEqual(self.git('rev-parse', 'HEAD'), head)
+
+        self.placeholder.parent.mkdir(parents=True)
+        self.placeholder.write_bytes(b'untracked placeholder must stay untouched\n')
+        result = self.cleanup()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.placeholder.read_bytes(), b'untracked placeholder must stay untouched\n')
+        self.assertEqual(self.git('ls-files', '--', 'backend/internal/web/dist/.keep'), '')
+
+    def test_tracked_placeholder_deleted_by_vite_is_restored_exactly(self):
+        self.track_placeholder()
+        head = self.git('rev-parse', 'HEAD')
+        self.placeholder.unlink()
+        result = self.cleanup()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.placeholder.read_bytes(), self.placeholder_bytes)
+        self.assertEqual(self.git('status', '--porcelain'), '')
+        self.assertEqual(self.git('rev-parse', 'HEAD'), head)
+
+    def test_cleanup_preserves_unrelated_staged_unstaged_and_untracked_source(self):
+        self.track_placeholder()
+        self.placeholder.unlink()
+        self.other.write_bytes(b'package fixture\n// modified source must remain visible to seal\n')
+        self.staged.write_bytes(b'package fixture\n// staged source must remain visible to seal\n')
+        self.git('add', '--', 'backend/staged.go')
+        untracked = self.source / 'backend/untracked.go'
+        untracked.write_bytes(b'package fixture\n// untracked source must not be cleaned\n')
+        expected = {path: path.read_bytes() for path in (self.other, self.staged, untracked)}
+        index_tree = self.git('write-tree')
+        result = self.cleanup()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.placeholder.read_bytes(), self.placeholder_bytes)
+        for path, contents in expected.items():
+            self.assertEqual(path.read_bytes(), contents)
+        self.assertEqual(self.git('write-tree'), index_tree)
+        self.assertEqual(self.git('diff', '--name-only'), 'backend/source.go')
+        self.assertEqual(self.git('diff', '--cached', '--name-only'), 'backend/staged.go')
+        self.assertEqual(self.git('ls-files', '--others', '--exclude-standard'), 'backend/untracked.go')
+
+    def test_real_git_restore_failure_remains_a_packaging_failure(self):
+        self.track_placeholder()
+        self.placeholder.unlink()
+        # A real Git lock permits HEAD inspection but prevents restoring the worktree.
+        index = self.source / '.git/index'
+        original_index = index.read_bytes()
+        lock = self.source / '.git/index.lock'
+        lock.write_bytes(b'held by another fixture operation\n')
+        self.assertEqual(self.git('ls-tree', '--name-only', 'HEAD', '--',
+                                  'backend/internal/web/dist/.keep'), 'backend/internal/web/dist/.keep')
+        result = self.cleanup()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('index.lock', result.stderr)
+        self.assertFalse(self.placeholder.exists())
+        self.assertEqual(index.read_bytes(), original_index)
+        self.assertEqual(lock.read_bytes(), b'held by another fixture operation\n')
+        lock.unlink()
+        result = self.cleanup()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.placeholder.read_bytes(), self.placeholder_bytes)
+        self.assertEqual(self.git('status', '--porcelain'), '')
+
+
 class JenkinsRuntimeTest(unittest.TestCase):
     """Check archive identity chains and isolation without a Docker daemon."""
 

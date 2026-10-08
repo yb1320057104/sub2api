@@ -20,6 +20,8 @@ Jenkins 的安装、凭据、任务参数和制品目录见 [Jenkins 运维说�
 
 按用户要求，Jenkins 只监听服务器 `127.0.0.1:18081`，不开放公网端口，由用户配置域名反向代理。原网页一键更新和回退继续读取本私库正式 Release；迁移不会把网页更新改成访问 Jenkins，也不会取消原授权下载和 SHA256 校验。
 
+Jenkins 打包的 npm/npx、pnpm、Go modules/build 缓存由专用 daemon 的命名卷保留，独立于临时工作区。新正式流程、手动正式包、候选包使用不同缓存域，完整性和源码/制品验收门禁不变；首次运行仍需填充缓存。项目 `node_modules` 和每轮测试环境不因此持久化。卷命名、权限、清理及占位文件恢复边界见 [Jenkins 缓存说明](deploy/jenkins/README.md#依赖与编译缓存)，不对整个 Docker 环境执行清理来释放缓存。
+
 源码验证环境需要 Linux amd64、Go 1.27.0、Node.js 24、pnpm 9、Python 3.12+、PyYAML 6.0.3、GNU make、Bash/POSIX 工具、GCC、golangci-lint 2.13.x、govulncheck 及可用的隔离 Docker/Compose。服务器入口提供受控容器环境，不使用生产 Docker 对象或卷。若选择本机验证，需本机 Linux 或已安装发行版的 WSL 2、对应 Docker Desktop 集成和本地 Unix socket；WSL 空壳或仅 Windows 工具不足。依赖下载需要访问 Go/npm/PyPI、容器仓库和漏洞数据库。
 
 PostgreSQL/Redis 由原有 Testcontainers 测试自动建立隔离容器：常规 PostgreSQL 为 `postgres:18.1-alpine3.23`、Redis 为 `redis:8.4-alpine`，币安与自动禁用 race 专项另跑 `postgres:15-alpine`。不连接生产数据库，不需要复制生产 `.env` 或密钥。原有可选真实模型、TLS 抓包与插件测试并未因此变为全覆盖；默认仍不执行这些额外验收，报告列出 Go 跳过项，受保护 `TestPK*` 被跳过会失败。

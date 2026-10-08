@@ -8,13 +8,25 @@
 
 控制器不执行构建，任务固定运行在 `pk-builder`。构建 agent 使用专用 Docker daemon，`DOCKER_HOST` 必须是独立 daemon 的 TCP 地址；不挂载生产主机 Docker socket。Agent 与专用 daemon 必须以相同绝对路径共享 `/home/jenkins/agent`，因为编译容器只挂载任务的 `source` 子目录。
 
-Jenkins 的 Pipeline from SCM 当前固定从私库已审阅的维护分支 `codex/jenkins-build` 读取根目录 `Jenkinsfile`，对应任务为 `sub2api-package`。本变更合入 `main` 后，再将任务的 SCM 分支切换到已审阅的 `main`。不能将流水线 SCM 分支改成用户选择的 `SOURCE_REF` 或填写的 `COMMIT_SHA`；这些参数只选择被打包的源码。有权修改任务或其可信 SCM 分支的人等同拥有该任务的发布权限。正式发行标签仍必须属于私库 `main` 历史，与流水线暂用维护分支无关。
+Jenkins 的 Pipeline from SCM 已在 2026-10-08 合入后切换到私库已审阅的 `main`，读取根目录 `Jenkinsfile`，对应任务为 `sub2api-package`。原维护分支 `codex/jenkins-build` 保留，不删除或改名。不能将流水线 SCM 分支改成用户选择的 `SOURCE_REF` 或填写的 `COMMIT_SHA`；这些参数只选择被打包的源码。有权修改任务或其可信 SCM 分支的人等同拥有该任务的发布权限。正式发行标签仍必须属于私库 `main` 历史。
 
 后续新工作分支按项目约束第 6 节统一为 `codex/vX.Y.Z-pk.N`，同一未发布版本复用一个分支与 PR。Jenkins 的 `SOURCE_REF` 可选择对应的 `origin/codex/vX.Y.Z-pk.N` 来打候选包；选择版本命名的分支仍是候选，只有正式标签才走标签包校验。当前 `codex/jenkins-build` 是既有迁移引用，切换完成前不得为整理分支而删改它；不因一次打包或重试新建分支。
 
 需要 Git、Git Parameter、Pipeline、Credentials Binding 插件及 agent 的 Python 3.11+、Bash、Git、Docker CLI、gzip/tar。Node 24、pnpm 9.15.9 和 `backend/go.mod` 指定的 Go 工具链由隔离编译容器提供。编译容器不挂载凭据、流水线代码、历史产物、测试证据或生产数据，也不挂载 Docker socket。默认每个编译容器最多 2 CPU / 4 GiB，可通过 agent 的 `PK_BUILD_CPUS`、`PK_BUILD_MEMORY` 调整。
 
 源码 `go test`、Vitest、lint 和安全审计在提交前的独立验证环境完成，默认是用户指定服务器的受控临时容器，不连接生产数据/服务。Jenkins 编译阶段运行 `vue-tsc -b`、`vite build` 和 Go 发行构建，不重复执行 `pnpm run build` 内置的 Vitest。默认 release 随后在专用 daemon 隔离容器执行同制品运行时检查；容器不连接生产、不挂载源码或发布凭据。该检查使用固定可信 pipeline checkout 的 `verify-runtime.py`，不能执行参数所选源码中的替代验收脚本。
+
+## 依赖与编译缓存
+
+`package.sh` 将 npm/npx 缓存、pnpm 内容存储、Go module 缓存和 Go 编译缓存分别挂载为专用 Docker daemon 的命名卷。此前这些内容位于 `--rm` 容器的 `/tmp`，每次容器删除后都要重新下载；Docker 镜像层本来就由专用 daemon 的 `docker-data` 卷保留，与语言依赖缓存不同。
+
+缓存名称以 `pk-sub2api-build-cache-v1-` 开头，区分 `release`（源码 notes 已通过的新正式流程）、`manual-release`（兼容手动正式标签包）和 `candidate`（分支/SHA 候选）。三个域不共享缓存；名称还包含平台、UID/GID、Node/pnpm 或准确 Go 工具链版本。只接受带匹配用途/域/名称标签、无挂载选项的本地卷，不允许源码指定任意路径或外部卷。
+
+首次缓存为空时仍需下载；以后未变化的包和 Go 编译结果可以复用，新增依赖仍会下载，代码或构建参数变化仍会触发必要编译。每次 checkout 和项目 `node_modules` 保持独立，不缓存发行包或测试结论。pnpm 保留 frozen lockfile 和存储完整性检查，使用复制方式导入并禁用 native/postinstall 结果缓存；Go 下载后执行 `go mod verify`，发行编译使用 `-mod=readonly`。缓存不能代替源码测试、制品验收或 SHA256 校验。
+
+初始化仅用无网络、只读根文件系统且仅有 CHOWN 能力的辅助容器修改四个卷根目录的属主，不递归遍历缓存；该容器不挂源码、凭据或 Docker socket。编译进程继续以非 root 用户运行。命名缓存卷不随工作区清理或 `--rm` 删除；工具链升级会使用不同卷，旧卷按实际需要在无构建运行时逐个检查、清理，不能用全局 `docker system prune --volumes` 代替定向维护。容器、证书、产物及生产卷不属于依赖缓存。
+
+打包结束只恢复 HEAD 确实跟踪的 `backend/internal/web/dist/.keep`。没有该占位文件的源码可以正常打包；真正的 Git 恢复失败仍会终止。`seal` 继续检查完整源码工作区，不能借缓存或清理步骤掩盖其他源码修改。
 
 ## 当前服务器部署
 
