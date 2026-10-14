@@ -17,8 +17,8 @@ func TestValidatePricingEntries_ReasoningEffortMultipliers(t *testing.T) {
 	}{
 		{"unset", nil, true},
 		{"cleared", map[string]float64{}, true},
-		{"all levels", map[string]float64{"none": 0.5, "minimal": 1, "low": 1.25, "medium": 1.5, "high": 2, "xhigh": 2.5, "max": 3}, true},
-		{"unknown level", map[string]float64{"ultra": 2}, false},
+		{"all levels", map[string]float64{"none": 0.5, "minimal": 1, "low": 1.25, "medium": 1.5, "high": 2, "xhigh": 2.5, "max": 3, "ultra": 4, "persistent": 5}, true},
+		{"unknown level", map[string]float64{"unknown": 2}, false},
 		{"blank level", map[string]float64{"": 2}, false},
 		{"noncanonical level", map[string]float64{"MAX": 2}, false},
 		{"zero", map[string]float64{"high": 0}, false},

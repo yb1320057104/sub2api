@@ -14,8 +14,8 @@ export type BillingMode =
   | typeof BILLING_MODE_IMAGE
   | typeof BILLING_MODE_VIDEO
 
-/** Supported request reasoning effort levels, ordered from lowest to highest. */
-export const REASONING_EFFORT_LEVELS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
+/** Supported billing levels; Kilo request levels remain distinct from its wire-level max. */
+export const REASONING_EFFORT_LEVELS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'persistent'] as const
 export type ReasoningEffortLevel = typeof REASONING_EFFORT_LEVELS[number]
 
 /** Billing-model-source values (must match service.BillingModelSource* constants in Go). */

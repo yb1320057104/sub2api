@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -4118,4 +4119,285 @@ func TestHandleCompatErrorResponseCyberPolicyEarlyReturn(t *testing.T) {
 	require.Contains(t, gotMsg, "flagged for cyber policy")
 	require.NotContains(t, gotMsg, "Upstream request failed")
 	require.NotNil(t, GetOpsCyberPolicy(c))
+}
+
+func TestPKKiloBridgeTranslationPreservesTasksAndModels(t *testing.T) {
+	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Extra: map[string]any{AccountExtraKiloBridgeEnabled: true}}
+	body := []byte(`{"model":"gpt-6-astra","reasoning":{"effort":"ultra","summary":"auto"},"include":["reasoning.encrypted_content","web_search_call.action.sources"],"nonce":9007199254740993,"input":[{"type":"function_call","id":"fc_a","call_id":"call_a","namespace":"collaboration","name":"spawn_agent","arguments":"{\"message\":\"gAAAA_secret_task\"}","status":"completed"},{"type":"function_call_output","id":"fco_a","call_id":"call_a","output":"gAAAA_secret_result"},{"type":"agent_message","content":[{"type":"input_text","text":"plain task result"},{"type":"encrypted_content","encrypted_content":"remove"}]},{"type":"reasoning","id":"rs_a","summary":[{"type":"summary_text","text":"keep summary"}],"encrypted_content":"remove"},{"type":"custom_tool_call","id":"ctc_b","input":"gAAAA_custom_task"}]}`)
+	converted, err := translateKiloResponsesRequest(account, body)
+	require.NoError(t, err)
+	require.Equal(t, "gpt-6-astra", gjson.GetBytes(converted, "model").String())
+	require.Equal(t, "max", gjson.GetBytes(converted, "reasoning.effort").String())
+	require.Equal(t, "9007199254740993", gjson.GetBytes(converted, "nonce").Raw)
+	require.Equal(t, "web_search_call.action.sources", gjson.GetBytes(converted, "include.0").String())
+	require.Equal(t, "custom_tool_call", gjson.GetBytes(converted, "input.0.type").String())
+	require.Equal(t, "ctc_a", gjson.GetBytes(converted, "input.0.id").String())
+	require.Equal(t, "call_a", gjson.GetBytes(converted, "input.0.call_id").String())
+	require.Equal(t, "collaboration", gjson.GetBytes(converted, "input.0.namespace").String())
+	require.Equal(t, gjson.GetBytes(body, "input.0.arguments").String(), gjson.GetBytes(converted, "input.0.input").String())
+	require.False(t, gjson.GetBytes(converted, "input.0.arguments").Exists())
+	require.Equal(t, "completed", gjson.GetBytes(converted, "input.0.status").String())
+	require.Equal(t, "ctco_a", gjson.GetBytes(converted, "input.1.id").String())
+	require.Equal(t, "gAAAA_secret_result", gjson.GetBytes(converted, "input.1.output.0.text").String())
+	require.Equal(t, "message", gjson.GetBytes(converted, "input.2.type").String())
+	require.Equal(t, "plain task result", gjson.GetBytes(converted, "input.2.content.0.text").String())
+	require.Len(t, gjson.GetBytes(converted, "input.2.content").Array(), 1)
+	require.False(t, gjson.GetBytes(converted, "input.3.encrypted_content").Exists())
+	require.Equal(t, "keep summary", gjson.GetBytes(converted, "input.3.summary.0.text").String())
+	require.Equal(t, "gAAAA_custom_task", gjson.GetBytes(converted, "input.4.input").String())
+	second, err := translateKiloResponsesRequest(account, converted)
+	require.NoError(t, err)
+	require.Equal(t, converted, second)
+	for _, effort := range []string{"ultra", "persistent", "high", "max"} {
+		converted, err := translateKiloResponsesRequest(account, []byte(`{"model":"custom/provider-model","input":"hello","reasoning":{"effort":"`+effort+`"},"include":["reasoning.encrypted_content"]}`))
+		require.NoError(t, err)
+		want := effort
+		if effort == "ultra" || effort == "persistent" {
+			want = "max"
+		}
+		require.Equal(t, want, gjson.GetBytes(converted, "reasoning.effort").String())
+		require.Equal(t, "custom/provider-model", gjson.GetBytes(converted, "model").String())
+		require.Equal(t, "hello", gjson.GetBytes(converted, "input").String())
+		require.False(t, gjson.GetBytes(converted, "include").Exists())
+	}
+	for _, disabled := range []*Account{nil, {Platform: PlatformOpenAI}, {Platform: PlatformAnthropic, Extra: account.Extra}} {
+		unchanged, err := translateKiloResponsesRequest(disabled, body)
+		require.NoError(t, err)
+		require.Equal(t, body, unchanged)
+	}
+}
+
+func TestPKKiloBridgeForwardUsesAccountMappingProxyAndUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, passthrough := range []bool{false, true} {
+		for _, mapped := range []bool{false, true} {
+			for _, withProxy := range []bool{false, true} {
+				t.Run(fmt.Sprintf("passthrough=%v/mapped=%v/proxy=%v", passthrough, mapped, withProxy), func(t *testing.T) {
+					upstream := &httpUpstreamRecorder{resp: &http.Response{
+						StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}},
+						Body: io.NopCloser(strings.NewReader(`{"id":"resp_kilo","object":"response","model":"gpt-6-astra","output":[],"usage":{"input_tokens":23,"output_tokens":2,"cache_creation_input_tokens":5,"cache_read_input_tokens":7}}`)),
+					}}
+					account := &Account{ID: 1, Name: "kilo", Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Concurrency: 1,
+						Credentials: map[string]any{"api_key": "test-kilo-key", "base_url": "https://api.kilo.ai/api/gateway"},
+						Extra:       map[string]any{AccountExtraKiloBridgeEnabled: true, "openai_passthrough": passthrough, "openai_responses_supported": false, AccountExtraCacheConversionEnabled: true, AccountExtraCacheConversionMultiplier: 0.5},
+					}
+					wantModel := "gpt-6-astra"
+					if mapped {
+						wantModel = "user-selected/model"
+						account.Credentials["model_mapping"] = map[string]any{"gpt-6-astra": wantModel}
+					}
+					if withProxy {
+						proxyID := int64(8)
+						account.ProxyID = &proxyID
+						account.Proxy = &Proxy{Protocol: "http", Host: "proxy.example", Port: 8080}
+					}
+					svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
+					body := []byte(`{"model":"gpt-6-astra","stream":false,"store":false,"reasoning":{"effort":"ultra"},"include":["reasoning.encrypted_content"],"input":[{"type":"function_call","id":"fc_task","call_id":"call_task","namespace":"collaboration","name":"spawn_agent","arguments":"gAAAA_task"},{"type":"function_call_output","id":"fco_task","call_id":"call_task","output":"result"},{"type":"reasoning","summary":[{"type":"summary_text","text":"summary survives"}]}]}`)
+					rec := httptest.NewRecorder()
+					c, _ := gin.CreateTestContext(rec)
+					c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+					SetOpenAIClientTransport(c, OpenAIClientTransportHTTP)
+					result, err := svc.Forward(context.Background(), c, account, body)
+					require.NoError(t, err)
+					require.NotNil(t, result)
+					require.Len(t, upstream.requests, 1)
+					require.Equal(t, "https://api.kilo.ai/api/gateway/responses", upstream.lastReq.URL.String())
+					require.Equal(t, "Bearer test-kilo-key", upstream.lastReq.Header.Get("Authorization"))
+					require.Equal(t, wantModel, gjson.GetBytes(upstream.lastBody, "model").String())
+					require.Equal(t, "max", gjson.GetBytes(upstream.lastBody, "reasoning.effort").String())
+					require.Equal(t, "custom_tool_call", gjson.GetBytes(upstream.lastBody, "input.0.type").String())
+					require.Equal(t, "collaboration", gjson.GetBytes(upstream.lastBody, "input.0.namespace").String())
+					require.Equal(t, "gAAAA_task", gjson.GetBytes(upstream.lastBody, "input.0.input").String())
+					require.Equal(t, "ctco_task", gjson.GetBytes(upstream.lastBody, "input.1.id").String())
+					require.Equal(t, "summary survives", gjson.GetBytes(upstream.lastBody, "input.2.summary.0.text").String())
+					wantProxy := ""
+					if withProxy {
+						wantProxy = account.Proxy.URL()
+					}
+					require.Equal(t, wantProxy, upstream.lastProxyURL)
+					require.Equal(t, 5, result.Usage.CacheCreationInputTokens)
+					require.NotNil(t, result.ReasoningEffort)
+					require.Equal(t, "max", *result.ReasoningEffort)
+					require.NotNil(t, result.RequestedReasoningEffort)
+					require.Equal(t, "ultra", *result.RequestedReasoningEffort)
+					require.Equal(t, int64(0), gjson.Get(rec.Body.String(), "usage.cache_creation_input_tokens").Int())
+					require.Equal(t, int64(9), gjson.Get(rec.Body.String(), "usage.cache_read_input_tokens").Int())
+					require.True(t, account.IsOpenAIWSForceHTTPEnabled())
+					require.Equal(t, APIProtocolResponses, resolveUpstreamProtocol(account, APIProtocolChatCompletions, wantModel, nil))
+				})
+			}
+		}
+	}
+}
+
+func TestPKKiloBridgeStreamingKeepsOutputAndConvertsUsage(t *testing.T) {
+	for _, passthrough := range []bool{false, true} {
+		t.Run(fmt.Sprintf("passthrough=%v", passthrough), func(t *testing.T) {
+			wire := "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_kilo\",\"status\":\"in_progress\"}}\n\n" +
+				"data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n" +
+				"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_kilo\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello\"}]}],\"usage\":{\"input_tokens\":23,\"output_tokens\":2,\"cache_creation_input_tokens\":5,\"cache_read_input_tokens\":7}}}\n\n"
+			upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(wire))}}
+			account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"api_key": "test", "base_url": "https://api.kilo.ai/api/gateway"}, Extra: map[string]any{AccountExtraKiloBridgeEnabled: true, "openai_passthrough": passthrough, AccountExtraCacheConversionEnabled: true, AccountExtraCacheConversionMultiplier: 0.5}}
+			svc := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}, httpUpstream: upstream}
+			body := []byte(`{"model":"my/model","stream":true,"reasoning":{"effort":"ultra"},"input":[{"type":"custom_tool_call","id":"ctc_keep","call_id":"call_keep","name":"spawn_agent","input":"gAAAA_task"}]}`)
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+			SetOpenAIClientTransport(c, OpenAIClientTransportHTTP)
+			result, err := svc.Forward(context.Background(), c, account, body)
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.Equal(t, 5, result.Usage.CacheCreationInputTokens)
+			require.NotNil(t, result.ReasoningEffort)
+			require.Equal(t, "max", *result.ReasoningEffort)
+			require.NotNil(t, result.RequestedReasoningEffort)
+			require.Equal(t, "ultra", *result.RequestedReasoningEffort)
+			require.Equal(t, "my/model", gjson.GetBytes(upstream.lastBody, "model").String())
+			require.Equal(t, "gAAAA_task", gjson.GetBytes(upstream.lastBody, "input.0.input").String())
+			require.Equal(t, "ctc_keep", gjson.GetBytes(upstream.lastBody, "input.0.id").String())
+			require.Equal(t, "max", gjson.GetBytes(upstream.lastBody, "reasoning.effort").String())
+			var completed string
+			for _, line := range strings.Split(rec.Body.String(), "\n") {
+				if strings.HasPrefix(line, "data: ") && gjson.Get(strings.TrimPrefix(line, "data: "), "type").String() == "response.completed" {
+					completed = strings.TrimPrefix(line, "data: ")
+				}
+			}
+			require.NotEmpty(t, completed)
+			require.Equal(t, int64(0), gjson.Get(completed, "response.usage.cache_creation_input_tokens").Int())
+			require.Equal(t, int64(9), gjson.Get(completed, "response.usage.cache_read_input_tokens").Int())
+			require.Contains(t, rec.Body.String(), `"delta":"hello"`)
+		})
+	}
+}
+
+func TestPKKiloBridgeCompatRetainsRequestedEffort(t *testing.T) {
+	for _, protocol := range []string{"chat", "messages"} {
+		for _, effort := range []string{"ultra", "persistent"} {
+			for _, stream := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%s/stream=%v", protocol, effort, stream), func(t *testing.T) {
+					wire := "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_kilo\",\"status\":\"in_progress\"}}\n\n" +
+						"data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n" +
+						"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_kilo\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello\"}]}],\"usage\":{\"input_tokens\":3,\"output_tokens\":2}}}\n\n"
+					upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(wire))}}
+					account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"api_key": "test", "base_url": "https://api.kilo.ai/api/gateway", "model_mapping": map[string]any{"client-model": "user/model"}}, Extra: map[string]any{AccountExtraKiloBridgeEnabled: true}}
+					svc := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}, httpUpstream: upstream}
+					request := map[string]any{"model": "client-model", "stream": stream, "messages": []any{map[string]any{"role": "user", "content": "hello"}}}
+					path := "/v1/chat/completions"
+					forward := svc.ForwardAsChatCompletions
+					if protocol == "messages" {
+						path = "/v1/messages"
+						forward = svc.ForwardAsAnthropic
+						request["max_tokens"] = 1024
+						request["output_config"] = map[string]any{"effort": effort}
+					} else {
+						request["reasoning_effort"] = effort
+					}
+					body, err := json.Marshal(request)
+					require.NoError(t, err)
+					rec := httptest.NewRecorder()
+					c, _ := gin.CreateTestContext(rec)
+					c.Request = httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+					result, err := forward(context.Background(), c, account, body, "", "")
+					require.NoError(t, err)
+					require.NotNil(t, result)
+					require.NotNil(t, result.ReasoningEffort)
+					require.Equal(t, "max", *result.ReasoningEffort)
+					require.NotNil(t, result.RequestedReasoningEffort)
+					require.Equal(t, effort, *result.RequestedReasoningEffort)
+					require.Equal(t, "max", gjson.GetBytes(upstream.lastBody, "reasoning.effort").String())
+					require.Equal(t, "user/model", gjson.GetBytes(upstream.lastBody, "model").String())
+					require.Equal(t, "https://api.kilo.ai/api/gateway/responses", upstream.lastReq.URL.String())
+				})
+			}
+		}
+	}
+}
+
+func TestPKKiloBridgeUsagePreservesGroupPolicyInput(t *testing.T) {
+	account := &Account{Platform: PlatformOpenAI, Extra: map[string]any{AccountExtraKiloBridgeEnabled: true}}
+	forwarded := "high"
+	result := &OpenAIForwardResult{ReasoningEffort: &forwarded}
+	ctx := WithRequestedReasoningEffort(context.Background(), "max")
+	stampKiloBridgeUsage(ctx, account, []byte(`{"reasoning":{"effort":"high"}}`), result)
+	require.NotNil(t, result.RequestedReasoningEffort)
+	require.Equal(t, "max", *result.RequestedReasoningEffort)
+	require.Equal(t, "high", *result.ReasoningEffort)
+}
+
+func TestPKKiloBridgeGroupPolicyPrecedesUpstreamDispatch(t *testing.T) {
+	for _, protocol := range []string{"responses", "passthrough", "chat", "messages"} {
+		for _, effort := range []string{"ultra", "persistent"} {
+			for _, policy := range []struct {
+				name     string
+				max      string
+				over     string
+				mappings []ReasoningEffortMapping
+				want     string
+				denied   bool
+			}{
+				{name: "ceiling", max: "high", want: "high"},
+				{name: "ceiling-deny", max: "high", over: ReasoningEffortOverLimitDeny, denied: true},
+				{name: "mapping-deny", mappings: []ReasoningEffortMapping{{From: "max", To: ReasoningEffortMappingDeny}}, denied: true},
+				{name: "single-model-mapping", mappings: []ReasoningEffortMapping{{From: "max", To: "high", MatchType: "exact", Model: "client-model"}, {From: "high", To: "low"}}, want: "high"},
+				{name: "unrestricted", want: "max"},
+			} {
+				t.Run(protocol+"/"+effort+"/"+policy.name, func(t *testing.T) {
+					wire := "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_kilo\",\"status\":\"in_progress\"}}\n\n" +
+						"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_kilo\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":3,\"output_tokens\":2}}}\n\n"
+					upstream := &httpUpstreamRecorder{resp: &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(wire))}}
+					account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"api_key": "test", "base_url": "https://api.kilo.ai/api/gateway", "model_mapping": map[string]any{"client-model": "user/model"}}, Extra: map[string]any{AccountExtraKiloBridgeEnabled: true, "openai_passthrough": protocol == "passthrough"}}
+					svc := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}, httpUpstream: upstream}
+					request := map[string]any{"model": "client-model", "stream": true}
+					path := "/v1/responses"
+					switch protocol {
+					case "chat", "messages":
+						request["messages"] = []any{map[string]any{"role": "user", "content": "hello"}}
+						if protocol == "messages" {
+							path = "/v1/messages"
+							request["max_tokens"] = 1024
+							request["output_config"] = map[string]any{"effort": effort}
+						} else {
+							path = "/v1/chat/completions"
+							request["reasoning_effort"] = effort
+						}
+					default:
+						request["input"] = "hello"
+						request["reasoning"] = map[string]any{"effort": effort}
+					}
+					body, err := json.Marshal(request)
+					require.NoError(t, err)
+					ctx := WithRequestedReasoningEffort(context.Background(), effort)
+					ctx = WithOpenAIReasoningEffortPolicy(ctx, policy.max, policy.mappings, policy.over)
+					rec := httptest.NewRecorder()
+					c, _ := gin.CreateTestContext(rec)
+					c.Request = httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body)).WithContext(ctx)
+					var result *OpenAIForwardResult
+					switch protocol {
+					case "chat":
+						result, err = svc.ForwardAsChatCompletions(ctx, c, account, body, "", "")
+					case "messages":
+						result, err = svc.ForwardAsAnthropic(ctx, c, account, body, "", "")
+					default:
+						result, err = svc.Forward(ctx, c, account, body)
+					}
+					if policy.denied {
+						require.True(t, IsReasoningEffortPolicyDenied(err))
+						require.Equal(t, http.StatusForbidden, rec.Code)
+						require.Contains(t, rec.Body.String(), effort)
+						require.NotContains(t, rec.Body.String(), "max", "policy errors must not expose the bridge alias")
+						require.Nil(t, upstream.lastReq, "denied request must not contact upstream")
+						return
+					}
+					require.NoError(t, err)
+					require.NotNil(t, result)
+					require.NotNil(t, result.RequestedReasoningEffort)
+					require.Equal(t, effort, *result.RequestedReasoningEffort)
+					require.NotNil(t, result.ReasoningEffort)
+					require.Equal(t, policy.want, *result.ReasoningEffort)
+					require.Equal(t, policy.want, gjson.GetBytes(upstream.lastBody, "reasoning.effort").String())
+					require.Equal(t, "user/model", gjson.GetBytes(upstream.lastBody, "model").String())
+				})
+			}
+		}
+	}
 }

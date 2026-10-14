@@ -45,7 +45,7 @@ func TestChannelReasoningPricingCreateUpdateReplace(t *testing.T) {
 	ctx := context.Background()
 	channel := &service.Channel{}
 	repo := newReasoningPricingIntegrationChannel(t, channel)
-	allLevels := map[string]float64{"none": 0.5, "minimal": 0.75, "low": 0.9, "medium": 1.25, "high": 1.5, "xhigh": 2, "max": 3}
+	allLevels := map[string]float64{"none": 0.5, "minimal": 0.75, "low": 0.9, "medium": 1.25, "high": 1.5, "xhigh": 2, "max": 3, "ultra": 4, "persistent": 5}
 	pricing := service.ChannelModelPricing{
 		ChannelID: channel.ID, Platform: service.PlatformOpenAI, Models: []string{"custom-reasoning-model"},
 		ReasoningEffortMultipliers: allLevels,
@@ -101,7 +101,7 @@ func TestAccountStatsReasoningPricingRoundTrip(t *testing.T) {
 		AccountStatsPricingRules: []service.AccountStatsPricingRule{{
 			Name: "independent account statistics", GroupIDs: []int64{}, AccountIDs: []int64{},
 			Pricing: []service.ChannelModelPricing{
-				{Platform: service.PlatformOpenAI, Models: []string{"custom-reasoning-model"}, ReasoningEffortMultipliers: map[string]float64{"none": 0.5, "high": 1.25, "max": 2.5}},
+				{Platform: service.PlatformOpenAI, Models: []string{"custom-reasoning-model"}, ReasoningEffortMultipliers: map[string]float64{"none": 0.5, "high": 1.25, "max": 2.5, "ultra": 3, "persistent": 4}},
 				{Platform: service.PlatformAnthropic, Models: []string{"claude-fable-5-1"}},
 			},
 		}},
@@ -122,7 +122,7 @@ func TestAccountStatsReasoningPricingRoundTrip(t *testing.T) {
 		requireReasoningPricingIntegrationMaps(t, loaded.ModelPricing, map[string]map[string]float64{"custom-reasoning-model": {"max": 4}})
 		return loaded
 	}
-	loaded := assertStored(map[string]float64{"none": 0.5, "high": 1.25, "max": 2.5})
+	loaded := assertStored(map[string]float64{"none": 0.5, "high": 1.25, "max": 2.5, "ultra": 3, "persistent": 4})
 	for _, multipliers := range []map[string]float64{{"low": 0.75, "max": 1.5}, nil, {"high": 2}, {}} {
 		loaded.AccountStatsPricingRules[0].Pricing[0].ReasoningEffortMultipliers = multipliers
 		require.NoError(t, repo.Update(ctx, loaded))
@@ -139,7 +139,7 @@ func TestGroupReasoningPricingRoundTripAndBilling(t *testing.T) {
 	tx := testEntTx(t)
 	repo := newGroupRepositoryWithSQL(tx.Client(), tx)
 	inputPrice, outputPrice := 1e-6, 2e-6
-	allLevels := map[string]float64{"none": 0.5, "minimal": 0.75, "low": 0.9, "medium": 1.25, "high": 1.5, "xhigh": 2, "max": 3}
+	allLevels := map[string]float64{"none": 0.5, "minimal": 0.75, "low": 0.9, "medium": 1.25, "high": 1.5, "xhigh": 2, "max": 3, "ultra": 4, "persistent": 5}
 	group := &service.Group{
 		Name: t.Name(), Platform: service.PlatformAnthropic, RateMultiplier: 0.8,
 		Status: service.StatusActive, SubscriptionType: service.SubscriptionTypeStandard,
@@ -156,7 +156,7 @@ func TestGroupReasoningPricingRoundTripAndBilling(t *testing.T) {
 		loaded, err := repo.GetByID(ctx, group.ID)
 		require.NoError(t, err)
 		requireReasoningPricingIntegrationMaps(t, loaded.ModelPricing, map[string]map[string]float64{"claude-fable-5-1": expected})
-		for _, effort := range []string{"none", "minimal", "low", "medium", "high", "xhigh", "max", ""} {
+		for _, effort := range []string{"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "persistent", ""} {
 			multiplier := 1.0
 			if configured, ok := expected[effort]; ok {
 				multiplier = configured

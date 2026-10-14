@@ -76,3 +76,17 @@ func TestBufferedResponseAccumulator_CodexEvents(t *testing.T) {
 	})
 	require.True(t, acc.HasContent())
 }
+
+func TestPKKiloCustomToolCompletedOutput(t *testing.T) {
+	input := `{"message":"gAAAA_task","model":"user/model"}`
+	response := &ResponsesResponse{ID: "resp_kilo", Output: []ResponsesOutput{{Type: "custom_tool_call", CallID: "call_task", Name: "spawn_agent", Input: input}}}
+	chat := ResponsesToChatCompletions(response, "model")
+	require.Len(t, chat.Choices, 1)
+	require.Len(t, chat.Choices[0].Message.ToolCalls, 1)
+	require.Equal(t, "call_task", chat.Choices[0].Message.ToolCalls[0].ID)
+	require.Equal(t, input, chat.Choices[0].Message.ToolCalls[0].Function.Arguments)
+	anthropic := ResponsesToAnthropic(response, "model")
+	require.Len(t, anthropic.Content, 1)
+	require.Equal(t, "tool_use", anthropic.Content[0].Type)
+	require.JSONEq(t, input, string(anthropic.Content[0].Input))
+}

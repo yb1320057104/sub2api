@@ -33,7 +33,30 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	body []byte,
 	promptCacheKey string,
 	defaultMappedModel string,
-) (*OpenAIForwardResult, error) {
+) (kiloResult *OpenAIForwardResult, forwardErr error) {
+	bindKiloBridgeResponseEffort(ctx, c, account, body)
+	defer func(inbound []byte) {
+		usageCtx := ctx
+		if c != nil && c.Request != nil {
+			usageCtx = c.Request.Context()
+		}
+		stampKiloBridgeUsage(usageCtx, account, inbound, kiloResult)
+	}(body)
+	// Evaluate Kilo-only aliases before the compatibility converter can
+	// reinterpret max, and do not apply the same mapping a second time below.
+	kiloAliasPolicyApplied := false
+	if gjson.GetBytes(body, "thinking.type").String() != "disabled" {
+		policyBody, aliasChanged, aliasErr := applyKiloReasoningEffortPolicyFromContext(ctx, account, body, "output_config.effort")
+		if aliasErr != nil {
+			if IsReasoningEffortPolicyDenied(aliasErr) {
+				MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalPolicyDenied)
+				writeAnthropicError(c, http.StatusForbidden, "forbidden_error", aliasErr.Error())
+			}
+			return nil, aliasErr
+		}
+		body = policyBody
+		kiloAliasPolicyApplied = aliasChanged
+	}
 	// 工具 Schema 清洗必须先于所有分流：下游每条路径（原生 Anthropic 直通、
 	// Chat Completions 转换、Responses 转换）都会把 tools 原样带给上游，而
 	// xAI / Moonshot 等严格校验方会因 input_schema 里的 required:null 或
@@ -54,29 +77,21 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 		return nil, err
 	}
 
-	// OpenCode Go：按模型原生协议分流。规则未命中兜底 Chat Completions。
-	if account.IsOpenCodeGo() {
-		mapped := resolveOpenCodeGoMappedModel(account, body, defaultMappedModel)
-		switch openCodeGoNativeProtocol(account, mapped) {
-		case APIProtocolAnthropic:
-			return s.forwardAnthropicViaNativeAnthropicEndpoint(ctx, c, account, body, defaultMappedModel)
-		case APIProtocolResponses:
-			break
-		default:
-			return s.forwardAnthropicViaRawChatCompletions(ctx, c, account, body, defaultMappedModel)
-		}
-	} else if account.IsAnthropicProtocol() || account.IsAdaptiveAPIProtocol() {
-		// 入口分流（国产供应商 Anthropic 协议）：上游为供应商原生 Anthropic 端点时，
-		// /v1/messages 请求零转换直通（仅模型名映射 + 少量 body 清洗），完整保留
-		// thinking / tool_use / cache 语义，适配 Claude Code 等原生客户端。
-		// 必须先于 ShouldUseResponsesAPI 分流：Anthropic 协议账号经 probe 落标
-		// openai_responses_supported=false，会先命中下方的 CC 直转分支。
-		return s.forwardAnthropicViaNativeAnthropicEndpoint(ctx, c, account, body, defaultMappedModel)
+	// 上游协议统一由 resolveUpstreamProtocol 判定（按模型分流时带上游模型目录）。Anthropic 分流必须先于
+	// ShouldUseResponsesAPI：Anthropic 协议账号经 probe 落标
+	// openai_responses_supported=false，否则会命中 CC 直转。
+	routingModel := upstreamRoutingModel(account, body, defaultMappedModel)
+	if account.IsOpenCodeGo() && IsOpenCodeUnsupportedModel(routingModel) {
+		return nil, writeOpenCodeUnsupportedModelError(c, true, routingModel)
 	}
-
-	// 固定 chat_completions 的 CN 账号，以及不支持 Responses 的其他 APIKey
-	// 账号，均将 Messages 转为 CC；固定 responses 的 CN 账号不受探针旧值覆盖。
-	if shouldForwardOpenAIResponsesViaRawChatCompletions(account) {
+	switch s.resolveUpstreamProtocolFor(ctx, account, APIProtocolAnthropic, routingModel) {
+	case APIProtocolAnthropic:
+		// 上游为供应商原生 Anthropic 端点：/v1/messages 零转换直通（仅模型名映射 +
+		// 少量 body 清洗），完整保留 thinking / tool_use / cache 语义。
+		return s.forwardAnthropicViaNativeAnthropicEndpoint(ctx, c, account, body, defaultMappedModel)
+	case APIProtocolChatCompletions:
+		// 固定 chat_completions 的多协议账号、规则命中 CC 的按模型分流账号，以及
+		// 不支持 Responses 的其他 APIKey 账号，均将 Messages 转为 CC。
 		return s.forwardAnthropicViaRawChatCompletions(ctx, c, account, body, defaultMappedModel)
 	}
 	SetActualOpenAIUpstreamEndpoint(c, openAIResponsesUpstreamEndpoint)
@@ -90,7 +105,9 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	}
 	anthropicDigestReq := cloneAnthropicRequestForDigest(&anthropicReq)
 	originalModel := anthropicReq.Model
-	applyOpenAICompatModelNormalization(&anthropicReq)
+	if !account.IsKiloBridgeEnabled() {
+		applyOpenAICompatModelNormalization(&anthropicReq)
+	}
 	normalizedModel := anthropicReq.Model
 	clientStream := anthropicReq.Stream // client's original stream preference
 
@@ -169,7 +186,9 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	}
 
 	responsesReq.Model = upstreamModel
-	if responsesReq.Reasoning != nil {
+	if responsesReq.Reasoning != nil && kiloAliasPolicyApplied && anthropicReq.OutputConfig != nil && (anthropicReq.Thinking == nil || anthropicReq.Thinking.Type != "disabled") {
+		responsesReq.Reasoning.Effort = anthropicReq.OutputConfig.Effort
+	} else if responsesReq.Reasoning != nil {
 		responsesReq.Reasoning.Effort = openAICompatAnthropicReasoningEffort(&anthropicReq, upstreamModel, responsesReq.Reasoning.Effort)
 	}
 	if previousResponseID != "" {
@@ -217,7 +236,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 		return nil, fmt.Errorf("marshal responses request: %w", err)
 	}
 
-	if account.UsesOpenAICodexProtocol() && account.Platform != PlatformGrok {
+	if account.UsesOpenAICodexProtocol() && account.Platform != PlatformGrok && !account.IsKiloBridgeEnabled() {
 		var reqBody map[string]any
 		if err := json.Unmarshal(responsesBody, &reqBody); err != nil {
 			return nil, fmt.Errorf("unmarshal for codex transform: %w", err)
@@ -297,7 +316,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 			}
 		}
 	}
-	if account.Platform == PlatformOpenAI {
+	if account.Platform == PlatformOpenAI && !kiloAliasPolicyApplied {
 		policyBody, changed, policyErr := ApplyOpenAIReasoningEffortPolicyFromContext(ctx, responsesBody)
 		if policyErr != nil {
 			if IsReasoningEffortPolicyDenied(policyErr) {
@@ -353,7 +372,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	}
 
 	// 6. Build upstream request
-	if account.UsesOpenAICodexProtocol() && account.Platform != PlatformGrok {
+	if account.UsesOpenAICodexProtocol() && account.Platform != PlatformGrok && !account.IsKiloBridgeEnabled() {
 		// Messages 兼容桥即使 body 未带 todo-guard/prompt_cache_key 标记（如映射到非
 		// gpt-5/codex 模型），也必须让 buildUpstreamRequest 走 bridge 分支，以保留
 		// 既有 body/session/conversation 行为。身份头在 post-build 阶段统一恢复。
@@ -380,7 +399,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 			upstreamReq.Header.Set("conversation_id", isolatedSessionID)
 		}
 	}
-	if account.UsesOpenAICodexProtocol() && account.Platform != PlatformGrok {
+	if account.UsesOpenAICodexProtocol() && account.Platform != PlatformGrok && !account.IsKiloBridgeEnabled() {
 		// buildUpstreamRequest 保留 Messages bridge 的 body/session 兼容行为，并会先
 		// 清除身份头。真正发送前恢复完整 Codex 身份，避免 ChatGPT Codex 上游因缺失
 		// originator/OpenAI-Beta 返回 404（issue #3901）。
@@ -1065,7 +1084,7 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 						if clientMsg == "" {
 							clientMsg = "Request blocked by upstream cyber-security policy"
 						}
-						if _, err := fmt.Fprint(c.Writer, buildAnthropicStreamErrorSSE("invalid_request_error", clientMsg)); err == nil {
+						if _, err := fmt.Fprint(c.Writer, buildAnthropicStreamErrorSSE("invalid_request_error", sanitizeKiloBridgeClientErrorMessage(c, clientMsg))); err == nil {
 							c.Writer.Flush()
 						}
 						clientDisconnected = true
@@ -1103,7 +1122,7 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 						clientOutputStarted = true
 					} else {
 						writeStreamHeaders()
-						if _, err := fmt.Fprint(c.Writer, buildAnthropicStreamErrorSSE(errType, errMsg)); err == nil {
+						if _, err := fmt.Fprint(c.Writer, buildAnthropicStreamErrorSSE(errType, sanitizeKiloBridgeClientErrorMessage(c, errMsg))); err == nil {
 							c.Writer.Flush()
 						}
 					}
@@ -1362,6 +1381,7 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 
 // writeAnthropicError writes an error response in Anthropic Messages API format.
 func writeAnthropicError(c *gin.Context, statusCode int, errType, message string) {
+	message = sanitizeKiloBridgeClientErrorMessage(c, message)
 	c.JSON(statusCode, gin.H{
 		"type": "error",
 		"error": gin.H{

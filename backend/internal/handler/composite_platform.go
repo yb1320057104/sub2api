@@ -139,6 +139,14 @@ func applyOpenAIReasoningEffortPolicyForRequest(c *gin.Context, apiKey *service.
 	if !ok {
 		return body, false, nil
 	}
+	if c != nil && c.Request != nil {
+		// Account selection happens later. Keep the policy available for a
+		// Kilo account's provider-only effort aliases, which the generic
+		// policy deliberately leaves unchanged at ingress.
+		ctx := service.WithOpenAIReasoningEffortPolicy(c.Request.Context(), maxEffort, mappings, overLimit)
+		ctx = service.WithReasoningEffortRequestModel(ctx, gjson.GetBytes(body, "model").String())
+		c.Request = c.Request.WithContext(ctx)
+	}
 	return service.ApplyOpenAIReasoningEffortPolicy(body, maxEffort, mappings, overLimit)
 }
 
@@ -174,5 +182,7 @@ func bindOpenAIReasoningEffortPolicyForMessagesRequest(c *gin.Context, apiKey *s
 	if !ok {
 		return
 	}
-	c.Request = c.Request.WithContext(service.WithOpenAIReasoningEffortPolicy(c.Request.Context(), maxEffort, mappings, overLimit))
+	ctx := service.WithOpenAIReasoningEffortPolicy(c.Request.Context(), maxEffort, mappings, overLimit)
+	ctx = service.WithReasoningEffortRequestModel(ctx, gjson.GetBytes(body, "model").String())
+	c.Request = c.Request.WithContext(ctx)
 }

@@ -1,10 +1,15 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
 )
 
 func TestMapUserErrorCategory(t *testing.T) {
@@ -180,5 +185,39 @@ func TestToUserErrorRequestDetail_WhitelistAndRedacts(t *testing.T) {
 func TestToUserErrorRequestDetail_Nil(t *testing.T) {
 	if out := ToUserErrorRequestDetail(nil); out != nil {
 		t.Errorf("expected nil for nil input, got %+v", out)
+	}
+}
+
+func TestPKKiloBridgeErrorHistoryRetainsAdminDiagnostics(t *testing.T) {
+	const message = "reasoning effort routed to max is unsupported"
+	const errorBody = `{"error":{"type":"invalid_request_error","message":"reasoning effort routed to max is unsupported","param":"reasoning.effort"}}`
+	account := &Account{Platform: PlatformOpenAI, Extra: map[string]any{AccountExtraKiloBridgeEnabled: true}}
+	for _, stream := range []bool{false, true} {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		bindKiloBridgeResponseEffort(context.Background(), c, account, []byte(`{"reasoning":{"effort":"ultra"}}`))
+		// A later successful non-Kilo attempt must not unmask the recovered
+		// error from the earlier Kilo account in the user's history.
+		bindKiloBridgeResponseEffort(context.Background(), c, &Account{Platform: PlatformOpenAI}, nil)
+		upstreamMessage := message
+		upstreamDetail := errorBody
+		body := errorBody
+		if stream {
+			body = "event: error\ndata: " + body + "\n\n"
+		}
+		entry := &OpsInsertErrorLogInput{ErrorMessage: message, ErrorBody: body, UpstreamErrorMessage: &upstreamMessage, UpstreamErrorDetail: &upstreamDetail}
+		SanitizeKiloBridgeClientErrorLog(c, entry)
+		require.Equal(t, "Upstream request failed", entry.ErrorMessage)
+		require.NotContains(t, entry.ErrorBody, "routed to max")
+		require.Contains(t, entry.ErrorBody, `"param":"reasoning.effort"`)
+		require.Equal(t, message, *entry.UpstreamErrorMessage)
+		require.Equal(t, errorBody, *entry.UpstreamErrorDetail)
+	}
+	for _, effort := range []string{"max", "high"} {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		bindKiloBridgeResponseEffort(WithRequestedReasoningEffort(context.Background(), effort), c, account, nil)
+		entry := &OpsInsertErrorLogInput{ErrorMessage: message, ErrorBody: errorBody}
+		SanitizeKiloBridgeClientErrorLog(c, entry)
+		require.Equal(t, message, entry.ErrorMessage)
+		require.Equal(t, errorBody, entry.ErrorBody)
 	}
 }

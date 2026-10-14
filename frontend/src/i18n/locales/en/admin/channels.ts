@@ -143,7 +143,7 @@ export default {
         fastMultiplier: 'Fast Multiplier',
         flexMultiplier: 'Flex Multiplier',
         reasoningEffortMultipliers: 'Custom Reasoning Effort Multipliers (optional)',
-        reasoningEffortMultipliersHint: 'Apply the multiplier for the final forwarded reasoning effort to the entire request cost and quota usage. Unconfigured levels use 1×. These multiply with other billing multipliers.',
+        reasoningEffortMultipliersHint: 'Bill by the final forwarded reasoning effort. With Kilo bridge, customer billing uses the original requested effort: ultra / persistent keep their own rates when forwarded as max. Custom account cost statistics use the actual forwarded effort. The multiplier applies to the entire request cost and quota usage. Unconfigured levels use 1× and these multiply with other billing multipliers.',
         reasoningEffortMultiplierLabel: '{effort} reasoning effort multiplier',
         reasoningEffortMultiplierDefault: 'Default: 1',
         clearReasoningEffortMultipliers: 'Clear multipliers',

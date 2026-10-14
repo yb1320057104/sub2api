@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
@@ -368,7 +369,7 @@ func isPlatformPricingMatch(groupPlatform, pricingPlatform string) bool {
 // fallback used before a request target has been resolved.
 func matchingPlatforms(groupPlatform string) []string {
 	if groupPlatform == PlatformComposite {
-		return []string{PlatformAnthropic, PlatformGemini, PlatformOpenAI, PlatformAntigravity, PlatformGrok, PlatformKimi, PlatformZhipu, PlatformDeepseek, PlatformMiniMax, PlatformOpenCodeGo, PlatformTypeSafe}
+		return domain.CompositePrecedencePlatformIDs()
 	}
 	return []string{groupPlatform}
 }
@@ -698,7 +699,7 @@ func validateReasoningEffortMultipliers(pricing []ChannelModelPricing) error {
 	for _, p := range pricing {
 		for effort, multiplier := range p.ReasoningEffortMultipliers {
 			switch effort {
-			case "none", "minimal", "low", "medium", "high", "xhigh", "max":
+			case "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "persistent":
 			default:
 				return infraerrors.BadRequest("INVALID_REASONING_EFFORT_MULTIPLIER",
 					fmt.Sprintf("unsupported reasoning effort %q for models %v", effort, p.Models))

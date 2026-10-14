@@ -126,6 +126,23 @@ func TestOpenAIReasoningEffortPolicyForCompositeTarget(t *testing.T) {
 	requested := service.RequestedReasoningEffortFromContext(openAICtx.Request.Context())
 	require.NotNil(t, requested)
 	require.Equal(t, "max", *requested)
+	// Account selection has not happened yet; retain the policy for Kilo-only
+	// aliases that become max only after a Kilo account has been selected.
+	boundAtIngress, changed, err := service.ApplyOpenAIReasoningEffortPolicyFromContext(openAICtx.Request.Context(), body)
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.JSONEq(t, `{"reasoning":{"effort":"medium"}}`, string(boundAtIngress))
+	for _, effort := range []string{"ultra", "persistent"} {
+		aliasCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+		aliasCtx.Request = httptest.NewRequest("POST", "/v1/responses", nil)
+		aliasCtx.Request = aliasCtx.Request.WithContext(service.WithResolvedTargetPlatform(aliasCtx.Request.Context(), service.PlatformOpenAI))
+		aliasBody := []byte(`{"model":"client-model","reasoning":{"effort":"` + effort + `"}}`)
+		_, _, err := applyOpenAIReasoningEffortPolicyForRequest(aliasCtx, apiKey, aliasBody)
+		require.NoError(t, err)
+		original := service.RequestedReasoningEffortFromContext(aliasCtx.Request.Context())
+		require.NotNil(t, original)
+		require.Equal(t, effort, *original)
+	}
 
 	bindOpenAIReasoningEffortPolicyForMessagesRequest(openAICtx, apiKey, []byte(`{"output_config":{"effort":"max"}}`))
 	bound, changed, err := service.ApplyOpenAIReasoningEffortPolicyFromContext(openAICtx.Request.Context(), body)

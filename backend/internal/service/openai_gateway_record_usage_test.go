@@ -168,11 +168,13 @@ type openAIRecordUsageSubRepoStub struct {
 	incrementCalls int
 	incrementErr   error
 	lastCtxErr     error
+	lastAmount     float64
 }
 
 func (s *openAIRecordUsageSubRepoStub) IncrementUsage(ctx context.Context, id int64, costUSD float64) error {
 	s.incrementCalls++
 	s.lastCtxErr = ctx.Err()
+	s.lastAmount = costUSD
 	return s.incrementErr
 }
 

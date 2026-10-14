@@ -403,6 +403,8 @@ export default {
     latencyUpstreamFirstToken: '上游首字',
     latencyUpstreamFirstTokenHint: '保留原有上游 TTFT 统计口径。OpenAI Responses 按设置采用 semantic（语义事件）或 visible（可见内容）；其他协议沿用各自口径。',
     latencyDuration: '总耗时',
+    outputTps: '输出 TPS',
+    outputTpsHint: '输出 Token ÷ 总耗时（包含首字等待），单位 tok/s。输出 Token 可能包含推理 Token。',
     time: '时间',
     ws: 'WS',
     stream: '流式',
@@ -693,7 +695,7 @@ export default {
       tierHint: '按单次请求的总上下文（输入 + 缓存写入 + 缓存读取）所在档位对整单计价',
       tierHintMarginal: '仅超过阈值的部分按该档计价，输出不加价',
       reasoningMultiplierBadge: '{effort} ×{multiplier}',
-      reasoningMultiplierHint: '最终转发的思考等级为 {effort} 时，整次请求的计费与额度消耗乘以 {multiplier}；未配置的等级按 1 倍计费',
+      reasoningMultiplierHint: '思考等级为 {effort} 时，整次请求的计费与额度消耗乘以 {multiplier}；未配置的等级按 1 倍计费',
       marginalBadge: '超出部分计价',
       timePricingRowHint: '按 {timezone} 时间，在该时段内发起的请求按本行价格计费',
       timePricingRowHintWeekdays:

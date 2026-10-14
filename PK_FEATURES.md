@@ -9,9 +9,11 @@
 - 2026-10-02 合并上游 `v0.2.12`（commit `5106065716e494204fc0e8db16f68f6e9d576be0`，tag 对象 `cbe9966432317e6757b47f598a103d2132ec27db`），合并前私库为 `162a58972bee08078a43eefa761da1b245f667fa`。逐项核对见 [0.2.12 合并记录](docs/PK_UPSTREAM_0.2.12_REVIEW.md)，正式发布目标为 `v0.2.12-pk.1`；发布与线上更新分别记录。
 - 2026-10-02 合并上游 `v0.2.11`（commit `96f4c115c9749078f90cbf210a01d39baf3f53b6`），合并前私库为 `32f068dcbdc75063ff7f6488aef6c85912d7bf3f`。逐项核对及本次验证见 [合并记录](docs/PK_UPSTREAM_0.2.11_REVIEW.md)；合并源码不代表已发布或更新线上。
 - 本次清点覆盖从该上游基线到私库 `23e5fe663338c86cd0cebbf2f688c8a75dd8c152` 的全部二开提交；应用发行参照 `v0.2.10-pk.7`，另登记本次新增的项目约束机制。此处是代码核对基线，不代表线上当前版本。
-- 以下 PK-001 至 PK-027 均为有效保护项。文件路径用于定位，不是完整修改白名单；所有新调用入口、迁移和旁路都要检查。
+- 以下 PK-001 至 PK-028 均为有效保护项。文件路径用于定位，不是完整修改白名单；所有新调用入口、迁移和旁路都要检查。
 - 每项说明“必须保持”的行为。文末另列验证入口与已知边界；测试存在、历史验证通过和本次候选通过是三件不同的事。
 - 2026-10-08 用户最新要求取代早前本次测试禁令：完整源码测试通过后才提交和推送，默认在用户指定测试服务器的隔离环境验证，本机 Linux/WSL 仍可用。Jenkins 一次 `ACTION=release` 完成构建、制品运行时验收和私库发布，不使用 GitHub Actions。下文历史“后续获准”及迁移禁令只记录当时状态，现行门禁以 PK-017 为准；服务器结果不写成本机通过，历史证据不代表本次已经执行。
+
+- 2026-10-15 在 `codex/v0.2.16-pk.1` 合并上游 `v0.2.16`（`01842576b3d5c1e2545b5a99ad555d36e28ed306`），增加 PK-028；逐项依据见 [0.2.16 合并核对](docs/PK_UPSTREAM_0.2.16_REVIEW.md)。最终源码验证以绑定提交的 notes 及服务器原报告为准，发行与部署另行记录。
 
 ## 功能索引
 
@@ -35,7 +37,7 @@
 | PK-016 | Docker网页更新持久化 | 数据卷可执行文件、种子哈希、镜像回退边界 |
 | PK-017 | 私有发行与部署入口 | 同一二进制、Jenkins 打包、本地验证、正式 Release、amd64 |
 | PK-018 | 新实例启动并发保护 | 可跳过全局启动清理，继续清理过期槽位 |
-| PK-019 | 后台启动与停止交接 | 19个受控后台、普通文件激活、只启动一次、停止安全 |
+| PK-019 | 后台启动与停止交接 | 20个受控后台、普通文件激活、只启动一次、停止安全 |
 | PK-020 | 切换与恢复运维流程 | 保护端口/数据/密钥、请求排空、后台单实例交接 |
 | PK-021 | 二开登记与项目约束 | Git持久化入口、唯一清单、增量登记、逐项合并审查 |
 | PK-022 | 币安 UID USDT 自助充值 | 完整五位金额乘订单倍率、账户加密、流水去重、过期回查、订单权限 |
@@ -44,6 +46,7 @@
 | PK-025 | 币安专用香港出口探测 | 每次操作重新探测、固定成功节点、香港校验、失败关闭、凭据隔离 |
 | PK-026 | 耻辱排行榜与手动扣费 | 独立菜单、当天与日期筛选、实时刷新、用户只读、精确倍率、逐条防重复扣费 |
 | PK-027 | 安全策略触发自动禁用 | 默认关闭、可配置次数、独立累计、管理员豁免、解禁可重计、鉴权失效 |
+| PK-028 | OpenAI 账号 Kilo 桥接 | 独立默认关闭、用户模型映射、账号代理、ultra 转 max、工具参数保真 |
 
 ## PK-001
 
@@ -55,6 +58,8 @@
 - 平台限制为 OpenAI，不限制为 API Key 类型；OAuth 兑换、Codex Session/PAT 导入和批量 RT 创建的接入也要保留。批量 API 预检目标存在且属于 OpenAI，保存后继续刷新调度快照；局部 extra 保留 JSONB 合并语义。
 - 入口：`frontend/src/components/account/{CreateAccountModal,EditAccountModal}.vue`、`frontend/src/types/index.ts`、中英 `admin/accounts.ts`；`backend/internal/service/{account_cache_conversion_validation,admin_account}.go` 及账号 repository 的 extra 更新逻辑。
 - 验证：设置往返、缺字段保留、显式 false/0 和非法倍率；已有 `TestPKCacheConversionSettings`。重导边界见文末。
+
+- 2026-10-15 新增同平台的 PK-028 独立开关，缓存转换默认值、倍率0及保存行为保持；创建/编辑现有回归覆盖两个开关独立保存。
 
 ## PK-002
 
@@ -99,6 +104,8 @@
 - 验证：原始长上下文恰好跨阶梯、转换倍率 0/小数/大于1、两种账号统计价格分支。现有用例不能代替所有模型价格及预留机制的场景验收。
 - 2026-10-02 上游新增 `gpt-6.1-sol` 的 272000 原始上下文阈值，继续使用 `InputContextTokens()` 选档；转换后 token 数量跨过阈值不得改变该判断。组合回归扩展在原有 `openai_gateway_usage_integrity_test.go`，按 PK-017 的提交前源码验证入口执行并记录真实环境。
 
+- 2026-10-15 兼容上游 v0.2.16：实际 OAuth 类凭据及最终 GPT-6.1 Sol 模型决定模型长上下文豁免，自定义区间仍按原始上下文选档；API Key 不继承订阅豁免。账号原始 token 统计与转换溢出零扣费分支保留。
+
 ## PK-005
 
 **下游 usage 与无损输出。** 引入：`6655dd8ca`。
@@ -129,6 +136,8 @@
 验证要覆盖下游实际 usage 与内部账单两侧。当前 API Key 号池是历史真实验收范围；这不授权合并时移除已有其他路径。WS 二进制帧、部分 OAuth 图片合成路径的边界见文末，不能声称所有图片或 WS 都已改写。
 
 2026-10-02 空格首字模式在既有 handler、service 与 Grok HTTP transport 的自动重试/协议回退入口增加同一请求门控，具体见 PK-011。仅空格正文已提交时拒绝重试，comment/ping 的转换与回退行为保留；真实 usage 仍走原缓存转换与账务路径。
+
+- 2026-10-15 Kilo 接入既有 HTTP Responses 请求构造器，普通/透传及 Chat/Messages 兼容入口继续走现有 usage/计费/首字链；不新增网络客户端。该桥接不支持上游 WebSocket，启用时强制 HTTP，详见 PK-028。
 
 ## PK-007
 
@@ -211,6 +220,8 @@
 - 入口：`backend/internal/service/{openai_early_sse_heartbeat,openai_early_sse_space,openai_compact_sse_keepalive,openai_gateway_forward,openai_gateway_service,openai_gateway_request_body,openai_gateway_chat_completions,openai_gateway_passthrough,openai_gateway_grok}.go`；`backend/internal/handler/gateway_helper.go` 及两个 OpenAI handler；`backend/internal/repository/http_upstream.go` 与 `backend/internal/pkg/ctxkey/` 的请求级重试门控。
 - 验证：`TestPKEarlyHeartbeat_AdjustmentCombinesStreamComments`、`ExternalHeartbeatAllowsLaterPeriodicKeepalive`、`OnlyCompleteTransportFramesPreserveController`、`QueueAccountingWithoutController`、`ReusesExistingPassthroughKeepalive` 等同前缀用例。
 - 空格重试回归在原有 `openai_gateway_first_output_timeout_test.go` 的 `TestPKEarlySpaceFailover*`、`http_upstream_test.go` 的 `TestPKEarlySpaceGrokTransportFallbackHonorsRetryGate` 和上述 service 回归文件中。覆盖排队期间先写空格、SafeToFailoverAfterWrite 不能越过正文、原子取消未发占位、transport 不重发及 comment/ping 原行为；均纳入现有 race 选择器。
+
+- 2026-10-15 上游新增“结构化 input 被拒绝时回退 Chat”入口：扣除 comment/ping 心跳后判断正文，回退前调用 `PrepareEarlySSESpaceRetry` 原子取消尚未发送的占位；已发送空格则禁止重试。回归在原 `openai_gateway_chat_completions_test.go`。
 
 ## PK-012
 
@@ -303,6 +314,8 @@
 - [中文部署指南](deploy/PK_DEPLOYMENT_CN.md)、README、[私有镜像说明](deploy/DOCKER.md) 和 [维护文档](PK_MAINTENANCE.md) 随源码保存；新部署使用自己的数据/账号/密钥，程序没有固定服务器 IP 或域名限制。
 - 入口：`Jenkinsfile`、`deploy/jenkins/{control.py,package.sh,verify-runtime.py,Dockerfile.source-tests}`、`scripts/test-server.py`、`scripts/test-local.{ps1,py}`、Dockerfile、`deploy/` 下相关脚本、Compose 与文档。验证边界见下文，不能把“发布已完成”当成“线上已更新”。
 
+- 2026-10-15 跟随上游 Go 1.27.2 / golangci-lint 2.14.x，服务器工具镜像更新为 `pk-source-tests:20261015`；上游 Actions 中的源码/部署/security 检查仍由现有九套件执行，关键前端列表合并保留双方条目。
+
 ## PK-018
 
 **旁路实例启动时保护现有并发。** 引入：`66671398d`。
@@ -321,10 +334,12 @@
 - 停止流程先调用 `StopPendingBackgroundStarts()`，取消尚未启动的任务并等待正在执行的启动回调，再停止各服务。`wire.go` 和 `wire_gen.go` 顺序必须一致。
 - `BatchImageCleanupService` 保留未启动即停止、立即停止、幂等生命周期保护，不能因启动门等待导致退出死锁。
 - worker 关闭捕获的局部 `done` channel，不能改回读取可能被 Stop 清空的 `s.done` 字段。
-- 当前19项受控后台：BatchImageCleanup、TokenRefresh、CNProviderBalanceCheck、DashboardAggregation、AccountExpiry、OpenAICodexVersionSync、ClaudeCodeVersionSync、ProxyExpiry、SubscriptionExpiry、OpsMetricsCollector、OpsAggregation、OpsAlertEvaluator、IdempotencyCleanup、ScheduledTestRunner、OpsScheduledReport、PaymentOrderExpiry、ChannelMonitorRunner、ChannelMonitorV2Aggregator、BinanceRechargeService。币安轮询随同原后台交接，仍以数据库唯一约束和事务防止重复入账。新增后台服务时必须审查是否需要同样交接，并同步本条。
+- 当前20项受控后台：BatchImageCleanup、TokenRefresh、CNProviderBalanceCheck、DashboardAggregation、AccountExpiry、OpenAICodexVersionSync、ClaudeCodeVersionSync、ProxyExpiry、SubscriptionExpiry、OpsMetricsCollector、OpsAggregation、OpsAlertEvaluator、IdempotencyCleanup、ScheduledTestRunner、OpsScheduledReport、PaymentOrderExpiry、ChannelMonitorRunner、ChannelMonitorV2Aggregator、BinanceRechargeService、GeminiCachedContentService。币安轮询随同原后台交接，仍以数据库唯一约束和事务防止重复入账。新增后台服务时必须审查是否需要同样交接，并同步本条。
 - 门控不暂停全部任务，不是数据库只读模式；请求处理、必要记账、缓存失效及已有锁保护的必要工作仍应可用。
 - 入口：`backend/internal/service/{background_start_gate,wire,batch_image_cleanup}.go`、`backend/cmd/server/{wire,wire_gen}.go`。
 - 验证：六项 `TestBackgroundStartGate_*`，以及 `TestBatchImageCleanupLifecycle_StopWithoutStart`、`ImmediateStop`。
+
+- 2026-10-15 新 Gemini 缓存恢复任务纳入启动门；停止取消数据库/上游调用并等待 worker 完成，未启动/重复/并发停止安全。普通客户端缓存修改仍保留上游脱离客户端取消的语义。回归 `TestPKBackgroundGeminiRecoveryStop` 及上游取消传播回归，加入源码 race 选择器。
 
 ## PK-020
 
@@ -447,6 +462,24 @@
 - 入口：`backend/migrations/245_cyber_policy_auto_disable.sql` 的使用记录/用户状态触发器、PK-026 管理员设置和原用户管理解禁流程；既有鉴权失效 outbox/worker 继续受原启动和停止约束保护。
 - 验证：在既有 repository integration 文件扩展 `TestPKCyber*`，覆盖阈值、默认关闭、管理员豁免、并发插入、重复写入、手动解禁两种重计模式和鉴权 outbox；按 PK-017 的提交前源码验证入口执行并记录真实环境。迁移不撤销已禁用状态，旧版回退仍受数据库触发器约束，须先核对已保存开关及管理员可操作入口。
 
+
+## PK-028
+
+**OpenAI 账号 Kilo 桥接。** 状态：有效；依据：2026-10-15 用户要求接入 `E:\Ai\kilo-test` 的协议转换，并明确模型/代理交由 Sub2API 配置。
+
+- 新增/编辑账号仅 OpenAI 平台显示独立开关，所有 OpenAI 账号类型可保存。`accounts.extra.kilo_bridge_enabled` 为 boolean，旧账号/新建默认 false；省略更新保留旧值，显式 false 关闭；其他平台提交该键或非法类型拒绝。普通更新、局部 extra 和批量 API 均校验并复用原调度刷新。
+- 与缓存转换完全独立。开启后强制 HTTP Responses，忽略旧的“不支持 Responses”探测，不自动回退 Chat 上游；下游 Chat/Messages 继续通过原协议适配器。关闭后恢复既有路由设置，不覆盖所存的协议/WS 设置。
+- 分组强度策略继续有效：选中 Kilo 账号后，仅对入口未识别的 ultra/persistent 按对应上游等级检查映射、上限和拒绝，保留原请求模型作用域，不对已经处理的普通等级重复映射；超限不绕过原权限规则。
+- 模型交由用户账号映射，不新增参考桥接中的 `openai/` 前缀。Kilo 与透传同时开启时同样应用账号映射，调度/上游请求保持一致；不套用 Codex 内置模型别名。既有渠道映射与 compact 专用映射继续有效。
+- `reasoning.effort` / `reasoning_effort` 中 ultra、persistent 转 max；其他强度不由桥接修改。按用户最新要求，使用记录通过 requested_reasoning_effort 保留客户端原始强度（ultra 仍显示 Ultra），客户费用和余额/订阅/API Key 额度按此原始强度的配置倍率计算；ultra、persistent 可分别配置，未配置按1倍，不套用 max 倍率。上游请求与管理员实际转发字段 reasoning_effort 保留 max；账号自定义成本规则仍反映实际转发强度和原始 usage。普通账号保留上游既有计费口径。
+- function_call 转 custom_tool_call，arguments 原样成为 input；function_call_output 转 custom_tool_call_output，字符串包装为 input_text 数组；配对 call_id/namespace/工具参数及其中的加密子任务保留。对应 fc_/fco_ 项 ID 转 ctc_/ctco_。
+- 普通用户的使用记录/API 仅显示请求强度，不提供上游强度或桥接映射说明。Responses JSON/SSE 回显的强度元数据恢复为原始 ultra/persistent；不更改生成正文、工具参数或真实 usage。原请求为 max 时照常显示 max。桥接请求的错误响应和用户错误记录中，如错误文案暴露到 max 的强度/路由映射，改为通用上游失败提示；普通参数错误保持，管理员实际错误诊断保留。
+- agent_message 仅保留可读 input_text 并转用户消息；reasoning 移除 encrypted_content 并保留 summary；include 删除 encrypted_content 请求。既有 custom_tool 项保持，不进行字符串递归擦除。
+- 复用账号认证、URL 安全校验、代理、超时及重试。API Key 账号 Base URL 可填 `https://api.kilo.ai/api/gateway`，拼接 `/responses`；所选代理为空即现有服务器出口。开关不替换账号凭据类型或 OAuth 的目标服务，不提供独立代理配置。
+- 同步Chat/Messages与Messages的custom_tool_call_input.done保留Kilo工具调用输入。响应继续走原 HTTP JSON/SSE、首字计时、usage 改写和费用流程；内部保留原 usage，缓存转换照常。没有新增表或全局设置。
+- 入口：`account_kilo_bridge.go`、`openai_kilo_bridge.go`、`admin_account.go`、`upstream_protocol_routing.go`、OpenAI forward/passthrough/chat/messages/request_body/scheduling、`account_test_service.go`，创建/编辑组件与中英说明。
+- 验证：扩展原 `openai_gateway_service_test.go`、`openai_gateway_usage_integrity_test.go`、`gateway_reasoning_pricing_test.go`、强度策略/定价及 DTO 回归和两份账号表单 spec，覆盖平台限制、默认值/保存、普通/透传、映射/未映射、代理/直连、工具子任务、ultra/max、同步/流式、分组策略及缓存转换共存；独立倍率下核对客户金额、余额/订阅/API Key 额度和上游成本，用户出口不显示映射。实际执行结果见最终源码报告。未用真实 Kilo 付费凭据作在线生成验收，不声称所有模型/客户端均已实测。
+
 ## 验证入口与现有边界
 
 ### 已有回归入口
@@ -480,7 +513,7 @@
 
 ## 新增条目模板
 
-新增独立能力使用下一个未用 ID，当前下一个为 `PK-028`；多项变更并行新增时在合并前消除 ID 冲突，已有 ID 不重用。同步更新索引、有效条目范围和此处的下一个 ID。
+新增独立能力使用下一个未用 ID，当前下一个为 `PK-029`；多项变更并行新增时在合并前消除 ID 冲突，已有 ID 不重用。同步更新索引、有效条目范围和此处的下一个 ID。
 
 ```markdown
 ## PK-NNN

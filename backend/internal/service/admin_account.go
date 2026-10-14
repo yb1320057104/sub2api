@@ -323,7 +323,7 @@ func (s *adminServiceImpl) DuplicateAccount(ctx context.Context, id int64, actor
 	if err := NormalizeHeaderOverrideCredentials(input.Credentials); err != nil {
 		return nil, err
 	}
-	if err := NormalizeOpenCodeGoProtocolRulesCredentials(input.Credentials); err != nil {
+	if err := NormalizeProtocolRulesCredentials(input.Credentials); err != nil {
 		return nil, err
 	}
 	duplicate, err := buildAccountForCreate(input, accountExtra)
@@ -411,7 +411,11 @@ func normalizeOpenAILongContextBillingUpdateExtra(account *Account, input *Updat
 // Grok media eligibility helpers live in account_grok_media_eligibility.go.
 
 func buildAccountForCreate(input *CreateAccountInput, accountExtra map[string]any) (*Account, error) {
-	accountExtra, err := normalizeOpenAICacheConversionExtra(input.Platform, accountExtra)
+	accountExtra, err := normalizeKiloBridgeExtra(input.Platform, accountExtra, nil)
+	if err != nil {
+		return nil, err
+	}
+	accountExtra, err = normalizeOpenAICacheConversionExtra(input.Platform, accountExtra)
 	if err != nil {
 		return nil, err
 	}
@@ -526,7 +530,7 @@ func (s *adminServiceImpl) CreateAccount(ctx context.Context, input *CreateAccou
 	if err := NormalizeHeaderOverrideCredentials(input.Credentials); err != nil {
 		return nil, err
 	}
-	if err := NormalizeOpenCodeGoProtocolRulesCredentials(input.Credentials); err != nil {
+	if err := NormalizeProtocolRulesCredentials(input.Credentials); err != nil {
 		return nil, err
 	}
 	// Never persist ephemeral SSO/password secrets after OAuth conversion.
@@ -593,6 +597,10 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 			return nil, err
 		}
 		normalizedExtra, err = normalizeOpenAICacheConversionUpdateExtra(account, normalizedExtra)
+		if err != nil {
+			return nil, err
+		}
+		normalizedExtra, err = normalizeKiloBridgeExtra(account.Platform, normalizedExtra, account.Extra)
 		if err != nil {
 			return nil, err
 		}
@@ -663,7 +671,7 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 		if err := NormalizeHeaderOverrideCredentials(account.Credentials); err != nil {
 			return nil, err
 		}
-		if err := NormalizeOpenCodeGoProtocolRulesCredentials(account.Credentials); err != nil {
+		if err := NormalizeProtocolRulesCredentials(account.Credentials); err != nil {
 			return nil, err
 		}
 		// Strip SSO/password residue that must never sit next to OAuth tokens.
@@ -945,12 +953,15 @@ func (s *adminServiceImpl) UpdateAccountExtra(ctx context.Context, id int64, upd
 	delete(updates, OpenCodeGoUsageAutoRefreshExtraKey)
 	delete(updates, OpenCodeGoUsageSnapshotExtraKey)
 	_, hasLongContextBilling := updates[openAILongContextBillingEnabledKey]
-	if hasLongContextBilling || hasOpenAICacheConversionExtra(updates) {
+	if hasLongContextBilling || hasOpenAICacheConversionExtra(updates) || hasKiloBridgeExtra(updates) {
 		account, err := s.accountRepo.GetByID(ctx, id)
 		if err != nil {
 			return err
 		}
 		if err := ValidateOpenAILongContextBillingExtra(account.Platform, updates); err != nil {
+			return err
+		}
+		if err := ValidateKiloBridgeExtra(account.Platform, updates); err != nil {
 			return err
 		}
 		if err := ValidateOpenAICacheConversionExtra(account.Platform, updates); err != nil {
@@ -1007,6 +1018,10 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 	if err != nil {
 		return nil, err
 	}
+	hasKiloBridgeUpdates := hasKiloBridgeExtra(input.Extra)
+	if err := ValidateKiloBridgeExtra(PlatformOpenAI, input.Extra); err != nil {
+		return nil, err
+	}
 	hasCacheConversionUpdates := hasOpenAICacheConversionExtra(input.Extra)
 	if err := ValidateOpenAICacheConversionExtra(PlatformOpenAI, input.Extra); err != nil {
 		return nil, err
@@ -1016,7 +1031,7 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 
 	// 预取所有目标账号，供凭据守卫/代理守卫/混合渠道检查共用，避免多次 DB 查询。
 	var cachedTargets []*Account
-	if len(input.Credentials) > 0 || input.ProxyID != nil || needMixedChannelCheck || openAISettings.any() || hasCacheConversionUpdates || input.ProbeEnabled != nil || input.RateMultiplier != nil {
+	if len(input.Credentials) > 0 || input.ProxyID != nil || needMixedChannelCheck || openAISettings.any() || hasCacheConversionUpdates || hasKiloBridgeUpdates || input.ProbeEnabled != nil || input.RateMultiplier != nil {
 		loaded, err := s.accountRepo.GetByIDs(ctx, input.AccountIDs)
 		if err != nil {
 			return nil, err
@@ -1027,6 +1042,17 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 	for _, account := range cachedTargets {
 		if account != nil {
 			targetsByID[account.ID] = account
+		}
+	}
+	if hasKiloBridgeUpdates {
+		for _, accountID := range input.AccountIDs {
+			account := targetsByID[accountID]
+			if account == nil {
+				return nil, invalidBulkOpenAITarget(accountID, "account does not exist")
+			}
+			if err := ValidateKiloBridgeExtra(account.Platform, input.Extra); err != nil {
+				return nil, err
+			}
 		}
 	}
 	if hasCacheConversionUpdates {
@@ -1129,7 +1155,7 @@ func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUp
 	if err := NormalizeHeaderOverrideCredentials(input.Credentials); err != nil {
 		return nil, err
 	}
-	if err := NormalizeOpenCodeGoProtocolRulesCredentials(input.Credentials); err != nil {
+	if err := NormalizeProtocolRulesCredentials(input.Credentials); err != nil {
 		return nil, err
 	}
 	// Bulk may mix platforms; always drop ephemeral SSO/password keys (cookie

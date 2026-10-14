@@ -137,7 +137,18 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 ) (*OpenAIForwardResult, error) {
 	requestedModel := reqModel
 	upstreamPassthroughModel := ""
-	if isOpenAIResponsesCompactPath(c) {
+	if account.IsKiloBridgeEnabled() {
+		mappedModel := resolveOpenAIAccountUpstreamModelForRequest(account, reqModel, isOpenAIResponsesCompactPath(c))
+		if mappedModel != "" && mappedModel != reqModel {
+			nextBody, err := sjson.SetBytes(body, "model", mappedModel)
+			if err != nil {
+				return nil, fmt.Errorf("set Kilo account model mapping: %w", err)
+			}
+			body = nextBody
+			upstreamPassthroughModel = mappedModel
+			attemptImageIntentInvalidated = true
+		}
+	} else if isOpenAIResponsesCompactPath(c) {
 		compactMappedModel := s.resolveOpenAICompactFallbackModel(account, reqModel)
 		if compactMappedModel != "" && compactMappedModel != reqModel {
 			nextBody, setErr := sjson.SetBytes(body, "model", compactMappedModel)
@@ -150,7 +161,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		}
 	}
 
-	if account != nil && account.UsesOpenAICodexProtocol() {
+	if account != nil && account.UsesOpenAICodexProtocol() && !account.IsKiloBridgeEnabled() {
 		if rejectReason := detectOpenAIPassthroughInstructionsRejectReason(reqModel, body); rejectReason != "" {
 			rejectMsg := "OpenAI codex passthrough requires a non-empty instructions field"
 			MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalPolicyDenied)
@@ -213,7 +224,10 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	}
 	if account != nil && account.IsOpenAI() {
 		responsesLite := isOpenAIResponsesLiteHeader(c.GetHeader(responsesLiteHeader)) || isOpenAIResponsesLiteWebSocketPayload(body)
-		normalizedBody, normalized, normalizeErr := normalizeOpenAIResponsesWebSocketCompatibilityBody(body, account, responsesLite)
+		normalizedBody, normalized, normalizeErr := normalizeOpenAIResponsesCompatibilityBodyWithOptions(body, account, openAIResponsesCompatibilityOptions{
+			ResponsesLite: responsesLite,
+			Compact:       isOpenAIResponsesCompactPath(c),
+		})
 		if normalizeErr != nil {
 			return nil, fmt.Errorf("normalize passthrough Responses compatibility: %w", normalizeErr)
 		}
@@ -233,7 +247,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	}
 
 	if account != nil && account.Platform == PlatformOpenAI && account.Type == AccountTypeAPIKey &&
-		!isOpenAIResponsesCompactPath(c) && needsOpenAIResponsesClientToolAdaptation(body) {
+		!account.IsKiloBridgeEnabled() && !isOpenAIResponsesCompactPath(c) && needsOpenAIResponsesClientToolAdaptation(body) {
 		adaptedBody, mapping, adaptErr := adaptOpenAIResponsesClientTools(body)
 		if adaptErr != nil {
 			return nil, adaptErr
@@ -603,13 +617,18 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 			if err != nil {
 				return nil, err
 			}
-			targetURL = buildOpenAIResponsesURLForPlatform(account.Platform, validatedURL)
+			targetURL = buildAccountResponsesURL(account, validatedURL)
 		}
 	}
 	targetURL = appendOpenAIResponsesRequestPathSuffix(targetURL, openAIResponsesRequestPathSuffix(c))
 
 	// DeepSeek / Kimi 原生 Responses 端点为无状态实现（见 normalizeDeepSeekResponsesRequestBody）。
 	body = normalizeDeepSeekResponsesRequestBody(account, body)
+	var bridgeErr error
+	body, bridgeErr = translateKiloResponsesRequest(account, body)
+	if bridgeErr != nil {
+		return nil, bridgeErr
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
 	if err != nil {
@@ -867,6 +886,7 @@ func writeOpenAIPassthroughErrorEnvelope(c *gin.Context, downstreamStatus int, u
 	if c == nil {
 		return
 	}
+	message = sanitizeKiloBridgeClientErrorMessage(c, message)
 	body, _ := json.Marshal(gin.H{
 		"error": gin.H{
 			"type":    "upstream_error",
@@ -1858,6 +1878,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	mappedModel string,
 ) (*openaiStreamingResultPassthrough, error) {
 	cacheConversionEnabled := account.IsCacheConversionEnabled()
+	kiloResponseRewrite := kiloBridgeResponseEffort(c, account) != ""
 	observer := upstreamResponseModelObserverFromContext(c)
 	if observer == nil {
 		observer = beginUpstreamResponseModelObservation(c)
@@ -1869,7 +1890,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no")
-	if cacheConversionEnabled {
+	if cacheConversionEnabled || kiloResponseRewrite {
 		c.Writer.Header().Del("Content-Length")
 	}
 	if v := resp.Header.Get("x-request-id"); v != "" {
@@ -1978,7 +1999,11 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 		if clientDisconnected || !writePendingLines() {
 			return
 		}
-		if _, err := fmt.Fprint(w, buildOpenAIResponseFailedSSE(responseID, originalModel, bareErrorPayload, failedMessage)); err != nil {
+		clientErrorBody, rewriteErr := rewriteKiloBridgeResponseJSON(c, account, bareErrorPayload)
+		if rewriteErr != nil {
+			clientErrorBody = nil
+		}
+		if _, err := fmt.Fprint(w, buildOpenAIResponseFailedSSE(responseID, originalModel, clientErrorBody, sanitizeKiloBridgeClientErrorMessage(c, failedMessage))); err != nil {
 			clientDisconnected = true
 			return
 		}
@@ -1996,7 +2021,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 	scanBuf := getSSEScannerBuf64K()
 	scanner.Buffer(scanBuf[:0], maxLineSize)
 	defer putSSEScannerBuf64K(scanBuf)
-	documentScanner := newOpenAICacheConversionSSEScanner(newOpenAISSEJSONDocumentScanner(scanner), cacheConversionEnabled)
+	documentScanner := newOpenAICacheConversionSSEScanner(newOpenAISSEJSONDocumentScanner(scanner), cacheConversionEnabled || kiloResponseRewrite)
 
 	needModelReplace := strings.TrimSpace(originalModel) != "" && strings.TrimSpace(mappedModel) != "" && strings.TrimSpace(originalModel) != strings.TrimSpace(mappedModel)
 	resultWithUsage := func() *openaiStreamingResultPassthrough {
@@ -2140,7 +2165,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 							c.JSON(status, gin.H{
 								"error": gin.H{
 									"type":    errType,
-									"message": errMsg,
+									"message": sanitizeKiloBridgeClientErrorMessage(c, errMsg),
 								},
 							})
 							return resultWithUsage(), fmt.Errorf("upstream response failed: passthrough rule matched message=%s", errMsg)
@@ -2201,6 +2226,14 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 				}
 			} else {
 				s.parseSSEUsageBytesWithType(dataBytes, eventType, usage)
+			}
+			if kiloResponseRewrite {
+				outputData, _ := extractOpenAISSEDataLine(line)
+				converted, err := rewriteKiloBridgeResponseJSON(c, account, []byte(outputData))
+				if err != nil {
+					return resultWithUsage(), fmt.Errorf("restore Kilo passthrough response effort: %w", err)
+				}
+				line = "data: " + string(converted)
 			}
 		}
 		if line == "" {
@@ -2377,7 +2410,11 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 	if err != nil {
 		return nil, fmt.Errorf("rewrite OpenAI passthrough cache usage: %w", err)
 	}
-	if account.IsCacheConversionEnabled() {
+	body, err = rewriteKiloBridgeResponseHTTPBody(c, account, body)
+	if err != nil {
+		return nil, fmt.Errorf("restore Kilo passthrough response effort: %w", err)
+	}
+	if account.IsCacheConversionEnabled() || kiloBridgeResponseEffort(c, account) != "" {
 		c.Writer.Header().Del("Content-Length")
 	}
 	if !writeOpenAICompactSSEBridge(c, resp.StatusCode, body) {
@@ -2463,7 +2500,11 @@ func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(resp *http.Response, c
 		return nil, fmt.Errorf("rewrite OpenAI passthrough SSE cache usage: %w", conversionErr)
 	}
 	body = convertedBody
-	if account.IsCacheConversionEnabled() {
+	body, conversionErr = rewriteKiloBridgeResponseHTTPBody(c, account, body)
+	if conversionErr != nil {
+		return nil, fmt.Errorf("restore Kilo passthrough SSE response effort: %w", conversionErr)
+	}
+	if account.IsCacheConversionEnabled() || kiloBridgeResponseEffort(c, account) != "" {
 		c.Writer.Header().Del("Content-Length")
 	}
 	if !writeOpenAICompactSSEBridge(c, resp.StatusCode, body) {

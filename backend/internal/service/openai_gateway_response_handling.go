@@ -50,6 +50,7 @@ func (s *OpenAIGatewayService) handleStreamingResponse(ctx context.Context, resp
 
 func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.Context, resp *http.Response, c *gin.Context, account *Account, startTime time.Time, originalModel, mappedModel, reasoningEffort string) (*openaiStreamingResult, error) {
 	cacheConversionEnabled := account.IsCacheConversionEnabled()
+	kiloResponseRewrite := kiloBridgeResponseEffort(c, account) != ""
 	observer := upstreamResponseModelObserverFromContext(c)
 	if observer == nil {
 		observer = beginUpstreamResponseModelObservation(c)
@@ -84,7 +85,7 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no")
-	if cacheConversionEnabled {
+	if cacheConversionEnabled || kiloResponseRewrite {
 		c.Writer.Header().Del("Content-Length")
 		attemptResponseHeaders.Del("Content-Length")
 	}
@@ -173,7 +174,7 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 	if stageFirstOutput {
 		scanner.Split(openAIFirstOutputDynamicScanLines(&firstOutputScanGuard))
 	}
-	documentScanner := newOpenAICacheConversionSSEScanner(newOpenAISSEJSONDocumentScanner(scanner), cacheConversionEnabled)
+	documentScanner := newOpenAICacheConversionSSEScanner(newOpenAISSEJSONDocumentScanner(scanner), cacheConversionEnabled || kiloResponseRewrite)
 
 	streamInterval := time.Duration(0)
 	if s.cfg != nil && s.cfg.Gateway.StreamDataIntervalTimeout > 0 {
@@ -387,7 +388,11 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 		}
 		if codexFailureTerminal && sawBareError && !sawResponseFailed && !clientDisconnected {
 			applyAttemptResponseHeaders()
-			if _, err := writePendingString(buildOpenAIResponseFailedSSE(responseID, originalModel, bareErrorPayload, failedMessage)); err != nil {
+			clientErrorBody, rewriteErr := rewriteKiloBridgeResponseJSON(c, account, bareErrorPayload)
+			if rewriteErr != nil {
+				clientErrorBody = nil
+			}
+			if _, err := writePendingString(buildOpenAIResponseFailedSSE(responseID, originalModel, clientErrorBody, sanitizeKiloBridgeClientErrorMessage(c, failedMessage))); err != nil {
 				handlePendingWriteError(err)
 			} else {
 				failureDelivered = true
@@ -607,7 +612,7 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 							c.JSON(status, gin.H{
 								"error": gin.H{
 									"type":    errType,
-									"message": errMsg,
+									"message": sanitizeKiloBridgeClientErrorMessage(c, errMsg),
 								},
 							})
 							streamEarlyErr = fmt.Errorf("upstream response failed: passthrough rule matched message=%s", errMsg)
@@ -696,8 +701,12 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 			// OpenAI Responses streams that terminate with an empty
 			// response.completed (no output, no usage, no error, nothing sent
 			// to the client) are silent upstream refusals: fail over instead of
-			// recording a successful 0/0 usage turn (issue #5009).
-			if account != nil && account.Platform == PlatformOpenAI &&
+			// recording a successful 0/0 usage turn (issue #5009). Grok
+			// subscriptions behind vendor gateways show the same silent-refusal
+			// shape on /v1/responses (forwardGrokResponses reaches this same
+			// handler), so cover PlatformGrok too — the passthrough-path guard
+			// is already unconditional.
+			if account != nil && (account.Platform == PlatformOpenAI || account.Platform == PlatformGrok) &&
 				(eventType == "response.completed" || eventType == "response.done") &&
 				!sawFailedEvent && !responsesSemanticOutputSeen && !clientOutputStarted &&
 				openAIResponsesCompletedEventIsEmpty(dataBytes, usage) {
@@ -716,6 +725,16 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 				if !bytes.Equal(converted, []byte(outputData)) {
 					line = "data: " + string(converted)
 				}
+			}
+
+			if kiloResponseRewrite {
+				outputData, _ := extractOpenAISSEDataLine(line)
+				converted, err := rewriteKiloBridgeResponseJSON(c, account, []byte(outputData))
+				if err != nil {
+					streamEarlyErr = fmt.Errorf("restore Kilo response effort: %w", err)
+					return
+				}
+				line = "data: " + string(converted)
 			}
 
 			// 写入客户端（客户端断开后继续 drain 上游）
@@ -1824,7 +1843,11 @@ func (s *OpenAIGatewayService) handleNonStreamingResponse(ctx context.Context, r
 	if err != nil {
 		return nil, fmt.Errorf("rewrite OpenAI response cache usage: %w", err)
 	}
-	if account.IsCacheConversionEnabled() {
+	body, err = rewriteKiloBridgeResponseHTTPBody(c, account, body)
+	if err != nil {
+		return nil, fmt.Errorf("restore Kilo response effort: %w", err)
+	}
+	if account.IsCacheConversionEnabled() || kiloBridgeResponseEffort(c, account) != "" {
 		c.Writer.Header().Del("Content-Length")
 	}
 	if !writeOpenAICompactSSEBridge(c, resp.StatusCode, body) {
@@ -1939,7 +1962,11 @@ func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Conte
 		return nil, fmt.Errorf("rewrite OpenAI SSE response cache usage: %w", conversionErr)
 	}
 	body = convertedBody
-	if account.IsCacheConversionEnabled() {
+	body, conversionErr = rewriteKiloBridgeResponseHTTPBody(c, account, body)
+	if conversionErr != nil {
+		return nil, fmt.Errorf("restore Kilo SSE response effort: %w", conversionErr)
+	}
+	if account.IsCacheConversionEnabled() || kiloBridgeResponseEffort(c, account) != "" {
 		c.Writer.Header().Del("Content-Length")
 	}
 	if !writeOpenAICompactSSEBridge(c, resp.StatusCode, body) {
@@ -2101,10 +2128,11 @@ func (s *OpenAIGatewayService) writeOpenAINonStreamingProtocolError(resp *http.R
 		message = "Upstream returned an invalid non-streaming response"
 	}
 	setOpsUpstreamError(c, http.StatusBadGateway, message, "")
+	clientMessage := sanitizeKiloBridgeClientErrorMessage(c, message)
 	// body-signal compact 心跳可能已把响应头提交为 200，此时只能以
 	// response.failed 终止事件回传错误，不能再写 JSON+状态码。
 	if openAICompactClientWantsStream(c) && StopOpenAICompactSSEKeepaliveCommitted(c) {
-		writeOpenAICompactSSEFailureMessage(c, http.StatusBadGateway, "upstream_error", message)
+		writeOpenAICompactSSEFailureMessage(c, http.StatusBadGateway, "upstream_error", clientMessage)
 		return fmt.Errorf("non-streaming openai protocol error: %s", message)
 	}
 	responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
@@ -2112,7 +2140,7 @@ func (s *OpenAIGatewayService) writeOpenAINonStreamingProtocolError(resp *http.R
 	c.JSON(http.StatusBadGateway, gin.H{
 		"error": gin.H{
 			"type":    "upstream_error",
-			"message": message,
+			"message": clientMessage,
 		},
 	})
 	return fmt.Errorf("non-streaming openai protocol error: %s", message)

@@ -366,3 +366,28 @@ func TestPKCacheConversionInflightBillingPreservesOriginalContext(t *testing.T) 
 		})
 	}
 }
+
+func TestPKKiloBridgeSettings(t *testing.T) {
+	defaults, err := normalizeKiloBridgeExtra(PlatformOpenAI, nil, nil)
+	require.NoError(t, err)
+	require.Equal(t, false, defaults[AccountExtraKiloBridgeEnabled])
+	for _, kind := range []string{AccountTypeAPIKey, AccountTypeOAuth, AccountTypeSetupToken} {
+		current := map[string]any{AccountExtraKiloBridgeEnabled: true}
+		input := map[string]any{"unrelated": "keep"}
+		extra, err := normalizeKiloBridgeExtra(PlatformOpenAI, input, current)
+		require.NoError(t, err)
+		require.True(t, (&Account{Platform: PlatformOpenAI, Type: kind, Extra: extra}).IsKiloBridgeEnabled())
+		require.Equal(t, map[string]any{"unrelated": "keep"}, input)
+		extra, err = normalizeKiloBridgeExtra(PlatformOpenAI, map[string]any{AccountExtraKiloBridgeEnabled: false}, current)
+		require.NoError(t, err)
+		require.Equal(t, false, extra[AccountExtraKiloBridgeEnabled])
+	}
+	for _, invalid := range []any{nil, "true", 1, 0.0} {
+		require.Error(t, ValidateKiloBridgeExtra(PlatformOpenAI, map[string]any{AccountExtraKiloBridgeEnabled: invalid}))
+	}
+	for _, enabled := range []bool{false, true} {
+		extra := map[string]any{AccountExtraKiloBridgeEnabled: enabled}
+		require.Error(t, ValidateKiloBridgeExtra(PlatformAnthropic, extra))
+		require.False(t, (&Account{Platform: PlatformAnthropic, Extra: extra}).IsKiloBridgeEnabled())
+	}
+}

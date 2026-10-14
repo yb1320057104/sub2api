@@ -17,8 +17,8 @@ import {
 
 describe('reasoning effort multipliers', () => {
   it('serializes independent overrides without altering their values', () => {
-    expect(formReasoningEffortMultipliersToAPI({ none: '0.5', high: 1, max: '3', low: '' }))
-      .toEqual({ none: 0.5, high: 1, max: 3 })
+    expect(formReasoningEffortMultipliersToAPI({ none: '0.5', high: 1, max: '3', ultra: '4', persistent: '5', low: '' }))
+      .toEqual({ none: 0.5, high: 1, max: 3, ultra: 4, persistent: 5 })
   })
 
   it.each([null, undefined, {}, { max: '' }])('clears empty overrides with null: %j', value => {
@@ -28,7 +28,7 @@ describe('reasoning effort multipliers', () => {
 
   it('accepts supported levels with positive finite multipliers, including discounts', () => {
     expect(validateReasoningEffortMultipliers({
-      none: 0.01, minimal: 0.5, low: 1, medium: '1.2', high: 2, xhigh: 2.5, max: 3,
+      none: 0.01, minimal: 0.5, low: 1, medium: '1.2', high: 2, xhigh: 2.5, max: 3, ultra: 4, persistent: '5',
     }, t)).toBeNull()
   })
 

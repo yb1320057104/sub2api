@@ -143,7 +143,7 @@ export default {
         fastMultiplier: 'Fast 倍率',
         flexMultiplier: 'Flex 倍率',
         reasoningEffortMultipliers: '自定义思考等级倍率（可选）',
-        reasoningEffortMultipliersHint: '按请求最终转发的思考等级，对整次请求的费用与额度消耗应用对应倍率。未配置的等级按 1 倍计费，可与其他计费倍率叠加。',
+        reasoningEffortMultipliersHint: '按请求最终转发的思考等级计费；启用 Kilo 桥接时，客户计费使用用户原始请求等级，ultra / persistent 转发为 max 仍按原等级计费，账号自定义成本统计使用实际转发等级。倍率应用于整次请求的费用与额度消耗，未配置的等级按 1 倍计费，可与其他计费倍率叠加。',
         reasoningEffortMultiplierLabel: '{effort} 思考等级倍率',
         reasoningEffortMultiplierDefault: '默认 1',
         clearReasoningEffortMultipliers: '清空倍率',

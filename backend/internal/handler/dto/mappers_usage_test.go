@@ -255,6 +255,19 @@ func TestUsageLogFromService_OmitsUpstreamReasoningEffortWhenUnmapped(t *testing
 	require.NotContains(t, string(adminJSON), "upstream_reasoning_effort")
 }
 
+func TestPKKiloBridgeUsageDisplaysOriginalEffort(t *testing.T) {
+	requested, forwarded := "ultra", "max"
+	log := &service.UsageLog{ReasoningEffort: &forwarded, RequestedReasoningEffort: &requested}
+	userJSON, err := json.Marshal(UsageLogFromService(log))
+	require.NoError(t, err)
+	require.Contains(t, string(userJSON), `"reasoning_effort":"ultra"`)
+	require.NotContains(t, string(userJSON), "upstream_reasoning_effort")
+	adminJSON, err := json.Marshal(UsageLogFromServiceAdmin(log))
+	require.NoError(t, err)
+	require.Contains(t, string(adminJSON), `"reasoning_effort":"ultra"`)
+	require.Contains(t, string(adminJSON), `"upstream_reasoning_effort":"max"`)
+}
+
 func TestUsageLogFromService_FallsBackToLegacyModelWhenRequestedModelMissing(t *testing.T) {
 	t.Parallel()
 

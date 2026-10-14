@@ -315,3 +315,14 @@ func TestResponsesToAnthropic_CodexNamespaceRootUnionTool(t *testing.T) {
 	// 同名属性两侧的约束用嵌套联合保留，只允许出现在 properties 内部。
 	assert.Contains(t, string(wire), `"mode":{"anyOf":[{"enum":["view"]},{"enum":["update"]}]}`)
 }
+
+func TestPKKiloCustomToolInputDoneWithoutDeltas(t *testing.T) {
+	state := NewResponsesEventToAnthropicState()
+	ResponsesEventToAnthropicEvents(&ResponsesStreamEvent{Type: "response.output_item.added", OutputIndex: 0, Item: &ResponsesOutput{Type: "custom_tool_call", CallID: "call_task", Name: "spawn_agent"}}, state)
+	input := `{"message":"gAAAA_task"}`
+	events := ResponsesEventToAnthropicEvents(&ResponsesStreamEvent{Type: "response.custom_tool_call_input.done", OutputIndex: 0, Input: input}, state)
+	require.Len(t, events, 2)
+	require.Equal(t, "content_block_delta", events[0].Type)
+	require.Equal(t, input, events[0].Delta.PartialJSON)
+	require.Equal(t, "content_block_stop", events[1].Type)
+}

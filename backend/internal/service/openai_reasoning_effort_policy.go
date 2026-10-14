@@ -48,6 +48,7 @@ func isReasoningEffortMappingDeny(raw string) bool {
 
 type openAIReasoningEffortPolicyContextKey struct{}
 type requestedReasoningEffortContextKey struct{}
+type reasoningEffortRequestModelContextKey struct{}
 
 type openAIReasoningEffortPolicy struct {
 	maxEffort string
@@ -445,6 +446,15 @@ func WithOpenAIReasoningEffortPolicy(ctx context.Context, maxEffort string, mapp
 	return context.WithValue(ctx, openAIReasoningEffortPolicyContextKey{}, policy)
 }
 
+// WithReasoningEffortRequestModel preserves the client model for account-time
+// policy checks, before channel or account model mapping changes the body.
+func WithReasoningEffortRequestModel(ctx context.Context, model string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, reasoningEffortRequestModelContextKey{}, strings.TrimSpace(model))
+}
+
 // ApplyOpenAIReasoningEffortPolicyFromContext applies a policy previously bound
 // to the request. An unbound request is returned byte-for-byte unchanged.
 func ApplyOpenAIReasoningEffortPolicyFromContext(ctx context.Context, body []byte) ([]byte, bool, error) {
@@ -456,6 +466,65 @@ func ApplyOpenAIReasoningEffortPolicyFromContext(ctx context.Context, body []byt
 		return body, false, nil
 	}
 	return ApplyOpenAIReasoningEffortPolicy(body, policy.maxEffort, policy.mappings, policy.overLimit)
+}
+
+// applyKiloReasoningEffortPolicyFromContext applies the bound group policy only
+// to provider aliases that the ingress policy could not recognize. Other effort
+// values were already mapped at ingress, so applying the full policy again would
+// incorrectly chain mappings. Messages callers invoke this before their normal
+// policy pass and skip that pass when an alias was handled here.
+func applyKiloReasoningEffortPolicyFromContext(ctx context.Context, account *Account, body []byte, paths ...string) ([]byte, bool, error) {
+	if !account.IsKiloBridgeEnabled() || ctx == nil {
+		return body, false, nil
+	}
+	policy, ok := ctx.Value(openAIReasoningEffortPolicyContextKey{}).(openAIReasoningEffortPolicy)
+	if !ok {
+		return body, false, nil
+	}
+	result := body
+	changed := false
+	requestModel := gjson.GetBytes(body, "model").String()
+	if originalModel, ok := ctx.Value(reasoningEffortRequestModelContextKey{}).(string); ok {
+		requestModel = originalModel
+	}
+	if len(paths) == 0 {
+		paths = []string{"reasoning.effort", "reasoning_effort", "output_config.effort"}
+	}
+	for _, path := range paths {
+		field := gjson.GetBytes(body, path)
+		if field.Type != gjson.String || kiloUpstreamReasoningEffort(field.String()) == field.String() {
+			continue
+		}
+		// Preserve the incoming model for model-scoped rules. A one-field
+		// payload prevents reapplying mappings to other already handled fields.
+		aliasBody, err := sjson.SetBytes([]byte(`{}`), "model", requestModel)
+		if err != nil {
+			return body, false, err
+		}
+		aliasBody, err = sjson.SetBytes(aliasBody, path, kiloUpstreamReasoningEffort(field.String()))
+		if err != nil {
+			return body, false, err
+		}
+		policyBody, _, err := ApplyOpenAIReasoningEffortPolicy(aliasBody, policy.maxEffort, policy.mappings, policy.overLimit)
+		if err != nil {
+			// Public policy errors refer to the client level, never the bridge's
+			// internal alias. Keep the typed error for the existing 403 handling.
+			var overLimitErr *ReasoningEffortOverLimitError
+			var mappingErr *ReasoningEffortMappingDeniedError
+			if errors.As(err, &overLimitErr) {
+				err = &ReasoningEffortOverLimitError{Requested: field.String(), Max: overLimitErr.Max}
+			} else if errors.As(err, &mappingErr) {
+				err = &ReasoningEffortMappingDeniedError{Requested: field.String()}
+			}
+			return body, false, err
+		}
+		result, err = sjson.SetBytes(result, path, gjson.GetBytes(policyBody, path).String())
+		if err != nil {
+			return body, false, err
+		}
+		changed = true
+	}
+	return result, changed, nil
 }
 
 func mapReasoningEffort(raw string, mappings []ReasoningEffortMapping, requestModel string) (string, bool) {

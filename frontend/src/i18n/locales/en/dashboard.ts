@@ -398,6 +398,8 @@ export default {
     latencyUpstreamFirstToken: 'Upstream first token',
     latencyUpstreamFirstTokenHint: 'Preserves the existing upstream TTFT metric. OpenAI Responses uses the configured semantic event or visible output mode; other protocols retain their existing definitions.',
     latencyDuration: 'Total',
+    outputTps: 'Output TPS',
+    outputTpsHint: 'Output tokens divided by total duration, including first-token wait, in tok/s. Output tokens may include reasoning tokens.',
     time: 'Time',
     ws: 'WS',
     stream: 'Stream',
@@ -688,7 +690,7 @@ export default {
       tierHint: 'The whole request is billed at the tier matching its total context (input + cache write + cache read)',
       tierHintMarginal: 'Only the portion above the threshold is billed at this tier; output is unaffected',
       reasoningMultiplierBadge: '{effort} ×{multiplier}',
-      reasoningMultiplierHint: 'When the forwarded reasoning effort is {effort}, billing and quota usage for the request are multiplied by {multiplier}. Unconfigured levels use 1×',
+      reasoningMultiplierHint: 'When reasoning effort is {effort}, request cost and quota usage are multiplied by {multiplier}. Unconfigured levels use 1×',
       marginalBadge: 'excess-only tiers',
       timePricingRowHint: 'Requests made within this period ({timezone} time) are billed at the prices in this row',
       timePricingRowHintWeekdays:

@@ -524,3 +524,59 @@ func TestReasoningEffortMappingDeniedError(t *testing.T) {
 	require.False(t, IsReasoningEffortPolicyDenied(nil))
 	require.False(t, IsReasoningEffortPolicyDenied(context.Canceled))
 }
+
+func TestPKKiloReasoningPolicyOnlyReevaluatesProviderAliases(t *testing.T) {
+	account := &Account{Platform: PlatformOpenAI, Extra: map[string]any{AccountExtraKiloBridgeEnabled: true}}
+	for _, effort := range []string{"ultra", "persistent"} {
+		requested := CanonicalRequestedReasoningEffort([]byte(`{"reasoning":{"effort":"` + effort + `"}}`))
+		require.NotNil(t, requested)
+		require.Equal(t, effort, *requested)
+		fromMap := CanonicalRequestedReasoningEffortFromReqBody(map[string]any{"reasoning_effort": effort})
+		require.Equal(t, requested, fromMap)
+		for _, path := range []string{"reasoning.effort", "reasoning_effort", "output_config.effort"} {
+			t.Run(effort+"/"+path, func(t *testing.T) {
+				body := []byte(`{"model":"client-model","reasoning":{"effort":"` + effort + `"},"reasoning_effort":"` + effort + `","output_config":{"effort":"` + effort + `"}}`)
+				ctx := WithOpenAIReasoningEffortPolicy(context.Background(), "high", nil, "")
+				got, changed, err := applyKiloReasoningEffortPolicyFromContext(ctx, account, body)
+				require.NoError(t, err)
+				require.True(t, changed)
+				require.Equal(t, "high", gjson.GetBytes(got, path).String())
+
+				ctx = WithOpenAIReasoningEffortPolicy(context.Background(), "high", nil, ReasoningEffortOverLimitDeny)
+				got, changed, err = applyKiloReasoningEffortPolicyFromContext(ctx, account, body)
+				require.True(t, IsReasoningEffortPolicyDenied(err))
+				require.False(t, changed)
+				require.Equal(t, body, got)
+			})
+		}
+	}
+
+	mappings := []ReasoningEffortMapping{{From: "max", To: "high"}, {From: "high", To: "low"}}
+	ctx := WithOpenAIReasoningEffortPolicy(context.Background(), "", mappings, "")
+	body := []byte(`{"model":"client-model","reasoning":{"effort":"ultra"},"reasoning_effort":"high"}`)
+	got, changed, err := applyKiloReasoningEffortPolicyFromContext(ctx, account, body)
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.Equal(t, "high", gjson.GetBytes(got, "reasoning.effort").String())
+	require.Equal(t, "high", gjson.GetBytes(got, "reasoning_effort").String(), "an ingress-mapped field must not be mapped twice")
+	second, changed, err := applyKiloReasoningEffortPolicyFromContext(ctx, account, got)
+	require.NoError(t, err)
+	require.False(t, changed)
+	require.Equal(t, got, second)
+
+	ctx = WithOpenAIReasoningEffortPolicy(context.Background(), "", []ReasoningEffortMapping{{From: "max", To: ReasoningEffortMappingDeny, Model: "client-model", MatchType: domain.ReasoningEffortMatchExact}}, "")
+	ctx = WithReasoningEffortRequestModel(ctx, "client-model")
+	body = []byte(`{"model":"channel/model","reasoning":{"effort":"ultra"}}`)
+	_, _, err = applyKiloReasoningEffortPolicyFromContext(ctx, account, body)
+	require.True(t, IsReasoningEffortPolicyDenied(err))
+	for _, disabled := range []*Account{nil, {Platform: PlatformOpenAI}, {Platform: PlatformAnthropic, Extra: map[string]any{AccountExtraKiloBridgeEnabled: true}}} {
+		got, changed, err = applyKiloReasoningEffortPolicyFromContext(ctx, disabled, body)
+		require.NoError(t, err)
+		require.False(t, changed)
+		require.Equal(t, body, got)
+	}
+	got, changed, err = applyKiloReasoningEffortPolicyFromContext(context.Background(), account, body)
+	require.NoError(t, err)
+	require.False(t, changed)
+	require.Equal(t, body, got)
+}

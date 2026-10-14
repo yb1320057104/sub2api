@@ -115,11 +115,11 @@ describe('PlazaModelPricingTable', () => {
 
   it('shows all configured reasoning multipliers in level order', () => {
     const model = tokenModel()
-    model.pricing!.reasoning_effort_multipliers = { max: 3, none: 0.5, high: 1.5 }
+    model.pricing!.reasoning_effort_multipliers = { persistent: 5, ultra: 4, max: 3, none: 0.5, high: 1.5 }
     const wrapper = mountTable([model], 1)
 
     const badges = wrapper.findAll('[data-reasoning-effort]')
-    expect(badges.map(badge => badge.attributes('data-reasoning-effort'))).toEqual(['none', 'high', 'max'])
+    expect(badges.map(badge => badge.attributes('data-reasoning-effort'))).toEqual(['none', 'high', 'max', 'ultra', 'persistent'])
     expect(badges.every(badge => badge.attributes('title') === 'modelPlaza.table.reasoningMultiplierHint')).toBe(true)
     expect(wrapper.text()).toContain('modelPlaza.table.reasoningMultiplierBadge')
   })

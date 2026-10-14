@@ -542,7 +542,14 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 		if contentType == "" {
 			contentType = "application/json"
 		}
-		c.Data(resp.StatusCode, contentType, body)
+		clientBody, rewriteErr := rewriteKiloBridgeResponseJSON(c, account, body)
+		if rewriteErr != nil {
+			return nil, fmt.Errorf("restore Kilo error response: %w", rewriteErr)
+		}
+		if len(clientBody) != len(body) {
+			c.Writer.Header().Del("Content-Length")
+		}
+		c.Data(resp.StatusCode, contentType, clientBody)
 		if cyberMsg == "" {
 			return nil, fmt.Errorf("openai cyber_policy: %d", resp.StatusCode)
 		}
@@ -622,7 +629,7 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 		c.JSON(status, gin.H{
 			"error": gin.H{
 				"type":    errType,
-				"message": errMsg,
+				"message": sanitizeKiloBridgeClientErrorMessage(c, errMsg),
 			},
 		})
 		if upstreamMsg == "" {
@@ -748,7 +755,7 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 	c.JSON(statusCode, gin.H{
 		"error": gin.H{
 			"type":    errType,
-			"message": errMsg,
+			"message": sanitizeKiloBridgeClientErrorMessage(c, errMsg),
 		},
 	})
 

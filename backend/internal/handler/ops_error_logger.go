@@ -1183,6 +1183,14 @@ func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 			}
 		}
 
+		// Google 格式错误体没有 type 字段：按网关回写时登记的错误类型补齐。
+		if errType, code := service.OpsLocalErrorType(c); errType != "" && !parsed.StreamFailure &&
+			(parsed.ErrorType == "" || parsed.ErrorType == "api_error") {
+			parsed.ErrorType = errType
+			if code != "" {
+				parsed.Code = code
+			}
+		}
 		normalizedType := normalizeOpsErrorType(parsed.ErrorType, parsed.Code)
 
 		phase, isBusinessLimited, errorOwner, errorSource := classifyOpsErrorLog(c, normalizedType, parsed.Message, parsed.Code, status)
@@ -1276,6 +1284,7 @@ func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 			entry.ClientIP = &clientIP
 		}
 
+		service.SanitizeKiloBridgeClientErrorLog(c, entry)
 		enqueueOpsErrorLog(ops, entry)
 	}
 }
@@ -1392,6 +1401,7 @@ func logOpsRecoveredUpstream(c *gin.Context, ops *service.OpsService, finalStatu
 		entry.ClientIP = &clientIP
 	}
 	applyOpsLatencyFieldsFromContext(c, entry)
+	service.SanitizeKiloBridgeClientErrorLog(c, entry)
 	enqueueOpsErrorLog(ops, entry)
 }
 
@@ -1581,6 +1591,7 @@ func logOpsStreamErrorValue(c *gin.Context, ops *service.OpsService, wireStatus 
 		entry.ClientIP = &clientIP
 	}
 
+	service.SanitizeKiloBridgeClientErrorLog(c, entry)
 	enqueueOpsErrorLog(ops, entry)
 }
 
@@ -2214,6 +2225,11 @@ func classifyOpsSeverity(errType string, status int) string {
 
 func classifyOpsErrorLog(c *gin.Context, errType, message, code string, status int) (phase string, isBusinessLimited bool, errorOwner string, errorSource string) {
 	phase = classifyOpsPhase(errType, message, code)
+	if service.IsOpsRequestScopedError(c) {
+		// 失败由请求内容决定：只按错误类型分类，上游错误上下文不参与归因。
+		isBusinessLimited = classifyOpsIsBusinessLimited(errType, phase, code, status, message)
+		return phase, isBusinessLimited, classifyOpsErrorOwner(phase, message), classifyOpsErrorSource(phase, message)
+	}
 	routingCapacityLimited := isOpsRoutingCapacityLimited(c)
 	clientBusinessLimited := service.HasOpsClientBusinessLimited(c)
 	localModelConfiguration := clientBusinessLimited && service.OpsClientBusinessLimitedReason(c) == service.OpsClientBusinessLimitedReasonLocalModelConfiguration

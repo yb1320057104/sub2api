@@ -13,20 +13,23 @@ import (
 )
 
 func TestReasoningEffortBillingMultiplier(t *testing.T) {
-	multipliers := map[string]float64{"none": 0.5, "minimal": 0.75, "low": 0.9, "medium": 1.25, "high": 1.5, "xhigh": 2, "max": 3}
+	multipliers := map[string]float64{"none": 0.5, "minimal": 0.75, "low": 0.9, "medium": 1.25, "high": 1.5, "xhigh": 2, "max": 3, "ultra": 4, "persistent": 5}
 	for _, tc := range []struct {
 		effort string
 		want   float64
 	}{
 		{"none", 0.5}, {"minimal", 0.75}, {"low", 0.9}, {"medium", 1.25},
 		{"high", 1.5}, {"xhigh", 2}, {"max", 3}, {" Extra-High ", 2},
-		{" MAX ", 3}, {"", 1}, {"unknown", 1},
+		{" MAX ", 3}, {"ultra", 4}, {" ULTRA ", 4}, {"persistent", 5}, {" PERSISTENT ", 5}, {"", 1}, {"unknown", 1},
 	} {
 		t.Run(tc.effort, func(t *testing.T) {
 			require.Equal(t, tc.want, reasoningEffortBillingMultiplier(tc.effort, multipliers))
 		})
 	}
 	require.Equal(t, 1.0, reasoningEffortBillingMultiplier("max", nil))
+	for _, effort := range []string{"ultra", "persistent"} {
+		require.Equal(t, 1.0, reasoningEffortBillingMultiplier(effort, map[string]float64{"max": 3}), "Kilo wire effort must not change the requested billing level")
+	}
 	for _, invalid := range []float64{0, -1, math.NaN(), math.Inf(1)} {
 		require.Equal(t, 1.0, reasoningEffortBillingMultiplier("max", map[string]float64{"max": invalid}))
 	}
@@ -38,10 +41,10 @@ func TestReasoningEffortBillingSupportsAllModelsAndLevels(t *testing.T) {
 			bs, resolver := newTokenCostTestEnv(t, PlatformOpenAI, []ChannelModelPricing{{
 				Platform: PlatformOpenAI, Models: []string{model}, BillingMode: BillingModeToken,
 				InputPrice: testPtrFloat64(1e-6), OutputPrice: testPtrFloat64(2e-6),
-				ReasoningEffortMultipliers: map[string]float64{"none": 0.5, "high": 1.5, "max": 3},
+				ReasoningEffortMultipliers: map[string]float64{"none": 0.5, "high": 1.5, "max": 3, "ultra": 4, "persistent": 5},
 			}}, nil)
 			group := &Group{ID: 100, Platform: PlatformOpenAI}
-			for effort, multiplier := range map[string]float64{"none": 0.5, "high": 1.5, "max": 3, "low": 1, "": 1} {
+			for effort, multiplier := range map[string]float64{"none": 0.5, "high": 1.5, "max": 3, "ultra": 4, "persistent": 5, "low": 1, "": 1} {
 				cost, err := bs.CalculateTokenCostForRequest(TokenCostRequest{
 					Ctx: context.Background(), Model: model, Group: group, Resolver: resolver,
 					Tokens: UsageTokens{InputTokens: 1000, OutputTokens: 200}, RateMultiplier: 0.8,
@@ -112,14 +115,14 @@ func TestReasoningEffortBillingGroupOverrideAndUnitBilling(t *testing.T) {
 			bs, resolver := newTokenCostTestEnv(t, PlatformOpenAI, []ChannelModelPricing{{
 				Platform: PlatformOpenAI, Models: []string{"custom-model"}, BillingMode: mode,
 				InputPrice: testPtrFloat64(1e-6), PerRequestPrice: testPtrFloat64(0.1),
-				ReasoningEffortMultipliers: map[string]float64{"high": 2, "max": 3},
+				ReasoningEffortMultipliers: map[string]float64{"high": 2, "max": 3, "ultra": 4, "persistent": 5},
 			}}, nil)
 			group := &Group{ID: 100, Platform: PlatformOpenAI, ModelPricing: []ChannelModelPricing{{
 				Models: []string{"custom-model"}, BillingMode: mode,
 				InputPrice: testPtrFloat64(1e-6), PerRequestPrice: testPtrFloat64(0.1),
-				ReasoningEffortMultipliers: map[string]float64{"high": 1.25},
+				ReasoningEffortMultipliers: map[string]float64{"high": 1.25, "ultra": 2, "persistent": 2.5},
 			}}}
-			for effort, multiplier := range map[string]float64{"high": 1.25, "max": 1} {
+			for effort, multiplier := range map[string]float64{"high": 1.25, "ultra": 2, "persistent": 2.5, "max": 1} {
 				input := CostInput{
 					Ctx: context.Background(), Model: "custom-model", Group: group, GroupID: &group.ID,
 					Tokens: UsageTokens{InputTokens: 1000}, RequestCount: 2, RateMultiplier: 0.8,
@@ -145,10 +148,10 @@ func TestAccountStatsCustomRulesUseOwnReasoningEffortMultipliers(t *testing.T) {
 				AccountIDs: []int64{1}, Pricing: []ChannelModelPricing{{
 					Models: []string{"claude-fable-5-1"}, BillingMode: mode,
 					InputPrice: testPtrFloat64(0.001), PerRequestPrice: testPtrFloat64(0.1),
-					ReasoningEffortMultipliers: map[string]float64{"high": 1.5},
+					ReasoningEffortMultipliers: map[string]float64{"high": 1.5, "ultra": 4, "persistent": 5},
 				}},
 			}}}
-			for effort, multiplier := range map[string]float64{"high": 1.5, "max": 1} {
+			for effort, multiplier := range map[string]float64{"high": 1.5, "max": 1, "ultra": 4, "persistent": 5, "low": 1} {
 				cost := tryCustomRules(channel, 1, 100, PlatformAnthropic, "claude-fable-5-1", UsageTokens{InputTokens: 100}, 2, effort)
 				require.NotNil(t, cost)
 				base := 0.2

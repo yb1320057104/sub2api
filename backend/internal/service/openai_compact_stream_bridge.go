@@ -113,6 +113,7 @@ func writeOpenAICompactSSEFailureMessage(c *gin.Context, statusCode int, errType
 		return
 	}
 	MarkOpsStreamError(c, errType, message, statusCode)
+	message = sanitizeKiloBridgeClientErrorMessage(c, message)
 	payload, err := json.Marshal(map[string]any{
 		"type":            "response.failed",
 		"sequence_number": 0,

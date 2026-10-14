@@ -53,11 +53,11 @@ func buildOpenAIResponsesURL(base string) string {
 }
 
 // buildOpenAIResponsesURLForPlatform 组装 Responses 端点（平台感知）。
-// DeepSeek 官方 Responses 端点为 /responses（无 /v1 前缀，适配 Codex）；
-// 其余平台维持 /v1/responses。
+// 供应商 profile 声明了 ResponsesPath 时按其拼接（如 DeepSeek 为无 /v1 前缀的
+// /responses）；其余平台维持 /v1/responses。
 func buildOpenAIResponsesURLForPlatform(platform string, base string) string {
-	if platform == PlatformDeepseek {
-		return buildOpenAIEndpointURL(base, "/responses")
+	if profile := LookupProviderProfile(platform); profile != nil && profile.ResponsesPath != "" {
+		return buildOpenAIEndpointURL(base, profile.ResponsesPath)
 	}
 	return buildOpenAIResponsesURL(base)
 }
@@ -1430,12 +1430,24 @@ func normalizeOpenAIResponseFormatSchemasBody(body []byte) ([]byte, bool, error)
 }
 
 func normalizeOpenAIResponsesWebSocketCompatibilityBody(body []byte, account *Account, responsesLite bool) ([]byte, bool, error) {
+	return normalizeOpenAIResponsesCompatibilityBodyWithOptions(body, account, openAIResponsesCompatibilityOptions{ResponsesLite: responsesLite})
+}
+
+type openAIResponsesCompatibilityOptions struct {
+	ResponsesLite bool
+	// Compact marks the /responses/compact wire shape, which is left as-is
+	// by request-shape compatibility rewrites such as web_search history.
+	Compact bool
+}
+
+func normalizeOpenAIResponsesCompatibilityBodyWithOptions(body []byte, account *Account, opts openAIResponsesCompatibilityOptions) ([]byte, bool, error) {
+	responsesLite := opts.ResponsesLite
 	if account == nil || !account.IsOpenAI() {
 		return body, false, nil
 	}
 	normalized := body
 	changed := false
-	if account.IsOpenAIOAuthLike() {
+	if account.IsOpenAIOAuthLike() && !account.IsKiloBridgeEnabled() {
 		var err error
 		normalized, changed, err = normalizeOpenAIResponsesLegacyIngress(body)
 		if err != nil {
@@ -1455,20 +1467,20 @@ func normalizeOpenAIResponsesWebSocketCompatibilityBody(body []byte, account *Ac
 			normalized = next
 			changed = true
 		}
-		if next, normalizedReasoning, err := normalizeOpenAIAPIKeyStoreFalseReasoningReplay(normalized, false); err != nil {
+		if next, normalizedReasoning, err := normalizeOpenAIAPIKeyReasoningReplayForAccount(account, normalized, false); err != nil {
 			return body, false, err
 		} else if normalizedReasoning {
 			normalized = next
 			changed = true
 		}
 	}
-	if sanitized, idsChanged, err := sanitizeOpenAIResponsesInputItemIDs(normalized); err != nil {
+	if sanitized, idsChanged, err := sanitizeOpenAIInputItemIDsForAccount(account, normalized); err != nil {
 		return body, false, fmt.Errorf("sanitize websocket Responses input item IDs: %w", err)
 	} else if idsChanged {
 		normalized = sanitized
 		changed = true
 	}
-	if account != nil && account.IsOpenAI() && account.IsOAuth() {
+	if account != nil && account.IsOpenAI() && account.IsOAuth() && !account.IsKiloBridgeEnabled() {
 		if reasoningBody, reasoningChanged, err := normalizeOpenAIResponsesReasoningMode(normalized, account.GetMappedModel(gjson.GetBytes(normalized, "model").String())); err != nil {
 			return body, false, err
 		} else if reasoningChanged {
@@ -1476,7 +1488,7 @@ func normalizeOpenAIResponsesWebSocketCompatibilityBody(body []byte, account *Ac
 			changed = true
 		}
 	}
-	if account != nil && account.IsOpenAIOAuthLike() {
+	if account != nil && (account.IsOpenAIOAuthLike() && !account.IsKiloBridgeEnabled()) {
 		oauthBody, oauthChanged, err := normalizeOpenAIOAuthResponsesCompatibilityBody(normalized)
 		if err != nil {
 			return body, false, err
@@ -1494,8 +1506,16 @@ func normalizeOpenAIResponsesWebSocketCompatibilityBody(body []byte, account *Ac
 			normalized = next
 			changed = true
 		}
+		if !opts.Compact {
+			webSearchBody, webSearchChanged, err := ensureOpenAIOAuthWebSearchToolForHistoryBody(normalized, responsesLite)
+			if err != nil {
+				return body, false, fmt.Errorf("normalize websocket body: %w", err)
+			}
+			normalized = webSearchBody
+			changed = changed || webSearchChanged
+		}
 	}
-	needsOrphanCleanup := account != nil && account.IsOpenAIOAuthLike() &&
+	needsOrphanCleanup := account != nil && (account.IsOpenAIOAuthLike() && !account.IsKiloBridgeEnabled()) &&
 		gjson.GetBytes(normalized, "input").IsArray()
 	if needsOrphanCleanup || openAIResponsesInputMayNeedTruncation(normalized) {
 		var reqBody map[string]any
@@ -1724,13 +1744,23 @@ func explicitRequestedReasoningEffortFromBody(body []byte) string {
 	return raw
 }
 
+// Client-only Kilo levels are preserved for billing/display without adding them
+// to the generic group's policy catalog.
+func canonicalRequestedReasoningEffortValue(raw string) string {
+	switch value := strings.ToLower(strings.TrimSpace(raw)); value {
+	case "ultra", "persistent":
+		return value
+	default:
+		return NormalizeMaxReasoningEffort(raw)
+	}
+}
+
 // CanonicalRequestedReasoningEffort extracts the client-requested effort before
 // group policy rewriting and before model-family remapping (max -> xhigh).
-// Empty or unknown values return nil. "max" is preserved even for models that
-// later persist "xhigh".
+// Empty or unknown values return nil.
 func CanonicalRequestedReasoningEffort(body []byte, modelCandidates ...string) *string {
 	if raw := explicitRequestedReasoningEffortFromBody(body); raw != "" {
-		canonical := NormalizeMaxReasoningEffort(raw)
+		canonical := canonicalRequestedReasoningEffortValue(raw)
 		if canonical == "" {
 			return nil
 		}
@@ -2514,7 +2544,7 @@ func CanonicalRequestedReasoningEffortFromReqBody(reqBody map[string]any, modelC
 		}
 	}
 	if raw != "" {
-		canonical := NormalizeMaxReasoningEffort(raw)
+		canonical := canonicalRequestedReasoningEffortValue(raw)
 		if canonical == "" {
 			return nil
 		}

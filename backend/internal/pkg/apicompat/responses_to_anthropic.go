@@ -52,12 +52,16 @@ func ResponsesToAnthropic(resp *ResponsesResponse, model string) *AnthropicRespo
 					})
 				}
 			}
-		case "function_call":
+		case "function_call", "custom_tool_call":
+			arguments := item.Arguments
+			if item.Type == "custom_tool_call" {
+				arguments = item.Input
+			}
 			blocks = append(blocks, AnthropicContentBlock{
 				Type:  "tool_use",
 				ID:    fromResponsesCallID(item.CallID),
 				Name:  item.Name,
-				Input: sanitizeAnthropicToolUseInput(item.Name, item.Arguments),
+				Input: sanitizeAnthropicToolUseInput(item.Name, arguments),
 			})
 		case "web_search_call":
 			toolUseID := "srvtoolu_" + item.ID
@@ -241,7 +245,7 @@ func ResponsesEventToAnthropicEvents(
 		// custom/freeform 工具的输入增量与 function_call 参数增量同形。
 		"response.custom_tool_call_input.delta":
 		return resToAnthHandleFuncArgsDelta(evt, state)
-	case "response.function_call_arguments.done":
+	case "response.function_call_arguments.done", "response.custom_tool_call_input.done":
 		return resToAnthHandleFuncArgsDone(evt, state)
 	case "response.output_item.done":
 		return resToAnthHandleOutputItemDone(evt, state)
@@ -550,6 +554,9 @@ func resToAnthHandleFuncArgsDone(evt *ResponsesStreamEvent, state *ResponsesEven
 	}
 
 	raw := evt.Arguments
+	if evt.Type == "response.custom_tool_call_input.done" {
+		raw = evt.Input
+	}
 	if raw == "" {
 		raw = state.CurrentToolArgs
 	}
