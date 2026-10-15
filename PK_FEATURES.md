@@ -9,7 +9,7 @@
 - 2026-10-02 合并上游 `v0.2.12`（commit `5106065716e494204fc0e8db16f68f6e9d576be0`，tag 对象 `cbe9966432317e6757b47f598a103d2132ec27db`），合并前私库为 `162a58972bee08078a43eefa761da1b245f667fa`。逐项核对见 [0.2.12 合并记录](docs/PK_UPSTREAM_0.2.12_REVIEW.md)，正式发布目标为 `v0.2.12-pk.1`；发布与线上更新分别记录。
 - 2026-10-02 合并上游 `v0.2.11`（commit `96f4c115c9749078f90cbf210a01d39baf3f53b6`），合并前私库为 `32f068dcbdc75063ff7f6488aef6c85912d7bf3f`。逐项核对及本次验证见 [合并记录](docs/PK_UPSTREAM_0.2.11_REVIEW.md)；合并源码不代表已发布或更新线上。
 - 本次清点覆盖从该上游基线到私库 `23e5fe663338c86cd0cebbf2f688c8a75dd8c152` 的全部二开提交；应用发行参照 `v0.2.10-pk.7`，另登记本次新增的项目约束机制。此处是代码核对基线，不代表线上当前版本。
-- 以下 PK-001 至 PK-029 均为有效保护项。文件路径用于定位，不是完整修改白名单；所有新调用入口、迁移和旁路都要检查。
+- 以下 PK-001 至 PK-030 均为有效保护项。文件路径用于定位，不是完整修改白名单；所有新调用入口、迁移和旁路都要检查。
 - 每项说明“必须保持”的行为。文末另列验证入口与已知边界；测试存在、历史验证通过和本次候选通过是三件不同的事。
 - 2026-10-08 用户最新要求取代早前本次测试禁令：完整源码测试通过后才提交和推送，默认在用户指定测试服务器的隔离环境验证，本机 Linux/WSL 仍可用。Jenkins 一次 `ACTION=release` 完成构建、制品运行时验收和私库发布，不使用 GitHub Actions。下文历史“后续获准”及迁移禁令只记录当时状态，现行门禁以 PK-017 为准；服务器结果不写成本机通过，历史证据不代表本次已经执行。
 
@@ -48,6 +48,7 @@
 | PK-027 | 安全策略触发自动禁用 | 默认关闭、可配置次数、独立累计、管理员豁免、解禁可重计、鉴权失效 |
 | PK-028 | OpenAI 账号 Kilo 桥接 | 独立默认关闭、用户模型映射、账号代理、ultra 转 max、工具参数保真 |
 | PK-029 | 账号隐藏计费倍率 | 默认1、专属倍率优先、桥接统一结算、管理员明细、用户费用及历史快照 |
+| PK-030 | 原始 Token 趋势统计 | 独立原始快照、小时/日聚合、未知留空、计费与明细不变 |
 
 ## PK-001
 
@@ -75,6 +76,7 @@
 - 使用 decimal 计算、向下取整及 int32 范围检查；不能改成不精确的浮点四舍五入。
 - 原读取量不再乘转换倍率，普通输入和输出不直接受此倍率影响。缓存创建总量、5m/1h 明细转换后清零；倍率 0 仍清零创建量，但不新增读取量。
 - 开关关闭保持原行为。计费和出口分别使用原始 usage 各计算一次，不对已经转换的 usage 再转换。
+- 2026-10-15 按用户明确要求，PK-030 在转换之前保存独立原始 Token 快照；仅 Token 趋势图改用原始快照，转换公式、使用明细、下游 usage 和客户账务不变。
 - 入口：`backend/internal/pkg/cacheconversion/usage.go`、`backend/internal/service/{openai_cache_conversion,openai_cache_conversion_output}.go`。
 - 验证：原读取存在、倍率 `0/0.5/1`、小数边界、关闭、非法输入与溢出；已有 `TestPKCacheConversionDisabledPreservesOriginal`、`TestPKCacheConversionBillingTokens`。溢出错误的结算边界见文末。
 
@@ -94,6 +96,7 @@
 - 2026-10-02 在该既有文件扩展 `TestPKCacheConversionInflightBillingPreservesOriginalContext`：倍率0/0.5/30与原始上下文272000/272001组合，检查预留独立、异步实扣前持有、各额度统一、原始上下文选档以及幂等释放；候选与正式发行CI均纳入race选择。
 - 上游 `TestInflightEstimate_AccountMappingNoDBAndBoundedMemory` 在同一测试二进制的独立子进程内测量，避免整个 service 测试进程的残留状态混入堆内存差值；保留 100 次预热、20000 次随机模型请求、数据库/快照断言和 8 MiB 阈值，并确保被测服务存活至末次采样。子进程失败仍使原测试失败，不改变生产预留逻辑。
 - 2026-10-15 PK-029 在原定价完成后、所有用户账务及缓存副作用之前乘账号隐藏倍率，保留缓存转换一次及原始长上下文选档。余额、订阅、Key/平台额度均使用同一最终金额；账号成本额度保持原口径。选账号前预留读同一调度桶的最大隐藏倍率（至少1），只读缓存，未命中按原无法定价策略处理，不增加数据库回退或按模型缓存；上述已定价模型100次预热现在对应100次倍率快照读取，随机未定价请求的20000次/8MiB/无DB保护保持。
+- 同日 PK-030 的原始快照只参与图表统计，不传入扣费命令；共享网关在强制缓存计费之前取快照，OpenAI 网关在原始输入拆分之后、转换之前取快照。
 
 ## PK-004
 
@@ -499,6 +502,17 @@
 - 桥接入口：`backend/internal/service/account_hidden_billing.go`、两处网关结算调用、批量图片定价/结算、DTO和 `pkg/usagestats/customer_billing.go` / `repository/usage_log_hidden_billing.go`；UI复用 `HiddenBillingMultiplierField.vue` / `utils/hiddenBilling.ts`，原页面只增加接入点。CRS同步合并旧extra保持值；新导入缺键默认为1。Codex Session显式重新导入会应用表单选中的隐藏倍率（默认1），按用户本次选择覆盖，旧API缺键不重置。
 - 验证：扩展已有 `TestPKHiddenBilling*` 与账号表单、UsageTable spec，覆盖默认/0/六位小数/非法值、专属优先、余额/订阅/Key额度、共享网关fallback、decimal与重复桥接、缓存转换/长上下文、管理员/用户字段、三个SQL写入路径、历史不重价、调度缓存、批量冻结与重试。完整源码执行环境及结果以绑定最终提交的报告/notes为准；核对范围见 [隐藏倍率核对记录](docs/PK_HIDDEN_BILLING_REVIEW.md)。
 
+## PK-030
+
+**原始 Token 趋势统计。** 状态：有效；依据：2026-10-15 用户明确要求保持转换后的展示和扣费，Token 使用趋势及缓存率改看原始用量。
+
+- `usage_logs.original_usage` 为独立、可空 JSONB 快照，只存普通输入、输出、缓存创建、缓存读取四个非负整数。OpenAI 原始总输入先减原创建/读取，得到互斥普通输入；其他协议复用共享网关的互斥用量。快照在缓存转换或强制缓存计费前复制，不随账号当前开关、倍率或之后的结果改写而变化，不保存提示词或响应正文。
+- 通过独立 `usage_original_tokens.go` 与 `usage_log_original_tokens.go` 接入原结算和 SQL；单条、批量、best-effort 写入及查询全部保留快照。原 `input_tokens`/`cache_*`、费用、隐藏倍率、余额/订阅/Key 额度、上游响应和下游 usage 保持原有语义。
+- `TrendDataPoint` 增加 `original_usage`、`original_usage_requests`，前者只汇总有快照的记录，后者表示覆盖的请求数。管理员和用户共用的 `TokenUsageTrend.vue` 四条 Token 曲线均使用完整原始数据，缓存率为 `原读取 / (原普通输入 + 原创建 + 原读取)`；按 Token 加权，不平均每次请求的百分比。费用提示继续使用原客户金额。
+- 小时/日 `usage_dashboard_*` 聚合增加相同快照和覆盖计数，筛选查询、用户查询及预聚合保持一致。其他费用/请求数统计及使用记录列表不切换 Token 口径；不新增管理员权限或暴露逐请求内部快照。
+- 迁移247只追加可空快照和默认0覆盖数，不猜测、逆算或回填旧记录。整个时段有任何原始数据缺失时图表留空并提示；真实0保留为0，无请求为0，不用转换后的数据冒充原始值。没有上游 Token 证据的旧记录、Live 和批量图片等专有旁路仍保持未知。升级不恢复已经丢弃的历史创建/读取量。
+- 回归在原有 `openai_gateway_usage_integrity_test.go`、`gateway_record_usage_test.go`、repository insert/scan 与 `usage_log_session_id_integration_test.go`、`TokenUsageTrend.spec.ts` 扩展；覆盖0/0.5/大倍率与长上下文、强制缓存计费前快照、三条写入路径、幂等、管理员/用户筛选和小时/日聚合、旧数据/部分覆盖留空、零读取和费用不变。集成用例 `TestPKUsageOriginalSnapshotsAndTrends` 为源码门禁必跑项，原图表 spec 加入前端关键集合；真实执行结果以本次服务器报告为准。
+
 ## 验证入口与现有边界
 
 ### 已有回归入口
@@ -532,7 +546,7 @@
 
 ## 新增条目模板
 
-新增独立能力使用下一个未用 ID，当前下一个为 `PK-030`；多项变更并行新增时在合并前消除 ID 冲突，已有 ID 不重用。同步更新索引、有效条目范围和此处的下一个 ID。
+新增独立能力使用下一个未用 ID，当前下一个为 `PK-031`；多项变更并行新增时在合并前消除 ID 冲突，已有 ID 不重用。同步更新索引、有效条目范围和此处的下一个 ID。
 
 ```markdown
 ## PK-NNN

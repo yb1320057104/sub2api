@@ -2017,6 +2017,13 @@ export interface UsageStatsResponse {
 
 // ==================== Trend & Chart Types ====================
 
+export interface OriginalTokenUsage {
+  input_tokens: number
+  output_tokens: number
+  cache_creation_tokens: number
+  cache_read_tokens: number
+}
+
 export interface TrendDataPoint {
   date: string
   requests: number
@@ -2027,6 +2034,8 @@ export interface TrendDataPoint {
   total_tokens: number
   cost: number // 标准计费
   actual_cost: number // 实际扣除
+  original_usage?: OriginalTokenUsage | null
+  original_usage_requests?: number
 }
 
 export interface ModelStat {

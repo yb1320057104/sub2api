@@ -79,6 +79,15 @@ type DashboardStats struct {
 	Tpm int64 `json:"tpm"` // 近5分钟平均每分钟Token数
 }
 
+// OriginalTokenUsage contains disjoint upstream counters before billing rewrites.
+// InputTokens excludes cache reads and writes for every supported protocol.
+type OriginalTokenUsage struct {
+	InputTokens         int64 `json:"input_tokens"`
+	OutputTokens        int64 `json:"output_tokens"`
+	CacheCreationTokens int64 `json:"cache_creation_tokens"`
+	CacheReadTokens     int64 `json:"cache_read_tokens"`
+}
+
 // TrendDataPoint represents a single point in trend data
 type TrendDataPoint struct {
 	Date                string  `json:"date"`
@@ -90,6 +99,10 @@ type TrendDataPoint struct {
 	TotalTokens         int64   `json:"total_tokens"`
 	Cost                float64 `json:"cost"`        // 标准计费
 	ActualCost          float64 `json:"actual_cost"` // 实际扣除
+	// OriginalUsage covers OriginalUsageRequests only. A chart must not present
+	// an incomplete bucket as the original usage of all Requests.
+	OriginalUsage         *OriginalTokenUsage `json:"original_usage"`
+	OriginalUsageRequests int64               `json:"original_usage_requests"`
 }
 
 // ModelStat represents usage statistics for a single model

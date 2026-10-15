@@ -530,7 +530,7 @@ def main():
         if ready:
             runner.suite("backend-unit", lambda: runner.go(["-tags", "unit", "./..."]))
             runner.suite("backend-integration", lambda: runner.go(["-tags", "integration", "./..."],
-                         required=("TestPKUsageFirstResponsePersistence", "TestPKHiddenBillingUsageSnapshotsAndCustomerAggregates", "TestPKHiddenBillingBatchSnapshotPersistence")))
+                         required=("TestPKUsageFirstResponsePersistence", "TestPKUsageOriginalSnapshotsAndTrends", "TestPKHiddenBillingUsageSnapshotsAndCustomerAggregates", "TestPKHiddenBillingBatchSnapshotPersistence")))
             runner.suite("backend-race", runner.race)
             runner.suite("backend-lint", lambda: runner.run(["golangci-lint", "run", "--timeout=30m"], ROOT / "backend"))
             runner.suite("frontend", runner.frontend)

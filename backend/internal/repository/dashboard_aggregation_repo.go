@@ -437,7 +437,9 @@ func (r *dashboardAggregationRepository) upsertHourlyAggregates(ctx context.Cont
 				COALESCE(SUM(total_cost), 0) AS total_cost,
 				COALESCE(SUM(actual_cost), 0) AS actual_cost,
 				COALESCE(SUM(COALESCE(account_stats_cost, total_cost) * COALESCE(account_rate_multiplier, 1)), 0) AS account_cost,
-				COALESCE(SUM(COALESCE(duration_ms, 0)), 0) AS total_duration_ms
+				COALESCE(SUM(COALESCE(duration_ms, 0)), 0) AS total_duration_ms,
+				` + originalUsageSumSQL("original_usage") + ` AS original_usage,
+				COUNT(original_usage) AS original_usage_requests
 			FROM usage_logs
 			WHERE created_at >= $1 AND created_at < $2
 			GROUP BY 1
@@ -460,6 +462,8 @@ func (r *dashboardAggregationRepository) upsertHourlyAggregates(ctx context.Cont
 			account_cost,
 			total_duration_ms,
 			active_users,
+			original_usage,
+			original_usage_requests,
 			computed_at
 		)
 		SELECT
@@ -474,6 +478,8 @@ func (r *dashboardAggregationRepository) upsertHourlyAggregates(ctx context.Cont
 			hourly.account_cost,
 			hourly.total_duration_ms,
 			COALESCE(user_counts.active_users, 0) AS active_users,
+			hourly.original_usage,
+			hourly.original_usage_requests,
 			NOW()
 		FROM hourly
 		LEFT JOIN user_counts ON user_counts.bucket_start = hourly.bucket_start
@@ -489,6 +495,8 @@ func (r *dashboardAggregationRepository) upsertHourlyAggregates(ctx context.Cont
 			account_cost = EXCLUDED.account_cost,
 			total_duration_ms = EXCLUDED.total_duration_ms,
 			active_users = EXCLUDED.active_users,
+			original_usage = EXCLUDED.original_usage,
+			original_usage_requests = EXCLUDED.original_usage_requests,
 			computed_at = EXCLUDED.computed_at
 	`
 	_, err := r.sql.ExecContext(ctx, query, start, end, tzName)
@@ -509,7 +517,9 @@ func (r *dashboardAggregationRepository) upsertDailyAggregates(ctx context.Conte
 				COALESCE(SUM(total_cost), 0) AS total_cost,
 				COALESCE(SUM(actual_cost), 0) AS actual_cost,
 				COALESCE(SUM(account_cost), 0) AS account_cost,
-				COALESCE(SUM(total_duration_ms), 0) AS total_duration_ms
+				COALESCE(SUM(total_duration_ms), 0) AS total_duration_ms,
+				` + originalUsageSumSQL("original_usage") + ` AS original_usage,
+				COALESCE(SUM(original_usage_requests), 0) AS original_usage_requests
 			FROM usage_dashboard_hourly
 			WHERE bucket_start >= $1 AND bucket_start < $2
 			GROUP BY (bucket_start AT TIME ZONE $5)::date
@@ -532,6 +542,8 @@ func (r *dashboardAggregationRepository) upsertDailyAggregates(ctx context.Conte
 			account_cost,
 			total_duration_ms,
 			active_users,
+			original_usage,
+			original_usage_requests,
 			computed_at
 		)
 		SELECT
@@ -546,6 +558,8 @@ func (r *dashboardAggregationRepository) upsertDailyAggregates(ctx context.Conte
 			daily.account_cost,
 			daily.total_duration_ms,
 			COALESCE(user_counts.active_users, 0) AS active_users,
+			daily.original_usage,
+			daily.original_usage_requests,
 			NOW()
 		FROM daily
 		LEFT JOIN user_counts ON user_counts.bucket_date = daily.bucket_date
@@ -561,6 +575,8 @@ func (r *dashboardAggregationRepository) upsertDailyAggregates(ctx context.Conte
 			account_cost = EXCLUDED.account_cost,
 			total_duration_ms = EXCLUDED.total_duration_ms,
 			active_users = EXCLUDED.active_users,
+			original_usage = EXCLUDED.original_usage,
+			original_usage_requests = EXCLUDED.original_usage_requests,
 			computed_at = EXCLUDED.computed_at
 	`
 	_, err := r.sql.ExecContext(ctx, query, start, end, start, end, tzName)

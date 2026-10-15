@@ -89,6 +89,38 @@ func newGatewayRecordUsageServiceForTest(usageRepo UsageLogRepository, userRepo 
 	)
 }
 
+func TestPKUsageOriginalSnapshotBeforeForcedCacheBilling(t *testing.T) {
+	for _, forceCache := range []bool{false, true} {
+		usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+		billingRepo := &openAIRecordUsageBillingRepoStub{result: &UsageBillingApplyResult{Applied: true}}
+		svc := newGatewayRecordUsageServiceWithBillingRepoForTest(usageRepo, billingRepo, nil, nil)
+		result := &ForwardResult{
+			RequestID: "pk-original-usage", Model: "claude-sonnet-4",
+			Usage: ClaudeUsage{InputTokens: 100, OutputTokens: 20, CacheCreationInputTokens: 200, CacheReadInputTokens: 700},
+		}
+		err := svc.RecordUsage(context.Background(), &RecordUsageInput{
+			Result: result, APIKey: &APIKey{ID: 2}, User: &User{ID: 1},
+			Account: &Account{ID: 3, Platform: PlatformAnthropic}, ForceCacheBilling: forceCache,
+		})
+		require.NoError(t, err)
+		log := usageRepo.lastLog
+		require.NotNil(t, log.OriginalUsage)
+		require.Equal(t, int64(100), log.OriginalUsage.InputTokens)
+		require.Equal(t, int64(20), log.OriginalUsage.OutputTokens)
+		require.Equal(t, int64(200), log.OriginalUsage.CacheCreationTokens)
+		require.Equal(t, int64(700), log.OriginalUsage.CacheReadTokens)
+		if forceCache {
+			require.Zero(t, log.InputTokens)
+			require.Equal(t, 800, log.CacheReadTokens)
+		} else {
+			require.Equal(t, 100, log.InputTokens)
+			require.Equal(t, 700, log.CacheReadTokens)
+		}
+		result.Usage.CacheReadInputTokens = 9999
+		require.Equal(t, int64(700), log.OriginalUsage.CacheReadTokens, "snapshot must not alias mutable upstream usage")
+	}
+}
+
 func newGatewayRecordUsageServiceWithBillingRepoForTest(usageRepo UsageLogRepository, billingRepo UsageBillingRepository, userRepo UserRepository, subRepo UserSubscriptionRepository) *GatewayService {
 	svc := newGatewayRecordUsageServiceForTest(usageRepo, userRepo, subRepo)
 	svc.usageBillingRepo = billingRepo

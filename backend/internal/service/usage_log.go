@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
 )
 
 const (
@@ -151,6 +153,9 @@ type UsageLog struct {
 	OutputTokens        int
 	CacheCreationTokens int
 	CacheReadTokens     int
+	// OriginalUsage is a separate immutable snapshot for trend charts. Nil means
+	// no original evidence; per-request DTOs continue exposing billing counters.
+	OriginalUsage *usagestats.OriginalTokenUsage `json:"-"`
 
 	CacheCreation5mTokens int `gorm:"column:cache_creation_5m_tokens"`
 	CacheCreation1hTokens int `gorm:"column:cache_creation_1h_tokens"`

@@ -411,6 +411,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		OutputTokens:             tokens.OutputTokens,
 		CacheCreationTokens:      tokens.CacheCreationTokens,
 		CacheReadTokens:          tokens.CacheReadTokens,
+		OriginalUsage:            originalUsageSnapshot(rawTokens),
 		ImageInputTokens:         result.Usage.ImageInputTokens,
 		ImageOutputTokens:        result.Usage.ImageOutputTokens,
 		ImageCount:               result.ImageCount,

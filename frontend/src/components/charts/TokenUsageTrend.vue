@@ -3,6 +3,12 @@
     <h3 class="mb-4 text-sm font-semibold text-gray-900 dark:text-white">
       {{ t('admin.dashboard.tokenUsageTrend') }}
     </h3>
+    <p class="mb-3 text-xs text-gray-500 dark:text-gray-400">
+      {{ t('admin.dashboard.originalTokenTrendHint') }}
+    </p>
+    <p v-if="!loading && hasIncompleteOriginalUsage" class="mb-3 text-xs text-amber-600 dark:text-amber-400">
+      {{ t('admin.dashboard.originalTokenTrendMissing') }}
+    </p>
     <div v-if="loading" class="flex h-48 items-center justify-center">
       <LoadingSpinner />
     </div>
@@ -34,7 +40,7 @@ import {
 } from 'chart.js'
 import { Line } from 'vue-chartjs'
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
-import type { TrendDataPoint } from '@/types'
+import type { OriginalTokenUsage, TrendDataPoint } from '@/types'
 
 ChartJS.register(
   CategoryScale,
@@ -68,6 +74,16 @@ const chartColors = computed(() => ({
   cacheHitRate: '#8b5cf6'
 }))
 
+const originalUsage = computed(() => props.trendData.map((point): OriginalTokenUsage | null => {
+  if (point.requests === 0) {
+    return { input_tokens: 0, output_tokens: 0, cache_creation_tokens: 0, cache_read_tokens: 0 }
+  }
+  if (point.original_usage_requests !== point.requests || !point.original_usage) return null
+  return point.original_usage
+}))
+
+const hasIncompleteOriginalUsage = computed(() => originalUsage.value.some((usage) => usage === null))
+
 const chartData = computed(() => {
   if (!props.trendData?.length) return null
 
@@ -76,7 +92,7 @@ const chartData = computed(() => {
     datasets: [
       {
         label: 'Input',
-        data: props.trendData.map((d) => d.input_tokens),
+        data: originalUsage.value.map((d) => d?.input_tokens ?? null),
         borderColor: chartColors.value.input,
         backgroundColor: `${chartColors.value.input}20`,
         fill: true,
@@ -84,7 +100,7 @@ const chartData = computed(() => {
       },
       {
         label: 'Output',
-        data: props.trendData.map((d) => d.output_tokens),
+        data: originalUsage.value.map((d) => d?.output_tokens ?? null),
         borderColor: chartColors.value.output,
         backgroundColor: `${chartColors.value.output}20`,
         fill: true,
@@ -92,7 +108,7 @@ const chartData = computed(() => {
       },
       {
         label: 'Cache Creation',
-        data: props.trendData.map((d) => d.cache_creation_tokens),
+        data: originalUsage.value.map((d) => d?.cache_creation_tokens ?? null),
         borderColor: chartColors.value.cacheCreation,
         backgroundColor: `${chartColors.value.cacheCreation}20`,
         fill: true,
@@ -100,7 +116,7 @@ const chartData = computed(() => {
       },
       {
         label: 'Cache Read',
-        data: props.trendData.map((d) => d.cache_read_tokens),
+        data: originalUsage.value.map((d) => d?.cache_read_tokens ?? null),
         borderColor: chartColors.value.cacheRead,
         backgroundColor: `${chartColors.value.cacheRead}20`,
         fill: true,
@@ -108,7 +124,8 @@ const chartData = computed(() => {
       },
       {
         label: 'Cache Hit Rate',
-        data: props.trendData.map((d) => {
+        data: originalUsage.value.map((d) => {
+          if (!d) return null
           const totalPromptTokens = d.input_tokens + d.cache_read_tokens + d.cache_creation_tokens
           return totalPromptTokens > 0 ? (d.cache_read_tokens / totalPromptTokens) * 100 : 0
         }),
@@ -146,6 +163,7 @@ const lineOptions = computed(() => ({
     tooltip: {
       callbacks: {
         label: (context: any) => {
+          if (context.raw === null || context.raw === undefined) return t('admin.dashboard.originalTokenTrendUnavailable')
           if (context.dataset.yAxisID === 'yPercent') {
             return `${context.dataset.label}: ${context.raw.toFixed(1)}%`
           }

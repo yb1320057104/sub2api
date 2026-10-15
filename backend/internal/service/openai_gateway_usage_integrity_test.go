@@ -340,6 +340,11 @@ func pkCacheConversionInflightBilling(t *testing.T, hidden float64) {
 					log := usageRepo.lastLog
 					require.NotNil(t, log)
 					require.Equal(t, ordinaryInput, log.InputTokens)
+					require.NotNil(t, log.OriginalUsage)
+					require.Equal(t, int64(ordinaryInput), log.OriginalUsage.InputTokens)
+					require.Equal(t, int64(originalCacheRead), log.OriginalUsage.CacheReadTokens)
+					require.Equal(t, int64(cacheCreation), log.OriginalUsage.CacheCreationTokens)
+					require.Equal(t, int64(outputTokens), log.OriginalUsage.OutputTokens)
 					require.Equal(t, conversion.wantRead, log.CacheReadTokens)
 					require.Zero(t, log.CacheCreationTokens)
 					require.Zero(t, log.CacheCreationCost)

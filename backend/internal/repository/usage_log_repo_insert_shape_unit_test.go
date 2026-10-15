@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
 )
@@ -129,7 +130,7 @@ func TestPrepareUsageLogInsert_UpstreamRequestIDArgWiring(t *testing.T) {
 	})
 	require.Len(t, prepared.args, len(usageLogInsertArgTypes))
 
-	idx := len(prepared.args) - 6
+	idx := 58
 	arg, ok := prepared.args[idx].(sql.NullString)
 	require.True(t, ok, "upstream_request_id arg should be sql.NullString, got %T", prepared.args[idx])
 	require.True(t, arg.Valid)
@@ -154,8 +155,8 @@ func TestPKUsageFirstResponseInsertPaths(t *testing.T) {
 	}
 	prepared := prepareUsageLogInsert(log)
 	require.Len(t, prepared.args, len(usageLogInsertArgTypes))
-	require.Equal(t, "integer", usageLogInsertArgTypes[len(usageLogInsertArgTypes)-2])
-	require.Equal(t, sql.NullInt64{Int64: 17, Valid: true}, prepared.args[len(prepared.args)-2])
+	require.Equal(t, "integer", usageLogInsertArgTypes[62])
+	require.Equal(t, sql.NullInt64{Int64: 17, Valid: true}, prepared.args[62])
 	require.Equal(t, sql.NullInt64{Int64: 9876, Valid: true}, prepared.args[34], "upstream TTFT keeps its existing position")
 	require.Equal(t, 100, prepared.args[11])
 	require.Equal(t, 20, prepared.args[12])
@@ -169,12 +170,33 @@ func TestPKUsageFirstResponseInsertPaths(t *testing.T) {
 	for _, query := range []string{batch, bestEffort} {
 		require.Equal(t, 3, strings.Count(query, "first_response_ms"), "input CTE, INSERT and SELECT must agree")
 	}
-	require.Equal(t, prepared.args[len(prepared.args)-2], batchArgs[len(batchArgs)-2])
-	require.Equal(t, prepared.args[len(prepared.args)-2], bestEffortArgs[len(bestEffortArgs)-2])
+	require.Equal(t, prepared.args[62], batchArgs[63])
+	require.Equal(t, prepared.args[62], bestEffortArgs[62])
 	for _, response := range []*int{nil, new(int)} {
 		log.FirstResponseMs = response
 		args := prepareUsageLogInsert(log).args
-		value := args[len(args)-2].(sql.NullInt64)
+		value := args[62].(sql.NullInt64)
 		require.Equal(t, response != nil, value.Valid, "unrecorded and measured zero must remain distinct")
 	}
+}
+
+func TestPKUsageOriginalSnapshotInsertPaths(t *testing.T) {
+	log := &service.UsageLog{
+		UserID: 1, APIKeyID: 2, AccountID: 3, RequestID: "pk-original-insert", Model: "gpt-6.1-sol",
+		CacheReadTokens: 9000,
+		OriginalUsage:   &usagestats.OriginalTokenUsage{OutputTokens: 20, CacheCreationTokens: 2000, CacheReadTokens: 8000},
+	}
+	prepared := prepareUsageLogInsert(log)
+	require.JSONEq(t, `{"input_tokens":0,"output_tokens":20,"cache_creation_tokens":2000,"cache_read_tokens":8000}`, prepared.args[64].(string))
+	require.Equal(t, "jsonb", usageLogInsertArgTypes[64])
+	key := usageLogBatchKey(log.RequestID, log.APIKeyID)
+	batch, batchArgs := buildUsageLogBatchInsertQuery([]string{key}, map[string]usageLogInsertPrepared{key: prepared})
+	bestEffort, bestEffortArgs := buildUsageLogBestEffortInsertQuery([]usageLogInsertPrepared{prepared})
+	for _, query := range []string{batch, bestEffort} {
+		require.Equal(t, 3, strings.Count(query, "original_usage"))
+	}
+	require.Equal(t, prepared.args[64], batchArgs[65])
+	require.Equal(t, prepared.args[64], bestEffortArgs[64])
+	log.OriginalUsage = nil
+	require.Nil(t, prepareUsageLogInsert(log).args[64], "historical unknown must not become a measured zero")
 }
