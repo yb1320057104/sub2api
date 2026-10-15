@@ -6,7 +6,10 @@
     <p class="mb-3 text-xs text-gray-500 dark:text-gray-400">
       {{ t('admin.dashboard.originalTokenTrendHint') }}
     </p>
-    <p v-if="!loading && hasIncompleteOriginalUsage" class="mb-3 text-xs text-amber-600 dark:text-amber-400">
+    <p
+      v-if="showOriginalUsageWarning && !loading && hasIncompleteOriginalUsage"
+      class="mb-3 text-xs text-amber-600 dark:text-amber-400"
+    >
       {{ t('admin.dashboard.originalTokenTrendMissing') }}
     </p>
     <div v-if="loading" class="flex h-48 items-center justify-center">
@@ -58,6 +61,7 @@ const { t } = useI18n()
 const props = defineProps<{
   trendData: TrendDataPoint[]
   loading?: boolean
+  showOriginalUsageWarning?: boolean
 }>()
 
 const isDarkMode = computed(() => {

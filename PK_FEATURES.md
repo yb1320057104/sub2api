@@ -510,7 +510,7 @@
 - 通过独立 `usage_original_tokens.go` 与 `usage_log_original_tokens.go` 接入原结算和 SQL；单条、批量、best-effort 写入及查询全部保留快照。原 `input_tokens`/`cache_*`、费用、隐藏倍率、余额/订阅/Key 额度、上游响应和下游 usage 保持原有语义。
 - `TrendDataPoint` 增加 `original_usage`、`original_usage_requests`，前者只汇总有快照的记录，后者表示覆盖的请求数。管理员和用户共用的 `TokenUsageTrend.vue` 四条 Token 曲线均使用完整原始数据，缓存率为 `原读取 / (原普通输入 + 原创建 + 原读取)`；按 Token 加权，不平均每次请求的百分比。费用提示继续使用原客户金额。
 - 小时/日 `usage_dashboard_*` 聚合增加相同快照和覆盖计数，筛选查询、用户查询及预聚合保持一致。其他费用/请求数统计及使用记录列表不切换 Token 口径；不新增管理员权限或暴露逐请求内部快照。
-- 迁移247只追加可空快照和默认0覆盖数，不猜测、逆算或回填旧记录。整个时段有任何原始数据缺失时图表留空并提示；真实0保留为0，无请求为0，不用转换后的数据冒充原始值。没有上游 Token 证据的旧记录、Live 和批量图片等专有旁路仍保持未知。升级不恢复已经丢弃的历史创建/读取量。
+- 迁移247只追加可空快照和默认0覆盖数，不猜测、逆算或回填旧记录。整个时段有任何原始数据缺失时图表留空；按2026-10-15用户要求，普通用户使用记录和仪表盘不显示缺失提示，管理员使用记录和仪表盘通过 `showOriginalUsageWarning` 显式保留提示。真实0保留为0，无请求为0，不用转换后的数据冒充原始值。没有上游 Token 证据的旧记录、Live 和批量图片等专有旁路仍保持未知。升级不恢复已经丢弃的历史创建/读取量。
 - 回归在原有 `openai_gateway_usage_integrity_test.go`、`gateway_record_usage_test.go`、repository insert/scan 与 `usage_log_session_id_integration_test.go`、`TokenUsageTrend.spec.ts` 扩展；覆盖0/0.5/大倍率与长上下文、强制缓存计费前快照、三条写入路径、幂等、管理员/用户筛选和小时/日聚合、旧数据/部分覆盖留空、零读取和费用不变。集成用例 `TestPKUsageOriginalSnapshotsAndTrends` 为源码门禁必跑项，原图表 spec 加入前端关键集合；真实执行结果以本次服务器报告为准。
 
 ## 验证入口与现有边界

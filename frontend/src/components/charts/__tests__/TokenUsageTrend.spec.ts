@@ -154,7 +154,7 @@ describe('TokenUsageTrend', () => {
   })
 
   it.each([undefined, null, { input_tokens: 0, output_tokens: 0, cache_creation_tokens: 0, cache_read_tokens: 0 }])(
-    'leaves missing or incomplete historical original usage blank: %s', (original) => {
+    'leaves missing or incomplete historical original usage blank: %s', async (original) => {
       const wrapper = mount(TokenUsageTrend, {
         props: {
           trendData: [{
@@ -167,9 +167,13 @@ describe('TokenUsageTrend', () => {
       })
       const chartData = JSON.parse(wrapper.find('.chart-data').text())
       for (const dataset of chartData.datasets) expect(dataset.data).toEqual([null])
-      expect(wrapper.text()).toContain(messages['admin.dashboard.originalTokenTrendMissing'])
+      expect(wrapper.text()).not.toContain(messages['admin.dashboard.originalTokenTrendMissing'])
       const options = wrapper.findComponent({ name: 'Line' }).props('options')
       expect(options.plugins.tooltip.callbacks.label({ raw: null })).toBe('admin.dashboard.originalTokenTrendUnavailable')
+
+      await wrapper.setProps({ showOriginalUsageWarning: true })
+      expect(wrapper.text()).toContain(messages['admin.dashboard.originalTokenTrendMissing'])
+      expect(JSON.parse(wrapper.find('.chart-data').text())).toEqual(chartData)
     }
   )
 

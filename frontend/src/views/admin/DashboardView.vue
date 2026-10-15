@@ -313,7 +313,7 @@
               :end-date="endDate"
               @ranking-click="goToUserUsage"
             />
-            <TokenUsageTrend :trend-data="trendData" :loading="chartsLoading" />
+            <TokenUsageTrend :trend-data="trendData" :loading="chartsLoading" show-original-usage-warning />
           </div>
 
           <!-- User Usage Trend (Full Width) -->
