@@ -221,6 +221,15 @@ func (c *pkCacheConversionInflightCache) UpdateAPIKeyRateLimitUsage(_ context.Co
 }
 
 func TestPKCacheConversionInflightBillingPreservesOriginalContext(t *testing.T) {
+	pkCacheConversionInflightBilling(t, 1)
+}
+
+func TestPKHiddenBillingCacheConversionAndLongContext(t *testing.T) {
+	pkCacheConversionInflightBilling(t, 2)
+}
+
+func pkCacheConversionInflightBilling(t *testing.T, hidden float64) {
+	t.Helper()
 	const (
 		model             = "gpt-6.1-sol"
 		startingBalance   = 100.0
@@ -267,6 +276,7 @@ func TestPKCacheConversionInflightBillingPreservesOriginalContext(t *testing.T) 
 					apiKey := &APIKey{ID: 2, User: user, Quota: 100, RateLimit5h: 100}
 					accountMultiplier := accountRate
 					account := &Account{ID: 3, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, RateMultiplier: &accountMultiplier, Extra: map[string]any{
+						AccountExtraHiddenRateMultiplier:      hidden,
 						AccountExtraCacheConversionEnabled:    true,
 						AccountExtraCacheConversionMultiplier: conversion.multiplier,
 						openAILongContextBillingEnabledKey:    true,
@@ -322,6 +332,9 @@ func TestPKCacheConversionInflightBillingPreservesOriginalContext(t *testing.T) 
 					wantOutputCost := outputTokens * 10e-6 * tier.outputMultiplier
 					wantTotalCost := wantInputCost + wantReadCost + wantOutputCost
 					wantActualCost := wantTotalCost * customerRate
+					if hidden != 1 {
+						wantActualCost = QuantizeUsageBillingAmount(wantActualCost * hidden)
+					}
 					require.Equal(t, raw, result.Usage, "downstream conversion must not overwrite upstream billing evidence")
 					require.Equal(t, 1, usageRepo.calls)
 					log := usageRepo.lastLog

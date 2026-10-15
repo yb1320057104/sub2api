@@ -219,6 +219,52 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
 
   afterEach(() => vi.useRealTimers())
 
+  it.each([1, 2, 0, 0.123456])('saves hidden multiplier %s separately from account costs and cache conversion', async (hidden) => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'OpenAI')
+    await selectButtonByText(wrapper, 'API Key')
+    const input = wrapper.get('[data-testid="hidden-rate-multiplier"]')
+    expect((input.element as HTMLInputElement).value).toBe('1')
+    await input.setValue(String(hidden))
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('hidden-price')
+    await wrapper.get('form#create-account-form input[type="password"]').setValue('test-key')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(createAccountMock.mock.calls[0]?.[0]?.extra).toMatchObject({
+      hidden_rate_multiplier: hidden, cache_conversion_enabled: false, cache_conversion_multiplier: 1,
+    })
+    await wrapper.setProps({ show: false })
+    await wrapper.setProps({ show: true })
+    expect((wrapper.get('[data-testid="hidden-rate-multiplier"]').element as HTMLInputElement).value).toBe('1')
+    wrapper.unmount()
+  })
+
+  it.each(['', '-1', '1001', '0.1234567'])('rejects invalid hidden multiplier %s before account creation', async (hidden) => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'OpenAI')
+    await selectButtonByText(wrapper, 'API Key')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('hidden-price')
+    await wrapper.get('form#create-account-form input[type="password"]').setValue('test-key')
+    await wrapper.get('[data-testid="hidden-rate-multiplier"]').setValue(hidden)
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(createAccountMock).not.toHaveBeenCalled()
+    expect(wrapper.find('[role="alert"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('carries the hidden multiplier into Codex session import', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'OpenAI')
+    await wrapper.get('[data-testid="hidden-rate-multiplier"]').setValue('2')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('hidden-session')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await wrapper.get('[data-testid="import-codex-session"]').trigger('click')
+    await flushPromises()
+    expect(importCodexSessionMock.mock.calls[0]?.[0]?.extra?.hidden_rate_multiplier).toBe(2)
+    wrapper.unmount()
+  })
+
   it('shows Kilo only for OpenAI and saves its independent switch', async () => {
     const wrapper = mountModal()
     await selectButtonByText(wrapper, 'OpenAI')

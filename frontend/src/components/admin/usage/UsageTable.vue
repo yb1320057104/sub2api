@@ -205,6 +205,18 @@
           </div>
         </template>
 
+        <template #cell-rate="{ row }">
+          <div v-if="showAccountBilling" class="space-y-0.5 whitespace-nowrap text-xs tabular-nums" data-testid="billing-multipliers">
+            <div class="text-gray-500 dark:text-gray-400">{{ t('usage.groupBillingRate') }} {{ formatMultiplier(row.group_rate_multiplier ?? row.rate_multiplier ?? 1) }}×</div>
+            <div class="text-gray-500 dark:text-gray-400">{{ t('usage.hiddenBillingRate') }} {{ formatMultiplier(row.hidden_rate_multiplier ?? 1) }}×</div>
+            <div class="font-medium text-gray-900 dark:text-gray-100">{{ t('usage.effectiveBillingRate') }} {{ formatMultiplier(row.effective_rate_multiplier ?? row.rate_multiplier ?? 1) }}×</div>
+          </div>
+        </template>
+
+        <template #cell-original_cost="{ row }">
+          <span v-if="showAccountBilling" class="text-sm tabular-nums text-gray-500 dark:text-gray-400" data-testid="original-billing-cost">${{ (row.original_cost ?? row.total_cost ?? 0).toFixed(6) }}</span>
+        </template>
+
         <template #cell-cost="{ row }">
           <div class="text-sm">
             <div class="flex items-center gap-1.5">
@@ -507,6 +519,16 @@
             <span class="text-gray-400">{{ t('usage.rate') }}</span>
             <span class="font-semibold text-blue-400">{{ formatMultiplier(tooltipData?.rate_multiplier ?? 1) }}x</span>
           </div>
+          <template v-if="showAccountBilling">
+            <div class="flex items-center justify-between gap-6">
+              <span class="text-gray-400">{{ t('usage.hiddenBillingRate') }}</span>
+              <span class="font-semibold text-blue-400">{{ formatMultiplier(tooltipData?.hidden_rate_multiplier ?? 1) }}x</span>
+            </div>
+            <div class="flex items-center justify-between gap-6">
+              <span class="text-gray-400">{{ t('usage.effectiveBillingRate') }}</span>
+              <span class="font-semibold text-blue-400">{{ formatMultiplier(tooltipData?.effective_rate_multiplier ?? tooltipData?.rate_multiplier ?? 1) }}x</span>
+            </div>
+          </template>
           <div class="flex items-center justify-between gap-6">
             <span class="text-gray-400">{{ t('usage.original') }}</span>
             <span class="font-medium text-white">${{ tooltipData?.total_cost?.toFixed(8) || '0.00000000' }}</span>
@@ -544,7 +566,8 @@ import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
 import { formatDateTime, formatReasoningEffort, reasoningEffortValuesEqual } from '@/utils/format'
-import { formatCacheTokens, formatMultiplier } from '@/utils/formatters'
+import { formatCacheTokens } from '@/utils/formatters'
+import { formatBillingMultiplier as formatMultiplier } from '@/utils/hiddenBilling'
 import { formatTokenPricePerMillion } from '@/utils/usagePricing'
 import { getUsageServiceTierLabel } from '@/utils/usageServiceTier'
 import { resolveUsageRequestType } from '@/utils/usageRequestType'

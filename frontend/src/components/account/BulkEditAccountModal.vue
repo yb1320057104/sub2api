@@ -820,6 +820,13 @@
             <span>{{ t('admin.accounts.bulkEdit.rateSyncWarning') }}</span>
           </p>
         </div>
+        <div>
+          <label class="mb-3 flex items-center gap-2 text-sm">
+            <input v-model="enableHiddenRateMultiplier" type="checkbox" data-testid="enable-hidden-rate-multiplier" class="rounded border-gray-300 text-primary-600" />
+            {{ t('admin.accounts.hiddenRateMultiplierApply') }}
+          </label>
+          <HiddenBillingMultiplierField v-model="hiddenRateMultiplier" :disabled="!enableHiddenRateMultiplier" />
+        </div>
       </div>
 
       <!-- Status -->
@@ -1474,6 +1481,8 @@
 </template>
 
 <script setup lang="ts">
+import HiddenBillingMultiplierField from './HiddenBillingMultiplierField.vue'
+import { isHiddenBillingMultiplierValid } from '@/utils/hiddenBilling'
 import { ref, watch, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
@@ -1656,6 +1665,8 @@ const enableConcurrency = ref(false)
 const enableLoadFactor = ref(false)
 const enablePriority = ref(false)
 const enableRateMultiplier = ref(false)
+const enableHiddenRateMultiplier = ref(false)
+const hiddenRateMultiplier = ref<number | string>(1)
 const enableStatus = ref(false)
 const enableGroups = ref(false)
 const enableOpenAIPassthrough = ref(false)
@@ -1957,6 +1968,10 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
     updates.priority = priority.value
   }
 
+  if (enableHiddenRateMultiplier.value) {
+    ensureExtra().hidden_rate_multiplier = hiddenRateMultiplier.value
+  }
+
   if (enableRateMultiplier.value) {
     updates.rate_multiplier = rateMultiplier.value
   }
@@ -2196,6 +2211,11 @@ const preCheckMixedChannelRisk = async (built: Record<string, unknown>): Promise
 }
 
 const handleSubmit = async () => {
+  if (enableHiddenRateMultiplier.value && !isHiddenBillingMultiplierValid(hiddenRateMultiplier.value)) {
+    appStore.showError(t('admin.accounts.hiddenRateMultiplierInvalid'))
+    return
+  }
+
   if (targetMode.value === 'selected' && props.accountIds.length === 0) {
     appStore.showError(t('admin.accounts.bulkEdit.noSelection'))
     return
@@ -2217,6 +2237,7 @@ const handleSubmit = async () => {
     enableLoadFactor.value ||
     enablePriority.value ||
     enableRateMultiplier.value ||
+    enableHiddenRateMultiplier.value ||
     enableStatus.value ||
     enableGroups.value ||
     enableOpenAIWSMode.value ||
@@ -2363,6 +2384,8 @@ watch(
       enableLoadFactor.value = false
       enablePriority.value = false
       enableRateMultiplier.value = false
+      enableHiddenRateMultiplier.value = false
+      hiddenRateMultiplier.value = 1
       enableStatus.value = false
       enableGroups.value = false
       enableOpenAIPassthrough.value = false

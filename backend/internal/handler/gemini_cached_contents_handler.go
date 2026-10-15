@@ -270,15 +270,18 @@ func (h *GatewayHandler) GeminiCachedContentsCreate(c *gin.Context) {
 		// 只收取已发生的缓存 token 输入费。
 		tokens := upstream.TotalTokenCount
 		storageTokenHours := service.GeminiCachedContentStorageTokenHours(tokens, ttl)
-		amount := h.gatewayService.QuoteUsageCost(c.Request.Context(), &service.RecordUsageInput{
+		amount, err := h.gatewayService.QuoteUsageCostWithHiddenBilling(c.Request.Context(), &service.RecordUsageInput{
 			Result: &service.ForwardResult{
 				Model: modelName, UpstreamModel: mappedModel,
 				Usage: service.ClaudeUsage{InputTokens: int(tokens)}, CacheStorageTokenHours: storageTokenHours,
 			},
-			APIKey: apiKey, User: apiKey.User, Subscription: subscription, PricingAt: pricingAt, ChannelUsageFields: usageFields,
+			APIKey: apiKey, User: apiKey.User, Account: account, Subscription: subscription, PricingAt: pricingAt, ChannelUsageFields: usageFields,
 		})
 		inflightRelease()
-		chargeDone, err := h.reserveGeminiCachedContentCharge(c, apiKey, subscription, amount)
+		chargeDone := inflightNoop
+		if err == nil {
+			chargeDone, err = h.reserveGeminiCachedContentCharge(c, apiKey, subscription, amount)
+		}
 		if err != nil {
 			reqLog.Info("gemini.cached_content.storage_charge_rejected", zap.Float64("amount", amount), zap.Error(err))
 			h.cleanupGeminiCachedContentUpstream(reqLog, account, upstream.Name)
@@ -437,7 +440,7 @@ func (h *GatewayHandler) GeminiCachedContentsPatch(c *gin.Context) {
 				Model: record.Model, UpstreamModel: record.UpstreamModelID(),
 				CacheStorageTokenHours: service.GeminiCachedContentStorageTokenHours(record.TotalTokenCount, extension),
 			},
-			APIKey: apiKey, User: apiKey.User, Subscription: subscription, PricingAt: pricingAt,
+			APIKey: apiKey, User: apiKey.User, Account: account, Subscription: subscription, PricingAt: pricingAt,
 			ChannelUsageFields: record.ChannelUsage,
 		}
 		if !h.gatewayService.CacheStoragePriced(c.Request.Context(), usage) {
@@ -447,7 +450,12 @@ func (h *GatewayHandler) GeminiCachedContentsPatch(c *gin.Context) {
 		if !h.checkGeminiCachedContentBilling(c, reqLog, apiKey, subscription) {
 			return
 		}
-		chargeDone, err := h.reserveGeminiCachedContentCharge(c, apiKey, subscription, h.gatewayService.QuoteUsageCost(c.Request.Context(), usage))
+		amount, err := h.gatewayService.QuoteUsageCostWithHiddenBilling(c.Request.Context(), usage)
+		if err != nil {
+			writeGeminiCachedContentBillingError(c, err)
+			return
+		}
+		chargeDone, err := h.reserveGeminiCachedContentCharge(c, apiKey, subscription, amount)
 		if err != nil {
 			reqLog.Info("gemini.cached_content.storage_charge_rejected", zap.Error(err))
 			writeGeminiCachedContentBillingError(c, err)

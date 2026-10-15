@@ -312,8 +312,9 @@ func openAIProfitControlVetoReason(ctx context.Context, account *Account) (bool,
 		return true, openAIProfitFilterReasonInvalidAccountRate
 	}
 	upstream := *account.RateMultiplier
-	if profitControlOverThreshold(upstream, gate.threshold) {
-		openAIProfitControlObserverInstance.recordVeto(gate.groupID, gate.platform, gate.threshold, openAIProfitFilterReasonThreshold)
+	threshold := hiddenBillingProduct(gate.threshold, account.HiddenBillingMultiplier())
+	if profitControlOverThreshold(upstream, threshold) {
+		openAIProfitControlObserverInstance.recordVeto(gate.groupID, gate.platform, threshold, openAIProfitFilterReasonThreshold)
 		return true, openAIProfitFilterReasonThreshold
 	}
 	return false, ""

@@ -677,6 +677,12 @@ type UsageLog struct {
 type AdminUsageLog struct {
 	UsageLog
 
+	// PK-029 pricing snapshots are administrator-only.
+	OriginalCost            float64 `json:"original_cost"`
+	GroupRateMultiplier     float64 `json:"group_rate_multiplier"`
+	HiddenRateMultiplier    float64 `json:"hidden_rate_multiplier"`
+	EffectiveRateMultiplier float64 `json:"effective_rate_multiplier"`
+
 	// FirstResponseMs is the measured downstream response time. The embedded
 	// FirstTokenMs retains the upstream semantic/visible metric only for admins.
 	FirstResponseMs *int `json:"first_response_ms"`

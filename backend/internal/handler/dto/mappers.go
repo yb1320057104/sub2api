@@ -683,6 +683,10 @@ func AccountSummaryFromService(a *service.Account) *AccountSummary {
 }
 
 func usageLogFromServiceUser(l *service.UsageLog) UsageLog {
+	return usageLogFromServiceBase(l.CustomerBillingView())
+}
+
+func usageLogFromServiceBase(l *service.UsageLog) UsageLog {
 	// 普通用户 DTO：严禁包含管理员字段（例如 account_rate_multiplier、account、upstream_model）。
 	requestType := l.EffectiveRequestType()
 	stream, openAIWSMode := service.ApplyLegacyRequestFields(requestType, l.Stream, l.OpenAIWSMode)
@@ -765,7 +769,7 @@ func UsageLogFromServiceAdmin(l *service.UsageLog) *AdminUsageLog {
 	if l == nil {
 		return nil
 	}
-	usageLog := usageLogFromServiceUser(l)
+	usageLog := usageLogFromServiceBase(l)
 	usageLog.UpstreamEndpoint = l.UpstreamEndpoint
 	usageLog.FirstTokenMs = l.FirstTokenMs
 	return &AdminUsageLog{
@@ -781,6 +785,10 @@ func UsageLogFromServiceAdmin(l *service.UsageLog) *AdminUsageLog {
 		BillingTier:             l.BillingTier,
 		AccountRateMultiplier:   l.AccountRateMultiplier,
 		AccountStatsCost:        l.AccountStatsCost,
+		OriginalCost:            l.TotalCost,
+		GroupRateMultiplier:     l.RateMultiplier,
+		HiddenRateMultiplier:    l.HiddenBillingMultiplier(),
+		EffectiveRateMultiplier: l.EffectiveBillingMultiplier(),
 		IPAddress:               l.IPAddress,
 		Account:                 AccountSummaryFromService(l.Account),
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
@@ -403,19 +404,19 @@ func (r *usageLogRepository) GetUserDashboardStats(ctx context.Context, userID i
 	}
 
 	// 累计 Token 统计
-	totalStatsQuery := `
+	totalStatsQuery := fmt.Sprintf(`
 		SELECT
 			COUNT(*) as total_requests,
 			COALESCE(SUM(input_tokens), 0) as total_input_tokens,
 			COALESCE(SUM(output_tokens), 0) as total_output_tokens,
 			COALESCE(SUM(cache_creation_tokens), 0) as total_cache_creation_tokens,
 			COALESCE(SUM(cache_read_tokens), 0) as total_cache_read_tokens,
-			COALESCE(SUM(total_cost), 0) as total_cost,
+			COALESCE(SUM(%s), 0) as total_cost,
 			COALESCE(SUM(actual_cost), 0) as total_actual_cost,
 			COALESCE(AVG(duration_ms), 0) as avg_duration_ms
 		FROM usage_logs
 		WHERE user_id = $1
-	`
+	`, usageTotalCostExpression(ctx, ""))
 	if err := scanSingleRow(
 		ctx,
 		r.sql,
@@ -435,18 +436,18 @@ func (r *usageLogRepository) GetUserDashboardStats(ctx context.Context, userID i
 	stats.TotalTokens = stats.TotalInputTokens + stats.TotalOutputTokens + stats.TotalCacheCreationTokens + stats.TotalCacheReadTokens
 
 	// 今日 Token 统计
-	todayStatsQuery := `
+	todayStatsQuery := fmt.Sprintf(`
 		SELECT
 			COUNT(*) as today_requests,
 			COALESCE(SUM(input_tokens), 0) as today_input_tokens,
 			COALESCE(SUM(output_tokens), 0) as today_output_tokens,
 			COALESCE(SUM(cache_creation_tokens), 0) as today_cache_creation_tokens,
 			COALESCE(SUM(cache_read_tokens), 0) as today_cache_read_tokens,
-			COALESCE(SUM(total_cost), 0) as today_cost,
+			COALESCE(SUM(%s), 0) as today_cost,
 			COALESCE(SUM(actual_cost), 0) as today_actual_cost
 		FROM usage_logs
 		WHERE user_id = $1 AND created_at >= $2
-	`
+	`, usageTotalCostExpression(ctx, ""))
 	if err := scanSingleRow(
 		ctx,
 		r.sql,
@@ -555,19 +556,19 @@ func (r *usageLogRepository) GetAPIKeyDashboardStats(ctx context.Context, apiKey
 	stats.ActiveAPIKeys = 1
 
 	// 累计 Token 统计
-	totalStatsQuery := `
+	totalStatsQuery := fmt.Sprintf(`
 		SELECT
 			COUNT(*) as total_requests,
 			COALESCE(SUM(input_tokens), 0) as total_input_tokens,
 			COALESCE(SUM(output_tokens), 0) as total_output_tokens,
 			COALESCE(SUM(cache_creation_tokens), 0) as total_cache_creation_tokens,
 			COALESCE(SUM(cache_read_tokens), 0) as total_cache_read_tokens,
-			COALESCE(SUM(total_cost), 0) as total_cost,
+			COALESCE(SUM(%s), 0) as total_cost,
 			COALESCE(SUM(actual_cost), 0) as total_actual_cost,
 			COALESCE(AVG(duration_ms), 0) as avg_duration_ms
 		FROM usage_logs
 		WHERE api_key_id = $1
-	`
+	`, usageTotalCostExpression(ctx, ""))
 	if err := scanSingleRow(
 		ctx,
 		r.sql,
@@ -587,18 +588,18 @@ func (r *usageLogRepository) GetAPIKeyDashboardStats(ctx context.Context, apiKey
 	stats.TotalTokens = stats.TotalInputTokens + stats.TotalOutputTokens + stats.TotalCacheCreationTokens + stats.TotalCacheReadTokens
 
 	// 今日 Token 统计
-	todayStatsQuery := `
+	todayStatsQuery := fmt.Sprintf(`
 		SELECT
 			COUNT(*) as today_requests,
 			COALESCE(SUM(input_tokens), 0) as today_input_tokens,
 			COALESCE(SUM(output_tokens), 0) as today_output_tokens,
 			COALESCE(SUM(cache_creation_tokens), 0) as today_cache_creation_tokens,
 			COALESCE(SUM(cache_read_tokens), 0) as today_cache_read_tokens,
-			COALESCE(SUM(total_cost), 0) as today_cost,
+			COALESCE(SUM(%s), 0) as today_cost,
 			COALESCE(SUM(actual_cost), 0) as today_actual_cost
 		FROM usage_logs
 		WHERE api_key_id = $1 AND created_at >= $2
-	`
+	`, usageTotalCostExpression(ctx, ""))
 	if err := scanSingleRow(
 		ctx,
 		r.sql,

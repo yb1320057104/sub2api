@@ -37,6 +37,23 @@ func profitControlTestAccountWithRate(account *Account, rate float64) *Account {
 	return account
 }
 
+func TestPKHiddenBillingProfitGateAndPreview(t *testing.T) {
+	ctx := context.WithValue(context.Background(), openAIProfitControlGateCtxKey{}, &openAIProfitControlGate{threshold: 0.7})
+	for _, hidden := range []float64{0, 1, 2} {
+		rate := 0.8
+		account := &Account{ID: 1, Platform: PlatformOpenAI, RateMultiplier: &rate, Extra: map[string]any{AccountExtraHiddenRateMultiplier: hidden}}
+		veto, _ := openAIProfitControlVetoReason(ctx, account)
+		require.Equal(t, hidden < 2, veto)
+		preview := previewAccountProfitAdmission(account, true, 0.7, 0.3, time.Now())
+		if hidden < 2 {
+			require.Equal(t, ProfitPreviewClassRejectedThreshold, preview.Class)
+		} else {
+			require.Equal(t, ProfitPreviewClassAdmitted, preview.Class)
+			require.True(t, preview.RejectedUnderMinD)
+		}
+	}
+}
+
 func TestResolveOpenAIProfitControlGate(t *testing.T) {
 	svc := &OpenAIGatewayService{}
 	groupID := int64(7)

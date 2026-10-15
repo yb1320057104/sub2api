@@ -157,6 +157,8 @@ func previewAccountProfitAdmission(
 	thresholdMinD float64,
 	evalAt time.Time,
 ) ProfitPreviewAccountVerdict {
+	thresholdDefault = hiddenBillingProduct(thresholdDefault, account.HiddenBillingMultiplier())
+	thresholdMinD = hiddenBillingProduct(thresholdMinD, account.HiddenBillingMultiplier())
 	verdict := ProfitPreviewAccountVerdict{
 		AccountID:  account.ID,
 		Name:       account.Name,

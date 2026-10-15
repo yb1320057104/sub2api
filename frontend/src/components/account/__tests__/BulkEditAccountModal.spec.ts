@@ -98,6 +98,38 @@ describe('BulkEditAccountModal', () => {
     } as any)
   })
 
+  it('requires explicit opt-in before changing the hidden multiplier and keeps zero', async () => {
+    const wrapper = mountModal()
+    expect(wrapper.get('[data-testid="hidden-rate-multiplier"]').attributes('disabled')).toBeDefined()
+    await wrapper.get('[data-testid="enable-hidden-rate-multiplier"]').setValue(true)
+    await wrapper.get('[data-testid="hidden-rate-multiplier"]').setValue('0')
+    await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledWith([1, 2], expect.objectContaining({ extra: { hidden_rate_multiplier: 0 } }))
+    wrapper.unmount()
+  })
+
+  it('does not reset hidden prices while editing the independent account rate', async () => {
+    const wrapper = mountModal()
+    await wrapper.get('#bulk-edit-rate-multiplier-enabled').setValue(true)
+    await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(adminAPI.accounts.bulkUpdate).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(adminAPI.accounts.bulkUpdate).mock.calls[0]?.[1]?.extra ?? {}).not.toHaveProperty('hidden_rate_multiplier')
+    wrapper.unmount()
+  })
+
+  it('rejects an invalid opted-in hidden multiplier before the bulk request', async () => {
+    const wrapper = mountModal()
+    await wrapper.get('[data-testid="enable-hidden-rate-multiplier"]').setValue(true)
+    await wrapper.get('[data-testid="hidden-rate-multiplier"]').setValue('1001')
+    await wrapper.get('#bulk-edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(adminAPI.accounts.bulkUpdate).not.toHaveBeenCalled()
+    expect(showError).toHaveBeenCalledWith('admin.accounts.hiddenRateMultiplierInvalid')
+    wrapper.unmount()
+  })
+
   it('批量修改倍率时提示自动同步账号需要先关闭同步', async () => {
     const wrapper = mountModal()
 

@@ -203,6 +203,9 @@ func (h *UsageHandler) parseUserUsageFilters(c *gin.Context, requireRange bool) 
 		}
 	}
 
+	// Pricing extensions remain private while customer summaries agree with
+	// the per-record DTO. Authentication and ownership are checked above.
+	c.Request = c.Request.WithContext(usagestats.WithCustomerBillingView(c.Request.Context()))
 	return &userUsageFilters{
 		Filters: usagestats.UsageLogFilters{
 			UserID:             subject.UserID,

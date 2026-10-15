@@ -20,6 +20,27 @@ func newBatchImageRepositoryWithSQL(sqlq batchImageSQLExecutor) *batchImageRepos
 	return &batchImageRepository{sql: sqlq}
 }
 
+func TestPKHiddenBillingBatchSnapshotPersistence(t *testing.T) {
+	ctx := context.Background()
+	repo := newBatchImageRepositoryWithSQL(testTx(t))
+	hidden, zero := 2.123456, 0.0
+	for i, multiplier := range []*float64{nil, &hidden, &zero} {
+		job, err := repo.CreateBatchImageJob(ctx, service.CreateBatchImageJobParams{
+			BatchID: batchImageTestID(t, string(rune('a'+i))), UserID: 1001,
+			Provider: service.BatchImageProviderGeminiAPI, Model: "gemini-image", ItemCount: 2,
+			HiddenRateMultiplier: multiplier, BaseUnitPrice: 0.25, GroupRateMultiplier: 0.5,
+			AccountRateMultiplier: 1.25, BillableUnitPrice: 0.1, PricingSnapshotVersion: 1,
+		})
+		require.NoError(t, err)
+		require.Equal(t, multiplier, job.HiddenRateMultiplier)
+		got, err := repo.GetBatchImageJobByBatchID(ctx, job.BatchID)
+		require.NoError(t, err)
+		require.Equal(t, multiplier, got.HiddenRateMultiplier)
+		require.Equal(t, 0.5, got.GroupRateMultiplier)
+		require.Equal(t, 0.1, got.BillableUnitPrice)
+	}
+}
+
 func TestBatchImageRepository_CreateJobAndDuplicates(t *testing.T) {
 	ctx := context.Background()
 	tx := testTx(t)

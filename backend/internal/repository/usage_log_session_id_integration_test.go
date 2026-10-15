@@ -9,9 +9,83 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
 )
+
+func TestPKHiddenBillingUsageSnapshotsAndCustomerAggregates(t *testing.T) {
+	ctx := context.Background()
+	client := testEntClient(t)
+	repo := newUsageLogRepositoryWithSQL(client, integrationDB)
+	user := mustCreateUser(t, client, &service.User{Email: "pk-hidden-" + uuid.NewString() + "@example.com"})
+	key := mustCreateApiKey(t, client, &service.APIKey{UserID: user.ID, Key: "sk-pk-hidden-" + uuid.NewString(), Name: "k"})
+	account := mustCreateAccount(t, client, &service.Account{Name: "pk-hidden-" + uuid.NewString()})
+	hidden, zero := 2.123456, 0.0
+	for _, mode := range []string{"single", "batch", "best-effort"} {
+		for _, multiplier := range []*float64{nil, &hidden, &zero} {
+			log := &service.UsageLog{
+				UserID: user.ID, APIKeyID: key.ID, AccountID: account.ID,
+				RequestID: uuid.NewString(), Model: "gpt-5", RequestedModel: "gpt-5",
+				InputTokens: 100, OutputTokens: 20, InputCost: 0.5,
+				TotalCost: 0.5, RateMultiplier: 0.25, HiddenRateMultiplier: multiplier, CreatedAt: time.Now().UTC(),
+			}
+			log.ActualCost = service.QuantizeUsageBillingAmount(0.125 * log.HiddenBillingMultiplier())
+			var err error
+			switch mode {
+			case "single":
+				_, err = repo.createSingle(ctx, integrationDB, log)
+			case "batch":
+				_, err = repo.Create(ctx, log)
+			case "best-effort":
+				err = repo.CreateBestEffort(ctx, log)
+			}
+			require.NoError(t, err)
+			var id int64
+			require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT id FROM usage_logs WHERE request_id = $1 AND api_key_id = $2`, log.RequestID, key.ID).Scan(&id))
+			got, err := repo.GetByID(ctx, id)
+			require.NoError(t, err)
+			require.Equal(t, multiplier, got.HiddenRateMultiplier, mode)
+			require.Equal(t, log.ActualCost, got.ActualCost)
+			require.Equal(t, 0.5, got.TotalCost)
+			// Changing the current account must not rewrite a recorded price.
+			_, err = integrationDB.ExecContext(ctx, `UPDATE accounts SET extra = jsonb_set(COALESCE(extra, '{}'::jsonb), '{hidden_rate_multiplier}', '9') WHERE id = $1`, account.ID)
+			require.NoError(t, err)
+			got, err = repo.GetByID(ctx, id)
+			require.NoError(t, err)
+			require.Equal(t, multiplier, got.HiddenRateMultiplier)
+		}
+	}
+	start, end := time.Now().Add(-time.Hour), time.Now().Add(time.Hour)
+	filters := usagestats.UsageLogFilters{UserID: user.ID, StartTime: &start, EndTime: &end}
+	admin, err := repo.GetStatsWithFilters(ctx, filters)
+	require.NoError(t, err)
+	require.Equal(t, 4.5, admin.TotalCost)
+	customerCtx := usagestats.WithCustomerBillingView(ctx)
+	customer, err := repo.GetStatsWithFilters(customerCtx, filters)
+	require.NoError(t, err)
+	wantBase := 1.5 * (1 + hidden)
+	require.InDelta(t, wantBase, customer.TotalCost, 1e-9)
+	require.Equal(t, admin.TotalActualCost, customer.TotalActualCost)
+	trend, err := repo.GetUsageTrendWithUsageFilters(customerCtx, start, end, "day", filters)
+	require.NoError(t, err)
+	require.Len(t, trend, 1)
+	require.InDelta(t, wantBase, trend[0].Cost, 1e-9)
+	models, err := repo.GetModelStatsWithUsageFiltersBySource(customerCtx, start, end, filters, usagestats.ModelSourceRequested)
+	require.NoError(t, err)
+	require.Len(t, models, 1)
+	require.InDelta(t, wantBase, models[0].Cost, 1e-9)
+	groups, err := repo.GetGroupStatsWithUsageFilters(customerCtx, start, end, filters)
+	require.NoError(t, err)
+	require.Len(t, groups, 1)
+	require.InDelta(t, wantBase, groups[0].Cost, 1e-9)
+	dashboard, err := repo.GetUserDashboardStats(customerCtx, user.ID)
+	require.NoError(t, err)
+	require.InDelta(t, wantBase, dashboard.TotalCost, 1e-9)
+	keyDashboard, err := repo.GetAPIKeyDashboardStats(customerCtx, key.ID)
+	require.NoError(t, err)
+	require.InDelta(t, wantBase, keyDashboard.TotalCost, 1e-9)
+}
 
 // TestUsageLog_SessionIDPersistence proves session_id round-trips from insert to
 // read and is omitted (NULL) when absent.

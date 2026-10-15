@@ -471,6 +471,40 @@ func TestGeminiCachedContentsCreate_UnaffordableStorageDeletesUpstreamAndBillsIn
 	require.InDelta(t, cachedBillingTokens*cachedBillingInputPrice, totals[0], 1e-9, "只收已发生的缓存 token 输入费")
 }
 
+func TestPKHiddenBillingGeminiCachedContentReservations(t *testing.T) {
+	t.Run("create rejects storage that only fits before the hidden multiplier", func(t *testing.T) {
+		env := newCachedBillingEnv(t, 150, 900)
+		env.accounts[900].Extra = map[string]any{service.AccountExtraHiddenRateMultiplier: 2.0}
+		env.upstream.createBody = cachedBillingCreateBody(time.Now().Add(24 * time.Hour))
+		rec := env.create()
+		require.NotEqual(t, http.StatusOK, rec.Code)
+		require.Equal(t, 1, env.upstream.methodCalls(http.MethodDelete))
+		require.Empty(t, env.repo.records)
+		env.waitForUsage(t, 1)
+		require.InDelta(t, 2*cachedBillingTokens*cachedBillingInputPrice, env.usage.first().ActualCost, 1e-9)
+	})
+	t.Run("extension rejects the full hidden charge before calling upstream", func(t *testing.T) {
+		env := newCachedBillingEnv(t, 150, 900)
+		env.accounts[900].Extra = map[string]any{service.AccountExtraHiddenRateMultiplier: 2.0}
+		env.seed(time.Now().Add(time.Hour))
+		rec := env.patch()
+		require.NotEqual(t, http.StatusOK, rec.Code)
+		require.Zero(t, env.upstream.methodCalls(http.MethodPatch))
+		require.Empty(t, env.usage.totals())
+	})
+	t.Run("zero hidden multiplier does not reserve the original storage fee", func(t *testing.T) {
+		env := newCachedBillingEnv(t, 1, 900)
+		env.accounts[900].Extra = map[string]any{service.AccountExtraHiddenRateMultiplier: 0.0}
+		env.upstream.createBody = cachedBillingCreateBody(time.Now().Add(24 * time.Hour))
+		rec := env.create()
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+		env.waitForUsage(t, 1)
+		require.Zero(t, env.usage.first().ActualCost)
+		require.Zero(t, env.usage.first().HiddenBillingMultiplier())
+		require.Zero(t, env.upstream.methodCalls(http.MethodDelete))
+	})
+}
+
 func TestGeminiCachedContentsCreate_UnusableUpstreamResponseCleansUpWithoutRetry(t *testing.T) {
 	env := newCachedBillingEnv(t, 500, 900, 901)
 	env.upstream.createBody = `{"name":"cachedContents/up1","expireTime":"2099-01-01T00:00:00Z"}`

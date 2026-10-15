@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent } from 'vue'
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import {
   BUILTIN_PLATFORM_CATALOG,
   resetPlatformCatalog,
@@ -335,6 +335,32 @@ describe('EditAccountModal', () => {
   })
 
   afterEach(() => vi.useRealTimers())
+
+  it.each([undefined, 0, 2.123456])('loads and saves hidden multiplier %s while preserving cache settings', async (hidden) => {
+    const account = buildAccount()
+    account.extra = { cache_conversion_enabled: true, cache_conversion_multiplier: 0.5, ...(hidden === undefined ? {} : { hidden_rate_multiplier: hidden }) }
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+    const wrapper = mountModal(account)
+    expect((wrapper.get('[data-testid="hidden-rate-multiplier"]').element as HTMLInputElement).value).toBe(String(hidden ?? 1))
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra).toMatchObject({
+      hidden_rate_multiplier: hidden ?? 1, cache_conversion_enabled: true, cache_conversion_multiplier: 0.5,
+    })
+    wrapper.unmount()
+  })
+
+  it('blocks an invalid hidden price before saving edited credentials', async () => {
+    const account = buildAccount()
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    const wrapper = mountModal(account)
+    await wrapper.get('[data-testid="hidden-rate-multiplier"]').setValue('-1')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    await flushPromises()
+    expect(updateAccountMock).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
 
   it('loads and disables Kilo without changing account mapping, proxy or cache conversion', async () => {
     const account = buildAccount()
