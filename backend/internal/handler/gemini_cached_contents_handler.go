@@ -14,6 +14,7 @@ import (
 	pkghttputil "github.com/Wei-Shaw/sub2api/internal/pkg/httputil"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/usageoutput"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
@@ -207,7 +208,7 @@ func (h *GatewayHandler) GeminiCachedContentsCreate(c *gin.Context) {
 		}
 		account = latest
 		attempts++
-		setOpsSelectedAccount(c, account.ID, account.Platform)
+		setOpsSelectedBillingAccount(c, account)
 
 		mappedModel := account.GetMappedModel(modelName)
 		usageFields := clientRequestedUsageFields(c, channelMapping, reqModel, mappedModel)
@@ -374,9 +375,11 @@ func (h *GatewayHandler) GeminiCachedContentsList(c *gin.Context) {
 		resp["nextPageToken"] = encodeGeminiCachedContentPageToken(records[len(records)-1].ID)
 	}
 	if len(records) > 0 {
-		views := make([]map[string]any, 0, len(records))
-		for _, record := range records {
-			views = append(views, service.GeminiCachedContentView(record))
+		views, err := h.geminiCachedContentCustomerViews(c.Request.Context(), records)
+		if err != nil {
+			reqLog.Error("gemini.cached_content.view_failed", zap.Error(err))
+			googleError(c, http.StatusInternalServerError, "Failed to load cached contents")
+			return
 		}
 		resp["cachedContents"] = views
 	}
@@ -393,7 +396,44 @@ func (h *GatewayHandler) GeminiCachedContentsGet(c *gin.Context) {
 	if !ok {
 		return
 	}
-	c.JSON(http.StatusOK, service.GeminiCachedContentView(record))
+	views, err := h.geminiCachedContentCustomerViews(c.Request.Context(), []*service.GeminiCachedContent{record})
+	if err != nil {
+		reqLog.Error("gemini.cached_content.view_failed", zap.Error(err))
+		googleError(c, http.StatusInternalServerError, "Failed to load cached content")
+		return
+	}
+	c.Data(http.StatusOK, "application/json", views[0])
+}
+
+// Read-only metadata does not select an upstream account. Scale each client
+// view with its own account, without binding one account to the entire page or
+// changing the stored token count used by generation and cache renewal billing.
+func (h *GatewayHandler) geminiCachedContentCustomerViews(ctx context.Context, records []*service.GeminiCachedContent) ([]json.RawMessage, error) {
+	multipliers := make(map[int64]float64)
+	views := make([]json.RawMessage, 0, len(records))
+	for _, record := range records {
+		multiplier, exists := multipliers[record.AccountID]
+		if !exists {
+			account, err := h.geminiCachedContentService.BoundAccount(ctx, record)
+			if err != nil {
+				return nil, err
+			}
+			// Removed/unsupported accounts retain the legacy default view. Their
+			// records do not contain a historical output-multiplier snapshot.
+			multiplier = account.HiddenBillingMultiplier()
+			multipliers[record.AccountID] = multiplier
+		}
+		body, err := json.Marshal(service.GeminiCachedContentView(record))
+		if err != nil {
+			return nil, err
+		}
+		body, err = usageoutput.ScaleJSON(body, multiplier, usageoutput.Options{Protocol: usageoutput.Gemini})
+		if err != nil {
+			return nil, err
+		}
+		views = append(views, json.RawMessage(body))
+	}
+	return views, nil
 }
 
 // GeminiCachedContentsPatch PATCH /v1beta/cachedContents/:cacheID
@@ -464,7 +504,7 @@ func (h *GatewayHandler) GeminiCachedContentsPatch(c *gin.Context) {
 		defer chargeDone()
 	}
 
-	setOpsSelectedAccount(c, account.ID, account.Platform)
+	setOpsSelectedBillingAccount(c, account)
 	mutation, err := svc.BeginMutation(c.Request.Context(), record)
 	if err != nil {
 		switch {
@@ -545,7 +585,7 @@ func (h *GatewayHandler) GeminiCachedContentsDelete(c *gin.Context) {
 		return
 	}
 	if account != nil {
-		setOpsSelectedAccount(c, account.ID, account.Platform)
+		setOpsSelectedBillingAccount(c, account)
 		if err := svc.DeleteUpstream(c.Request.Context(), account, record); err != nil {
 			var upErr *service.GeminiCachedContentUpstreamError
 			if !errors.As(err, &upErr) {

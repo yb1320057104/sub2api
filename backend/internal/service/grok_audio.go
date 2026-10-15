@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -11,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/usageoutput"
 	coderws "github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
@@ -138,7 +140,11 @@ func (s *OpenAIGatewayService) ProxyGrokRealtime(ctx context.Context, c *gin.Con
 	return s.ProxyGrokRealtimeConn(ctx, c, client, upstream)
 }
 
-type GrokRealtimeUpstream struct{ conn openAIWSClientConn }
+type GrokRealtimeUpstream struct {
+	conn openAIWSClientConn
+	// Snapshot the selected account; nil retains the default for legacy callers.
+	hiddenRateMultiplier *float64
+}
 
 // GrokRealtimeDialError preserves an HTTP status returned before WebSocket
 // upgrade so handlers can apply the normal Grok account policy.
@@ -186,7 +192,8 @@ func (s *OpenAIGatewayService) OpenGrokRealtime(ctx context.Context, account *Ac
 	if err != nil {
 		return nil, &GrokRealtimeDialError{StatusCode: status, Err: err}
 	}
-	return &GrokRealtimeUpstream{conn: conn}, nil
+	hiddenMultiplier := account.HiddenBillingMultiplier()
+	return &GrokRealtimeUpstream{conn: conn, hiddenRateMultiplier: &hiddenMultiplier}, nil
 }
 
 // HandleGrokRealtimeUpstreamError applies the shared Grok account policy to a
@@ -203,6 +210,10 @@ func (s *OpenAIGatewayService) ProxyGrokRealtimeConn(ctx context.Context, c *gin
 		return false, fmt.Errorf("realtime connection is required")
 	}
 	conn := upstream.conn
+	hiddenMultiplier := 1.0
+	if upstream.hiddenRateMultiplier != nil {
+		hiddenMultiplier = *upstream.hiddenRateMultiplier
+	}
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -219,6 +230,15 @@ func (s *OpenAIGatewayService) ProxyGrokRealtimeConn(ctx context.Context, c *gin
 			}
 			if grokRealtimeEventHasAudio(msg) {
 				audioObserved.Store(true)
+			}
+			if gjson.ValidBytes(msg) {
+				var err error
+				msg, err = usageoutput.ScaleJSON(msg, hiddenMultiplier, usageoutput.Options{Protocol: usageoutput.OpenAI})
+				if err != nil {
+					logOpenAIWSModeDebug("downstream_usage_rewrite_failed transport=grok_realtime err=%v", err)
+					errCh <- errors.New("realtime usage rewrite failed")
+					return
+				}
 			}
 			if writeErr := client.Write(ctx, coderws.MessageText, msg); writeErr != nil {
 				errCh <- writeErr

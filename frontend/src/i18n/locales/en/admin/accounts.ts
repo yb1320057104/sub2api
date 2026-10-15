@@ -1109,7 +1109,7 @@ export default {
       priorityHint: 'Lower value accounts are used first',
       billingRateMultiplier: 'Billing Rate Multiplier',
       hiddenRateMultiplier: 'Hidden billing multiplier',
-      hiddenRateMultiplierHint: 'Default 1. Effective rate = hidden rate × group rate, with the user-specific rate taking precedence. Existing image, peak and batch pricing rules still apply. Visible to administrators only.',
+      hiddenRateMultiplierHint: 'Default 1. Effective rate = hidden rate × group rate, with the user-specific rate taking precedence. Downstream token usage also applies this multiplier; local trends keep original usage. Existing image, peak and batch pricing rules still apply. This setting is visible to administrators only.',
       hiddenRateMultiplierInvalid: 'Enter a number from 0 to 1000 with up to 6 decimal places. 0 makes customer usage free.',
       hiddenRateMultiplierApply: 'Change the hidden multiplier for selected accounts',
       billingRateMultiplierHint: '0 = free, affects account billing only',

@@ -87,6 +87,7 @@ func (h *OpenAIGatewayHandler) GrokRealtime(c *gin.Context) {
 		}
 		candidateSeen = true
 		account := candidate.Account
+		setOpsSelectedBillingAccount(c, account)
 		var streamStarted bool
 		var slotStatus openAISlotAcquireResult
 		release, slotStatus = h.acquireResponsesAccountSlot(c, apiKey.GroupID, "", candidate, false, &streamStarted, reqLog)
@@ -270,6 +271,7 @@ func (h *OpenAIGatewayHandler) GrokVoice(c *gin.Context, endpoint string) {
 			return
 		}
 		account := selection.Account
+		setOpsSelectedBillingAccount(c, account)
 		var started bool
 		release, status := h.acquireResponsesAccountSlot(c, apiKey.GroupID, "", selection, false, &started, reqLog)
 		if status == openAISlotAcquireProfitVetoed {

@@ -117,13 +117,14 @@
 
 **下游 usage 与无损输出。** 引入：`6655dd8ca`。
 
-- 开启缓存转换时，下游实际 JSON/SSE usage 同步改写；关闭时保持原输出路径。
+- 开启缓存转换时，下游实际 JSON/SSE usage 同步改写；关闭时不做缓存转换。2026-10-16 用户另行授权 PK-029 在最终客户端副本上对 Token 用量乘隐藏倍率，该步骤独立于缓存转换开关。
 - OpenAI 输入总量和 `total_tokens` 按对应协议语义调整；Anthropic `input_tokens` 保持普通输入语义。兼容 usage 字段别名、显式 `0` 和 5m/1h 创建明细。
 - 只修改目标 usage 字段，保留模型文本、未知字段、事件类型及 SSE 多行 frame。保留原始 usage 供计费；客户端需要 usage 的场景继续向上游请求 stream usage。
 - 保留 canonical 字段与已有别名同步、嵌套显式 0 优先、Anthropic 5m/1h 创建量回退。typed Responses/Chat 序列化不能让 `omitempty` 丢掉显式 0；JSON 改写后移除旧 `Content-Length`，SSE 保留注释、空行及 `[DONE]`。
 - 客户端未请求 `include_usage` 不应丢弃已经收到的上游 usage；原始 Chat 强制向上游请求 stream usage，Anthropic→Chat 发现真实 usage 后保留下游发送路径。
 - 入口：`backend/internal/service/openai_cache_conversion_output.go`、`openai_gateway_{response_handling,passthrough,cc_pipeline}.go` 及 PK-006 接入点。
 - 验证：已有 `TestPKCacheConversionJSONKeepsPayloadAndOriginalUsage`、`TestPKCacheConversionSSEPreservesTextAndFraming`；增加协议或上游字段时逐个检查原始数据与改写结果。
+- PK-029 的最终输出桥只处理已知 usage 容器和 Token 明细，不遍历模型正文或工具参数；保留 JSON/SSE 原协议、LF/CRLF/CR、多行 data、注释、空行和 `[DONE]`。默认隐藏倍率1保持原字节，不增加倍率或内部标记字段；HTTP 每请求一次、真正 WebSocket 每最终帧一次，不能与内部缓存转换/计费相乘两次。
 
 ## PK-006
 
@@ -145,6 +146,7 @@
 2026-10-02 空格首字模式在既有 handler、service 与 Grok HTTP transport 的自动重试/协议回退入口增加同一请求门控，具体见 PK-011。仅空格正文已提交时拒绝重试，comment/ping 的转换与回退行为保留；真实 usage 仍走原缓存转换与账务路径。
 
 - 2026-10-15 Kilo 接入既有 HTTP Responses 请求构造器，普通/透传及 Chat/Messages 兼容入口继续走现有 usage/计费/首字链；不新增网络客户端。该桥接不支持上游 WebSocket，启用时强制 HTTP，详见 PK-028。
+- 2026-10-16 PK-029 增加跨平台隐藏倍率输出：网关路由共用 `HiddenUsageOutputMiddleware`，按实际选号/终检结果绑定账号，覆盖 OpenAI/Kilo、Anthropic/Bedrock、Gemini/Antigravity、SystemOne、HTTP图片/embeddings与Grok。真正 OpenAI/Grok WebSocket 与本站代理的 Live Sideband 控制帧在最后发送客户端处缩放；WS上游转HTTP仍只走HTTP输出桥。异步图片worker独立安装并在存结果前结束输出桥，查询不重复缩放；输出失败即使已经发出HTTP200空白心跳也必须记任务失败。Gemini缓存资源list/get逐账号转换返回副本；创建/更新由请求级输出桥处理。无账号的本地计数估算保持原样；WebRTC直连数据通道不经过本站输出桥。
 
 ## PK-007
 
@@ -493,7 +495,10 @@
 **账号隐藏计费倍率。** 状态：有效；依据：2026-10-15 用户要求添加账号默认隐藏倍率1、按分组/用户专属倍率结算，并以桥接方式维护。
 
 - 所有账号平台的创建、编辑及批量编辑支持 `accounts.extra.hidden_rate_multiplier`；默认1，接受0～1000且最多6位小数。0表示该账号客户费用为0；它与原 `accounts.rate_multiplier`（账号成本倍率）及缓存转换倍率完全独立。服务端创建/更新/局部extra/批量/重新授权均校验，省略保留旧值，显式0不丢失；旧客户端和旧账号缺键时只在读取时默认1，不强写extra；复制保留显式倍率，旧空extra清空配额行为不变。批量UI必须勾选才修改，取消勾选不会重置所选账号。
-- 普通请求实际倍率 = 隐藏倍率 × 有效分组倍率；设置用户专属倍率时替代分组默认倍率，不能再乘一次默认值。上游独立图片/视频、高峰、强度、Free Fast及批量折扣规则继续先执行，隐藏桥接只乘最终客户金额一次，不重写模型、token、协议输出或账号成本。新倍率生效后的客户金额按余额8位精度统一到记录、余额/订阅、Key额度/限速和平台额度；非法/溢出不静默扣原价。
+- 普通请求实际倍率 = 隐藏倍率 × 有效分组倍率；设置用户专属倍率时替代分组默认倍率，不能再乘一次默认值。上游独立图片/视频、高峰、强度、Free Fast及批量折扣规则继续先执行，隐藏计费桥只乘最终客户金额一次，不重写内部计费用量、模型或账号成本。原先“不改协议输出”的范围在2026-10-16按用户明确要求扩展为下面的下游Token输出规则；客户金额仍按余额8位精度统一到记录、余额/订阅、Key额度/限速和平台额度，非法/溢出不静默扣原价。
+- 下游已有缓存转换完成后，普通输入、输出、缓存创建/读取及已知推理/图片/音频等Token明细统一乘账号隐藏倍率，不发送隐藏倍率、实际倍率或缩放标记字段。返回字段使用 decimal 逐项向下取整，已有总数字段按原协议组成项和非负残差重算；缓存/推理子集不重复加入总数，不补造缺失字段，未知null仍为null。0返回显式零，1保持原字节。只改变客户端副本；原始快照、内部结算Token、账号成本、历史记录及本站图表不因此再次放大，扣费仍只乘一次。
+- Token输出桥入口：`pkg/usageoutput/scale.go`、`service/hidden_usage_output.go`、网关route与选号绑定、OpenAI/Grok/Live Sideband最终WebSocket写出。HTTP支持整包/分块JSON、SSE跨Write组帧、透传/协议转换、首字心跳和异步图片；WS支持文本和已识别的JSON二进制帧，opaque二进制、生成正文和媒体内容不变。Token转换失败向客户端返回通用上游错误，具体诊断仅在内部日志；不按原始Token静默回退。客户端断连、网络写失败或短写则保留原传输错误链，不补写错误帧或误记为上游故障。
+- 此输出规则只缩放Token计数，不缩放图片张数、音视频时长、工具次数、金额、模型上下文上限或请求参数。已选择账号的count接口同样换算；无账号本地估算和WebRTC直连usage不在本站可改写出口内。Gemini缓存资源list/get用当前绑定账号倍率且不改存储计费基数；已删除/不再支持缓存的账号无历史输出倍率快照，继续默认1。下游独立价表、阶梯、舍入和非Token收费仍可能与本站金额不同，不能把换算后的Token再次用于本站选档或扣费。
 - 用量新增可空 `hidden_rate_multiplier` 快照，由原显式SQL单条、批量、best-effort写入及列表读取覆盖。NULL历史记录视为1；查询只读当时快照，不读今天账号配置、不回填或补扣旧账。迁移246只追加可空列，旧程序能忽略列，但旧程序不会执行新倍率，回退必须接受恢复旧计费行为。
 - 管理员使用记录和每日消费共享表新增“倍率”（分组/专属、隐藏、实际）及费用旁“原始费用”；原费用显示最终实际结算金额。导出同样增加三项倍率和原始费用。倍率为该笔实际应用快照，保留高峰/独立媒体/批量折扣后的适用口径，不随当前分组设置变化。
 - 普通用户只看到客户价格、普通分组倍率及最终费用，响应不包含隐藏/实际倍率、原始费用或账号成本字段；单条、列表、近期记录、CSV、统计卡片、趋势/模型/分组/API Key汇总均使用同一客户基础价格。管理员聚合和账号成本保持存储原口径。
@@ -507,7 +512,7 @@
 **原始 Token 趋势统计。** 状态：有效；依据：2026-10-15 用户明确要求保持转换后的展示和扣费，Token 使用趋势及缓存率改看原始用量。
 
 - `usage_logs.original_usage` 为独立、可空 JSONB 快照，只存普通输入、输出、缓存创建、缓存读取四个非负整数。OpenAI 原始总输入先减原创建/读取，得到互斥普通输入；其他协议复用共享网关的互斥用量。快照在缓存转换或强制缓存计费前复制，不随账号当前开关、倍率或之后的结果改写而变化，不保存提示词或响应正文。
-- 通过独立 `usage_original_tokens.go` 与 `usage_log_original_tokens.go` 接入原结算和 SQL；单条、批量、best-effort 写入及查询全部保留快照。原 `input_tokens`/`cache_*`、费用、隐藏倍率、余额/订阅/Key 额度、上游响应和下游 usage 保持原有语义。
+- 通过独立 `usage_original_tokens.go` 与 `usage_log_original_tokens.go` 接入原结算和 SQL；单条、批量、best-effort 写入及查询全部保留快照。此趋势功能不改变原 `input_tokens`/`cache_*`、费用、隐藏倍率、余额/订阅/Key 额度及上游用量；2026-10-16新增的下游输出换算另按PK-029执行，不回写本快照。
 - `TrendDataPoint` 增加 `original_usage`、`original_usage_requests`，前者只汇总有快照的记录，后者表示覆盖的请求数。管理员和用户共用的 `TokenUsageTrend.vue` 四条 Token 曲线均使用完整原始数据，缓存率为 `原读取 / (原普通输入 + 原创建 + 原读取)`；按 Token 加权，不平均每次请求的百分比。费用提示继续使用原客户金额。
 - 小时/日 `usage_dashboard_*` 聚合增加相同快照和覆盖计数，筛选查询、用户查询及预聚合保持一致。其他费用/请求数统计及使用记录列表不切换 Token 口径；不新增管理员权限或暴露逐请求内部快照。
 - 迁移247只追加可空快照和默认0覆盖数，不猜测、逆算或回填旧记录。整个时段有任何原始数据缺失时图表留空；按2026-10-15用户要求，普通用户使用记录和仪表盘不显示缺失提示，管理员使用记录和仪表盘通过 `showOriginalUsageWarning` 显式保留提示。真实0保留为0，无请求为0，不用转换后的数据冒充原始值。没有上游 Token 证据的旧记录、Live 和批量图片等专有旁路仍保持未知。升级不恢复已经丢弃的历史创建/读取量。
