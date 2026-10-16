@@ -1,0 +1,209 @@
+{
+  "schema_version": 2,
+  "tests_profile": "pk-source-v2",
+  "repository": "pengkang0322/sub2api",
+  "commit": "82689422e5bb1444769265534265f570fed274a2",
+  "tree": "fde1e2fb4506cc3384b2b49f1d726f217a4d884b",
+  "status": "passed",
+  "started_at": "2026-10-16T05:53:44.539534Z",
+  "execution_environment": "server-isolated",
+  "base_commit": "d1b1dbf650b69292cb3998a9f1d32821c769dfd2",
+  "workspace_before": {
+    "head": "d1b1dbf650b69292cb3998a9f1d32821c769dfd2",
+    "tree": "fde1e2fb4506cc3384b2b49f1d726f217a4d884b",
+    "worktree_matches_index": true,
+    "status": "M  Makefile\nM  PK_FEATURES.md\nM  backend/internal/handler/admin/account_handler.go\nM  backend/internal/handler/dto/mappers.go\nM  backend/internal/handler/dto/mappers_usage_test.go\nM  backend/internal/handler/dto/types.go\nM  backend/internal/handler/gateway_handler.go\nM  backend/internal/handler/gateway_handler_chat_completions.go\nM  backend/internal/handler/gateway_handler_responses.go\nM  backend/internal/handler/gateway_systemone.go\nM  backend/internal/handler/gemini_cached_contents_billing_test.go\nM  backend/internal/handler/gemini_cached_contents_handler.go\nM  backend/internal/handler/gemini_cached_contents_handler_test.go\nM  backend/internal/handler/gemini_v1beta_handler.go\nM  backend/internal/handler/grok_audio.go\nM  backend/internal/handler/grok_media.go\nM  backend/internal/handler/image_task_handler.go\nM  backend/internal/handler/image_task_handler_test.go\nM  backend/internal/handler/openai_alpha_search.go\nM  backend/internal/handler/openai_chat_completions.go\nM  backend/internal/handler/openai_codex_models_handler.go\nM  backend/internal/handler/openai_embeddings.go\nM  backend/internal/handler/openai_gateway_count_tokens.go\nM  backend/internal/handler/openai_gateway_handler.go\nM  backend/internal/handler/openai_images.go\nM  backend/internal/handler/openai_models_handler.go\nM  backend/internal/handler/ops_error_logger.go\nM  backend/internal/handler/ops_error_logger_test.go\nM  backend/internal/handler/usage_handler.go\nD  backend/internal/pkg/usageoutput/scale.go\nD  backend/internal/pkg/usagestats/customer_billing.go\nM  backend/internal/pkg/usagestats/usage_log_types.go\nM  backend/internal/repository/batch_image_repo.go\nM  backend/internal/repository/batch_image_repo_integration_test.go\nM  backend/internal/repository/dashboard_aggregation_repo.go\nM  backend/internal/repository/scheduler_cache.go\nM  backend/internal/repository/scheduler_cache_rate_multiplier_unit_test.go\nD  backend/internal/repository/usage_log_hidden_billing.go\nD  backend/internal/repository/usage_log_original_tokens.go\nM  backend/internal/repository/usage_log_repo_dashboard.go\nM  backend/internal/repository/usage_log_repo_insert.go\nM  backend/internal/repository/usage_log_repo_insert_shape_unit_test.go\nM  backend/internal/repository/usage_log_repo_query.go\nM  backend/internal/repository/usage_log_repo_request_type_test.go\nM  backend/internal/repository/usage_log_repo_stats.go\nM  backend/internal/repository/usage_log_repo_trend.go\nM  backend/internal/repository/usage_log_session_id_integration_test.go\nM  backend/internal/repository/usage_log_session_id_unit_test.go\nM  backend/internal/server/routes/gateway.go\nM  backend/internal/server/routes/gateway_model_allowlist_test.go\nM  backend/internal/service/account_billing_rate_multiplier_test.go\nD  backend/internal/service/account_hidden_billing.go\nM  backend/internal/service/admin_account.go\nM  backend/internal/service/admin_account_upstream_billing_probe_test.go\nM  backend/internal/service/admin_service_duplicate_account_test.go\nM  backend/internal/service/batch_image.go\nM  backend/internal/service/batch_image_processor_test.go\nM  backend/internal/service/batch_image_public.go\nM  backend/internal/service/batch_image_public_test.go\nM  backend/internal/service/batch_image_settlement.go\nM  backend/internal/service/billing_inflight_reservation.go\nM  backend/internal/service/billing_inflight_reservation_test.go\nM  backend/internal/service/gateway_record_usage_test.go\nM  backend/internal/service/gateway_usage_billing.go\nM  backend/internal/service/gemini_cached_content_hardening_test.go\nM  backend/internal/service/grok_audio.go\nM  backend/internal/service/grok_audio_test.go\nD  backend/internal/service/hidden_usage_output.go\nM  backend/internal/service/openai_gateway_record_usage_test.go\nM  backend/internal/service/openai_gateway_usage.go\nM  backend/internal/service/openai_gateway_usage_integrity_test.go\nM  backend/internal/service/openai_live.go\nM  backend/internal/service/openai_live_lifecycle_test.go\nM  backend/internal/service/openai_profit_control.go\nM  backend/internal/service/openai_profit_control_test.go\nM  backend/internal/service/openai_ws_forwarder_ingress.go\nM  backend/internal/service/openai_ws_v2_passthrough_adapter.go\nM  backend/internal/service/openai_ws_v2_passthrough_image_usage_test.go\nM  backend/internal/service/profit_preview.go\nM  backend/internal/service/usage_log.go\nD  backend/internal/service/usage_original_tokens.go\nM  backend/internal/service/usage_service.go\nD  backend/migrations/246_hidden_billing_multiplier.sql\nD  backend/migrations/247_usage_original_tokens.sql\nD  docs/PK_HIDDEN_BILLING_REVIEW.md\nM  frontend/src/components/account/BulkEditAccountModal.vue\nM  frontend/src/components/account/CreateAccountModal.vue\nM  frontend/src/components/account/EditAccountModal.vue\nD  frontend/src/components/account/HiddenBillingMultiplierField.vue\nM  frontend/src/components/account/__tests__/BulkEditAccountModal.spec.ts\nM  frontend/src/components/account/__tests__/CreateAccountModal.spec.ts\nM  frontend/src/components/account/__tests__/EditAccountModal.spec.ts\nM  frontend/src/components/admin/usage/UsageTable.vue\nM  frontend/src/components/admin/usage/__tests__/UsageTable.spec.ts\nM  frontend/src/components/charts/TokenUsageTrend.vue\nM  frontend/src/components/charts/__tests__/TokenUsageTrend.spec.ts\nM  frontend/src/i18n/locales/en/admin/accounts.ts\nM  frontend/src/i18n/locales/en/admin/overview.ts\nM  frontend/src/i18n/locales/en/dashboard.ts\nM  frontend/src/i18n/locales/zh/admin/accounts.ts\nM  frontend/src/i18n/locales/zh/admin/overview.ts\nM  frontend/src/i18n/locales/zh/dashboard.ts\nM  frontend/src/types/index.ts\nD  frontend/src/utils/hiddenBilling.ts\nM  frontend/src/views/admin/DashboardView.vue\nM  frontend/src/views/admin/UsageView.vue\nM  scripts/test-local.py"
+  },
+  "preflight": {
+    "name": "preflight",
+    "status": "passed",
+    "exit_code": 0,
+    "commands": [
+      "go version",
+      "node --version",
+      "pnpm --version",
+      "golangci-lint version",
+      "/opt/source-tests-venv/bin/python3 -c 'import yaml; assert yaml.__version__ == '\"'\"'6.0.3'\"'\"''",
+      "govulncheck -version",
+      "docker context inspect --format '{{.Endpoints.docker.Host}}'",
+      "docker info --format '{{json .}}'",
+      "docker compose version"
+    ],
+    "started_at": "2026-10-16T05:53:44.814330Z",
+    "log": "preflight.log",
+    "finished_at": "2026-10-16T05:53:45.215842Z",
+    "log_sha256": "e74743354368377e7759b6b0c4cc0b9f10f4efc1aa6904bb98989a423642d316"
+  },
+  "workspace_after": {
+    "head": "d1b1dbf650b69292cb3998a9f1d32821c769dfd2",
+    "tree": "fde1e2fb4506cc3384b2b49f1d726f217a4d884b",
+    "worktree_matches_index": true,
+    "status": "M  Makefile\nM  PK_FEATURES.md\nM  backend/internal/handler/admin/account_handler.go\nM  backend/internal/handler/dto/mappers.go\nM  backend/internal/handler/dto/mappers_usage_test.go\nM  backend/internal/handler/dto/types.go\nM  backend/internal/handler/gateway_handler.go\nM  backend/internal/handler/gateway_handler_chat_completions.go\nM  backend/internal/handler/gateway_handler_responses.go\nM  backend/internal/handler/gateway_systemone.go\nM  backend/internal/handler/gemini_cached_contents_billing_test.go\nM  backend/internal/handler/gemini_cached_contents_handler.go\nM  backend/internal/handler/gemini_cached_contents_handler_test.go\nM  backend/internal/handler/gemini_v1beta_handler.go\nM  backend/internal/handler/grok_audio.go\nM  backend/internal/handler/grok_media.go\nM  backend/internal/handler/image_task_handler.go\nM  backend/internal/handler/image_task_handler_test.go\nM  backend/internal/handler/openai_alpha_search.go\nM  backend/internal/handler/openai_chat_completions.go\nM  backend/internal/handler/openai_codex_models_handler.go\nM  backend/internal/handler/openai_embeddings.go\nM  backend/internal/handler/openai_gateway_count_tokens.go\nM  backend/internal/handler/openai_gateway_handler.go\nM  backend/internal/handler/openai_images.go\nM  backend/internal/handler/openai_models_handler.go\nM  backend/internal/handler/ops_error_logger.go\nM  backend/internal/handler/ops_error_logger_test.go\nM  backend/internal/handler/usage_handler.go\nD  backend/internal/pkg/usageoutput/scale.go\nD  backend/internal/pkg/usagestats/customer_billing.go\nM  backend/internal/pkg/usagestats/usage_log_types.go\nM  backend/internal/repository/batch_image_repo.go\nM  backend/internal/repository/batch_image_repo_integration_test.go\nM  backend/internal/repository/dashboard_aggregation_repo.go\nM  backend/internal/repository/scheduler_cache.go\nM  backend/internal/repository/scheduler_cache_rate_multiplier_unit_test.go\nD  backend/internal/repository/usage_log_hidden_billing.go\nD  backend/internal/repository/usage_log_original_tokens.go\nM  backend/internal/repository/usage_log_repo_dashboard.go\nM  backend/internal/repository/usage_log_repo_insert.go\nM  backend/internal/repository/usage_log_repo_insert_shape_unit_test.go\nM  backend/internal/repository/usage_log_repo_query.go\nM  backend/internal/repository/usage_log_repo_request_type_test.go\nM  backend/internal/repository/usage_log_repo_stats.go\nM  backend/internal/repository/usage_log_repo_trend.go\nM  backend/internal/repository/usage_log_session_id_integration_test.go\nM  backend/internal/repository/usage_log_session_id_unit_test.go\nM  backend/internal/server/routes/gateway.go\nM  backend/internal/server/routes/gateway_model_allowlist_test.go\nM  backend/internal/service/account_billing_rate_multiplier_test.go\nD  backend/internal/service/account_hidden_billing.go\nM  backend/internal/service/admin_account.go\nM  backend/internal/service/admin_account_upstream_billing_probe_test.go\nM  backend/internal/service/admin_service_duplicate_account_test.go\nM  backend/internal/service/batch_image.go\nM  backend/internal/service/batch_image_processor_test.go\nM  backend/internal/service/batch_image_public.go\nM  backend/internal/service/batch_image_public_test.go\nM  backend/internal/service/batch_image_settlement.go\nM  backend/internal/service/billing_inflight_reservation.go\nM  backend/internal/service/billing_inflight_reservation_test.go\nM  backend/internal/service/gateway_record_usage_test.go\nM  backend/internal/service/gateway_usage_billing.go\nM  backend/internal/service/gemini_cached_content_hardening_test.go\nM  backend/internal/service/grok_audio.go\nM  backend/internal/service/grok_audio_test.go\nD  backend/internal/service/hidden_usage_output.go\nM  backend/internal/service/openai_gateway_record_usage_test.go\nM  backend/internal/service/openai_gateway_usage.go\nM  backend/internal/service/openai_gateway_usage_integrity_test.go\nM  backend/internal/service/openai_live.go\nM  backend/internal/service/openai_live_lifecycle_test.go\nM  backend/internal/service/openai_profit_control.go\nM  backend/internal/service/openai_profit_control_test.go\nM  backend/internal/service/openai_ws_forwarder_ingress.go\nM  backend/internal/service/openai_ws_v2_passthrough_adapter.go\nM  backend/internal/service/openai_ws_v2_passthrough_image_usage_test.go\nM  backend/internal/service/profit_preview.go\nM  backend/internal/service/usage_log.go\nD  backend/internal/service/usage_original_tokens.go\nM  backend/internal/service/usage_service.go\nD  backend/migrations/246_hidden_billing_multiplier.sql\nD  backend/migrations/247_usage_original_tokens.sql\nD  docs/PK_HIDDEN_BILLING_REVIEW.md\nM  frontend/src/components/account/BulkEditAccountModal.vue\nM  frontend/src/components/account/CreateAccountModal.vue\nM  frontend/src/components/account/EditAccountModal.vue\nD  frontend/src/components/account/HiddenBillingMultiplierField.vue\nM  frontend/src/components/account/__tests__/BulkEditAccountModal.spec.ts\nM  frontend/src/components/account/__tests__/CreateAccountModal.spec.ts\nM  frontend/src/components/account/__tests__/EditAccountModal.spec.ts\nM  frontend/src/components/admin/usage/UsageTable.vue\nM  frontend/src/components/admin/usage/__tests__/UsageTable.spec.ts\nM  frontend/src/components/charts/TokenUsageTrend.vue\nM  frontend/src/components/charts/__tests__/TokenUsageTrend.spec.ts\nM  frontend/src/i18n/locales/en/admin/accounts.ts\nM  frontend/src/i18n/locales/en/admin/overview.ts\nM  frontend/src/i18n/locales/en/dashboard.ts\nM  frontend/src/i18n/locales/zh/admin/accounts.ts\nM  frontend/src/i18n/locales/zh/admin/overview.ts\nM  frontend/src/i18n/locales/zh/dashboard.ts\nM  frontend/src/types/index.ts\nD  frontend/src/utils/hiddenBilling.ts\nM  frontend/src/views/admin/DashboardView.vue\nM  frontend/src/views/admin/UsageView.vue\nM  scripts/test-local.py"
+  },
+  "finished_at": "2026-10-16T06:05:38.662576Z",
+  "suites": [
+    {
+      "name": "backend-unit",
+      "status": "passed",
+      "exit_code": 0,
+      "commands": [
+        "go test -json -count=1 -tags unit ./..."
+      ],
+      "started_at": "2026-10-16T05:53:45.215986Z",
+      "log": "backend-unit.log",
+      "skipped_tests": [
+        "TestAllProfiles",
+        "TestAuthPendingIdentityService_UpsertAdoptionDecision_ClearsLegacyNullSessionReference",
+        "TestContentModerationTypeSafeLive",
+        "TestDialerBasicConnection",
+        "TestDingTalkOAuthStart_Disabled",
+        "TestEstimateOpenAIInputTokens_CompareWithOpenAIAPI",
+        "TestJA3Fingerprint",
+        "TestPluginRuntimeIntegration",
+        "TestPromptAuditConfigCASSecretRoundTripInvalidationAndTTL",
+        "TestPromptAuditDatabasePersistsFullPromptOnEventsOnly",
+        "TestPromptAuditMigrationSchemaAndLeakageGate",
+        "TestPromptAuditRepositoryAdmissionClaimFencingAndEventTransaction",
+        "TestPromptAuditRepositoryForeignKeysFiltersAndStableIdentitySnapshots",
+        "TestPromptAuditRepositoryHighWaterAndSafeDeletion",
+        "TestPromptAuditServiceConfirmationKeepsPostPreviewEventsAndConcurrentDeletesAreSafe",
+        "TestPromptRuntimeAggregatesConfigWorkersQueueRedisEndpointsAndGuardMetrics",
+        "TestRedisPayloadStoreRoundTripTTLNamespaceAndDelete"
+      ],
+      "finished_at": "2026-10-16T05:58:13.245083Z",
+      "log_sha256": "4ea5e016b3a40f1f0ea517159d75a7fa26d811b79fe256e3facd280c49c858c7"
+    },
+    {
+      "name": "backend-integration",
+      "status": "passed",
+      "exit_code": 0,
+      "commands": [
+        "go test -json -count=1 -tags integration ./..."
+      ],
+      "started_at": "2026-10-16T05:58:13.260737Z",
+      "log": "backend-integration.log",
+      "skipped_tests": [
+        "TestConcurrencyCacheSuite/TestGetAccountsLoadBatch",
+        "TestContentModerationTypeSafeLive",
+        "TestDialerAgainstCaptureServer",
+        "TestDingTalkOAuthStart_Disabled",
+        "TestEstimateOpenAIInputTokens_CompareWithOpenAIAPI",
+        "TestPluginRuntimeIntegration",
+        "TestPromptAuditConfigCASSecretRoundTripInvalidationAndTTL",
+        "TestPromptAuditDatabasePersistsFullPromptOnEventsOnly",
+        "TestPromptAuditMigrationSchemaAndLeakageGate",
+        "TestPromptAuditRepositoryAdmissionClaimFencingAndEventTransaction",
+        "TestPromptAuditRepositoryForeignKeysFiltersAndStableIdentitySnapshots",
+        "TestPromptAuditRepositoryHighWaterAndSafeDeletion",
+        "TestPromptAuditServiceConfirmationKeepsPostPreviewEventsAndConcurrentDeletesAreSafe",
+        "TestPromptRuntimeAggregatesConfigWorkersQueueRedisEndpointsAndGuardMetrics",
+        "TestRedisPayloadStoreRoundTripTTLNamespaceAndDelete"
+      ],
+      "finished_at": "2026-10-16T06:01:00.265792Z",
+      "log_sha256": "2153c4a5c5e60f0509e43be820f7f0c521dd4784ce926c9934b95bdb347fe207"
+    },
+    {
+      "name": "backend-race",
+      "status": "passed",
+      "exit_code": 0,
+      "commands": [
+        "go test -json -count=1 -race -tags unit ./internal/service ./internal/handler ./internal/handler/dto ./internal/handler/admin ./internal/repository ./internal/server ./internal/server/middleware -run 'Test(PKCyber|PKEarly|PKFirstResponse|PKUsage|PKSystemOne|PKCacheConversion|PKKiloBridge|PKBackground|PKChannelMonitor|StreamEarlyHeartbeat|UpdateSettingsEarlyHeartbeat|ServerTiming|Inflight|EstimateInflight|ReserveInflight|WrapUsageRecord|SyncBalanceCacheAfterDeduction|RequestMaxOutputTokens|WebSearch_RejectsWhenInflight)'",
+        "go test -json -count=1 -race -tags unit ./internal/service -run 'Test(BackgroundStartGate|BatchImageCleanupLifecycle)'",
+        "go test -json -count=1 -race -tags unit ./internal/config ./internal/payment ./internal/service ./internal/handler -run TestPKBinance",
+        "go test -json -count=1 -race -tags integration ./internal/repository -run TestPKBinance",
+        "go test -json -count=1 -race -tags integration ./internal/repository -run 'TestPK(Binance|Cyber)'"
+      ],
+      "started_at": "2026-10-16T06:01:00.276608Z",
+      "log": "backend-race.log",
+      "skipped_tests": [],
+      "finished_at": "2026-10-16T06:03:55.071157Z",
+      "log_sha256": "0394ec0b878792517ea35f335ffe9f0fd0928aec3cc2dd8db343c7e70ace9d40"
+    },
+    {
+      "name": "backend-lint",
+      "status": "passed",
+      "exit_code": 0,
+      "commands": [
+        "golangci-lint run --timeout=30m"
+      ],
+      "started_at": "2026-10-16T06:03:55.071664Z",
+      "log": "backend-lint.log",
+      "finished_at": "2026-10-16T06:04:51.597636Z",
+      "log_sha256": "b23e42dc588d17d228d9ea670523c7dbbd49c327298dbc342058b9b45eb0915e"
+    },
+    {
+      "name": "frontend",
+      "status": "passed",
+      "exit_code": 0,
+      "commands": [
+        "pnpm install --frozen-lockfile",
+        "make test-frontend"
+      ],
+      "started_at": "2026-10-16T06:04:51.597907Z",
+      "log": "frontend.log",
+      "finished_at": "2026-10-16T06:05:29.925588Z",
+      "log_sha256": "726d36cea13def9d64800684b81539c77aa3ba23083f082e5d115b9202f906a7"
+    },
+    {
+      "name": "shell",
+      "status": "passed",
+      "exit_code": 0,
+      "commands": [
+        "sh -n deploy/docker-entrypoint.sh",
+        "bash -n deploy/install.sh deploy/docker-deploy.sh deploy/apple-container.sh",
+        "bash deploy/tests/apple-container-test.sh",
+        "bash deploy/tests/install-github-token-test.sh",
+        "sh deploy/tests/docker-compose-simple-mode-env-test.sh",
+        "sh deploy/tests/docker-compose-security-test.sh",
+        "sh deploy/tests/docker-compose-gateway-env-test.sh",
+        "sh deploy/tests/docker-runtime-resources-test.sh",
+        "sh deploy/test-caddyfile-cache.sh"
+      ],
+      "started_at": "2026-10-16T06:05:29.925761Z",
+      "log": "shell.log",
+      "finished_at": "2026-10-16T06:05:33.206951Z",
+      "log_sha256": "11f1f681167d7be7b50300e8d9324b6f370275311d0de7de7d532ad4116c7077"
+    },
+    {
+      "name": "binance-proxy",
+      "status": "passed",
+      "exit_code": 0,
+      "commands": [
+        "/opt/source-tests-venv/bin/python3 -B -c '\nimport base64\nimport hashlib\nimport importlib.util\nimport json\nfrom pathlib import Path\nimport socket\nimport ssl\nimport tempfile\nimport threading\nimport time\nfrom types import SimpleNamespace\nimport unittest\nfrom unittest import mock\n\nspec = importlib.util.spec_from_file_location(\"binance_gateway\", \"deploy/binance-proxy/gateway.py\")\ngateway = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(gateway)\nAUTH = \"Basic \" + base64.b64encode(b\"ci-user:ci-password-with-32-characters!!\").decode()\nPRINCIPAL = hashlib.sha256(base64.b64decode(AUTH.split()[1])).digest()\nNODES = ((\"hk-a\", \"127.0.0.1\", 18001), (\"hk-b\", \"127.0.0.1\", 18002))\n\n\nclass MemorySocket:\n    def __init__(self, data=b\"\"):\n        self.data = bytearray(data)\n        self.sent = bytearray()\n        self.closed = False\n        self.timeouts = []\n\n    def settimeout(self, value):\n        self.timeouts.append(value)\n\n    def recv(self, size):\n        chunk = bytes(self.data[:size])\n        del self.data[:size]\n        return chunk\n\n    def sendall(self, data):\n        self.sent.extend(data)\n\n    def close(self):\n        self.closed = True\n\n    def do_handshake(self):\n        pass\n\n\ndef response(body, status=200):\n    return (\"HTTP/1.1 %d Result\\r\\nContent-Length: %d\\r\\n\\r\\n\" % (status, len(body))).encode() + body\n\n\nclass GatewayChecks(unittest.TestCase):\n    def setUp(self):\n        self.state = gateway.GatewayState(PRINCIPAL, NODES)\n        self.addCleanup(self.state.executor.shutdown, wait=True)\n        self.addCleanup(self.state.close_all)\n        # No test may resolve or open a real network connection.\n        for name in (\"create_connection\", \"socket\", \"getaddrinfo\"):\n            patcher = mock.patch.object(gateway.socket, name, side_effect=AssertionError(\"unexpected network\"))\n            patcher.start()\n            self.addCleanup(patcher.stop)\n\n    def request(self, method, path, headers=None, prefix=b\"\"):\n        values = {\"Host\": gateway.TARGET}\n        values.update(headers or {})\n        raw = (method + \" \" + path + \" HTTP/1.1\\r\\n\" + \"\".join(k + \": \" + v + \"\\r\\n\" for k, v in values.items()) + \"\\r\\n\").encode() + prefix\n        sock = MemorySocket(raw)\n        gateway.GatewayHandler(sock, (\"127.0.0.1\", 1), SimpleNamespace(state=self.state))\n        head, body = bytes(sock.sent).split(b\"\\r\\n\\r\\n\", 1)\n        return int(head.split()[1]), json.loads(body) if body else None\n\n    def test_authentication_and_no_unchecked_tunnel(self):\n        with mock.patch.object(self.state, \"upstream\") as upstream, mock.patch.object(self.state, \"preflight\") as preflight:\n            for auth in (None, \"Basic !!!!\", \"Bearer invalid\", \"Basic \" + base64.b64encode(b\"wrong:password\").decode()):\n                headers = {} if auth is None else {\"Authorization\": auth, \"Proxy-Authorization\": auth}\n                self.assertEqual(self.request(\"POST\", \"/_binance/preflight\", headers)[0], 401)\n                self.assertEqual(self.request(\"CONNECT\", gateway.TARGET, headers)[0], 407)\n            self.assertEqual(self.request(\"GET\", \"/health\")[0], 401)\n            self.assertEqual(self.request(\"GET\", \"/health\", {\"Authorization\": AUTH})[0], 200)\n            self.assertEqual(self.request(\"CONNECT\", gateway.TARGET, {\"Proxy-Authorization\": AUTH})[0], 403)\n            upstream.assert_not_called()\n            preflight.assert_not_called()\n\n    def test_only_exact_binance_connect_destination(self):\n        token = self.state.issue(NODES[0])\n        headers = {\"Proxy-Authorization\": AUTH, \"X-Binance-Route-Token\": token}\n        with mock.patch.object(self.state, \"upstream\") as upstream:\n            for target in (\"example.com:443\", \"api.binance.com:80\", \"api.binance.com:443.evil\", \"api.binance.com.:443\", \"127.0.0.1:443\", \"www.cloudflare.com:443\"):\n                self.assertEqual(self.request(\"CONNECT\", target, headers)[0], 403)\n            self.assertEqual(self.request(\"CONNECT\", gateway.TARGET, dict(headers, Host=\"evil.example:443\"))[0], 403)\n            self.assertEqual(self.request(\"GET\", \"https://api.binance.com/api/v3/time\", {\"Authorization\": AUTH})[0], 404)\n            upstream.assert_not_called()\n\n    def test_rejects_duplicate_headers_and_request_bodies(self):\n        with mock.patch.object(self.state, \"preflight\") as preflight:\n            self.assertEqual(self.request(\"POST\", \"/_binance/preflight\", {\"Authorization\": AUTH, \"authorization\": AUTH})[0], 400)\n            for extra in ({\"Content-Length\": \"1\"}, {\"Transfer-Encoding\": \"chunked\"}, {\"Expect\": \"100-continue\"}):\n                self.assertEqual(self.request(\"POST\", \"/_binance/preflight\", dict(extra, Authorization=AUTH))[0], 400)\n            self.assertEqual(self.request(\"POST\", \"/_binance/preflight\", {\"Authorization\": AUTH}, b\"body\")[0], 400)\n            preflight.assert_not_called()\n\n    def test_preflight_failures_and_capacity_fail_closed(self):\n        with mock.patch.object(self.state, \"probe\", return_value=None):\n            self.assertEqual(self.request(\"POST\", \"/_binance/preflight\", {\"Authorization\": AUTH}), (503, {\"error\": \"no_available_node\"}))\n        self.assertEqual(len(self.state.tokens), 0)\n        for _ in range(gateway.MAX_PREFLIGHTS):\n            self.assertTrue(self.state.preflights.acquire(blocking=False))\n        try:\n            with mock.patch.object(self.state, \"preflight\") as preflight:\n                self.assertEqual(self.request(\"POST\", \"/_binance/preflight\", {\"Authorization\": AUTH})[0], 429)\n                preflight.assert_not_called()\n        finally:\n            for _ in range(gateway.MAX_PREFLIGHTS):\n                self.state.preflights.release()\n\n    def test_fastest_route_is_fixed_for_repeated_connects(self):\n        with mock.patch.object(self.state, \"probe\", side_effect=lambda node, deadline: (0.3 if node == NODES[0] else 0.1, node)):\n            status, data = self.request(\"POST\", \"/_binance/preflight\", {\"Authorization\": AUTH})\n        self.assertEqual(status, 200)\n        token = data[\"route_token\"]\n        self.assertEqual(self.state.lookup(token), NODES[1])\n        with mock.patch.object(self.state, \"probe\", side_effect=lambda node, deadline: (0.1 if node == NODES[0] else 0.3, node)):\n            later = self.state.preflight()\n        self.assertEqual(self.state.lookup(later), NODES[0])\n        headers = {\"Proxy-Authorization\": AUTH, \"X-Binance-Route-Token\": token}\n        with mock.patch.object(self.state, \"upstream\", side_effect=lambda *args: MemorySocket()) as upstream, mock.patch.object(gateway, \"relay\") as relay:\n            for _ in range(2):\n                self.assertEqual(self.request(\"CONNECT\", gateway.TARGET, headers, b\"opaque-tls\")[0], 200)\n            self.assertEqual([call.args[0] for call in upstream.call_args_list], [NODES[1], NODES[1]])\n            self.assertEqual(relay.call_args.args[2], b\"opaque-tls\")\n        with mock.patch.object(self.state, \"upstream\", side_effect=OSError(\"selected node failed\")) as upstream:\n            self.assertEqual(self.request(\"CONNECT\", gateway.TARGET, headers), (502, {\"error\": \"selected_node_unavailable\"}))\n            upstream.assert_called_once()\n            self.assertEqual(upstream.call_args.args[0], NODES[1])\n        self.assertEqual(self.state.lookup(token), NODES[1])\n        self.assertIsNone(self.state.lookup(\"unknown-token-\" + \"x\" * 32))\n        with mock.patch.object(gateway, \"TOKEN_TTL\", -1):\n            expired = self.state.issue(NODES[0])\n        self.assertIsNone(self.state.lookup(expired))\n\n    def test_hong_kong_and_binance_must_pass_same_node_deadline(self):\n        with mock.patch.object(self.state, \"probe_response\", side_effect=[b\"ip=192.0.2.1\\nloc=HK\\n\", b'\"'\"'{\"serverTime\":1234}'\"'\"']) as probe:\n            self.assertEqual(self.state.probe(NODES[0], time.monotonic() + 10)[1], NODES[0])\n        calls = probe.call_args_list\n        self.assertEqual([call.args[:3] for call in calls], [(NODES[0], \"www.cloudflare.com\", \"/cdn-cgi/trace\"), (NODES[0], \"api.binance.com\", \"/api/v3/time\")])\n        self.assertEqual(calls[0].args[3], calls[1].args[3])\n        self.assertLessEqual(calls[0].args[3], time.monotonic() + gateway.NODE_TIMEOUT)\n        for trace in (b\"loc=US\\n\", b\"loc=HK\\nloc=HK\\n\", b\"ip=192.0.2.1\\n\"):\n            with mock.patch.object(self.state, \"probe_response\", return_value=trace) as probe:\n                self.assertIsNone(self.state.probe(NODES[0], time.monotonic() + 10))\n                probe.assert_called_once()\n        for body in (b\"invalid\", b'\"'\"'{\"serverTime\":true}'\"'\"', b'\"'\"'{\"serverTime\":0}'\"'\"', b'\"'\"'{\"serverTime\":\"123\"}'\"'\"'):\n            with mock.patch.object(self.state, \"probe_response\", side_effect=[b\"loc=HK\\n\", body]):\n                self.assertIsNone(self.state.probe(NODES[0], time.monotonic() + 10))\n        with mock.patch.object(self.state, \"probe_response\", side_effect=socket.timeout(\"timeout\")):\n            self.assertIsNone(self.state.probe(NODES[0], time.monotonic() + 10))\n\n    def test_overall_preflight_timeout_does_not_issue_route(self):\n        release = threading.Event()\n        def blocked_probe(node, deadline):\n            release.wait(1)\n            return None\n        try:\n            with mock.patch.object(self.state, \"probe\", side_effect=blocked_probe), mock.patch.object(gateway, \"PREFLIGHT_TIMEOUT\", 0.02):\n                started = time.monotonic()\n                with self.assertRaises(gateway.GatewayError):\n                    self.state.preflight()\n                self.assertLess(time.monotonic() - started, 0.8)\n                self.assertEqual(len(self.state.tokens), 0)\n        finally:\n            release.set()\n\n    def test_upstream_only_dials_fixed_listener_without_fallback(self):\n        for target in (gateway.TARGET, \"www.cloudflare.com:443\"):\n            sock = MemorySocket(b\"HTTP/1.1 200 OK\\r\\n\\r\\n\")\n            with mock.patch.object(gateway.socket, \"create_connection\", return_value=sock) as dial:\n                self.assertIs(self.state.upstream(NODES[1], time.monotonic() + 1, target), sock)\n                self.assertEqual(dial.call_args.args[0], (\"127.0.0.1\", 18002))\n                self.assertIn((\"CONNECT \" + target + \" HTTP/1.1\").encode(), sock.sent)\n                self.assertNotIn(b\"Authorization\", sock.sent)\n            self.state.close(sock)\n        with mock.patch.object(gateway.socket, \"create_connection\") as dial:\n            with self.assertRaises(gateway.GatewayError):\n                self.state.upstream(NODES[0], time.monotonic() + 1, \"evil.example:443\")\n            dial.assert_not_called()\n        for error in (OSError(\"failed\"), socket.timeout(\"timeout\")):\n            with mock.patch.object(gateway.socket, \"create_connection\", side_effect=error) as dial:\n                with self.assertRaises(OSError):\n                    self.state.upstream(NODES[0], time.monotonic() + 1)\n                dial.assert_called_once()\n                self.assertEqual(dial.call_args.args[0], (\"127.0.0.1\", 18001))\n        for data in (b\"HTTP/1.1 403 Forbidden\\r\\n\\r\\n\", b\"HTTP/1.1 200 OK\\r\\nContent-Length: 1\\r\\n\\r\\nx\"):\n            sock = MemorySocket(data)\n            with mock.patch.object(gateway.socket, \"create_connection\", return_value=sock):\n                with self.assertRaises(gateway.GatewayError):\n                    self.state.upstream(NODES[0], time.monotonic() + 1)\n            self.assertTrue(sock.closed)\n\n    def test_probe_tls_verification_response_errors_and_timeout(self):\n        self.assertTrue(self.state.tls.check_hostname)\n        self.assertEqual(self.state.tls.verify_mode, ssl.CERT_REQUIRED)\n        self.assertGreaterEqual(self.state.tls.minimum_version, ssl.TLSVersion.TLSv1_2)\n        for status in (200, 403, 429, 500):\n            plain, wrapped = MemorySocket(), MemorySocket(response(b'\"'\"'{\"serverTime\":1234}'\"'\"', status))\n            tls = mock.Mock()\n            tls.wrap_socket.return_value = wrapped\n            with mock.patch.object(self.state, \"upstream\", return_value=plain), mock.patch.object(self.state, \"tls\", tls):\n                if status == 200:\n                    self.assertEqual(self.state.probe_response(NODES[0], \"api.binance.com\", \"/api/v3/time\", time.monotonic() + 1), b'\"'\"'{\"serverTime\":1234}'\"'\"')\n                else:\n                    with self.assertRaises(gateway.GatewayError):\n                        self.state.probe_response(NODES[0], \"api.binance.com\", \"/api/v3/time\", time.monotonic() + 1)\n                tls.wrap_socket.assert_called_once_with(plain, server_hostname=\"api.binance.com\", do_handshake_on_connect=False)\n            self.assertTrue(wrapped.closed)\n        plain = MemorySocket()\n        tls = mock.Mock()\n        tls.wrap_socket.side_effect = ssl.SSLCertVerificationError(\"untrusted certificate\")\n        with mock.patch.object(self.state, \"upstream\", return_value=plain), mock.patch.object(self.state, \"tls\", tls):\n            self.assertIsNone(self.state.probe(NODES[0], time.monotonic() + 1))\n        self.assertTrue(plain.closed)\n        stalled = MemorySocket()\n        stalled.recv = mock.Mock(side_effect=socket.timeout(\"timeout\"))\n        with self.assertRaises(socket.timeout):\n            gateway.read_headers(stalled, time.monotonic() + 1)\n        with self.assertRaises(gateway.GatewayError):\n            gateway.read_probe_body(MemorySocket(b\"x\"), {\"content-length\": \"2\"}, b\"\", time.monotonic() + 1)\n        with self.assertRaises(gateway.GatewayError):\n            gateway.read_probe_body(MemorySocket(), {\"content-length\": \"9000\"}, b\"\", time.monotonic() + 1)\n\n    def test_configuration_cannot_add_public_or_dynamic_nodes(self):\n        base = {\"bind\": \"127.0.0.1\", \"port\": 17990, \"auth_username\": \"ci-user\", \"auth_password\": \"ci-password-with-32-characters!!\", \"nodes\": [{\"name\": \"hk-a\", \"host\": \"127.0.0.1\", \"port\": 18001}]}\n        with tempfile.TemporaryDirectory() as directory:\n            path = Path(directory) / \"gateway.json\"\n            def load(config, mode=0o600):\n                path.write_text(json.dumps(config), encoding=\"utf-8\")\n                path.chmod(mode)\n                return gateway.load_config(str(path))\n            self.assertEqual(load(base)[3], (NODES[0],))\n            for changed in (dict(base, bind=\"0.0.0.0\"), dict(base, bind=\"8.8.8.8\"), dict(base, auth_password=\"short\"), dict(base, nodes=[]), dict(base, nodes=base[\"nodes\"] * 2)):\n                with self.assertRaises(gateway.GatewayError):\n                    load(changed)\n            for host in (\"example.com\", \"8.8.8.8\", \"10.0.0.1\"):\n                with self.assertRaises((gateway.GatewayError, ValueError)):\n                    load(dict(base, nodes=[dict(base[\"nodes\"][0], host=host)]))\n            with self.assertRaises(gateway.GatewayError):\n                load(base, 0o644)\n\n\nunittest.main(verbosity=2)\n'"
+      ],
+      "started_at": "2026-10-16T06:05:33.207077Z",
+      "log": "binance-proxy.log",
+      "finished_at": "2026-10-16T06:05:33.348627Z",
+      "log_sha256": "7696127a36bf90a2da4e2e71189b7eb6cba0f4804f7e74cf4b29b36359853cae"
+    },
+    {
+      "name": "release-helpers",
+      "status": "passed",
+      "exit_code": 0,
+      "commands": [
+        "/opt/source-tests-venv/bin/python3 -B -m unittest discover -s .github/release-tools -p test_release_matrix.py",
+        "bash -n .github/release-tools/release-images.sh"
+      ],
+      "started_at": "2026-10-16T06:05:33.348858Z",
+      "log": "release-helpers.log",
+      "finished_at": "2026-10-16T06:05:33.740796Z",
+      "log_sha256": "feb919019e6c113545341de09b96740ee3b933fd79870ef43767cf3bbf2717cc"
+    },
+    {
+      "name": "security",
+      "status": "passed",
+      "exit_code": 0,
+      "commands": [
+        "govulncheck ./...",
+        "pnpm audit --prod --audit-level=high --json",
+        "/opt/source-tests-venv/bin/python3 tools/check_pnpm_audit_exceptions.py --audit /tmp/pk-audit-w3_0pq5r/audit.json --exceptions .github/audit-exceptions.yml"
+      ],
+      "started_at": "2026-10-16T06:05:33.740919Z",
+      "log": "security.log",
+      "finished_at": "2026-10-16T06:05:38.640947Z",
+      "log_sha256": "e544a4549be0f512297e0d7b17794dd1ccbba2bf5ab06460697899e640d22ebb"
+    }
+  ],
+  "source_eligible": true,
+  "bound_at": "2026-10-16T06:07:07.197055Z"
+}
