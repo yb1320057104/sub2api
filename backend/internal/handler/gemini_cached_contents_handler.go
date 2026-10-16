@@ -14,7 +14,6 @@ import (
 	pkghttputil "github.com/Wei-Shaw/sub2api/internal/pkg/httputil"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/usageoutput"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
@@ -208,7 +207,7 @@ func (h *GatewayHandler) GeminiCachedContentsCreate(c *gin.Context) {
 		}
 		account = latest
 		attempts++
-		setOpsSelectedBillingAccount(c, account)
+		setOpsSelectedAccount(c, account.ID, account.Platform)
 
 		mappedModel := account.GetMappedModel(modelName)
 		usageFields := clientRequestedUsageFields(c, channelMapping, reqModel, mappedModel)
@@ -271,18 +270,15 @@ func (h *GatewayHandler) GeminiCachedContentsCreate(c *gin.Context) {
 		// 只收取已发生的缓存 token 输入费。
 		tokens := upstream.TotalTokenCount
 		storageTokenHours := service.GeminiCachedContentStorageTokenHours(tokens, ttl)
-		amount, err := h.gatewayService.QuoteUsageCostWithHiddenBilling(c.Request.Context(), &service.RecordUsageInput{
+		amount := h.gatewayService.QuoteUsageCost(c.Request.Context(), &service.RecordUsageInput{
 			Result: &service.ForwardResult{
 				Model: modelName, UpstreamModel: mappedModel,
 				Usage: service.ClaudeUsage{InputTokens: int(tokens)}, CacheStorageTokenHours: storageTokenHours,
 			},
-			APIKey: apiKey, User: apiKey.User, Account: account, Subscription: subscription, PricingAt: pricingAt, ChannelUsageFields: usageFields,
+			APIKey: apiKey, User: apiKey.User, Subscription: subscription, PricingAt: pricingAt, ChannelUsageFields: usageFields,
 		})
 		inflightRelease()
-		chargeDone := inflightNoop
-		if err == nil {
-			chargeDone, err = h.reserveGeminiCachedContentCharge(c, apiKey, subscription, amount)
-		}
+		chargeDone, err := h.reserveGeminiCachedContentCharge(c, apiKey, subscription, amount)
 		if err != nil {
 			reqLog.Info("gemini.cached_content.storage_charge_rejected", zap.Float64("amount", amount), zap.Error(err))
 			h.cleanupGeminiCachedContentUpstream(reqLog, account, upstream.Name)
@@ -375,11 +371,9 @@ func (h *GatewayHandler) GeminiCachedContentsList(c *gin.Context) {
 		resp["nextPageToken"] = encodeGeminiCachedContentPageToken(records[len(records)-1].ID)
 	}
 	if len(records) > 0 {
-		views, err := h.geminiCachedContentCustomerViews(c.Request.Context(), records)
-		if err != nil {
-			reqLog.Error("gemini.cached_content.view_failed", zap.Error(err))
-			googleError(c, http.StatusInternalServerError, "Failed to load cached contents")
-			return
+		views := make([]map[string]any, 0, len(records))
+		for _, record := range records {
+			views = append(views, service.GeminiCachedContentView(record))
 		}
 		resp["cachedContents"] = views
 	}
@@ -396,44 +390,7 @@ func (h *GatewayHandler) GeminiCachedContentsGet(c *gin.Context) {
 	if !ok {
 		return
 	}
-	views, err := h.geminiCachedContentCustomerViews(c.Request.Context(), []*service.GeminiCachedContent{record})
-	if err != nil {
-		reqLog.Error("gemini.cached_content.view_failed", zap.Error(err))
-		googleError(c, http.StatusInternalServerError, "Failed to load cached content")
-		return
-	}
-	c.Data(http.StatusOK, "application/json", views[0])
-}
-
-// Read-only metadata does not select an upstream account. Scale each client
-// view with its own account, without binding one account to the entire page or
-// changing the stored token count used by generation and cache renewal billing.
-func (h *GatewayHandler) geminiCachedContentCustomerViews(ctx context.Context, records []*service.GeminiCachedContent) ([]json.RawMessage, error) {
-	multipliers := make(map[int64]float64)
-	views := make([]json.RawMessage, 0, len(records))
-	for _, record := range records {
-		multiplier, exists := multipliers[record.AccountID]
-		if !exists {
-			account, err := h.geminiCachedContentService.BoundAccount(ctx, record)
-			if err != nil {
-				return nil, err
-			}
-			// Removed/unsupported accounts retain the legacy default view. Their
-			// records do not contain a historical output-multiplier snapshot.
-			multiplier = account.HiddenBillingMultiplier()
-			multipliers[record.AccountID] = multiplier
-		}
-		body, err := json.Marshal(service.GeminiCachedContentView(record))
-		if err != nil {
-			return nil, err
-		}
-		body, err = usageoutput.ScaleJSON(body, multiplier, usageoutput.Options{Protocol: usageoutput.Gemini})
-		if err != nil {
-			return nil, err
-		}
-		views = append(views, json.RawMessage(body))
-	}
-	return views, nil
+	c.JSON(http.StatusOK, service.GeminiCachedContentView(record))
 }
 
 // GeminiCachedContentsPatch PATCH /v1beta/cachedContents/:cacheID
@@ -480,7 +437,7 @@ func (h *GatewayHandler) GeminiCachedContentsPatch(c *gin.Context) {
 				Model: record.Model, UpstreamModel: record.UpstreamModelID(),
 				CacheStorageTokenHours: service.GeminiCachedContentStorageTokenHours(record.TotalTokenCount, extension),
 			},
-			APIKey: apiKey, User: apiKey.User, Account: account, Subscription: subscription, PricingAt: pricingAt,
+			APIKey: apiKey, User: apiKey.User, Subscription: subscription, PricingAt: pricingAt,
 			ChannelUsageFields: record.ChannelUsage,
 		}
 		if !h.gatewayService.CacheStoragePriced(c.Request.Context(), usage) {
@@ -490,12 +447,7 @@ func (h *GatewayHandler) GeminiCachedContentsPatch(c *gin.Context) {
 		if !h.checkGeminiCachedContentBilling(c, reqLog, apiKey, subscription) {
 			return
 		}
-		amount, err := h.gatewayService.QuoteUsageCostWithHiddenBilling(c.Request.Context(), usage)
-		if err != nil {
-			writeGeminiCachedContentBillingError(c, err)
-			return
-		}
-		chargeDone, err := h.reserveGeminiCachedContentCharge(c, apiKey, subscription, amount)
+		chargeDone, err := h.reserveGeminiCachedContentCharge(c, apiKey, subscription, h.gatewayService.QuoteUsageCost(c.Request.Context(), usage))
 		if err != nil {
 			reqLog.Info("gemini.cached_content.storage_charge_rejected", zap.Error(err))
 			writeGeminiCachedContentBillingError(c, err)
@@ -504,7 +456,7 @@ func (h *GatewayHandler) GeminiCachedContentsPatch(c *gin.Context) {
 		defer chargeDone()
 	}
 
-	setOpsSelectedBillingAccount(c, account)
+	setOpsSelectedAccount(c, account.ID, account.Platform)
 	mutation, err := svc.BeginMutation(c.Request.Context(), record)
 	if err != nil {
 		switch {
@@ -585,7 +537,7 @@ func (h *GatewayHandler) GeminiCachedContentsDelete(c *gin.Context) {
 		return
 	}
 	if account != nil {
-		setOpsSelectedBillingAccount(c, account)
+		setOpsSelectedAccount(c, account.ID, account.Platform)
 		if err := svc.DeleteUpstream(c.Request.Context(), account, record); err != nil {
 			var upErr *service.GeminiCachedContentUpstreamError
 			if !errors.As(err, &upErr) {

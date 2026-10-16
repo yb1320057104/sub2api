@@ -411,11 +411,7 @@ func normalizeOpenAILongContextBillingUpdateExtra(account *Account, input *Updat
 // Grok media eligibility helpers live in account_grok_media_eligibility.go.
 
 func buildAccountForCreate(input *CreateAccountInput, accountExtra map[string]any) (*Account, error) {
-	accountExtra, err := normalizeHiddenBillingExtra(accountExtra, nil)
-	if err != nil {
-		return nil, err
-	}
-	accountExtra, err = normalizeKiloBridgeExtra(input.Platform, accountExtra, nil)
+	accountExtra, err := normalizeKiloBridgeExtra(input.Platform, accountExtra, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -605,10 +601,6 @@ func (s *adminServiceImpl) UpdateAccount(ctx context.Context, id int64, input *U
 			return nil, err
 		}
 		normalizedExtra, err = normalizeKiloBridgeExtra(account.Platform, normalizedExtra, account.Extra)
-		if err != nil {
-			return nil, err
-		}
-		normalizedExtra, err = normalizeHiddenBillingExtra(normalizedExtra, account.Extra)
 		if err != nil {
 			return nil, err
 		}
@@ -961,9 +953,6 @@ func (s *adminServiceImpl) UpdateAccountExtra(ctx context.Context, id int64, upd
 	delete(updates, OpenCodeGoUsageAutoRefreshExtraKey)
 	delete(updates, OpenCodeGoUsageSnapshotExtraKey)
 	_, hasLongContextBilling := updates[openAILongContextBillingEnabledKey]
-	if err := ValidateHiddenBillingExtra(updates); err != nil {
-		return err
-	}
 	if hasLongContextBilling || hasOpenAICacheConversionExtra(updates) || hasKiloBridgeExtra(updates) {
 		account, err := s.accountRepo.GetByID(ctx, id)
 		if err != nil {
@@ -988,9 +977,6 @@ func (s *adminServiceImpl) UpdateAccountExtra(ctx context.Context, id int64, upd
 // BulkUpdateAccounts updates multiple accounts in one request.
 // It merges credentials/extra keys instead of overwriting the whole object.
 func (s *adminServiceImpl) BulkUpdateAccounts(ctx context.Context, input *BulkUpdateAccountsInput) (*BulkUpdateAccountsResult, error) {
-	if err := ValidateHiddenBillingExtra(input.Extra); err != nil {
-		return nil, err
-	}
 	// Managed probe/session state may only enter through dedicated typed endpoints.
 	input.Extra = sanitizedCodexFingerprintExtraUpdates(input.Extra)
 	input.Extra = stripOpenAIAutoResetCreditManagedExtra(input.Extra, true)

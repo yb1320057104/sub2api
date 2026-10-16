@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/usageoutput"
 	coderws "github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
@@ -484,7 +483,6 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		}, nil
 	}
 
-	hiddenMultiplier := account.HiddenBillingMultiplier()
 	writeClientMessage := func(message []byte) error {
 		writeCtx, cancel := newOpenAIWSDownstreamWriteContext(ctx, hooks, s.openAIWSWriteTimeout())
 		defer cancel()
@@ -493,11 +491,6 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		message, err := RewriteOpenAICacheConversionJSON(account, message)
 		if err != nil {
 			return fmt.Errorf("rewrite websocket cache usage: %w", err)
-		}
-		message, err = usageoutput.ScaleJSON(message, hiddenMultiplier, usageoutput.Options{Protocol: usageoutput.OpenAI})
-		if err != nil {
-			logOpenAIWSModeDebug("downstream_usage_rewrite_failed transport=ingress err=%v", err)
-			return errors.New("websocket usage rewrite failed")
 		}
 		message = restoreCodexToolNamesFromContext(c, message)
 		return clientConn.Write(writeCtx, coderws.MessageText, message)

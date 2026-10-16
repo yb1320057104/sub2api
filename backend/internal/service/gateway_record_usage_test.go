@@ -14,46 +14,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestPKHiddenBillingSharedGatewayAndFallback(t *testing.T) {
-	for _, atomic := range []bool{false, true} {
-		usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
-		userRepo := &openAIRecordUsageUserRepoStub{}
-		quota := &openAIRecordUsageAPIKeyQuotaStub{}
-		svc := newGatewayRecordUsageServiceForTest(usageRepo, userRepo, &openAIRecordUsageSubRepoStub{})
-		billingRepo := &openAIRecordUsageBillingRepoStub{result: &UsageBillingApplyResult{Applied: true}}
-		if atomic {
-			svc.usageBillingRepo = billingRepo
-		}
-		userRate := 0.25
-		svc.userGroupRateResolver = newUserGroupRateResolver(&openAIUserGroupRateRepoStub{rate: &userRate}, nil, time.Minute, nil, "pk-hidden-test")
-		group := &Group{ID: 7, RateMultiplier: 1.5, Platform: PlatformAnthropic}
-		err := svc.RecordUsage(context.Background(), &RecordUsageInput{
-			Result: &ForwardResult{RequestID: "pk-hidden-shared", Model: "claude-sonnet-4", Usage: ClaudeUsage{InputTokens: 1000, OutputTokens: 100}},
-			APIKey: &APIKey{ID: 2, GroupID: &group.ID, Group: group, Quota: 100, RateLimit5h: 100},
-			User:   &User{ID: 1}, Account: &Account{ID: 3, Platform: PlatformAnthropic, Extra: map[string]any{AccountExtraHiddenRateMultiplier: 2.0}},
-			APIKeyService: quota,
-		})
-		require.NoError(t, err)
-		log := usageRepo.lastLog
-		require.NotNil(t, log)
-		want := QuantizeUsageBillingAmount(log.TotalCost * 0.5)
-		require.Greater(t, want, 0.0)
-		require.Equal(t, want, log.ActualCost)
-		require.Equal(t, 0.25, log.RateMultiplier)
-		require.Equal(t, 2.0, log.HiddenBillingMultiplier())
-		if atomic {
-			require.Equal(t, want, billingRepo.lastCmd.BalanceCost)
-			require.Equal(t, want, billingRepo.lastCmd.APIKeyQuotaCost)
-			require.Equal(t, want, billingRepo.lastCmd.APIKeyRateLimitCost)
-		} else {
-			require.Equal(t, want, userRepo.lastAmount)
-			require.Equal(t, want, quota.lastAmount)
-			require.Equal(t, 1, quota.quotaCalls)
-			require.Equal(t, 1, quota.rateLimitCalls)
-		}
-	}
-}
-
 func newGatewayRecordUsageServiceForTest(usageRepo UsageLogRepository, userRepo UserRepository, subRepo UserSubscriptionRepository) *GatewayService {
 	cfg := &config.Config{}
 	cfg.Default.RateMultiplier = 1.1
@@ -87,38 +47,6 @@ func newGatewayRecordUsageServiceForTest(usageRepo UsageLogRepository, userRepo 
 		nil,
 		nil, // userPlatformQuotaRepo
 	)
-}
-
-func TestPKUsageOriginalSnapshotBeforeForcedCacheBilling(t *testing.T) {
-	for _, forceCache := range []bool{false, true} {
-		usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
-		billingRepo := &openAIRecordUsageBillingRepoStub{result: &UsageBillingApplyResult{Applied: true}}
-		svc := newGatewayRecordUsageServiceWithBillingRepoForTest(usageRepo, billingRepo, nil, nil)
-		result := &ForwardResult{
-			RequestID: "pk-original-usage", Model: "claude-sonnet-4",
-			Usage: ClaudeUsage{InputTokens: 100, OutputTokens: 20, CacheCreationInputTokens: 200, CacheReadInputTokens: 700},
-		}
-		err := svc.RecordUsage(context.Background(), &RecordUsageInput{
-			Result: result, APIKey: &APIKey{ID: 2}, User: &User{ID: 1},
-			Account: &Account{ID: 3, Platform: PlatformAnthropic}, ForceCacheBilling: forceCache,
-		})
-		require.NoError(t, err)
-		log := usageRepo.lastLog
-		require.NotNil(t, log.OriginalUsage)
-		require.Equal(t, int64(100), log.OriginalUsage.InputTokens)
-		require.Equal(t, int64(20), log.OriginalUsage.OutputTokens)
-		require.Equal(t, int64(200), log.OriginalUsage.CacheCreationTokens)
-		require.Equal(t, int64(700), log.OriginalUsage.CacheReadTokens)
-		if forceCache {
-			require.Zero(t, log.InputTokens)
-			require.Equal(t, 800, log.CacheReadTokens)
-		} else {
-			require.Equal(t, 100, log.InputTokens)
-			require.Equal(t, 700, log.CacheReadTokens)
-		}
-		result.Usage.CacheReadInputTokens = 9999
-		require.Equal(t, int64(700), log.OriginalUsage.CacheReadTokens, "snapshot must not alias mutable upstream usage")
-	}
 }
 
 func newGatewayRecordUsageServiceWithBillingRepoForTest(usageRepo UsageLogRepository, billingRepo UsageBillingRepository, userRepo UserRepository, subRepo UserSubscriptionRepository) *GatewayService {

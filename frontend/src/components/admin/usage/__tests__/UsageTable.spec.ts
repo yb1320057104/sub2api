@@ -49,9 +49,6 @@ const messages: Record<string, string> = {
   'usage.serviceTierFlex': 'Flex',
   'usage.serviceTierStandard': 'Standard',
   'usage.rate': 'Rate',
-  'usage.groupBillingRate': 'Group / dedicated',
-  'usage.hiddenBillingRate': 'Hidden',
-  'usage.effectiveBillingRate': 'Effective',
   'usage.accountMultiplier': 'Account rate',
   'usage.original': 'Original',
   'usage.userBilled': 'User billed',
@@ -117,8 +114,6 @@ const DataTableStub = {
         <slot name="cell-tokens" :row="row" />
         <slot name="cell-latency" :row="row" />
         <slot name="cell-cost" :row="row" />
-        <slot name="cell-rate" :row="row" />
-        <slot name="cell-original_cost" :row="row" />
         <slot name="cell-request_id" :row="row" />
         <slot name="cell-upstream_request_id" :row="row" />
       </div>
@@ -195,37 +190,6 @@ describe('PK usage response timing', () => {
     const labels = wrapper.findAll('span').filter((node) => node.text() === '首字')
     expect(labels).toHaveLength(1)
     expect(labels[0].element.nextElementSibling?.textContent).toBe('-')
-  })
-})
-
-describe('PK hidden billing visibility', () => {
-  const mountPricing = (admin: boolean) => mount(UsageTable, {
-    props: {
-      data: [{ ...baseImageRow, total_cost: 1, original_cost: 1, actual_cost: 0.8493824, rate_multiplier: 0.4,
-        group_rate_multiplier: 0.4, hidden_rate_multiplier: 2.123456, effective_rate_multiplier: 0.8493824 }],
-      columns: [], showAccountBilling: admin,
-    },
-    global: { stubs: { DataTable: DataTableStub, EmptyState: true, Icon: true, Teleport: true } },
-  })
-
-  it('shows the applied group, hidden and effective snapshot with full precision for admins', () => {
-    const wrapper = mountPricing(true)
-    const rates = wrapper.get('[data-testid="billing-multipliers"]').text()
-    expect(rates).toContain('Group / dedicated 0.40×')
-    expect(rates).toContain('Hidden 2.123456×')
-    expect(rates).toContain('Effective 0.8493824×')
-    expect(wrapper.get('[data-testid="original-billing-cost"]').text()).toBe('$1.000000')
-    expect(wrapper.text()).toContain('$0.849382')
-    wrapper.unmount()
-  })
-
-  it('shows the settled customer cost without admin pricing columns for users', () => {
-    const wrapper = mountPricing(false)
-    expect(wrapper.find('[data-testid="billing-multipliers"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="original-billing-cost"]').exists()).toBe(false)
-    expect(wrapper.text()).toContain('$0.849382')
-    expect(wrapper.text()).not.toContain('Hidden')
-    wrapper.unmount()
   })
 })
 

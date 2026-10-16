@@ -593,7 +593,7 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 			}
 		}
 		account := selection.Account
-		setOpsSelectedBillingAccount(c, account)
+		setOpsSelectedAccount(c, account.ID, account.Platform)
 
 		// 检测账号切换：如果粘性会话绑定的账号与当前选择的账号不同，清除 thoughtSignature
 		// 注意：Gemini 原生 API 的 thoughtSignature 与具体上游账号强相关；跨账号透传会导致 400。
@@ -688,7 +688,6 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 			continue
 		}
 		account = latest
-		service.BindHiddenUsageOutput(c, account)
 		selection.Account = latest
 		// 等待路径保持既有 eager 绑定（无门时 helper 直接绑定）；调度器已抢槽
 		// 的直达路径无门时由选号内部绑定，这里只在门下补准入后绑定。

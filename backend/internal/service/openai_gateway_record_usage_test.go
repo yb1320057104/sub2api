@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -12,64 +11,6 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/stretchr/testify/require"
 )
-
-func TestPKHiddenBillingOpenAIChargeAndScopes(t *testing.T) {
-	for _, hidden := range []float64{1, 2, 0, 0.29} {
-		for _, dedicated := range []bool{false, true} {
-			for _, subscription := range []bool{false, true} {
-				t.Run(fmt.Sprintf("hidden=%g/dedicated=%t/subscription=%t", hidden, dedicated, subscription), func(t *testing.T) {
-					usageRepo := &openAIRecordUsageLogRepoStub{}
-					billingRepo := &openAIRecordUsageBillingRepoStub{result: &UsageBillingApplyResult{Applied: true}}
-					userRate := 0.4
-					rateRepo := &openAIUserGroupRateRepoStub{}
-					if dedicated {
-						rateRepo.rate = &userRate
-					}
-					svc := newOpenAIRecordUsageServiceWithBillingRepoForTest(usageRepo, billingRepo, &openAIRecordUsageUserRepoStub{}, &openAIRecordUsageSubRepoStub{}, rateRepo)
-					group := &Group{ID: 7, RateMultiplier: 1.5, Platform: PlatformOpenAI}
-					var sub *UserSubscription
-					if subscription {
-						group.SubscriptionType = SubscriptionTypeSubscription
-						sub = &UserSubscription{ID: 8}
-					}
-					accountRate := 3.0
-					account := &Account{ID: 3, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, RateMultiplier: &accountRate, Extra: map[string]any{AccountExtraHiddenRateMultiplier: hidden, "quota_limit": 100.0}}
-					usage := OpenAIUsage{InputTokens: 1200, OutputTokens: 300, CacheReadInputTokens: 200}
-					err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
-						Result: &OpenAIForwardResult{RequestID: "pk-hidden", Model: "gpt-5.1", Usage: usage},
-						APIKey: &APIKey{ID: 2, GroupID: &group.ID, Group: group, Quota: 100, RateLimit5h: 100},
-						User:   &User{ID: 1}, Account: account, Subscription: sub, APIKeyService: &openAIRecordUsageAPIKeyQuotaStub{},
-					})
-					require.NoError(t, err)
-					rate := group.RateMultiplier
-					if dedicated {
-						rate = userRate
-					}
-					baseline := expectedOpenAICost(t, svc, "gpt-5.1", usage, rate)
-					want := QuantizeUsageBillingAmount(baseline.ActualCost * hidden)
-					log := usageRepo.lastLog
-					require.NotNil(t, log)
-					require.InDelta(t, baseline.TotalCost, log.TotalCost, 1e-12)
-					require.InDelta(t, want, log.ActualCost, 1e-12)
-					require.Equal(t, rate, log.RateMultiplier)
-					require.Equal(t, hidden, log.HiddenBillingMultiplier())
-					cmd := billingRepo.lastCmd
-					require.NotNil(t, cmd)
-					if subscription {
-						require.Equal(t, want, cmd.SubscriptionCost)
-						require.Zero(t, cmd.BalanceCost)
-					} else {
-						require.Equal(t, want, cmd.BalanceCost)
-						require.Zero(t, cmd.SubscriptionCost)
-					}
-					require.Equal(t, want, cmd.APIKeyQuotaCost)
-					require.Equal(t, want, cmd.APIKeyRateLimitCost)
-					require.Equal(t, QuantizeUsageBillingAmount(baseline.TotalCost*accountRate), cmd.AccountQuotaCost)
-				})
-			}
-		}
-	}
-}
 
 type openAIRecordUsageLogRepoStub struct {
 	UsageLogRepository

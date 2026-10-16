@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-
-	"github.com/Wei-Shaw/sub2api/internal/pkg/usagestats"
 )
 
 const (
@@ -153,9 +151,6 @@ type UsageLog struct {
 	OutputTokens        int
 	CacheCreationTokens int
 	CacheReadTokens     int
-	// OriginalUsage is a separate immutable snapshot for trend charts. Nil means
-	// no original evidence; per-request DTOs continue exposing billing counters.
-	OriginalUsage *usagestats.OriginalTokenUsage `json:"-"`
 
 	CacheCreation5mTokens int `gorm:"column:cache_creation_5m_tokens"`
 	CacheCreation1hTokens int `gorm:"column:cache_creation_1h_tokens"`
@@ -173,9 +168,6 @@ type UsageLog struct {
 	ActualCost                float64
 	RateMultiplier            float64
 	LongContextBillingApplied bool
-	// HiddenRateMultiplier is the PK customer-price snapshot; nil means legacy 1.
-	// RateMultiplier remains the effective group/user rate before this factor.
-	HiddenRateMultiplier *float64
 	// AccountRateMultiplier 账号计费倍率快照（nil 表示历史数据，按 1.0 处理）
 	AccountRateMultiplier *float64
 	// AccountStatsCost 账号统计定价预计算费用（nil = 使用默认公式 total_cost × account_rate_multiplier）

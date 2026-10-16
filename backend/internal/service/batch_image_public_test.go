@@ -45,62 +45,6 @@ func TestBatchImagePublicService_SelectAccountPriority(t *testing.T) {
 	}
 }
 
-func TestPKHiddenBillingBatchHoldsAndSettlementUseFrozenPrice(t *testing.T) {
-	for _, hidden := range []float64{1, 2, 0, 0.29} {
-		svc, repo, _, _, _ := newTestBatchImagePublicService(true)
-		accountRepo := svc.AccountRepo.(*publicBatchImageAccountRepo)
-		accountRate := 1.25
-		accountRepo.accounts[0].RateMultiplier = &accountRate
-		accountRepo.accounts[0].Extra = map[string]any{AccountExtraHiddenRateMultiplier: hidden}
-		groupID, userRate := int64(7), 0.5
-		svc.GroupRepo = &publicBatchImageGroupRepo{groups: map[int64]*Group{groupID: {
-			ID: groupID, Platform: PlatformGemini, RateMultiplier: 2, AllowBatchImageGeneration: true,
-			BatchImageDiscountMultiplier: 0.8, BatchImageHoldMultiplier: 0.9,
-		}}}
-		svc.UserGroupRateRepo = &publicBatchImageUserGroupRateRepo{rates: map[int64]*float64{groupID: &userRate}}
-		owner := BatchImageOwner{UserID: 11, APIKeyID: 22, GroupID: &groupID}
-		ctx := context.Background()
-		got, err := svc.Submit(ctx, owner, validBatchImageSubmitRequest(), "pk-hidden-idempotent")
-		require.NoError(t, err)
-		job := repo.jobs[got.ID]
-		require.Equal(t, &hidden, job.HiddenRateMultiplier)
-		require.InDelta(t, 0.125*hidden, job.BillableUnitPrice, 1e-10)
-		require.InDelta(t, 0.25*hidden, job.EstimatedCost, 1e-8)
-		billing := svc.BillingRepo.(*fakeBatchImageBillingRepo)
-		if hidden == 0 {
-			require.Empty(t, billing.reserves, "free requests do not hold a balance")
-		} else {
-			require.Len(t, billing.reserves, 1)
-			require.InDelta(t, 0.28125*hidden, billing.reserves[0].HoldAmount, 1e-8)
-		}
-		reserveCount := len(billing.reserves)
-		accountRepo.accounts[0].Extra[AccountExtraHiddenRateMultiplier] = 9.0
-		retried, err := svc.Submit(ctx, owner, validBatchImageSubmitRequest(), "pk-hidden-idempotent")
-		require.NoError(t, err)
-		require.Equal(t, got.ID, retried.ID)
-		require.Len(t, billing.reserves, reserveCount, "submit retry must not create a second hold")
-		job.Status, job.SuccessCount, job.FailCount = BatchImageJobStatusSettling, 1, 1
-		usage := &openAIRecordUsageLogRepoStub{}
-		settlement := &BatchImageSettlementService{Repo: repo, BillingRepo: billing, UsageLogRepo: usage, Pricing: &fakeBatchImagePricingResolver{unitPrice: 99}}
-		result, err := settlement.Settle(ctx, got.ID)
-		require.NoError(t, err)
-		want := QuantizeUsageBillingAmount(0.125 * hidden)
-		require.Equal(t, want, result.ActualCost)
-		require.Len(t, billing.captures, 1)
-		require.Equal(t, want, billing.captures[0].ActualAmount)
-		require.Equal(t, want, usage.lastLog.ActualCost)
-		require.Equal(t, hidden, usage.lastLog.HiddenBillingMultiplier())
-		require.Equal(t, 0.4, usage.lastLog.RateMultiplier)
-		require.Equal(t, 0.3125, usage.lastLog.TotalCost)
-		require.NotNil(t, usage.lastLog.AccountStatsCost)
-		require.Equal(t, 0.125, *usage.lastLog.AccountStatsCost, "hidden prices do not inflate upstream statistics")
-		result, err = settlement.Settle(ctx, got.ID)
-		require.NoError(t, err)
-		require.True(t, result.AlreadySettled)
-		require.Len(t, billing.captures, 1)
-	}
-}
-
 func TestBatchImagePublicService_Submit(t *testing.T) {
 	ctx := context.Background()
 

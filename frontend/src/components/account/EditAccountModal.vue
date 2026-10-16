@@ -1845,7 +1845,6 @@
           </div>
         </div>
       </div>
-      <HiddenBillingMultiplierField v-model="hiddenRateMultiplier" />
       <div class="border-t border-gray-200 pt-4 dark:border-dark-600">
         <label class="input-label">{{ t('admin.accounts.expiresAt') }}</label>
         <input v-model="expiresAtInput" type="datetime-local" class="input" />
@@ -3289,8 +3288,6 @@
 </template>
 
 <script setup lang="ts">
-import HiddenBillingMultiplierField from './HiddenBillingMultiplierField.vue'
-import { hiddenBillingMultiplierFromExtra, isHiddenBillingMultiplierValid, withHiddenBillingExtra } from '@/utils/hiddenBilling'
 import { ref, reactive, computed, watch, nextTick, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'
@@ -3552,7 +3549,6 @@ interface TempUnschedRuleForm {
 
 // State
 const submitting = ref(false)
-const hiddenRateMultiplier = ref<number | string>(1)
 const editBaseUrl = ref('https://api.anthropic.com')
 const editApiKey = ref('')
 
@@ -4373,7 +4369,6 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   form.load_factor = newAccount.load_factor ?? null
   form.priority = newAccount.priority
   form.rate_multiplier = newAccount.rate_multiplier ?? 1
-  hiddenRateMultiplier.value = hiddenBillingMultiplierFromExtra(newAccount.extra)
   form.status = (newAccount.status === 'active' || newAccount.status === 'inactive' || newAccount.status === 'error')
     ? newAccount.status
     : 'active'
@@ -5409,11 +5404,6 @@ const handleSubmit = async () => {
   if (!props.account) return
   const accountID = props.account.id
 
-  if (!isHiddenBillingMultiplierValid(hiddenRateMultiplier.value)) {
-    appStore.showError(t('admin.accounts.hiddenRateMultiplierInvalid'))
-    return
-  }
-
   if (props.account.platform === 'openai' && cacheConversionEnabled.value && !cacheConversionMultiplierValid.value) {
     appStore.showError(t('admin.accounts.openai.cacheConversionMultiplierInvalid'))
     return
@@ -6172,9 +6162,6 @@ const handleSubmit = async () => {
         cache_conversion_multiplier: cacheConversionMultiplierValid.value ? cacheConversionMultiplier.value : 1
       }
     }
-
-    const billingExtra = (updatePayload.extra as Record<string, unknown> | undefined) ?? props.account.extra
-    updatePayload.extra = withHiddenBillingExtra(billingExtra, hiddenRateMultiplier.value)
 
     // 上游ID头名只在改动时写回 extra，避免用弹窗打开时的快照覆盖运行态键。
     const nextUpstreamRequestIdHeader = upstreamRequestIdHeader.value.trim()

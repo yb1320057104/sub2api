@@ -11,10 +11,8 @@ import (
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/cacheconversion"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/usageoutput"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
-	"github.com/tidwall/gjson"
 )
 
 func TestRequiresBillableGrokChatUsage(t *testing.T) {
@@ -223,15 +221,6 @@ func (c *pkCacheConversionInflightCache) UpdateAPIKeyRateLimitUsage(_ context.Co
 }
 
 func TestPKCacheConversionInflightBillingPreservesOriginalContext(t *testing.T) {
-	pkCacheConversionInflightBilling(t, 1)
-}
-
-func TestPKHiddenBillingCacheConversionAndLongContext(t *testing.T) {
-	pkCacheConversionInflightBilling(t, 2)
-}
-
-func pkCacheConversionInflightBilling(t *testing.T, hidden float64) {
-	t.Helper()
 	const (
 		model             = "gpt-6.1-sol"
 		startingBalance   = 100.0
@@ -278,7 +267,6 @@ func pkCacheConversionInflightBilling(t *testing.T, hidden float64) {
 					apiKey := &APIKey{ID: 2, User: user, Quota: 100, RateLimit5h: 100}
 					accountMultiplier := accountRate
 					account := &Account{ID: 3, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, RateMultiplier: &accountMultiplier, Extra: map[string]any{
-						AccountExtraHiddenRateMultiplier:      hidden,
 						AccountExtraCacheConversionEnabled:    true,
 						AccountExtraCacheConversionMultiplier: conversion.multiplier,
 						openAILongContextBillingEnabledKey:    true,
@@ -334,19 +322,11 @@ func pkCacheConversionInflightBilling(t *testing.T, hidden float64) {
 					wantOutputCost := outputTokens * 10e-6 * tier.outputMultiplier
 					wantTotalCost := wantInputCost + wantReadCost + wantOutputCost
 					wantActualCost := wantTotalCost * customerRate
-					if hidden != 1 {
-						wantActualCost = QuantizeUsageBillingAmount(wantActualCost * hidden)
-					}
 					require.Equal(t, raw, result.Usage, "downstream conversion must not overwrite upstream billing evidence")
 					require.Equal(t, 1, usageRepo.calls)
 					log := usageRepo.lastLog
 					require.NotNil(t, log)
 					require.Equal(t, ordinaryInput, log.InputTokens)
-					require.NotNil(t, log.OriginalUsage)
-					require.Equal(t, int64(ordinaryInput), log.OriginalUsage.InputTokens)
-					require.Equal(t, int64(originalCacheRead), log.OriginalUsage.CacheReadTokens)
-					require.Equal(t, int64(cacheCreation), log.OriginalUsage.CacheCreationTokens)
-					require.Equal(t, int64(outputTokens), log.OriginalUsage.OutputTokens)
 					require.Equal(t, conversion.wantRead, log.CacheReadTokens)
 					require.Zero(t, log.CacheCreationTokens)
 					require.Zero(t, log.CacheCreationCost)
@@ -410,256 +390,4 @@ func TestPKKiloBridgeSettings(t *testing.T) {
 		require.Error(t, ValidateKiloBridgeExtra(PlatformAnthropic, extra))
 		require.False(t, (&Account{Platform: PlatformAnthropic, Extra: extra}).IsKiloBridgeEnabled())
 	}
-}
-
-func TestPKHiddenBillingOutputMultipliers(t *testing.T) {
-	t.Parallel()
-	const source = `{ "usage": {"input_tokens":100,"output_tokens":7,"total_tokens":107,"input_tokens_details":{"cached_tokens":0}}, "id":107 }`
-	for _, tc := range []struct {
-		name       string
-		multiplier float64
-		input      int64
-		output     int64
-		total      int64
-	}{
-		{name: "zero", multiplier: 0, input: 0, output: 0, total: 0},
-		{name: "one", multiplier: 1, input: 100, output: 7, total: 107},
-		{name: "two", multiplier: 2, input: 200, output: 14, total: 214},
-		{name: "half", multiplier: 0.5, input: 50, output: 3, total: 53},
-		{name: "decimal floor", multiplier: 0.29, input: 29, output: 2, total: 31},
-		{name: "six decimals", multiplier: 0.000001, input: 0, output: 0, total: 0},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			original := []byte(source)
-			out, err := usageoutput.ScaleJSON(original, tc.multiplier, usageoutput.Options{Protocol: usageoutput.OpenAI})
-			require.NoError(t, err)
-			require.Equal(t, source, string(original))
-			require.Equal(t, tc.input, gjson.GetBytes(out, "usage.input_tokens").Int())
-			require.Equal(t, tc.output, gjson.GetBytes(out, "usage.output_tokens").Int())
-			require.Equal(t, tc.total, gjson.GetBytes(out, "usage.total_tokens").Int())
-			require.True(t, gjson.GetBytes(out, "usage.input_tokens_details.cached_tokens").Exists())
-			require.Zero(t, gjson.GetBytes(out, "usage.input_tokens_details.cached_tokens").Int())
-			require.Equal(t, int64(107), gjson.GetBytes(out, "id").Int())
-			if tc.multiplier == 1 {
-				require.Equal(t, source, string(out), "default must preserve exact wire bytes")
-			} else {
-				out[0] = '['
-				require.Equal(t, source, string(original), "rewritten output must own its buffer")
-			}
-		})
-	}
-}
-
-func TestPKHiddenBillingOutputProtocols(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		name     string
-		protocol usageoutput.Protocol
-		body     string
-		want     string
-	}{
-		{
-			name:     "OpenAI aliases reasoning and residual",
-			protocol: usageoutput.OpenAI,
-			body:     `{"usage":{"input_tokens":23,"prompt_tokens":23,"output_tokens":13,"completion_tokens":13,"total_tokens":39,"cache_creation_input_tokens":5,"cache_read_input_tokens":7,"input_tokens_details":{"cached_tokens":7,"cache_write_tokens":5,"text_tokens":11,"audio_tokens":3,"image_tokens":9},"output_tokens_details":{"reasoning_tokens":7,"text_tokens":5,"audio_tokens":1,"accepted_prediction_tokens":3,"rejected_prediction_tokens":1},"cost":0.9,"duration":12,"provider_extension":{"tokens":99}}}`,
-			want:     `{"usage":{"input_tokens":11,"prompt_tokens":11,"output_tokens":6,"completion_tokens":6,"total_tokens":18,"cache_creation_input_tokens":2,"cache_read_input_tokens":3,"input_tokens_details":{"cached_tokens":3,"cache_write_tokens":2,"text_tokens":5,"audio_tokens":1,"image_tokens":4},"output_tokens_details":{"reasoning_tokens":3,"text_tokens":2,"audio_tokens":0,"accepted_prediction_tokens":1,"rejected_prediction_tokens":0},"cost":0.9,"duration":12,"provider_extension":{"tokens":99}}}`,
-		},
-		{
-			name:     "Anthropic cache buckets and detail aliases",
-			protocol: usageoutput.Anthropic,
-			body:     `{"message":{"usage":{"input_tokens":11,"output_tokens":13,"total_tokens":39,"cache_creation_input_tokens":5,"cache_read_input_tokens":7,"cache_creation":{"ephemeral_5m_input_tokens":2,"ephemeral_1h_input_tokens":3},"cache_creation_5m_tokens":2,"cache_creation_1h_tokens":3,"server_tool_use":{"web_search_requests":7}}}}`,
-			want:     `{"message":{"usage":{"input_tokens":5,"output_tokens":6,"total_tokens":17,"cache_creation_input_tokens":2,"cache_read_input_tokens":3,"cache_creation":{"ephemeral_5m_input_tokens":1,"ephemeral_1h_input_tokens":1},"cache_creation_5m_tokens":1,"cache_creation_1h_tokens":1,"server_tool_use":{"web_search_requests":7}}}}`,
-		},
-		{
-			name:     "Gemini modality arrays cache subset and residual",
-			protocol: usageoutput.Gemini,
-			body:     `{"response":{"usageMetadata":{"promptTokenCount":11,"candidatesTokenCount":7,"cachedContentTokenCount":9,"thoughtsTokenCount":3,"toolUsePromptTokenCount":5,"totalTokenCount":29,"promptTokensDetails":[{"modality":"TEXT","tokenCount":5},{"modality":"AUDIO","tokenCount":6}],"candidatesTokensDetails":[{"modality":"TEXT","tokenCount":3},{"modality":"IMAGE","tokenCount":4}],"cacheTokensDetails":[{"modality":"TEXT","tokenCount":9}],"toolUsePromptTokensDetails":[{"modality":"TEXT","tokenCount":5}],"trafficType":"ON_DEMAND"}}}`,
-			want:     `{"response":{"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":3,"cachedContentTokenCount":4,"thoughtsTokenCount":1,"toolUsePromptTokenCount":2,"totalTokenCount":12,"promptTokensDetails":[{"modality":"TEXT","tokenCount":2},{"modality":"AUDIO","tokenCount":3}],"candidatesTokensDetails":[{"modality":"TEXT","tokenCount":1},{"modality":"IMAGE","tokenCount":2}],"cacheTokensDetails":[{"modality":"TEXT","tokenCount":4}],"toolUsePromptTokensDetails":[{"modality":"TEXT","tokenCount":2}],"trafficType":"ON_DEMAND"}}}`,
-		},
-		{
-			name:     "Realtime singular detail containers",
-			protocol: usageoutput.OpenAI,
-			body:     `{"response":{"usage":{"input_tokens":11,"output_tokens":3,"total_tokens":14,"input_token_details":{"cached_tokens":7,"text_tokens":9,"audio_tokens":1,"image_tokens":1,"cached_tokens_details":{"text_tokens":3,"audio_tokens":3,"image_tokens":1,"duration":3}},"output_token_details":{"text_tokens":1,"audio_tokens":2}}}}`,
-			want:     `{"response":{"usage":{"input_tokens":5,"output_tokens":1,"total_tokens":6,"input_token_details":{"cached_tokens":3,"text_tokens":4,"audio_tokens":0,"image_tokens":0,"cached_tokens_details":{"text_tokens":1,"audio_tokens":1,"image_tokens":0,"duration":3}},"output_token_details":{"text_tokens":0,"audio_tokens":1}}}}`,
-		},
-		{
-			name:     "OpenAI image wire counters remain token subsets",
-			protocol: usageoutput.OpenAI,
-			body:     `{"usage":{"input_tokens":11,"output_tokens":7,"total_tokens":18,"image_input_tokens":5,"image_cache_read_tokens":3,"image_output_tokens":7,"images":1,"max_tokens":20}}`,
-			want:     `{"usage":{"input_tokens":5,"output_tokens":3,"total_tokens":8,"image_input_tokens":2,"image_cache_read_tokens":1,"image_output_tokens":3,"images":1,"max_tokens":20}}`,
-		},
-		{
-			name:     "Anthropic compatible hit and miss aliases",
-			protocol: usageoutput.Anthropic,
-			body:     `{"usage":{"input_tokens":5,"output_tokens":7,"cache_read_input_tokens":9,"prompt_tokens":14,"prompt_cache_hit_tokens":9,"prompt_cache_miss_tokens":5,"image_output_tokens":3}}`,
-			want:     `{"usage":{"input_tokens":2,"output_tokens":3,"cache_read_input_tokens":4,"prompt_tokens":7,"prompt_cache_hit_tokens":4,"prompt_cache_miss_tokens":2,"image_output_tokens":1}}`,
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			body := []byte(tc.body)
-			out, err := usageoutput.ScaleJSON(body, 0.5, usageoutput.Options{Protocol: tc.protocol})
-			require.NoError(t, err)
-			require.JSONEq(t, tc.want, string(out))
-			require.Equal(t, tc.body, string(body))
-		})
-	}
-}
-
-func TestPKHiddenBillingOutputPreservesPayloadBoundaries(t *testing.T) {
-	t.Parallel()
-	const body = `{ "usage":{"input_tokens":5,"output_tokens":3,"total_tokens":8}, "text":"usage input_tokens=17", "output":[{"usage":{"input_tokens":17}},{"type":"function_call","arguments":{"usage":{"input_tokens":19}}}], "tools":[{"parameters":{"usage":{"input_tokens":23}}}], "provider_extension":{"usage":{"input_tokens":29}}, "created_at":31, "calls":37, "cost":41, "duration":43 }`
-	const want = `{ "usage":{"input_tokens":10,"output_tokens":6,"total_tokens":16}, "text":"usage input_tokens=17", "output":[{"usage":{"input_tokens":17}},{"type":"function_call","arguments":{"usage":{"input_tokens":19}}}], "tools":[{"parameters":{"usage":{"input_tokens":23}}}], "provider_extension":{"usage":{"input_tokens":29}}, "created_at":31, "calls":37, "cost":41, "duration":43 }`
-	out, err := usageoutput.ScaleJSON([]byte(body), 2, usageoutput.Options{Protocol: usageoutput.OpenAI})
-	require.NoError(t, err)
-	require.Equal(t, want, string(out), "only recognized counts may change, including whitespace outside those counts")
-	require.False(t, gjson.GetBytes(out, "hidden_rate_multiplier").Exists())
-	require.False(t, gjson.GetBytes(out, "usage.hidden_rate_multiplier").Exists())
-
-	for _, unchanged := range []string{
-		`{"output":[{"usage":{"input_tokens":5}}],"tools":[{"parameters":{"usage":{"input_tokens":7}}}]}`,
-		`{"usage":{"server_tool_use":{"web_search_requests":3},"cost":1.2},"extension":1e1000000}`,
-		`{"input_tokens":5,"output_tokens":3,"total_tokens":8}`,
-		`{"usage":null,"id":"partial"}`,
-		` [DONE] `,
-		"\n\t",
-	} {
-		out, err = usageoutput.ScaleJSON([]byte(unchanged), 2, usageoutput.Options{Protocol: usageoutput.OpenAI})
-		require.NoError(t, err)
-		require.Equal(t, unchanged, string(out))
-	}
-}
-
-func TestPKHiddenBillingOutputEnvelopesAndPartialUsage(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		body string
-		want string
-	}{
-		{`{"usage":{"output_tokens":3}}`, `{"usage":{"output_tokens":1}}`},
-		{`{"usage":{"input_tokens":0,"prompt_tokens":5,"output_tokens":0,"completion_tokens":3,"total_tokens":8}}`, `{"usage":{"input_tokens":0,"prompt_tokens":2,"output_tokens":0,"completion_tokens":1,"total_tokens":4}}`},
-		{`{"data":{"response":{"usage":{"prompt_tokens":5,"completion_tokens":3,"total_tokens":8}}}}`, `{"data":{"response":{"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}}}`},
-		{`{"data":{"message":{"usage":{"output_tokens":3}}}}`, `{"data":{"message":{"usage":{"output_tokens":1}}}}`},
-		{`{"usage":{"input_tokens":null,"output_tokens":3,"total_tokens":9,"input_tokens_details":{"cached_tokens":null},"output_tokens_details":null}}`, `{"usage":{"input_tokens":null,"output_tokens":1,"total_tokens":4,"input_tokens_details":{"cached_tokens":null},"output_tokens_details":null}}`},
-		{`{"usage":{"input_tokens":5,"output_tokens":null,"total_tokens":null}}`, `{"usage":{"input_tokens":2,"output_tokens":null,"total_tokens":null}}`},
-		{`[{"usage":{"input_tokens":5,"output_tokens":3,"total_tokens":8}},{"data":{"usage":{"output_tokens":5}}},{"output":[{"usage":{"input_tokens":7}}]}]`, `[{"usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3}},{"data":{"usage":{"output_tokens":2}}},{"output":[{"usage":{"input_tokens":7}}]}]`},
-	} {
-		out, err := usageoutput.ScaleJSON([]byte(tc.body), 0.5, usageoutput.Options{Protocol: usageoutput.OpenAI})
-		require.NoError(t, err)
-		require.JSONEq(t, tc.want, string(out))
-	}
-	const snake = `{"data":{"usage_metadata":{"prompt_token_count":5,"candidates_token_count":3,"thoughts_token_count":1,"cached_content_token_count":3,"total_token_count":9,"prompt_tokens_details":[{"modality":"TEXT","token_count":5}]}}}`
-	out, err := usageoutput.ScaleJSON([]byte(snake), 2, usageoutput.Options{Protocol: usageoutput.Gemini})
-	require.NoError(t, err)
-	require.JSONEq(t, `{"data":{"usage_metadata":{"prompt_token_count":10,"candidates_token_count":6,"thoughts_token_count":2,"cached_content_token_count":6,"total_token_count":18,"prompt_tokens_details":[{"modality":"TEXT","token_count":10}]}}}`, string(out))
-	const unknown = `{"usageMetadata":{"promptTokenCount":null,"candidatesTokenCount":3,"thoughtsTokenCount":null,"totalTokenCount":15,"promptTokensDetails":[{"modality":"TEXT","tokenCount":null}]}}`
-	out, err = usageoutput.ScaleJSON([]byte(unknown), 0.5, usageoutput.Options{Protocol: usageoutput.Gemini})
-	require.NoError(t, err)
-	require.JSONEq(t, `{"usageMetadata":{"promptTokenCount":null,"candidatesTokenCount":1,"thoughtsTokenCount":null,"totalTokenCount":7,"promptTokensDetails":[{"modality":"TEXT","tokenCount":null}]}}`, string(out))
-	out, err = usageoutput.ScaleJSON([]byte(`{"usage":{"input_tokens":null,"output_tokens":3}}`), 0, usageoutput.Options{Protocol: usageoutput.Anthropic})
-	require.NoError(t, err)
-	require.JSONEq(t, `{"usage":{"input_tokens":null,"output_tokens":0}}`, string(out))
-}
-
-func TestPKHiddenBillingOutputBareCountsAndImageUsage(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		body     string
-		want     string
-		protocol usageoutput.Protocol
-	}{
-		{`{"input_tokens":5}`, `{"input_tokens":2}`, usageoutput.Anthropic},
-		{`{"totalTokens":5}`, `{"totalTokens":2}`, usageoutput.Gemini},
-		{`{"total_tokens":5}`, `{"total_tokens":2}`, usageoutput.OpenAI},
-	} {
-		out, err := usageoutput.ScaleJSON([]byte(tc.body), 0.5, usageoutput.Options{Protocol: tc.protocol})
-		require.NoError(t, err)
-		require.Equal(t, tc.body, string(out))
-		out, err = usageoutput.ScaleJSON([]byte(tc.body), 0.5, usageoutput.Options{Protocol: tc.protocol, AllowBare: true})
-		require.NoError(t, err)
-		require.JSONEq(t, tc.want, string(out))
-	}
-	const body = `{"response":{"tool_usage":{"image_gen":{"images":1,"input_tokens":5,"output_tokens":3,"total_tokens":8,"usage":{"input_tokens":7,"output_tokens":5,"total_tokens":12,"input_tokens_details":{"text_tokens":3,"image_tokens":4}}}},"output":[{"type":"image_generation_call","result":"unchanged","usage":{"input_tokens":99}}]}}`
-	out, err := usageoutput.ScaleJSON([]byte(body), 0.5, usageoutput.Options{Protocol: usageoutput.OpenAI})
-	require.NoError(t, err)
-	require.JSONEq(t, `{"response":{"tool_usage":{"image_gen":{"images":1,"input_tokens":2,"output_tokens":1,"total_tokens":3,"usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5,"input_tokens_details":{"text_tokens":1,"image_tokens":2}}}},"output":[{"type":"image_generation_call","result":"unchanged","usage":{"input_tokens":99}}]}}`, string(out))
-}
-
-func TestPKHiddenBillingOutputTotalsRespectOriginalRelationships(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		name     string
-		protocol usageoutput.Protocol
-		body     string
-		total    int64
-	}{
-		{"OpenAI reasoning included", usageoutput.OpenAI, `{"usage":{"input_tokens":5,"output_tokens":3,"total_tokens":8,"output_tokens_details":{"reasoning_tokens":3}}}`, 3},
-		{"OpenAI small nonstandard total", usageoutput.OpenAI, `{"usage":{"input_tokens":7,"output_tokens":5,"total_tokens":3}}`, 1},
-		{"Anthropic total excludes cache", usageoutput.Anthropic, `{"usage":{"input_tokens":5,"output_tokens":3,"cache_creation_input_tokens":11,"cache_read_input_tokens":13,"total_tokens":8}}`, 3},
-		{"Anthropic only creation details", usageoutput.Anthropic, `{"usage":{"input_tokens":5,"output_tokens":3,"cache_creation":{"ephemeral_5m_input_tokens":3,"ephemeral_1h_input_tokens":3},"total_tokens":14}}`, 5},
-		{"Gemini thoughts are candidate subset", usageoutput.Gemini, `{"usage":{"promptTokenCount":5,"candidatesTokenCount":3,"thoughtsTokenCount":1,"cachedContentTokenCount":3,"totalTokenCount":8}}`, 3},
-		{"Gemini tool prompt included separately", usageoutput.Gemini, `{"usage":{"promptTokenCount":5,"candidatesTokenCount":3,"thoughtsTokenCount":1,"toolUsePromptTokenCount":3,"totalTokenCount":11}}`, 4},
-		{"Gemini residual still counted", usageoutput.Gemini, `{"usage":{"promptTokenCount":5,"candidatesTokenCount":3,"thoughtsTokenCount":3,"totalTokenCount":14}}`, 5},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			out, err := usageoutput.ScaleJSON([]byte(tc.body), 0.5, usageoutput.Options{Protocol: tc.protocol})
-			require.NoError(t, err)
-			path := "usage.total_tokens"
-			if tc.protocol == usageoutput.Gemini {
-				path = "usage.totalTokenCount"
-			}
-			require.Equal(t, tc.total, gjson.GetBytes(out, path).Int())
-		})
-	}
-}
-
-func TestPKHiddenBillingOutputRejectsInvalidAndOverflow(t *testing.T) {
-	t.Parallel()
-	for _, multiplier := range []float64{-1, 1000.000001, math.NaN(), math.Inf(1), math.Inf(-1), 0.0000001} {
-		out, err := usageoutput.ScaleJSON([]byte(`{"usage":{"input_tokens":1}}`), multiplier, usageoutput.Options{Protocol: usageoutput.OpenAI})
-		require.Error(t, err)
-		require.Nil(t, out)
-	}
-	for _, body := range []string{
-		`{"usage":{"input_tokens":-1}}`,
-		`{"usage":{"input_tokens":1.5}}`,
-		`{"usage":{"input_tokens":"12"}}`,
-		`{"usage":{"input_tokens":true}}`,
-		`{"usage":{"input_tokens":9223372036854775807}}`,
-		`{"usage":{"input_tokens":9223372036854775808}}`,
-		`{"usage":{"input_tokens":1e1000000}}`,
-		`{"usage":{"input_tokens":1e-1000000}}`,
-		`{"usage":{"input_tokens":1,"output_tokens_details":{"reasoning_tokens":-1}}}`,
-		`{"usage":`,
-	} {
-		original := []byte(body)
-		out, err := usageoutput.ScaleJSON(original, 2, usageoutput.Options{Protocol: usageoutput.OpenAI})
-		require.Error(t, err, body)
-		require.Nil(t, out, "invalid tokens must not leak an original/partially scaled payload")
-		require.Equal(t, body, string(original))
-	}
-	out, err := usageoutput.ScaleJSON([]byte(`{"usage":{"input_tokens":4611686018427387903}}`), 2, usageoutput.Options{Protocol: usageoutput.OpenAI})
-	require.NoError(t, err)
-	require.Equal(t, int64(9223372036854775806), gjson.GetBytes(out, "usage.input_tokens").Int())
-	out, err = usageoutput.ScaleJSON([]byte(`{"usageMetadata":{"promptTokensDetails":[{"tokenCount":-1}]}}`), 2, usageoutput.Options{Protocol: usageoutput.Gemini})
-	require.Error(t, err)
-	require.Nil(t, out)
-}
-
-func TestPKHiddenBillingOutputAfterCacheConversion(t *testing.T) {
-	t.Parallel()
-	const source = `{"usage":{"input_tokens":23,"output_tokens":13,"total_tokens":36,"cache_creation_input_tokens":5,"input_tokens_details":{"cached_tokens":7,"cache_write_tokens":5}}}`
-	original := []byte(source)
-	converted, err := cacheconversion.RewriteJSON(original, cacheconversion.Config{Enabled: true, Multiplier: 0.5}, cacheconversion.OpenAI)
-	require.NoError(t, err)
-	require.Equal(t, int64(20), gjson.GetBytes(converted, "usage.input_tokens").Int())
-	require.Equal(t, int64(9), gjson.GetBytes(converted, "usage.input_tokens_details.cached_tokens").Int())
-	convertedSnapshot := string(converted)
-	out, err := usageoutput.ScaleJSON(converted, 2, usageoutput.Options{Protocol: usageoutput.OpenAI})
-	require.NoError(t, err)
-	require.JSONEq(t, `{"usage":{"input_tokens":40,"output_tokens":26,"total_tokens":66,"cache_creation_input_tokens":0,"input_tokens_details":{"cached_tokens":18,"cache_write_tokens":0}}}`, string(out))
-	require.Equal(t, source, string(original))
-	require.Equal(t, convertedSnapshot, string(converted), "billing still observes only the original cache conversion")
 }

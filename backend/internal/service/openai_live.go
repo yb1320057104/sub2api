@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/usageoutput"
 	coderws "github.com/coder/websocket"
 	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
@@ -45,13 +44,6 @@ type liveFrameConn interface {
 	ReadFrame(ctx context.Context) (coderws.MessageType, []byte, error)
 	WriteFrame(ctx context.Context, msgType coderws.MessageType, payload []byte) error
 	Close() error
-}
-
-// Keep raw reads and client-to-upstream writes unchanged. Only the final
-// downstream writer uses this connection-time account snapshot.
-type liveSidebandAccountConn struct {
-	liveFrameConn
-	hiddenRateMultiplier float64
 }
 
 func liveSidebandReadError(err error) error {
@@ -454,7 +446,6 @@ func (s *OpenAIGatewayService) dialLiveSideband(ctx context.Context, record *Liv
 	if account == nil || !account.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityLive) {
 		return nil, ErrLiveUnavailable
 	}
-	hiddenMultiplier := account.HiddenBillingMultiplier()
 	headers, err := s.liveSidebandHeaders(ctx, account, record)
 	if err != nil {
 		return nil, err
@@ -469,7 +460,7 @@ func (s *OpenAIGatewayService) dialLiveSideband(ctx context.Context, record *Liv
 		_ = conn.Close()
 		return nil, errors.New("live sideband transport does not support raw frames")
 	}
-	return &liveSidebandAccountConn{liveFrameConn: raw, hiddenRateMultiplier: hiddenMultiplier}, nil
+	return raw, nil
 }
 
 func (s *OpenAIGatewayService) GetLiveCallForIdentity(
@@ -529,10 +520,6 @@ func (s *OpenAIGatewayService) ProxyLiveSideband(
 	}
 	defer func() { _ = upstream.Close() }()
 	downstream.SetReadLimit(openAIWSMessageReadLimitBytes)
-	hiddenMultiplier := 1.0
-	if snapshot, ok := upstream.(*liveSidebandAccountConn); ok {
-		hiddenMultiplier = snapshot.hiddenRateMultiplier
-	}
 
 	proxyCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -557,17 +544,7 @@ func (s *OpenAIGatewayService) ProxyLiveSideband(
 				errCh <- liveSidebandReadError(readErr)
 				return
 			}
-			clientPayload := payload
-			if messageType == coderws.MessageText || (messageType == coderws.MessageBinary && gjson.ValidBytes(payload)) {
-				var rewriteErr error
-				clientPayload, rewriteErr = usageoutput.ScaleJSON(payload, hiddenMultiplier, usageoutput.Options{Protocol: usageoutput.OpenAI})
-				if rewriteErr != nil {
-					logOpenAIWSModeDebug("downstream_usage_rewrite_failed transport=live_sideband err=%v", rewriteErr)
-					errCh <- errors.New("live sideband usage rewrite failed")
-					return
-				}
-			}
-			if writeErr := downstream.Write(proxyCtx, messageType, clientPayload); writeErr != nil {
+			if writeErr := downstream.Write(proxyCtx, messageType, payload); writeErr != nil {
 				errCh <- writeErr
 				return
 			}

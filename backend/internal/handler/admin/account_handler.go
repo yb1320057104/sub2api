@@ -1625,10 +1625,6 @@ func (h *AccountHandler) ApplyOAuthCredentials(c *gin.Context) {
 		response.ErrorFrom(c, err)
 		return
 	}
-	if err := service.ValidateHiddenBillingExtra(req.Extra); err != nil {
-		response.ErrorFrom(c, err)
-		return
-	}
 	if err := service.ValidateUpstreamRequestIDHeaderExtra(req.Extra); err != nil {
 		response.ErrorFrom(c, err)
 		return

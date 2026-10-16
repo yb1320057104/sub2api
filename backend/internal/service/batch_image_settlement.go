@@ -135,7 +135,7 @@ func (s *BatchImageSettlementService) Settle(ctx context.Context, batchID string
 		}
 		return nil, err
 	}
-	actualCost := batchImageHiddenBillingCharge(job, float64(job.SuccessCount)*unitPrice)
+	actualCost := float64(job.SuccessCount) * unitPrice
 	result.ActualCost = actualCost
 	holdAmount := job.EstimatedCost
 	if job.HoldAmount != nil {
@@ -280,7 +280,6 @@ func (s *BatchImageSettlementService) recordUsageLog(ctx context.Context, job *B
 		SessionID:             job.SessionID,
 		CreatedAt:             createdAt,
 	}
-	applyBatchImageHiddenBillingSnapshot(job, usageLog)
 	writeUsageLogBestEffort(ctx, s.UsageLogRepo, usageLog, "service.batch_image_settlement")
 }
 

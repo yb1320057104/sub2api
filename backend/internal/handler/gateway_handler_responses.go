@@ -223,7 +223,7 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 			}
 		}
 		account := selection.Account
-		setOpsSelectedBillingAccount(c, account)
+		setOpsSelectedAccount(c, account.ID, account.Platform)
 
 		// 4. Acquire account concurrency slot
 		accountReleaseFunc := selection.ReleaseFunc
@@ -265,7 +265,6 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 			continue
 		}
 		account = latest
-		service.BindHiddenUsageOutput(c, account)
 		selection.Account = latest
 		if selection.ProfitGateActive() {
 			if err := h.gatewayService.BindStickySessionAfterProfitAdmission(admissionCtx, apiKey.GroupID, sessionHash, account.ID); err != nil {

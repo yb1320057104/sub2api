@@ -739,15 +739,7 @@ func (s *GatewayService) EstimateInflightReservation(ctx context.Context, apiKey
 	if s == nil {
 		return 0, false
 	}
-	estimate, priced := s.inflightEstimateDeps().estimate(ctx, apiKey, req)
-	if !priced || estimate <= 0 || s.schedulerSnapshot == nil {
-		return estimate, priced
-	}
-	platform, forced, err := s.resolvePlatform(ctx, apiKey.GroupID, apiKey.Group, req.Model)
-	if err != nil {
-		return 0, false
-	}
-	return hiddenBillingInflightEstimate(ctx, s.schedulerSnapshot, apiKey.GroupID, platform, forced, estimate, priced)
+	return s.inflightEstimateDeps().estimate(ctx, apiKey, req)
 }
 
 func (s *OpenAIGatewayService) inflightEstimateDeps() inflightEstimateDeps {
@@ -780,13 +772,5 @@ func (s *OpenAIGatewayService) EstimateInflightReservation(ctx context.Context, 
 	if s == nil {
 		return 0, false
 	}
-	estimate, priced := s.inflightEstimateDeps().estimate(ctx, apiKey, req)
-	if apiKey == nil {
-		return estimate, priced
-	}
-	platform := PlatformOpenAI
-	if apiKey.Group != nil && apiKey.Group.Platform != "" && apiKey.Group.Platform != PlatformComposite {
-		platform = apiKey.Group.Platform
-	}
-	return hiddenBillingInflightEstimate(ctx, s.schedulerSnapshot, apiKey.GroupID, NormalizeOpenAICompatiblePlatform(platform), false, estimate, priced)
+	return s.inflightEstimateDeps().estimate(ctx, apiKey, req)
 }

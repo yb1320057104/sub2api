@@ -68,34 +68,6 @@ func TestGeminiCachedContentStoragePriceFollowsBillingModel(t *testing.T) {
 	require.False(t, svc.CacheStoragePriced(ctx, unpriced))
 }
 
-func TestPKHiddenBillingGeminiFixedChargeQuoteMatchesSettlement(t *testing.T) {
-	for _, hidden := range []float64{1, 2, 0, 0.29} {
-		t.Run(fmt.Sprintf("hidden=%g", hidden), func(t *testing.T) {
-			svc, usageRepo := newGeminiCacheBillingGatewayForTest(t)
-			groupID := int64(33)
-			key := &APIKey{ID: 821, GroupID: &groupID, User: &User{ID: 621},
-				Group: &Group{ID: groupID, Platform: PlatformGemini, RateMultiplier: 2, Hydrated: true}}
-			input := &RecordUsageInput{
-				Result: &ForwardResult{RequestID: "pk-hidden-cache", Model: "gemini-2.5-pro",
-					Usage: ClaudeUsage{InputTokens: 1000}, CacheStorageTokenHours: 24000},
-				APIKey: key, User: key.User, Account: &Account{ID: 713, Platform: PlatformGemini,
-					Extra: map[string]any{AccountExtraHiddenRateMultiplier: hidden}},
-			}
-			quote, err := svc.QuoteUsageCostWithHiddenBilling(context.Background(), input)
-			require.NoError(t, err)
-			require.InDelta(t, QuantizeUsageBillingAmount(0.2185*hidden), quote, 1e-12)
-			require.NoError(t, svc.RecordUsage(context.Background(), input))
-			require.Equal(t, usageRepo.lastLog.ActualCost, quote, "fixed holds and final charge must use the same price")
-			require.Equal(t, hidden, usageRepo.lastLog.HiddenBillingMultiplier())
-			if hidden > 0 {
-				input.Result.CacheStorageTokenHours = 1e20
-				_, err = svc.QuoteUsageCostWithHiddenBilling(context.Background(), input)
-				require.Error(t, err, "an overflowing quote must not be treated as a free reservation")
-			}
-		})
-	}
-}
-
 func TestGeminiCachedContentStorageOnlyIsNotARequest(t *testing.T) {
 	ctx := context.Background()
 	svc, usageRepo := newGeminiCacheBillingGatewayForTest(t)

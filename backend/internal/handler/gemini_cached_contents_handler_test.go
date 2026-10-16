@@ -5,7 +5,6 @@ package handler
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -77,34 +76,8 @@ func (r *geminiCachedContentHandlerRepoStub) SoftDelete(context.Context, int64) 
 	return nil
 }
 
-type geminiCachedContentViewAccountRepo struct {
-	service.AccountRepository
-	accounts map[int64]*service.Account
-	calls    map[int64]int
-	err      error
-}
-
-func (r *geminiCachedContentViewAccountRepo) GetByID(_ context.Context, id int64) (*service.Account, error) {
-	if r.calls != nil {
-		r.calls[id]++
-	}
-	if r.err != nil {
-		return nil, r.err
-	}
-	if account := r.accounts[id]; account != nil {
-		return account, nil
-	}
-	return nil, service.ErrAccountNotFound
-}
-
 func newGeminiCachedContentHandlerForTest(repo *geminiCachedContentHandlerRepoStub) *GatewayHandler {
-	return newGeminiCachedContentHandlerWithAccountsForTest(repo, &geminiCachedContentViewAccountRepo{})
-}
-
-func newGeminiCachedContentHandlerWithAccountsForTest(repo *geminiCachedContentHandlerRepoStub, accounts *geminiCachedContentViewAccountRepo) *GatewayHandler {
-	cfg := &config.Config{}
-	compat := service.NewGeminiMessagesCompatService(accounts, nil, nil, nil, nil, nil, nil, nil, cfg)
-	return &GatewayHandler{geminiCachedContentService: service.NewGeminiCachedContentService(repo, compat, cfg)}
+	return &GatewayHandler{geminiCachedContentService: service.NewGeminiCachedContentService(repo, nil, &config.Config{})}
 }
 
 func geminiCachedContentTestAPIKey(platform string) *service.APIKey {
@@ -239,84 +212,6 @@ func TestGeminiCachedContentsListAndGet(t *testing.T) {
 	h.GeminiCachedContentsGet(c)
 	require.Equal(t, http.StatusForbidden, rec.Code)
 	require.True(t, strings.Contains(rec.Body.String(), service.GeminiCachedContentNotFoundMessage))
-}
-
-func TestPKHiddenBillingCachedContentViewsUseEachAccountOnce(t *testing.T) {
-	repo := &geminiCachedContentHandlerRepoStub{}
-	first := seedGeminiCachedContent(repo, "first", 7, time.Now().Add(time.Hour))
-	second := seedGeminiCachedContent(repo, "second", 7, time.Now().Add(time.Hour))
-	third := seedGeminiCachedContent(repo, "third", 7, time.Now().Add(time.Hour))
-	first.TotalTokenCount, second.TotalTokenCount, third.TotalTokenCount = 100, 200, 400
-	third.AccountID = 901
-	accounts := &geminiCachedContentViewAccountRepo{
-		accounts: map[int64]*service.Account{
-			900: {ID: 900, Platform: service.PlatformGemini, Type: service.AccountTypeServiceAccount, Extra: map[string]any{service.AccountExtraHiddenRateMultiplier: 2}},
-			901: {ID: 901, Platform: service.PlatformGemini, Type: service.AccountTypeServiceAccount, Extra: map[string]any{service.AccountExtraHiddenRateMultiplier: 0.5}},
-		},
-		calls: make(map[int64]int),
-	}
-	h := newGeminiCachedContentHandlerWithAccountsForTest(repo, accounts)
-	apiKey := geminiCachedContentTestAPIKey(service.PlatformGemini)
-	router := gin.New()
-	router.Use(service.HiddenUsageOutputMiddleware(), func(c *gin.Context) {
-		c.Set(string(middleware.ContextKeyAPIKey), apiKey)
-		c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: apiKey.UserID})
-		c.Next()
-	})
-	router.GET("/v1beta/cachedContents", h.GeminiCachedContentsList)
-	router.GET("/v1beta/cachedContents/:cacheID", h.GeminiCachedContentsGet)
-	recorder := httptest.NewRecorder()
-	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1beta/cachedContents", nil))
-	require.Equal(t, http.StatusOK, recorder.Code)
-	var list struct {
-		CachedContents []struct {
-			Name          string `json:"name"`
-			UsageMetadata struct {
-				TotalTokenCount int64 `json:"totalTokenCount"`
-			} `json:"usageMetadata"`
-		} `json:"cachedContents"`
-	}
-	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &list))
-	require.Len(t, list.CachedContents, 3)
-	want := map[string]int64{"cachedContents/first": 200, "cachedContents/second": 400, "cachedContents/third": 200}
-	for _, item := range list.CachedContents {
-		require.Equal(t, want[item.Name], item.UsageMetadata.TotalTokenCount)
-	}
-	require.Equal(t, map[int64]int{900: 1, 901: 1}, accounts.calls)
-	require.NotContains(t, recorder.Body.String(), "multiplier")
-
-	recorder = httptest.NewRecorder()
-	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1beta/cachedContents/third", nil))
-	require.Equal(t, http.StatusOK, recorder.Code)
-	var single struct {
-		UsageMetadata struct {
-			TotalTokenCount int64 `json:"totalTokenCount"`
-		} `json:"usageMetadata"`
-	}
-	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &single))
-	require.Equal(t, int64(200), single.UsageMetadata.TotalTokenCount)
-	require.Equal(t, int64(100), first.TotalTokenCount)
-	require.Equal(t, int64(200), second.TotalTokenCount)
-	require.Equal(t, int64(400), third.TotalTokenCount)
-	require.Equal(t, 2.0, accounts.accounts[900].HiddenBillingMultiplier())
-}
-
-func TestPKHiddenBillingCachedContentAccountLookupFailureDoesNotExposeRawCount(t *testing.T) {
-	repo := &geminiCachedContentHandlerRepoStub{}
-	seedGeminiCachedContent(repo, "first", 7, time.Now().Add(time.Hour))
-	h := newGeminiCachedContentHandlerWithAccountsForTest(repo, &geminiCachedContentViewAccountRepo{err: errors.New("account lookup failed")})
-	apiKey := geminiCachedContentTestAPIKey(service.PlatformGemini)
-	for _, list := range []bool{false, true} {
-		c, recorder := newGeminiCachedContentTestContext(http.MethodGet, "/v1beta/cachedContents/first", apiKey)
-		c.Params = gin.Params{{Key: "cacheID", Value: "first"}}
-		if list {
-			h.GeminiCachedContentsList(c)
-		} else {
-			h.GeminiCachedContentsGet(c)
-		}
-		require.Equal(t, http.StatusInternalServerError, recorder.Code)
-		require.NotContains(t, recorder.Body.String(), "totalTokenCount")
-	}
 }
 
 func TestHandleGeminiCachedContentFailoverExhausted(t *testing.T) {

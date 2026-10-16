@@ -1244,7 +1244,6 @@ export interface Account {
   opencode_go_usage?: OpenCodeGoUsageState
   // Extra fields including Codex usage, OpenAI compact capability, and model-level rate limits.
   extra?: (CodexUsageSnapshot & OpenAICompactState & {
-    hidden_rate_multiplier?: number
     kilo_bridge_enabled?: boolean
     cache_conversion_enabled?: boolean
     cache_conversion_multiplier?: number
@@ -1846,10 +1845,6 @@ export interface UsageLogAccountSummary {
 }
 
 export interface AdminUsageLog extends UsageLog {
-  original_cost?: number
-  group_rate_multiplier?: number
-  hidden_rate_multiplier?: number
-  effective_rate_multiplier?: number
   // first_token_ms is upstream TTFT for admins; users receive downstream response time.
   first_response_ms?: number | null
   upstream_model?: string | null
@@ -2017,13 +2012,6 @@ export interface UsageStatsResponse {
 
 // ==================== Trend & Chart Types ====================
 
-export interface OriginalTokenUsage {
-  input_tokens: number
-  output_tokens: number
-  cache_creation_tokens: number
-  cache_read_tokens: number
-}
-
 export interface TrendDataPoint {
   date: string
   requests: number
@@ -2034,8 +2022,6 @@ export interface TrendDataPoint {
   total_tokens: number
   cost: number // 标准计费
   actual_cost: number // 实际扣除
-  original_usage?: OriginalTokenUsage | null
-  original_usage_requests?: number
 }
 
 export interface ModelStat {

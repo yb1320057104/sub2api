@@ -173,7 +173,7 @@ func (h *OpenAIGatewayHandler) AlphaSearch(c *gin.Context) {
 		}
 
 		account := selection.Account
-		setOpsSelectedBillingAccount(c, account)
+		setOpsSelectedAccount(c, account.ID, account.Platform)
 		accountRelease, slotResult := h.acquireResponsesAccountSlot(c, apiKey.GroupID, sessionHash, selection, false, &streamStarted, reqLog)
 		if slotResult == openAISlotAcquireProfitVetoed {
 			// 利润终检否决：排除该账号重新选号；否决次数达上限则按无可用账号终止。

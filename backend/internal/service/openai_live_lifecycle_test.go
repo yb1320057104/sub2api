@@ -15,7 +15,6 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	coderws "github.com/coder/websocket"
 	"github.com/stretchr/testify/require"
-	"github.com/tidwall/gjson"
 )
 
 type liveTestFrame struct {
@@ -342,28 +341,6 @@ func TestGetLiveCallForIdentityRejectsMismatchedCaller(t *testing.T) {
 }
 
 func TestProxyLiveSidebandForwardsTextAndBinary(t *testing.T) {
-	testLiveSidebandHiddenUsage(t, nil, 100)
-}
-
-func TestPKHiddenBillingLiveSidebandOutputSnapshot(t *testing.T) {
-	for _, tc := range []struct {
-		name       string
-		multiplier *float64
-		wantInput  int64
-	}{
-		{name: "default", wantInput: 100},
-		{name: "one", multiplier: ptrFloat64WS(1), wantInput: 100},
-		{name: "zero", multiplier: ptrFloat64WS(0), wantInput: 0},
-		{name: "double", multiplier: ptrFloat64WS(2), wantInput: 200},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			testLiveSidebandHiddenUsage(t, tc.multiplier, tc.wantInput)
-		})
-	}
-}
-
-func testLiveSidebandHiddenUsage(t *testing.T, multiplier *float64, wantInput int64) {
-	t.Helper()
 	account := &Account{
 		ID:          11,
 		Platform:    PlatformOpenAI,
@@ -373,10 +350,6 @@ func testLiveSidebandHiddenUsage(t *testing.T, multiplier *float64, wantInput in
 			"access_token":       "test-access-token",
 			"chatgpt_account_id": "acct_test",
 		},
-		Extra: map[string]any{},
-	}
-	if multiplier != nil {
-		account.Extra[AccountExtraHiddenRateMultiplier] = *multiplier
 	}
 	record := &LiveCallRecord{
 		CallID:     "call_proxy",
@@ -399,13 +372,11 @@ func testLiveSidebandHiddenUsage(t *testing.T, multiplier *float64, wantInput in
 	require.NoError(t, store.SaveLiveCall(context.Background(), record, time.Hour))
 	upstream := newLiveTestFrameConn()
 	dialer := &liveTestDialer{conn: upstream}
-	usageRepo := &liveTestUsageRepo{}
 	service := &OpenAIGatewayService{
 		accountRepo:               &liveTestAccountRepo{account: account},
 		cache:                     store,
 		openaiWSPassthroughDialer: dialer,
 		liveAttestationCipher:     attestationCipher,
-		usageLogRepo:              usageRepo,
 	}
 	proxyResult := make(chan error, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -429,19 +400,10 @@ func testLiveSidebandHiddenUsage(t *testing.T, multiplier *float64, wantInput in
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	clientRequest := []byte(`{"type":"client.text","usage":{"input_tokens":100},"audio":"unchanged-audio"}`)
-	require.NoError(t, client.Write(ctx, coderws.MessageText, clientRequest))
+	require.NoError(t, client.Write(ctx, coderws.MessageText, []byte(`{"type":"client.text"}`)))
 	clientText := <-upstream.writes
 	require.Equal(t, coderws.MessageText, clientText.messageType)
-	require.JSONEq(t, string(clientRequest), string(clientText.payload))
-	// Receiving the forwarded request proves dialing and its snapshot are done.
-	// Changing the account now must not alter this connection's output rate.
-	account.Extra[AccountExtraHiddenRateMultiplier] = 9.0
-
-	require.NoError(t, client.Write(ctx, coderws.MessageBinary, clientRequest))
-	clientJSONBinary := <-upstream.writes
-	require.Equal(t, coderws.MessageBinary, clientJSONBinary.messageType)
-	require.JSONEq(t, string(clientRequest), string(clientJSONBinary.payload))
+	require.JSONEq(t, `{"type":"client.text"}`, string(clientText.payload))
 
 	require.NoError(t, client.Write(ctx, coderws.MessageBinary, []byte{1, 2, 3}))
 	clientBinary := <-upstream.writes
@@ -460,42 +422,12 @@ func testLiveSidebandHiddenUsage(t *testing.T, multiplier *float64, wantInput in
 	require.Equal(t, coderws.MessageBinary, messageType)
 	require.Equal(t, []byte{4, 5, 6}, payload)
 
-	originalUsageEvent := []byte(`{"type":"response.done","response":{"id":"live_usage","usage":{"input_tokens":100,"output_tokens":200,"total_tokens":300,"input_token_details":{"audio_tokens":100},"output_token_details":{"audio_tokens":200}},"output":[{"type":"function_call","arguments":"{\"usage\":{\"input_tokens\":17}}"}]},"audio":"unchanged-output-audio"}`)
-	originalCopy := append([]byte(nil), originalUsageEvent...)
-	for _, kind := range []coderws.MessageType{coderws.MessageText, coderws.MessageBinary} {
-		upstream.reads <- liveTestFrame{messageType: kind, payload: originalUsageEvent}
-		gotKind, got, readErr := client.Read(ctx)
-		require.NoError(t, readErr)
-		require.Equal(t, kind, gotKind)
-		require.Equal(t, wantInput, gjson.GetBytes(got, "response.usage.input_tokens").Int())
-		require.Equal(t, 2*wantInput, gjson.GetBytes(got, "response.usage.output_tokens").Int())
-		require.Equal(t, 3*wantInput, gjson.GetBytes(got, "response.usage.total_tokens").Int())
-		require.Equal(t, wantInput, gjson.GetBytes(got, "response.usage.input_token_details.audio_tokens").Int())
-		require.Equal(t, 2*wantInput, gjson.GetBytes(got, "response.usage.output_token_details.audio_tokens").Int())
-		require.Equal(t, "live_usage", gjson.GetBytes(got, "response.id").String())
-		require.Equal(t, `{"usage":{"input_tokens":17}}`, gjson.GetBytes(got, "response.output.0.arguments").String())
-		require.Equal(t, "unchanged-output-audio", gjson.GetBytes(got, "audio").String())
-		require.NotContains(t, string(got), "hidden_rate_multiplier")
-		if wantInput == 100 {
-			require.Equal(t, originalCopy, got, "default rate must preserve exact bytes")
-		}
-	}
-	require.Equal(t, originalCopy, originalUsageEvent, "raw upstream event must not be changed by downstream output")
-
 	require.Equal(t, "wss://chatgpt.com/backend-api/codex/call_proxy", dialer.url)
 	require.Equal(t, "Bearer test-access-token", dialer.headers.Get("Authorization"))
 	require.Equal(t, "acct_test", dialer.headers.Get("Chatgpt-Account-Id"))
 	require.Equal(t, `{"v":1,"s":0,"t":"v1.sideband"}`, dialer.headers.Get(liveAttestationHeader))
 	upstream.reads <- liveTestFrame{err: coderws.CloseError{Code: coderws.StatusNormalClosure}}
 	require.ErrorIs(t, <-proxyResult, ErrLiveCallNotFound)
-	usageRepo.mu.Lock()
-	defer usageRepo.mu.Unlock()
-	require.Len(t, usageRepo.logs, 1)
-	require.Equal(t, RequestTypeLive, usageRepo.logs[0].RequestType)
-	require.Zero(t, usageRepo.logs[0].InputTokens)
-	require.Zero(t, usageRepo.logs[0].OutputTokens)
-	require.Zero(t, usageRepo.logs[0].TotalCost)
-	require.Zero(t, usageRepo.logs[0].ActualCost)
 }
 
 // TestLiveSessionEndedTreatsLeaseLossAsTerminal 锁定：租约续租失败（ErrLiveUnavailable）

@@ -32,7 +32,7 @@ SOURCE_SUITES = (
 SUITES = (*SOURCE_SUITES, "artifact-runtime")
 NOTES_REF = "refs/notes/pk-source-validation"
 RACE_PATTERN = (
-    "Test(PKCyber|PKEarly|PKFirstResponse|PKUsage|PKSystemOne|PKCacheConversion|PKHiddenBilling|PKKiloBridge|PKBackground|"
+    "Test(PKCyber|PKEarly|PKFirstResponse|PKUsage|PKSystemOne|PKCacheConversion|PKKiloBridge|PKBackground|"
     "PKChannelMonitor|StreamEarlyHeartbeat|UpdateSettingsEarlyHeartbeat|"
     "ServerTiming|Inflight|EstimateInflight|ReserveInflight|WrapUsageRecord|"
     "SyncBalanceCacheAfterDeduction|RequestMaxOutputTokens|WebSearch_RejectsWhenInflight)"
@@ -349,7 +349,7 @@ class Runner:
         self.go(["-race", "-tags", "unit", "./internal/service", "./internal/handler",
                  "./internal/handler/dto", "./internal/handler/admin", "./internal/repository",
                  "./internal/server", "./internal/server/middleware", "-run", RACE_PATTERN],
-                required=("TestPKEarly", "TestPKCacheConversion", "TestPKCyber", "TestPKHiddenBilling"))
+                required=("TestPKEarly", "TestPKCacheConversion", "TestPKCyber"))
         self.go(["-race", "-tags", "unit", "./internal/service", "-run",
                  "Test(BackgroundStartGate|BatchImageCleanupLifecycle)"])
         self.go(["-race", "-tags", "unit", "./internal/config", "./internal/payment",
@@ -530,7 +530,7 @@ def main():
         if ready:
             runner.suite("backend-unit", lambda: runner.go(["-tags", "unit", "./..."]))
             runner.suite("backend-integration", lambda: runner.go(["-tags", "integration", "./..."],
-                         required=("TestPKUsageFirstResponsePersistence", "TestPKUsageOriginalSnapshotsAndTrends", "TestPKHiddenBillingUsageSnapshotsAndCustomerAggregates", "TestPKHiddenBillingBatchSnapshotPersistence")))
+                         required=("TestPKUsageFirstResponsePersistence",)))
             runner.suite("backend-race", runner.race)
             runner.suite("backend-lint", lambda: runner.run(["golangci-lint", "run", "--timeout=30m"], ROOT / "backend"))
             runner.suite("frontend", runner.frontend)

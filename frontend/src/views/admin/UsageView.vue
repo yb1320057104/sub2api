@@ -61,7 +61,7 @@
             :end-date="endDate"
             :filters="breakdownFilters"
           />
-          <TokenUsageTrend :trend-data="trendData" :loading="chartsLoading" show-original-usage-warning />
+          <TokenUsageTrend :trend-data="trendData" :loading="chartsLoading" />
         </div>
       </div>
       <!-- 明细区：tab 栏 + 筛选 + 内容收进同一张卡片，消除割裂感 -->
@@ -633,7 +633,7 @@ const exportToExcel = async () => {
       t('admin.usage.cacheReadTokens'), t('admin.usage.cacheCreationTokens'),
       t('admin.usage.inputCost'), t('admin.usage.outputCost'),
       t('admin.usage.cacheReadCost'), t('admin.usage.cacheCreationCost'),
-      t('usage.groupBillingRate'), t('usage.hiddenBillingRate'), t('usage.effectiveBillingRate'), t('usage.accountMultiplier'), t('usage.originalCost'), t('usage.userBilled'), t('usage.accountBilled'),
+      t('usage.rate'), t('usage.accountMultiplier'), t('usage.original'), t('usage.userBilled'), t('usage.accountBilled'),
       t('usage.latencyFirstToken'), t('usage.latencyUpstreamFirstToken'), t('usage.duration'),
       t('admin.usage.requestId'), t('admin.usage.upstreamRequestId'), t('usage.userAgent'), t('admin.usage.ipAddress')
     ]
@@ -651,9 +651,8 @@ const exportToExcel = async () => {
         log.input_tokens, log.output_tokens, log.cache_read_tokens, log.cache_creation_tokens,
         log.input_cost?.toFixed(6) || '0.000000', log.output_cost?.toFixed(6) || '0.000000',
         log.cache_read_cost?.toFixed(6) || '0.000000', log.cache_creation_cost?.toFixed(6) || '0.000000',
-        log.group_rate_multiplier ?? log.rate_multiplier ?? 1, log.hidden_rate_multiplier ?? 1,
-        log.effective_rate_multiplier ?? log.rate_multiplier ?? 1, (log.account_rate_multiplier ?? 1).toPrecision(4),
-        (log.original_cost ?? log.total_cost ?? 0).toFixed(6), log.actual_cost?.toFixed(6) || '0.000000',
+        log.rate_multiplier?.toPrecision(4) || '1.00', (log.account_rate_multiplier ?? 1).toPrecision(4),
+        log.total_cost?.toFixed(6) || '0.000000', log.actual_cost?.toFixed(6) || '0.000000',
         ((log.account_stats_cost ?? log.total_cost) * (log.account_rate_multiplier ?? 1)).toFixed(6), log.first_response_ms ?? '', log.first_token_ms ?? '', log.duration_ms,
         log.request_id || '', log.upstream_request_id || '', log.user_agent || '', log.ip_address || ''
       ])
@@ -697,8 +696,6 @@ const allColumns = computed(() => [
   { key: 'stream', label: t('usage.type'), sortable: false },
   { key: 'billing_mode', label: t('admin.usage.billingMode'), sortable: false },
   { key: 'tokens', label: t('usage.tokens'), sortable: false },
-  { key: 'rate', label: t('usage.rate'), sortable: false },
-  { key: 'original_cost', label: t('usage.originalCost'), sortable: false },
   { key: 'cost', label: t('usage.cost'), sortable: false },
   { key: 'latency', label: t('usage.latency'), sortable: false },
   { key: 'created_at', label: t('usage.time'), sortable: true },

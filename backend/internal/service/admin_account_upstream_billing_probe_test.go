@@ -18,30 +18,6 @@ func (r *upstreamBillingProbeAdminRepo) ListShadowsByParent(context.Context, int
 	return nil, nil
 }
 
-func TestPKHiddenBillingAdminCreateUpdateAndCredentialRefresh(t *testing.T) {
-	for _, platform := range []string{PlatformOpenAI, PlatformAnthropic, PlatformGemini} {
-		repo := &upstreamBillingProbeAdminRepo{&upstreamBillingProbeAccountRepo{}}
-		svc := &adminServiceImpl{accountRepo: repo}
-		ctx := context.Background()
-		account, err := svc.CreateAccount(ctx, &CreateAccountInput{
-			Name: "hidden-billing", Platform: platform, Type: AccountTypeAPIKey,
-			Credentials: map[string]any{"api_key": "test"}, SkipDefaultGroupBind: true,
-		})
-		require.NoError(t, err)
-		require.Equal(t, 1.0, account.HiddenBillingMultiplier())
-		for _, multiplier := range []float64{2.123456, 0} {
-			account, err = svc.UpdateAccount(ctx, account.ID, &UpdateAccountInput{Extra: map[string]any{AccountExtraHiddenRateMultiplier: multiplier}})
-			require.NoError(t, err)
-			require.Equal(t, multiplier, account.HiddenBillingMultiplier())
-			account, err = svc.UpdateAccount(ctx, account.ID, &UpdateAccountInput{
-				Credentials: map[string]any{"api_key": "refreshed"}, Extra: map[string]any{"unrelated": true},
-			})
-			require.NoError(t, err)
-			require.Equal(t, multiplier, account.HiddenBillingMultiplier(), "old clients omitting the setting must retain it")
-		}
-	}
-}
-
 type accountBillingSettingsAdminRepo struct {
 	*upstreamBillingProbeAccountRepo
 	concurrentRate   *float64

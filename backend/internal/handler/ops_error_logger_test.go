@@ -2,7 +2,6 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -52,34 +51,6 @@ func (r *ingressRejectOpsRepo) BatchInsertErrorLogs(_ context.Context, entries [
 	r.insertCalls++
 	r.entries = append(r.entries, entries...)
 	return 0, nil
-}
-
-func TestPKHiddenBillingSelectedAccountTracksFailover(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	for _, multiplier := range []float64{0, 0.5, 1, 3} {
-		router := gin.New()
-		router.Use(OpsErrorLoggerMiddleware(nil), service.HiddenUsageOutputMiddleware())
-		router.POST("/v1/responses", func(c *gin.Context) {
-			setOpsSelectedBillingAccount(c, &service.Account{ID: 7, Platform: service.PlatformOpenAI, Extra: map[string]any{service.AccountExtraHiddenRateMultiplier: 2}})
-			setOpsSelectedBillingAccount(c, &service.Account{ID: 9, Platform: service.PlatformOpenAI, Extra: map[string]any{service.AccountExtraHiddenRateMultiplier: multiplier}})
-			require.Equal(t, int64(9), c.GetInt64(opsAccountIDKey))
-			require.Equal(t, int64(9), c.Request.Context().Value(ctxkey.AccountID))
-			require.Equal(t, service.PlatformOpenAI, c.Request.Context().Value(ctxkey.Platform))
-			c.Data(http.StatusOK, "application/json", []byte(`{"usage":{"input_tokens":4,"output_tokens":2,"total_tokens":6},"output":[{"text":"input_tokens: 4"}]}`))
-		})
-		recorder := httptest.NewRecorder()
-		router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/responses", nil))
-		require.Equal(t, http.StatusOK, recorder.Code)
-		var response struct {
-			Usage map[string]int `json:"usage"`
-		}
-		require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &response))
-		require.Equal(t, int(4*multiplier), response.Usage["input_tokens"])
-		require.Equal(t, int(2*multiplier), response.Usage["output_tokens"])
-		require.Equal(t, int(6*multiplier), response.Usage["total_tokens"])
-		require.Contains(t, recorder.Body.String(), "input_tokens: 4")
-		require.NotContains(t, recorder.Body.String(), "multiplier")
-	}
 }
 
 func TestOpsErrorLogQueueByteBudget(t *testing.T) {

@@ -704,7 +704,7 @@ func (r *usageLogRepository) GetStatsWithFilters(ctx context.Context, filters Us
 				output_tokens,
 				cache_creation_tokens,
 				cache_read_tokens,
-				%s AS total_cost,
+				total_cost,
 				actual_cost,
 				COALESCE(account_stats_cost, total_cost) * COALESCE(account_rate_multiplier, 1) AS account_cost,
 				duration_ms
@@ -732,7 +732,7 @@ func (r *usageLogRepository) GetStatsWithFilters(ctx context.Context, filters Us
 			(upstream_endpoint),
 			(inbound_endpoint, upstream_endpoint)
 		)
-	`, usageTotalCostExpression(ctx, ""), buildWhere(conditions))
+	`, buildWhere(conditions))
 
 	stats := &UsageStats{}
 	var totalAccountCost float64

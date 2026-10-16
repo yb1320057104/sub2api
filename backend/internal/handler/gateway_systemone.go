@@ -193,7 +193,7 @@ func (h *GatewayHandler) SystemOne(c *gin.Context) {
 		}
 		account = latest
 		accountRelease = wrapReleaseOnDone(c.Request.Context(), accountRelease)
-		setOpsSelectedBillingAccount(c, account)
+		setOpsSelectedAccount(c, account.ID, account.Platform)
 		service.SetOpsUpstreamModel(c, model)
 
 		forwardStart := time.Now()

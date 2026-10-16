@@ -229,19 +229,7 @@ func (h *AsyncImageHandler) run(taskID, platform string, taskCtx *gin.Context, r
 		}
 	}()
 
-	// Detached tasks write into their own recorder, bypassing the route chain.
-	// Finish the output copy before saving it, so polling never scales it again
-	// and the billing result retained by the gateway stays untouched.
-	finishOutput := service.BeginHiddenUsageOutput(taskCtx)
-	defer finishOutput()
 	h.execute(platform, taskCtx)
-	finishOutput()
-	if err := service.HiddenUsageOutputError(taskCtx); err != nil {
-		// Keepalive whitespace may have committed 200 before the output failed.
-		// Persist the transform failure rather than a successful error payload.
-		h.failTask(taskID, http.StatusBadGateway, imageTaskErrorPayload("upstream_error", err.Error()))
-		return
-	}
 	body := bytes.TrimSpace(recorder.Body.Bytes())
 	if err := taskCtx.Request.Context().Err(); err != nil && len(body) == 0 {
 		h.failTask(taskID, http.StatusGatewayTimeout, imageTaskErrorPayload("timeout_error", "image generation task timed out"))

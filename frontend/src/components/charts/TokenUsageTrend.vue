@@ -3,15 +3,6 @@
     <h3 class="mb-4 text-sm font-semibold text-gray-900 dark:text-white">
       {{ t('admin.dashboard.tokenUsageTrend') }}
     </h3>
-    <p class="mb-3 text-xs text-gray-500 dark:text-gray-400">
-      {{ t('admin.dashboard.originalTokenTrendHint') }}
-    </p>
-    <p
-      v-if="showOriginalUsageWarning && !loading && hasIncompleteOriginalUsage"
-      class="mb-3 text-xs text-amber-600 dark:text-amber-400"
-    >
-      {{ t('admin.dashboard.originalTokenTrendMissing') }}
-    </p>
     <div v-if="loading" class="flex h-48 items-center justify-center">
       <LoadingSpinner />
     </div>
@@ -43,7 +34,7 @@ import {
 } from 'chart.js'
 import { Line } from 'vue-chartjs'
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
-import type { OriginalTokenUsage, TrendDataPoint } from '@/types'
+import type { TrendDataPoint } from '@/types'
 
 ChartJS.register(
   CategoryScale,
@@ -61,7 +52,6 @@ const { t } = useI18n()
 const props = defineProps<{
   trendData: TrendDataPoint[]
   loading?: boolean
-  showOriginalUsageWarning?: boolean
 }>()
 
 const isDarkMode = computed(() => {
@@ -78,16 +68,6 @@ const chartColors = computed(() => ({
   cacheHitRate: '#8b5cf6'
 }))
 
-const originalUsage = computed(() => props.trendData.map((point): OriginalTokenUsage | null => {
-  if (point.requests === 0) {
-    return { input_tokens: 0, output_tokens: 0, cache_creation_tokens: 0, cache_read_tokens: 0 }
-  }
-  if (point.original_usage_requests !== point.requests || !point.original_usage) return null
-  return point.original_usage
-}))
-
-const hasIncompleteOriginalUsage = computed(() => originalUsage.value.some((usage) => usage === null))
-
 const chartData = computed(() => {
   if (!props.trendData?.length) return null
 
@@ -96,7 +76,7 @@ const chartData = computed(() => {
     datasets: [
       {
         label: 'Input',
-        data: originalUsage.value.map((d) => d?.input_tokens ?? null),
+        data: props.trendData.map((d) => d.input_tokens),
         borderColor: chartColors.value.input,
         backgroundColor: `${chartColors.value.input}20`,
         fill: true,
@@ -104,7 +84,7 @@ const chartData = computed(() => {
       },
       {
         label: 'Output',
-        data: originalUsage.value.map((d) => d?.output_tokens ?? null),
+        data: props.trendData.map((d) => d.output_tokens),
         borderColor: chartColors.value.output,
         backgroundColor: `${chartColors.value.output}20`,
         fill: true,
@@ -112,7 +92,7 @@ const chartData = computed(() => {
       },
       {
         label: 'Cache Creation',
-        data: originalUsage.value.map((d) => d?.cache_creation_tokens ?? null),
+        data: props.trendData.map((d) => d.cache_creation_tokens),
         borderColor: chartColors.value.cacheCreation,
         backgroundColor: `${chartColors.value.cacheCreation}20`,
         fill: true,
@@ -120,7 +100,7 @@ const chartData = computed(() => {
       },
       {
         label: 'Cache Read',
-        data: originalUsage.value.map((d) => d?.cache_read_tokens ?? null),
+        data: props.trendData.map((d) => d.cache_read_tokens),
         borderColor: chartColors.value.cacheRead,
         backgroundColor: `${chartColors.value.cacheRead}20`,
         fill: true,
@@ -128,8 +108,7 @@ const chartData = computed(() => {
       },
       {
         label: 'Cache Hit Rate',
-        data: originalUsage.value.map((d) => {
-          if (!d) return null
+        data: props.trendData.map((d) => {
           const totalPromptTokens = d.input_tokens + d.cache_read_tokens + d.cache_creation_tokens
           return totalPromptTokens > 0 ? (d.cache_read_tokens / totalPromptTokens) * 100 : 0
         }),
@@ -167,7 +146,6 @@ const lineOptions = computed(() => ({
     tooltip: {
       callbacks: {
         label: (context: any) => {
-          if (context.raw === null || context.raw === undefined) return t('admin.dashboard.originalTokenTrendUnavailable')
           if (context.dataset.yAxisID === 'yPercent') {
             return `${context.dataset.label}: ${context.raw.toFixed(1)}%`
           }

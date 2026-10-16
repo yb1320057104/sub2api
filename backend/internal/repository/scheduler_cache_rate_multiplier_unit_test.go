@@ -10,24 +10,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestPKHiddenBillingSchedulerSnapshots(t *testing.T) {
-	for _, multiplier := range []float64{0, 1, 2.123456} {
-		account := service.Account{ID: 9010, Platform: service.PlatformOpenAI, Extra: map[string]any{service.AccountExtraHiddenRateMultiplier: multiplier}}
-		full, metadata, err := marshalSchedulerCacheAccount(account)
-		require.NoError(t, err)
-		for _, payload := range [][]byte{full, metadata} {
-			decoded, err := decodeCachedAccount(payload)
-			require.NoError(t, err)
-			require.Equal(t, multiplier, decoded.HiddenBillingMultiplier())
-		}
-		cache := newSchedulerCacheUnit(t)
-		require.NoError(t, cache.SetAccount(context.Background(), &account))
-		got, err := cache.GetAccount(context.Background(), account.ID)
-		require.NoError(t, err)
-		require.Equal(t, multiplier, got.HiddenBillingMultiplier())
-	}
-}
-
 // TestSchedulerCachePreservesRateMultiplier 钉死账号调度快照的两份 payload
 // （full + metadata）都必须保留 RateMultiplier。
 //

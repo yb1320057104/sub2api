@@ -411,7 +411,6 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		OutputTokens:             tokens.OutputTokens,
 		CacheCreationTokens:      tokens.CacheCreationTokens,
 		CacheReadTokens:          tokens.CacheReadTokens,
-		OriginalUsage:            originalUsageSnapshot(rawTokens),
 		ImageInputTokens:         result.Usage.ImageInputTokens,
 		ImageOutputTokens:        result.Usage.ImageOutputTokens,
 		ImageCount:               result.ImageCount,
@@ -514,11 +513,6 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		return cacheConversionErr
 	}
 
-	if err := applyHiddenBillingBridge(account, cost, usageLog); err != nil {
-		usageLog.ActualCost = 0
-		writeUsageLogBestEffort(ctx, s.usageLogRepo, usageLog, "service.openai_gateway")
-		return err
-	}
 	simpleModeKeyRateLimitOnly := simpleModeKeyRateLimitBillingEnabled(s.cfg, apiKey)
 	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple && !simpleModeKeyRateLimitOnly {
 		writeUsageLogBestEffort(ctx, s.usageLogRepo, usageLog, "service.openai_gateway")

@@ -201,25 +201,6 @@ func TestDuplicateAccountCopiesConfigurationAndResetsRuntimeState(t *testing.T) 
 	require.Equal(t, "remote-42", storedSource.Extra["crs_account_id"])
 }
 
-func TestPKHiddenBillingDuplicatePreservesExplicitMultiplier(t *testing.T) {
-	for _, hidden := range []float64{0, 1, 2.123456} {
-		ctx := context.Background()
-		repo := newDuplicateAccountRepoStub()
-		svc := &adminServiceImpl{accountRepo: repo, accountDuplicateRepo: repo}
-		source := &Account{Name: "hidden-copy", Platform: PlatformAnthropic, Type: AccountTypeAPIKey,
-			Credentials: map[string]any{"api_key": "test"}, Extra: map[string]any{AccountExtraHiddenRateMultiplier: hidden}}
-		require.NoError(t, repo.Create(ctx, source))
-		duplicate, err := svc.DuplicateAccount(ctx, source.ID, "admin:1", "")
-		require.NoError(t, err)
-		require.Equal(t, hidden, duplicate.HiddenBillingMultiplier())
-		require.Equal(t, hidden, duplicate.Extra[AccountExtraHiddenRateMultiplier])
-		duplicate.Extra[AccountExtraHiddenRateMultiplier] = 9.0
-		stored, err := repo.GetByID(ctx, source.ID)
-		require.NoError(t, err)
-		require.Equal(t, hidden, stored.HiddenBillingMultiplier())
-	}
-}
-
 func TestDuplicateAccountRejectsCredentialShadow(t *testing.T) {
 	ctx := context.Background()
 	repo := newDuplicateAccountRepoStub()

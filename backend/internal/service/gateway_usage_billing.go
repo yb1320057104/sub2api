@@ -771,14 +771,6 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 	ApplyForwardImageBillingResolution(result)
 	logServiceTierBillingDowngrade("service.gateway", account, result.RequestID, ApplyForwardServiceTierBillingResolution(result))
 
-	// Preserve original buckets before forced cache billing changes them.
-	originalUsage := originalUsageSnapshot(UsageTokens{
-		InputTokens:         result.Usage.InputTokens,
-		OutputTokens:        result.Usage.OutputTokens,
-		CacheCreationTokens: result.Usage.CacheCreationInputTokens,
-		CacheReadTokens:     result.Usage.CacheReadInputTokens,
-	})
-
 	// 强制缓存计费：将 input_tokens 转为 cache_read_input_tokens
 	// 用于粘性会话切换时的特殊计费处理
 	if input.ForceCacheBilling && result.Usage.InputTokens > 0 {
@@ -841,7 +833,6 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 	accountRateMultiplier := account.BillingRateMultiplier()
 	usageLog := s.buildRecordUsageLog(ctx, input, result, apiKey, user, account, subscription,
 		requestedModel, multiplier, imageMultiplier, accountRateMultiplier, billingType, cacheTTLOverridden, cost)
-	usageLog.OriginalUsage = originalUsage
 
 	// 计算账号统计定价费用（使用最终上游模型匹配自定义规则）。纯存储费不是一次模型请求，
 	// 账号统计成本回落 total_cost（官方存储价）。
@@ -863,11 +854,6 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 		addCacheStorageToAccountStatsCost(usageLog, cacheStorageCost)
 	}
 
-	if err := applyHiddenBillingBridge(account, cost, usageLog); err != nil {
-		usageLog.ActualCost = 0
-		writeUsageLogBestEffort(ctx, s.usageLogRepo, usageLog, "service.gateway")
-		return err
-	}
 	simpleModeKeyRateLimitOnly := simpleModeKeyRateLimitBillingEnabled(s.cfg, apiKey)
 	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple && !simpleModeKeyRateLimitOnly {
 		writeUsageLogBestEffort(ctx, s.usageLogRepo, usageLog, "service.gateway")

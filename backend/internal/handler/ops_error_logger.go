@@ -464,16 +464,6 @@ func setOpsEndpointContext(c *gin.Context, upstreamModel string, requestType int
 	c.Set(opsRequestTypeKey, requestType)
 }
 
-// Bind output scaling to the same account that owns this forwarding attempt.
-// Keeping the legacy ID-only helper separate avoids changing ops-only callers.
-func setOpsSelectedBillingAccount(c *gin.Context, account *service.Account) {
-	if c == nil || account == nil {
-		return
-	}
-	setOpsSelectedAccount(c, account.ID, account.Platform)
-	service.BindHiddenUsageOutput(c, account)
-}
-
 func setOpsSelectedAccount(c *gin.Context, accountID int64, platform ...string) {
 	if c == nil || accountID <= 0 {
 		return

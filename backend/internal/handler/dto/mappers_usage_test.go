@@ -8,37 +8,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestPKHiddenBillingUsagePrivacyAndHistoricalDefaults(t *testing.T) {
-	hidden := 2.0
-	log := &service.UsageLog{TotalCost: 10, InputCost: 7, OutputCost: 3, ActualCost: 6, RateMultiplier: 0.3, HiddenRateMultiplier: &hidden}
-	user := UsageLogFromService(log)
-	require.Equal(t, 6.0, user.ActualCost)
-	require.Equal(t, 20.0, user.TotalCost)
-	require.Equal(t, 14.0, user.InputCost)
-	require.Equal(t, 0.3, user.RateMultiplier)
-	encoded, err := json.Marshal(user)
-	require.NoError(t, err)
-	for _, field := range []string{"hidden_rate_multiplier", "effective_rate_multiplier", "original_cost", "account_rate_multiplier"} {
-		require.NotContains(t, string(encoded), field)
-	}
-	admin := UsageLogFromServiceAdmin(log)
-	require.Equal(t, 10.0, admin.OriginalCost)
-	require.Equal(t, 10.0, admin.TotalCost)
-	require.Equal(t, 7.0, admin.InputCost)
-	require.Equal(t, 0.3, admin.GroupRateMultiplier)
-	require.Equal(t, 2.0, admin.HiddenRateMultiplier)
-	require.Equal(t, 0.6, admin.EffectiveRateMultiplier)
-	require.Equal(t, user.ActualCost, admin.ActualCost)
-	require.Equal(t, 10.0, log.TotalCost, "user view cannot mutate accounting evidence")
-	log.HiddenRateMultiplier = nil
-	require.Equal(t, 1.0, UsageLogFromServiceAdmin(log).HiddenRateMultiplier)
-	require.Equal(t, 10.0, UsageLogFromService(log).TotalCost)
-	hidden = 0
-	log.HiddenRateMultiplier = &hidden
-	require.Zero(t, UsageLogFromServiceAdmin(log).EffectiveRateMultiplier)
-	require.Zero(t, UsageLogFromService(log).TotalCost)
-}
-
 func TestUsageLogFromService_IncludesOpenAIWSMode(t *testing.T) {
 	t.Parallel()
 

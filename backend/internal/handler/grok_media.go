@@ -358,7 +358,7 @@ func (h *OpenAIGatewayHandler) handleGrokMedia(c *gin.Context, endpoint service.
 			return
 		}
 		sessionHash = ensureOpenAIPoolModeSessionHash(sessionHash, account)
-		setOpsSelectedBillingAccount(c, account)
+		setOpsSelectedAccount(c, account.ID, account.Platform)
 
 		admissionSessionHash := sessionHash
 		if boundLookupAccountID > 0 {

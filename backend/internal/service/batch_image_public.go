@@ -97,7 +97,6 @@ type BatchImagePublicService struct {
 type BatchImagePricingSnapshot struct {
 	BaseUnitPrice           float64
 	GroupRateMultiplier     float64
-	HiddenRateMultiplier    *float64
 	AccountRateMultiplier   float64
 	BatchDiscountMultiplier float64
 	HoldMultiplier          float64
@@ -273,7 +272,6 @@ func (s *BatchImagePublicService) Submit(ctx context.Context, owner BatchImageOw
 		HoldAmount:              &holdAmount,
 		BaseUnitPrice:           pricingSnapshot.BaseUnitPrice,
 		GroupRateMultiplier:     pricingSnapshot.GroupRateMultiplier,
-		HiddenRateMultiplier:    pricingSnapshot.HiddenRateMultiplier,
 		AccountRateMultiplier:   pricingSnapshot.AccountRateMultiplier,
 		BatchDiscountMultiplier: pricingSnapshot.BatchDiscountMultiplier,
 		HoldMultiplier:          pricingSnapshot.HoldMultiplier,
@@ -1077,7 +1075,7 @@ func (s *BatchImagePublicService) resolvePricingSnapshot(ctx context.Context, ow
 	standardUnitPrice := unit * groupMultiplier * accountMultiplier
 	billableUnitPrice := standardUnitPrice * discountMultiplier
 	holdUnitPrice := standardUnitPrice * holdMultiplier
-	snapshot := &BatchImagePricingSnapshot{
+	return &BatchImagePricingSnapshot{
 		BaseUnitPrice:           unit,
 		GroupRateMultiplier:     groupMultiplier,
 		AccountRateMultiplier:   accountMultiplier,
@@ -1087,11 +1085,7 @@ func (s *BatchImagePublicService) resolvePricingSnapshot(ctx context.Context, ow
 		HoldUnitPrice:           holdUnitPrice,
 		EstimatedCost:           billableUnitPrice * float64(len(req.Items)),
 		HoldAmount:              holdUnitPrice * float64(len(req.Items)),
-	}
-	if err := applyBatchImageHiddenPricing(account, snapshot, len(req.Items)); err != nil {
-		return nil, err
-	}
-	return snapshot, nil
+	}, nil
 }
 
 func (s *BatchImagePublicService) enabled() bool {

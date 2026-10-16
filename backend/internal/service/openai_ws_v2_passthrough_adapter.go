@@ -13,7 +13,6 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/usageoutput"
 	openaiwsv2 "github.com/Wei-Shaw/sub2api/internal/service/openai_ws_v2"
 	coderws "github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
@@ -31,8 +30,6 @@ type openAIWSClientFrameConn struct {
 	restoreResponseModel func([]byte) []byte
 	restoreToolNames     func([]byte) []byte
 	rewriteCacheUsage    func([]byte) ([]byte, error)
-	// A nil snapshot preserves the default multiplier for legacy callers.
-	hiddenRateMultiplier *float64
 }
 
 // openAIWSPolicyEnforcingFrameConn wraps a client-side FrameConn and runs
@@ -664,18 +661,6 @@ func (c *openAIWSClientFrameConn) WriteFrame(ctx context.Context, msgType coderw
 			}
 		}
 	}
-	if msgType == coderws.MessageText || (msgType == coderws.MessageBinary && gjson.ValidBytes(payload)) {
-		multiplier := 1.0
-		if c.hiddenRateMultiplier != nil {
-			multiplier = *c.hiddenRateMultiplier
-		}
-		var err error
-		payload, err = usageoutput.ScaleJSON(payload, multiplier, usageoutput.Options{Protocol: usageoutput.OpenAI})
-		if err != nil {
-			logOpenAIWSModeDebug("downstream_usage_rewrite_failed transport=passthrough err=%v", err)
-			return errors.New("websocket usage rewrite failed")
-		}
-	}
 	return c.conn.Write(ctx, msgType, payload)
 }
 
@@ -978,13 +963,11 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	completedTurns := atomic.Int32{}
 	turnLifecycle := newOpenAIWSPassthroughTurnLifecycle(true)
 	var acceptedTurnStartedAt atomic.Pointer[time.Time]
-	hiddenMultiplier := account.HiddenBillingMultiplier()
 	clientFrameConn := &openAIWSClientFrameConn{
 		conn:                 clientConn,
 		controlCtx:           ctx,
 		interTurnIdleTimeout: s.openAIWSIngressInterTurnIdleTimeout(),
 		interTurnStarted:     make(chan struct{}, 1),
-		hiddenRateMultiplier: &hiddenMultiplier,
 		restoreResponseModel: func(payload []byte) []byte {
 			eventType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
 			if !openAIWSEventMayContainModel(eventType) {

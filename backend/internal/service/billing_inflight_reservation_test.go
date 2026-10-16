@@ -391,7 +391,6 @@ type inflightSnapshotCacheStub struct {
 	mu       sync.Mutex
 	byBucket map[string][]Account
 	reads    atomic.Int64
-	readErr  error
 }
 
 func inflightBucketKey(groupID int64, platform string) string {
@@ -408,9 +407,6 @@ func (c *inflightSnapshotCacheStub) GetSnapshot(ctx context.Context, bucket Sche
 	c.reads.Add(1)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.readErr != nil {
-		return nil, false, c.readErr
-	}
 	src := c.byBucket[inflightBucketKey(bucket.GroupID, bucket.Platform)]
 	out := make([]*Account, 0, len(src))
 	for i := range src {
@@ -438,42 +434,7 @@ func attachInflightSnapshot(svc *GatewayService, snap *inflightSnapshotCacheStub
 	return repo
 }
 
-func TestPKHiddenBillingInflightUsesCurrentMaximumWithoutDB(t *testing.T) {
-	svc := newInflightEstimateGateway(t, nil)
-	groupID, unit := int64(7), 0.5
-	group := &Group{ID: groupID, Platform: PlatformAnthropic, RateMultiplier: 2,
-		ModelPricing: []ChannelModelPricing{{Models: []string{"hidden-priced"}, BillingMode: BillingModePerRequest, PerRequestPrice: &unit}},
-	}
-	key := &APIKey{User: &User{ID: 1}, GroupID: &groupID, Group: group}
-	snapshot := &inflightSnapshotCacheStub{byBucket: map[string][]Account{}}
-	repo := attachInflightSnapshot(svc, snapshot)
-	for _, hidden := range []float64{2, 3, 0} {
-		snapshot.set(groupID, PlatformAnthropic, []Account{
-			{ID: 1, Extra: map[string]any{AccountExtraHiddenRateMultiplier: 0.5}},
-			{ID: 2, Extra: map[string]any{AccountExtraHiddenRateMultiplier: hidden}},
-		})
-		estimate, priced := svc.EstimateInflightReservation(context.Background(), key, InflightEstimateRequest{Model: "hidden-priced"})
-		require.True(t, priced)
-		require.Equal(t, math.Max(1, hidden), estimate, "price 0.5 × group 2 × maximum hidden factor")
-	}
-	require.Zero(t, repo.dbCalls.Load())
-}
-
-func TestPKHiddenBillingInflightCacheFailureNeverFallsBackToDB(t *testing.T) {
-	svc := newInflightEstimateGateway(t, nil)
-	snapshot := &inflightSnapshotCacheStub{readErr: fmt.Errorf("cache unavailable")}
-	repo := attachInflightSnapshot(svc, snapshot)
-	estimate, priced := hiddenBillingInflightEstimate(context.Background(), svc.schedulerSnapshot, nil, PlatformAnthropic, false, 1, true)
-	require.False(t, priced)
-	require.Zero(t, estimate)
-	require.Zero(t, repo.dbCalls.Load())
-	estimate, priced = hiddenBillingInflightEstimate(context.Background(), svc.schedulerSnapshot, nil, PlatformAnthropic, false, 0, true)
-	require.True(t, priced, "free requests need no reservation")
-	require.Zero(t, estimate)
-	require.Equal(t, int64(1), snapshot.reads.Load())
-}
-
-// 已定价模型只读取隐藏倍率快照；随机未定价模型名不直接查库、不产生按模型名的缓存（内存有界）。
+// 已定价模型永不查账号映射；随机未定价模型名不直接查库、不产生按模型名的缓存（内存有界）。
 func TestInflightEstimate_AccountMappingNoDBAndBoundedMemory(t *testing.T) {
 	// MemStats measures the entire process, including state and background work
 	// left by other service tests. Run the unchanged workload in this same test
@@ -514,8 +475,7 @@ func TestInflightEstimate_AccountMappingNoDBAndBoundedMemory(t *testing.T) {
 		_, priced := svc.EstimateInflightReservation(ctx, apiKey, InflightEstimateRequest{Model: "claude-sonnet-4-5", BodyBytes: 4000, MaxTokens: 1000})
 		require.True(t, priced)
 	}
-	require.Equal(t, int64(100), snap.reads.Load(), "priced models read only the hidden-rate snapshot, not account-model fallback")
-	snap.reads.Store(0) // Measure the independent unpriced fallback path below.
+	require.Zero(t, snap.reads.Load(), "priced models must never trigger account-mapping lookup")
 
 	var before, after runtime.MemStats
 	runtime.GC()

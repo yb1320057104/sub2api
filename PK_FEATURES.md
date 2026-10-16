@@ -9,11 +9,12 @@
 - 2026-10-02 合并上游 `v0.2.12`（commit `5106065716e494204fc0e8db16f68f6e9d576be0`，tag 对象 `cbe9966432317e6757b47f598a103d2132ec27db`），合并前私库为 `162a58972bee08078a43eefa761da1b245f667fa`。逐项核对见 [0.2.12 合并记录](docs/PK_UPSTREAM_0.2.12_REVIEW.md)，正式发布目标为 `v0.2.12-pk.1`；发布与线上更新分别记录。
 - 2026-10-02 合并上游 `v0.2.11`（commit `96f4c115c9749078f90cbf210a01d39baf3f53b6`），合并前私库为 `32f068dcbdc75063ff7f6488aef6c85912d7bf3f`。逐项核对及本次验证见 [合并记录](docs/PK_UPSTREAM_0.2.11_REVIEW.md)；合并源码不代表已发布或更新线上。
 - 本次清点覆盖从该上游基线到私库 `23e5fe663338c86cd0cebbf2f688c8a75dd8c152` 的全部二开提交；应用发行参照 `v0.2.10-pk.7`，另登记本次新增的项目约束机制。此处是代码核对基线，不代表线上当前版本。
-- 以下 PK-001 至 PK-030 均为有效保护项。文件路径用于定位，不是完整修改白名单；所有新调用入口、迁移和旁路都要检查。
+- 以下 PK-001 至 PK-028 均为有效保护项；PK-029、PK-030 已按用户授权移除，保留原 ID 与回退记录，不得复用。文件路径用于定位，不是完整修改白名单；所有新调用入口、迁移和旁路都要检查。
 - 每项说明“必须保持”的行为。文末另列验证入口与已知边界；测试存在、历史验证通过和本次候选通过是三件不同的事。
 - 2026-10-08 用户最新要求取代早前本次测试禁令：完整源码测试通过后才提交和推送，默认在用户指定测试服务器的隔离环境验证，本机 Linux/WSL 仍可用。Jenkins 一次 `ACTION=release` 完成构建、制品运行时验收和私库发布，不使用 GitHub Actions。下文历史“后续获准”及迁移禁令只记录当时状态，现行门禁以 PK-017 为准；服务器结果不写成本机通过，历史证据不代表本次已经执行。
 
 - 2026-10-15 在 `codex/v0.2.16-pk.1` 合并上游 `v0.2.16`（`01842576b3d5c1e2545b5a99ad555d36e28ed306`），增加 PK-028；逐项依据见 [0.2.16 合并核对](docs/PK_UPSTREAM_0.2.16_REVIEW.md)。最终源码验证以绑定提交的 notes 及服务器原报告为准，发行与部署另行记录。
+- 2026-10-16 用户明确要求“所有代码都回退到 v0.2.16-pk.1”。从 `d1b1dbf650b69292cb3998a9f1d32821c769dfd2` 逆序撤销 pk.2～pk.5 的四次提交，源码、原有测试和验证入口恢复到私库标签 `v0.2.16-pk.1`（`f0671148bc54d87a95623035e23a94ad5c74be0e`）；仅本清单补充撤销记录。无新增二开；PK-001～028 的实现与目标标签一致，PK-029/030 按下文退出。源码提交以本次隔离服务器完整验证报告及绑定 notes 为准，不沿用旧版报告冒充本次执行；本次不发布、不部署、不改业务数据。
 
 ## 功能索引
 
@@ -47,8 +48,8 @@
 | PK-026 | 耻辱排行榜与手动扣费 | 独立菜单、当天与日期筛选、实时刷新、用户只读、精确倍率、逐条防重复扣费 |
 | PK-027 | 安全策略触发自动禁用 | 默认关闭、可配置次数、独立累计、管理员豁免、解禁可重计、鉴权失效 |
 | PK-028 | OpenAI 账号 Kilo 桥接 | 独立默认关闭、用户模型映射、账号代理、ultra 转 max、工具参数保真 |
-| PK-029 | 账号隐藏计费倍率 | 默认1、专属倍率优先、桥接统一结算、管理员明细、用户费用及历史快照 |
-| PK-030 | 原始 Token 趋势统计 | 独立原始快照、小时/日聚合、未知留空、计费与明细不变 |
+| PK-029 | 账号隐藏计费倍率及下游用量缩放 | 已授权移除；恢复 pk.1 计费与输出，保留历史记录 |
+| PK-030 | 原始 Token 趋势统计 | 已授权移除；恢复 pk.1 趋势口径，保留历史数据 |
 
 ## PK-001
 
@@ -62,7 +63,6 @@
 - 验证：设置往返、缺字段保留、显式 false/0 和非法倍率；已有 `TestPKCacheConversionSettings`。重导边界见文末。
 
 - 2026-10-15 新增同平台的 PK-028 独立开关，缓存转换默认值、倍率0及保存行为保持；创建/编辑现有回归覆盖两个开关独立保存。
-- 同日 PK-029 新增独立客户隐藏倍率；缓存转换的开关和倍率不与它共用配置，缺字段保存及小数/0继续保留。
 
 ## PK-002
 
@@ -76,7 +76,6 @@
 - 使用 decimal 计算、向下取整及 int32 范围检查；不能改成不精确的浮点四舍五入。
 - 原读取量不再乘转换倍率，普通输入和输出不直接受此倍率影响。缓存创建总量、5m/1h 明细转换后清零；倍率 0 仍清零创建量，但不新增读取量。
 - 开关关闭保持原行为。计费和出口分别使用原始 usage 各计算一次，不对已经转换的 usage 再转换。
-- 2026-10-15 按用户明确要求，PK-030 在转换之前保存独立原始 Token 快照；仅 Token 趋势图改用原始快照，转换公式、使用明细、下游 usage 和客户账务不变。
 - 入口：`backend/internal/pkg/cacheconversion/usage.go`、`backend/internal/service/{openai_cache_conversion,openai_cache_conversion_output}.go`。
 - 验证：原读取存在、倍率 `0/0.5/1`、小数边界、关闭、非法输入与溢出；已有 `TestPKCacheConversionDisabledPreservesOriginal`、`TestPKCacheConversionBillingTokens`。溢出错误的结算边界见文末。
 
@@ -95,8 +94,6 @@
 - 验证：普通输入/读取/创建/输出拆分、费用及各额度结果、关闭时原账务。已有 `openai_gateway_usage_integrity_test.go`；合并上游余额预留等新机制时必须另查预估与实扣是否使用兼容口径。
 - 2026-10-02 在该既有文件扩展 `TestPKCacheConversionInflightBillingPreservesOriginalContext`：倍率0/0.5/30与原始上下文272000/272001组合，检查预留独立、异步实扣前持有、各额度统一、原始上下文选档以及幂等释放；候选与正式发行CI均纳入race选择。
 - 上游 `TestInflightEstimate_AccountMappingNoDBAndBoundedMemory` 在同一测试二进制的独立子进程内测量，避免整个 service 测试进程的残留状态混入堆内存差值；保留 100 次预热、20000 次随机模型请求、数据库/快照断言和 8 MiB 阈值，并确保被测服务存活至末次采样。子进程失败仍使原测试失败，不改变生产预留逻辑。
-- 2026-10-15 PK-029 在原定价完成后、所有用户账务及缓存副作用之前乘账号隐藏倍率，保留缓存转换一次及原始长上下文选档。余额、订阅、Key/平台额度均使用同一最终金额；账号成本额度保持原口径。选账号前预留读同一调度桶的最大隐藏倍率（至少1），只读缓存，未命中按原无法定价策略处理，不增加数据库回退或按模型缓存；上述已定价模型100次预热现在对应100次倍率快照读取，随机未定价请求的20000次/8MiB/无DB保护保持。
-- 同日 PK-030 的原始快照只参与图表统计，不传入扣费命令；共享网关在强制缓存计费之前取快照，OpenAI 网关在原始输入拆分之后、转换之前取快照。
 
 ## PK-004
 
@@ -105,7 +102,6 @@
 - 保留 `UsageTokens.OriginalContextTokens` 和 `InputContextTokens()`，价格档位依据转换前原始上下文，不能使用转换后缩小/放大的 token 总数选档。
 - 这项适用于 token 阶梯、按次计费上下文档位和整会话长上下文倍率；保护的是二开转换后的兼容语义，不把整套上游定价功能当作 PK 新增。
 - 账号/分组倍率与缓存转换倍率相互独立。
-- PK-029 的客户隐藏倍率同样独立：账号原成本、原始 token 价格与账号统计分支不乘隐藏倍率；用户使用明细和用户汇总的基础价格通过只读桥接乘隐藏倍率，实际费用读取同一已结算金额。批量图片保留已有账号成本倍率和折扣计算，新增明确的原始费用展示及冻结隐藏倍率。
 - 自定义账号价格统计及模型价格文件回退使用原始 token；启用“将客户定价应用于账号统计”时使用转换后、客户倍率前的 `TotalCost`。不能在合并中把两个分支统一成另一种算法。
 - 入口：`backend/internal/service/billing_service.go`、`openai_gateway_usage.go` 中的 usage 构造、价格选择与账号统计分支。
 - 验证：原始长上下文恰好跨阶梯、转换倍率 0/小数/大于1、两种账号统计价格分支。现有用例不能代替所有模型价格及预留机制的场景验收。
@@ -117,14 +113,13 @@
 
 **下游 usage 与无损输出。** 引入：`6655dd8ca`。
 
-- 开启缓存转换时，下游实际 JSON/SSE usage 同步改写；关闭时不做缓存转换。2026-10-16 用户另行授权 PK-029 在最终客户端副本上对 Token 用量乘隐藏倍率，该步骤独立于缓存转换开关。
+- 开启缓存转换时，下游实际 JSON/SSE usage 同步改写；关闭时保持原输出路径。
 - OpenAI 输入总量和 `total_tokens` 按对应协议语义调整；Anthropic `input_tokens` 保持普通输入语义。兼容 usage 字段别名、显式 `0` 和 5m/1h 创建明细。
 - 只修改目标 usage 字段，保留模型文本、未知字段、事件类型及 SSE 多行 frame。保留原始 usage 供计费；客户端需要 usage 的场景继续向上游请求 stream usage。
 - 保留 canonical 字段与已有别名同步、嵌套显式 0 优先、Anthropic 5m/1h 创建量回退。typed Responses/Chat 序列化不能让 `omitempty` 丢掉显式 0；JSON 改写后移除旧 `Content-Length`，SSE 保留注释、空行及 `[DONE]`。
 - 客户端未请求 `include_usage` 不应丢弃已经收到的上游 usage；原始 Chat 强制向上游请求 stream usage，Anthropic→Chat 发现真实 usage 后保留下游发送路径。
 - 入口：`backend/internal/service/openai_cache_conversion_output.go`、`openai_gateway_{response_handling,passthrough,cc_pipeline}.go` 及 PK-006 接入点。
 - 验证：已有 `TestPKCacheConversionJSONKeepsPayloadAndOriginalUsage`、`TestPKCacheConversionSSEPreservesTextAndFraming`；增加协议或上游字段时逐个检查原始数据与改写结果。
-- PK-029 的最终输出桥只处理已知 usage 容器和 Token 明细，不遍历模型正文或工具参数；保留 JSON/SSE 原协议、LF/CRLF/CR、多行 data、注释、空行和 `[DONE]`。默认隐藏倍率1保持原字节，不增加倍率或内部标记字段；HTTP 每请求一次、真正 WebSocket 每最终帧一次，不能与内部缓存转换/计费相乘两次。
 
 ## PK-006
 
@@ -146,7 +141,6 @@
 2026-10-02 空格首字模式在既有 handler、service 与 Grok HTTP transport 的自动重试/协议回退入口增加同一请求门控，具体见 PK-011。仅空格正文已提交时拒绝重试，comment/ping 的转换与回退行为保留；真实 usage 仍走原缓存转换与账务路径。
 
 - 2026-10-15 Kilo 接入既有 HTTP Responses 请求构造器，普通/透传及 Chat/Messages 兼容入口继续走现有 usage/计费/首字链；不新增网络客户端。该桥接不支持上游 WebSocket，启用时强制 HTTP，详见 PK-028。
-- 2026-10-16 PK-029 增加跨平台隐藏倍率输出：网关路由共用 `HiddenUsageOutputMiddleware`，按实际选号/终检结果绑定账号，覆盖 OpenAI/Kilo、Anthropic/Bedrock、Gemini/Antigravity、SystemOne、HTTP图片/embeddings与Grok。真正 OpenAI/Grok WebSocket 与本站代理的 Live Sideband 控制帧在最后发送客户端处缩放；WS上游转HTTP仍只走HTTP输出桥。异步图片worker独立安装并在存结果前结束输出桥，查询不重复缩放；输出失败即使已经发出HTTP200空白心跳也必须记任务失败。Gemini缓存资源list/get逐账号转换返回副本；创建/更新由请求级输出桥处理。无账号的本地计数估算保持原样；WebRTC直连数据通道不经过本站输出桥。
 
 ## PK-007
 
@@ -307,7 +301,6 @@
 - 2026-10-08 用户要求把测试前移到提交前，并将正式打包与发布合为一次 Jenkins 操作，取代 2026-10-03 迁移期间的本地测试禁令。默认在完整暂存且没有未暂存/非忽略未跟踪文件的 tree 上执行提交前源码测试，通过才提交相同 tree 和推送。缺环境、测试失败、诊断子集、受保护测试跳过或验证期间源码变化均不合格，不能提交、合入或发布；不编译本地发行程序。
 - 同日用户指定服务器测试，默认以控制端 Python 3.12+/Paramiko 执行 `scripts/test-server.py`；仅上传 HEAD bundle 和暂存树 Git 对象包，远端解包后直接恢复暂存树，保留原始 blob、文件 mode、tree 与 base HEAD，不重新 `git add` 规范化或生成临时 commit。每轮使用独立 UUID、8 CPU/16 GiB 的 DinD 测试环境及目录，工具镜像来自 `deploy/jenkins/Dockerfile.source-tests`，不编译发行程序。SSH 主机指纹必须已核验，凭据文件须 Git 忽略且未跟踪，不传容器；测试源码、数据库/Redis 与夹具隔离，不挂宿主 socket/生产卷或影响生产服务。完成回传报告和原日志，清理本轮容器、匿名 daemon 卷及远端目录。报告注明 `execution_environment=server-isolated`，不得写成本机通过。本机 Linux/WSL 的 test-local 入口仍可用。
 - 默认 `local-validation.json` 为 `schema_version=2`、`tests_profile=pk-source-v2`，含九个源码套件 `backend-unit`、`backend-integration`、`backend-race`、`backend-lint`、`frontend`、`shell`、`binance-proxy`、`release-helpers`、`security` 及独立 preflight；保留真实命令、日志 SHA256、前后相同的暂存 tree/工作区快照、base_commit 和执行环境。报告绑定可由 Windows Python 执行，不要求 WSL。
-- PK-029 的 `TestPKHiddenBilling*` 纳入 unit/race，usage 和批量图片快照数据库回归列为 integration 必须执行项；原创建/编辑、UsageTable 关键 Vitest 扩展隐藏倍率，批量编辑原 spec 加入关键前端列表。仅扩展已有测试文件，报告仍须来自完整九套件。
 - 提交后以 `--bind-commit HEAD --report ... --publish-evidence` 将通过的原报告绑定到相同 tree、包含 base_commit 的干净最终 commit，并通过私库 `refs/notes/pk-source-validation` 发布。notes 不强制覆盖；合入或标签指向新 commit 时，最终 commit 本身须具备报告，不能只检查另一提交的 tree 相同。已绑定报告仅可重新绑定到旧绑定 commit 的同 tree 后代，并为最终 commit 生成独立 note；原始日志和执行时间保留，tree 改变须重新完整测试。
 - 默认正式流程为源码 notes 预检 → build → inventory → 专用 daemon 制品运行时验收 → seal → publish。Jenkins 显式 fetch notes，校验最终 commit/tree 及套件，保全 `source-validation.json`、SHA256 和 notes 出处；`pk-artifact-v2` 十一项运行时检查验证同一次归档/镜像、非 root 执行、可写卷、同种子保留、backup 恢复及种子切换等边界。运行时容器不接生产或发布凭据，使用隔离 daemon 和可清理测试卷。完整证据绑定 package_id、二进制/归档/镜像哈希；同次发布原制品，不重新构建、不自动部署生产。
 - 旧手动 `package` → 下载同包 → 本地 `--artifact-dir` → 上传报告 → `publish` 仍兼容：`pk-local-v1` 十套件（含 `artifact-runtime`）必须全部通过且 commit/tree/package_id/制品 SHA256 一致。`publish` 可处理已封存但尚未对外发布的包；若已推送镜像、产生草稿或版本被占用，先核查阻挡和日志，不声称自动恢复或覆盖重发。候选不能由此转为正式版。
@@ -492,31 +485,20 @@
 
 ## PK-029
 
-**账号隐藏计费倍率。** 状态：有效；依据：2026-10-15 用户要求添加账号默认隐藏倍率1、按分组/用户专属倍率结算，并以桥接方式维护。
+**账号隐藏计费倍率及下游用量缩放。** 状态：已授权移除。引入：`v0.2.16-pk.2` / `4427e25f8`；下游 Token 缩放扩展：`v0.2.16-pk.5` / `d1b1dbf65`。
 
-- 所有账号平台的创建、编辑及批量编辑支持 `accounts.extra.hidden_rate_multiplier`；默认1，接受0～1000且最多6位小数。0表示该账号客户费用为0；它与原 `accounts.rate_multiplier`（账号成本倍率）及缓存转换倍率完全独立。服务端创建/更新/局部extra/批量/重新授权均校验，省略保留旧值，显式0不丢失；旧客户端和旧账号缺键时只在读取时默认1，不强写extra；复制保留显式倍率，旧空extra清空配额行为不变。批量UI必须勾选才修改，取消勾选不会重置所选账号。
-- 普通请求实际倍率 = 隐藏倍率 × 有效分组倍率；设置用户专属倍率时替代分组默认倍率，不能再乘一次默认值。上游独立图片/视频、高峰、强度、Free Fast及批量折扣规则继续先执行，隐藏计费桥只乘最终客户金额一次，不重写内部计费用量、模型或账号成本。原先“不改协议输出”的范围在2026-10-16按用户明确要求扩展为下面的下游Token输出规则；客户金额仍按余额8位精度统一到记录、余额/订阅、Key额度/限速和平台额度，非法/溢出不静默扣原价。
-- 下游已有缓存转换完成后，普通输入、输出、缓存创建/读取及已知推理/图片/音频等Token明细统一乘账号隐藏倍率，不发送隐藏倍率、实际倍率或缩放标记字段。返回字段使用 decimal 逐项向下取整，已有总数字段按原协议组成项和非负残差重算；缓存/推理子集不重复加入总数，不补造缺失字段，未知null仍为null。0返回显式零，1保持原字节。只改变客户端副本；原始快照、内部结算Token、账号成本、历史记录及本站图表不因此再次放大，扣费仍只乘一次。
-- Token输出桥入口：`pkg/usageoutput/scale.go`、`service/hidden_usage_output.go`、网关route与选号绑定、OpenAI/Grok/Live Sideband最终WebSocket写出。HTTP支持整包/分块JSON、SSE跨Write组帧、透传/协议转换、首字心跳和异步图片；WS支持文本和已识别的JSON二进制帧，opaque二进制、生成正文和媒体内容不变。Token转换失败向客户端返回通用上游错误，具体诊断仅在内部日志；不按原始Token静默回退。客户端断连、网络写失败或短写则保留原传输错误链，不补写错误帧或误记为上游故障。
-- 此输出规则只缩放Token计数，不缩放图片张数、音视频时长、工具次数、金额、模型上下文上限或请求参数。已选择账号的count接口同样换算；无账号本地估算和WebRTC直连usage不在本站可改写出口内。Gemini缓存资源list/get用当前绑定账号倍率且不改存储计费基数；已删除/不再支持缓存的账号无历史输出倍率快照，继续默认1。下游独立价表、阶梯、舍入和非Token收费仍可能与本站金额不同，不能把换算后的Token再次用于本站选档或扣费。
-- 用量新增可空 `hidden_rate_multiplier` 快照，由原显式SQL单条、批量、best-effort写入及列表读取覆盖。NULL历史记录视为1；查询只读当时快照，不读今天账号配置、不回填或补扣旧账。迁移246只追加可空列，旧程序能忽略列，但旧程序不会执行新倍率，回退必须接受恢复旧计费行为。
-- 管理员使用记录和每日消费共享表新增“倍率”（分组/专属、隐藏、实际）及费用旁“原始费用”；原费用显示最终实际结算金额。导出同样增加三项倍率和原始费用。倍率为该笔实际应用快照，保留高峰/独立媒体/批量折扣后的适用口径，不随当前分组设置变化。
-- 普通用户只看到客户价格、普通分组倍率及最终费用，响应不包含隐藏/实际倍率、原始费用或账号成本字段；单条、列表、近期记录、CSV、统计卡片、趋势/模型/分组/API Key汇总均使用同一客户基础价格。管理员聚合和账号成本保持存储原口径。
-- 批量图片在创建/冻结时保存隐藏倍率，并乘到冻结和结算单价；任务执行期间修改账号不会变更账单，重试不重复预扣或再次乘倍率。现有批量图片的账号成本倍率仍在基础单价内，折扣仍在实际分组倍率内；新记录将基础费用与倍率拆开展示，并用 `account_stats_cost` 保留原账号统计基数。旧任务无快照继续原结算规则。上游原本免费且无计费链的Live会话保持零费用。
-- 在途余额预留在选账号前读调度桶最大隐藏倍率、至少1，保留原估算上限及无法定价策略；快照读取不查数据库，低于1不降低原保守预留。显式缓存创建/延期在选号后按该账号隐藏倍率进行确定金额预留，报价与结算复用同一桥接，溢出返回错误。调度轻量/完整缓存均保留该字段。原利润门和管理员预览按账号隐藏倍率调整收入阈值，不扩大上游成本或豁免。
-- 桥接入口：`backend/internal/service/account_hidden_billing.go`、两处网关结算调用、批量图片定价/结算、DTO和 `pkg/usagestats/customer_billing.go` / `repository/usage_log_hidden_billing.go`；UI复用 `HiddenBillingMultiplierField.vue` / `utils/hiddenBilling.ts`，原页面只增加接入点。CRS同步合并旧extra保持值；新导入缺键默认为1。Codex Session显式重新导入会应用表单选中的隐藏倍率（默认1），按用户本次选择覆盖，旧API缺键不重置。
-- 验证：扩展已有 `TestPKHiddenBilling*` 与账号表单、UsageTable spec，覆盖默认/0/六位小数/非法值、专属优先、余额/订阅/Key额度、共享网关fallback、decimal与重复桥接、缓存转换/长上下文、管理员/用户字段、三个SQL写入路径、历史不重价、调度缓存、批量冻结与重试。完整源码执行环境及结果以绑定最终提交的报告/notes为准；核对范围见 [隐藏倍率核对记录](docs/PK_HIDDEN_BILLING_REVIEW.md)。
+- 2026-10-16 按用户要求将全部源码恢复到 `v0.2.16-pk.1`，撤销隐藏倍率设置、扣费桥、账务展示、预留适配、批量图片倍率快照及 HTTP/SSE/WebSocket 用量缩放；恢复 pk.1 的缓存转换、分组/用户倍率和账号成本口径，Kilo 桥接保留。
+- 原入口为 `account_hidden_billing.go`、`hidden_usage_output.go`、`internal/pkg/usageoutput`、相关 handler/repository/DTO 及前端设置/展示；实现和新增迁移 `246_hidden_billing_multiplier.sql` 随源码回退，历史内容仍可从原标签读取。
+- 本次仅回退源码，不删除数据库列、迁移记录或账号配置，不返还或重算已结算费用。旧代码忽略隐藏倍率配置和追加列；若日后部署旧程序，存量批量图片任务仍按已冻结单价结算，不能把源码回退称为重置全部历史倍率。
+- 验证：除本清单外全部跟踪文件须与 pk.1 一致，并执行目标版本完整九套件和 preflight；结果绑定本次最终提交。迁移兼容性为源码核对，不是本次生产降级验收。
 
 ## PK-030
 
-**原始 Token 趋势统计。** 状态：有效；依据：2026-10-15 用户明确要求保持转换后的展示和扣费，Token 使用趋势及缓存率改看原始用量。
+**原始 Token 趋势统计。** 状态：已授权移除。引入：`v0.2.16-pk.3` / `13880e18a`；普通用户缺失提示调整：`v0.2.16-pk.4` / `ec35f1e77`。
 
-- `usage_logs.original_usage` 为独立、可空 JSONB 快照，只存普通输入、输出、缓存创建、缓存读取四个非负整数。OpenAI 原始总输入先减原创建/读取，得到互斥普通输入；其他协议复用共享网关的互斥用量。快照在缓存转换或强制缓存计费前复制，不随账号当前开关、倍率或之后的结果改写而变化，不保存提示词或响应正文。
-- 通过独立 `usage_original_tokens.go` 与 `usage_log_original_tokens.go` 接入原结算和 SQL；单条、批量、best-effort 写入及查询全部保留快照。此趋势功能不改变原 `input_tokens`/`cache_*`、费用、隐藏倍率、余额/订阅/Key 额度及上游用量；2026-10-16新增的下游输出换算另按PK-029执行，不回写本快照。
-- `TrendDataPoint` 增加 `original_usage`、`original_usage_requests`，前者只汇总有快照的记录，后者表示覆盖的请求数。管理员和用户共用的 `TokenUsageTrend.vue` 四条 Token 曲线均使用完整原始数据，缓存率为 `原读取 / (原普通输入 + 原创建 + 原读取)`；按 Token 加权，不平均每次请求的百分比。费用提示继续使用原客户金额。
-- 小时/日 `usage_dashboard_*` 聚合增加相同快照和覆盖计数，筛选查询、用户查询及预聚合保持一致。其他费用/请求数统计及使用记录列表不切换 Token 口径；不新增管理员权限或暴露逐请求内部快照。
-- 迁移247只追加可空快照和默认0覆盖数，不猜测、逆算或回填旧记录。整个时段有任何原始数据缺失时图表留空；按2026-10-15用户要求，普通用户使用记录和仪表盘不显示缺失提示，管理员使用记录和仪表盘通过 `showOriginalUsageWarning` 显式保留提示。真实0保留为0，无请求为0，不用转换后的数据冒充原始值。没有上游 Token 证据的旧记录、Live 和批量图片等专有旁路仍保持未知。升级不恢复已经丢弃的历史创建/读取量。
-- 回归在原有 `openai_gateway_usage_integrity_test.go`、`gateway_record_usage_test.go`、repository insert/scan 与 `usage_log_session_id_integration_test.go`、`TokenUsageTrend.spec.ts` 扩展；覆盖0/0.5/大倍率与长上下文、强制缓存计费前快照、三条写入路径、幂等、管理员/用户筛选和小时/日聚合、旧数据/部分覆盖留空、零读取和费用不变。集成用例 `TestPKUsageOriginalSnapshotsAndTrends` 为源码门禁必跑项，原图表 spec 加入前端关键集合；真实执行结果以本次服务器报告为准。
+- 同次授权恢复 pk.1 的图表查询、聚合、DTO 和前端展示，撤销原始 Token 快照及覆盖标记逻辑，也撤销 pk.4 的缺失提示控制；不修改历史使用记录。
+- 原入口为 `usage_original_tokens.go`、`usage_log_original_tokens.go`、usage repository/聚合及 `TokenUsageTrend.vue`；新增迁移 `247_usage_original_tokens.sql` 随源码回退。已存在的数据库追加列与迁移记录保留，pk.1 的迁移 runner 不要求删除数据库中多出的 246/247 记录。
+- 验证方式与 PK-029 相同；本次不连接生产数据库，不将历史费用或图表口径恢复解释为数据回滚。PK-029、PK-030 的原 ID 永久保留，后续重新引入须明确登记。
 
 ## 验证入口与现有边界
 
