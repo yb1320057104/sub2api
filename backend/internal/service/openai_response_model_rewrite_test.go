@@ -60,7 +60,7 @@ func TestMappedResponseModelForwarding(t *testing.T) {
 						contentType := "application/json"
 						body := payload
 						if kind == "responses" {
-							payload = `{"type":"response.completed","response":{"id":"resp_1","model":"` + returned + `","output":[],"usage":{"input_tokens":1,"output_tokens":1}}}`
+							payload = `{"type":"response.completed","response":{"id":"resp_1","created_at":1700000000,"model":"` + returned + `","output":[],"usage":{"input_tokens":1,"output_tokens":1}}}`
 							want = strings.Replace(payload, `"model":"`+returned+`"`, `"model":"`+model+`"`, 1)
 						}
 						if kind != "json" {
@@ -222,6 +222,44 @@ func TestPKKiloBridgeErrorDetailPrivacy(t *testing.T) {
 				// Internal diagnostics retain the actual provider rejection.
 				require.Equal(t, tc.message, gjson.GetBytes(payload, "error.message").String())
 			}
+		})
+	}
+}
+
+func TestPKKiloBridgeSynthesizedFailurePreservesUpstreamMetadata(t *testing.T) {
+	for _, passthrough := range []bool{false, true} {
+		t.Run(fmt.Sprintf("passthrough=%v", passthrough), func(t *testing.T) {
+			wire := `data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_kilo_failure","object":"response","created_at":1700000000,"status":"in_progress"}}` + "\n\n" +
+				`data: {"type":"response.output_text.delta","sequence_number":1,"delta":"partial"}` + "\n\n" +
+				`data: {"type":"error","sequence_number":2,"error":{"code":"unsupported_value","message":"reasoning effort routed to max is unsupported"}}` + "\n\n"
+			account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Extra: map[string]any{AccountExtraKiloBridgeEnabled: true}}
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			bindKiloBridgeResponseEffort(context.Background(), c, account, []byte(`{"reasoning":{"effort":"ultra"}}`))
+			resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(wire))}
+			svc := &OpenAIGatewayService{cfg: &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}}
+			var streamErr error
+			if passthrough {
+				_, streamErr = svc.handleStreamingResponsePassthrough(context.Background(), resp, c, account, time.Now(), "client-model", "client-model")
+			} else {
+				_, streamErr = svc.handleStreamingResponse(context.Background(), resp, c, account, time.Now(), "client-model", "client-model")
+			}
+			var failures []string
+			for _, line := range strings.Split(rec.Body.String(), "\n") {
+				payload, ok := strings.CutPrefix(line, "data: ")
+				if ok && gjson.Get(payload, "type").String() == "response.failed" {
+					failures = append(failures, payload)
+				}
+			}
+			require.Len(t, failures, 1, "upstream error must end with one valid Responses failure")
+			require.EqualValues(t, 1700000000, gjson.Get(failures[0], "response.created_at").Int())
+			require.EqualValues(t, 2, gjson.Get(failures[0], "sequence_number").Int())
+			require.Equal(t, "resp_kilo_failure", gjson.Get(failures[0], "response.id").String())
+			require.Equal(t, "Upstream request failed", gjson.Get(failures[0], "response.error.message").String())
+			require.Contains(t, rec.Body.String(), `"delta":"partial"`)
+			require.NotContains(t, rec.Body.String(), "routed to max")
+			require.ErrorContains(t, streamErr, "routed to max", "internal diagnostics must retain the original provider error")
 		})
 	}
 }

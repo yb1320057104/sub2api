@@ -18,6 +18,8 @@
 
 ## 功能索引
 
+2026-10-19 在唯一目标分支 `codex/v0.2.17-pk.1` 合并上游 `v0.2.17`（`060d0160417782cd962a0c7f460f6cd4565d4916`），合并前私库为 `82689422e5bb1444769265534265f570fed274a2`。无新增二开，PK-029/030 继续保持已授权移除；全部有效 ID 的静态核对及源码验证要求见 [0.2.17 合并记录](docs/PK_UPSTREAM_0.2.17_REVIEW.md)，普通 OpenAI Key 计费边界见 [专项审计](docs/PK_OPENAI_KEY_BILLING_AUDIT_0.2.17.md)。本次合并不代表正式发行或线上更新，动态结果只以当前 tree 的服务器原报告及最终 commit notes 为准。
+
 | ID | 二开功能 | 必须保留的重点 |
 |---|---|---|
 | PK-001 | 账号缓存转换设置 | 新增/编辑、默认值、倍率 0、extra 保存与校验 |
@@ -319,6 +321,8 @@
 
 - 2026-10-15 跟随上游 Go 1.27.2 / golangci-lint 2.14.x，服务器工具镜像更新为 `pk-source-tests:20261015`；上游 Actions 中的源码/部署/security 检查仍由现有九套件执行，关键前端列表合并保留双方条目。
 
+- 2026-10-19 合入 v0.2.17：将原有 `StripePaymentView.spec.ts` 纳入 `FRONTEND_CRITICAL_VITEST`，保证订单本地快照/client_secret 绑定的上游安全修复进入默认源码验收。工具链、九套件、notes 和 Jenkins 私库门禁不变；不扩大审计豁免。
+
 ## PK-018
 
 **旁路实例启动时保护现有并发。** 引入：`66671398d`。
@@ -482,6 +486,10 @@
 - 同步Chat/Messages与Messages的custom_tool_call_input.done保留Kilo工具调用输入。响应继续走原 HTTP JSON/SSE、首字计时、usage 改写和费用流程；内部保留原 usage，缓存转换照常。没有新增表或全局设置。
 - 入口：`account_kilo_bridge.go`、`openai_kilo_bridge.go`、`admin_account.go`、`upstream_protocol_routing.go`、OpenAI forward/passthrough/chat/messages/request_body/scheduling、`account_test_service.go`，创建/编辑组件与中英说明。
 - 验证：扩展原 `openai_gateway_service_test.go`、`openai_gateway_usage_integrity_test.go`、`gateway_reasoning_pricing_test.go`、强度策略/定价及 DTO 回归和两份账号表单 spec，覆盖平台限制、默认值/保存、普通/透传、映射/未映射、代理/直连、工具子任务、ultra/max、同步/流式、分组策略及缓存转换共存；独立倍率下核对客户金额、余额/订阅/API Key 额度和上游成本，用户出口不显示映射。实际执行结果见最终源码报告。未用真实 Kilo 付费凭据作在线生成验收，不声称所有模型/客户端均已实测。
+
+2026-10-19 合入 v0.2.17：普通/透传错误终态同时保留 Kilo 客户端错误脱敏和上游新增的 `created_at`、`sequence_number`；不改变管理员原始诊断、强度计费或 usage。原 `openai_response_model_rewrite_test.go` 新增 `TestPKKiloBridgeSynthesizedFailurePreservesUpstreamMetadata`，覆盖两条实际流式合成终态路径的时间、序号、真实响应 ID、正文、客户端脱敏和内部原错误保留，纳入现有 unit/race 选择器。
+
+同次审计发现的既有边界：强度倍率函数与校验由多类账号共享。第三方兼容 API Key 即使关闭 Kilo，若其 Chat→Responses 上游接受 ultra/persistent 且配置了同名倍率，仍可能使用该 PK 扩展键；真实 OpenAI 常规合法强度不受影响。详见[计费审计](docs/PK_OPENAI_KEY_BILLING_AUDIT_0.2.17.md)。本次登记并保留已有配置，不将这一缺口描述为所有普通账号都严格隔离，也不未经明确范围调整收费。
 
 ## PK-029
 
