@@ -114,6 +114,19 @@ docker compose -f compose.yaml ps
 
 ## 打包、验证和发布
 
+### 交给用户正式构建前（2026-10-19 明确要求）
+
+本项目“合并后交接 Jenkins 正式打包”包括准备、推送并核验正式 `vX.Y.Z-pk.N` 标签，不能只推送 `codex/vX.Y.Z-pk.N` 工作分支就宣称可以打正式包。普通源码合并不自动构建、发布或部署；已经约定正式打包交接时，助手须先完成以下事项，再把构建操作交给用户：
+
+- 核对最终私库 `main` 提交完整源码验证通过，并且该提交本身的 commit/tree 与已推送到 `refs/notes/pk-source-validation` 的通过报告匹配；新提交重新绑定、tree 改变重新验证的要求不变。
+- 核对本地/远端正式标签及私库 Release，确认目标版本未被其他版本占用，再创建并推送指向该已验证提交的正式标签。已存在且属于本次目标的标签仅核验，不重建或改写；指向不符或版本被占用时停止交接。
+- 从远端核实标签剥离后的 commit 等于目标提交，且在私库 `main` 历史内。附注标签的 tag 对象 SHA 不是 commit；当前控制脚本支持轻量及附注标签，不要求改成轻量标签。
+- 交付 `ACTION=release`、`SOURCE_REF=vX.Y.Z-pk.N`、`COMMIT_SHA` 和 `PACKAGE_ID` 留空的准确参数。由用户亲自点击构建，助手不默认代为触发；`ACTION=package` 的分支/SHA 只用于明确说明的候选试包，不替代正式交接。
+
+**本次已准备的示例（2026-10-19）：** 正式标签 `v0.2.17-pk.1` 已推送，远端剥离提交为 `0557923542d291ffd4c4e5fc25487777ef3918aa`，与当时 `main` 一致；该固定提交的测试服务器隔离源码验证及 notes 绑定、推送已完成。用户应选择 `ACTION=release`、`SOURCE_REF=v0.2.17-pk.1`，其余两项留空。交接时 Jenkins 尚未构建、验收或发布该版本，生产未部署；不改写现有标签，也不把这份历史验证用于后续改动。
+
+### 完整执行流程
+
 1. **提交前源码验证。** 完成代码和 PK 清单核对，检查范围后将待测源码全部暂存，无未暂存改动/非忽略未跟踪文件。默认在用户指定服务器受控隔离环境运行完整源码套件，或选择本机 `scripts/test-local.ps1`（WSL）/`python3 scripts/test-local.py`。`local-validation.json` 须为 `schema_version=2`、`tests_profile=pk-source-v2`，preflight 与九套件全部通过，`source_eligible=true`；前后 tree/快照一致，保留原日志及真实执行环境。不完整诊断或把服务器结果标作本机通过均不合格。
 2. **提交和绑定。** 测试通过后提交相同 tree，在干净最终提交上运行 `python3 scripts/test-local.py --bind-commit HEAD --report /path/to/local-validation.json --publish-evidence`；Windows 控制端可直接用 `python -B scripts/test-local.py --bind-commit HEAD --report ... --publish-evidence`，无需 WSL；若使用 WSL 包装入口，其对应参数为 `-BindCommit HEAD -Report ... -PublishEvidence`。代码和 `refs/notes/pk-source-validation` 都须推送私库。合入/正式 tag 指向的最终 commit 必须有自己的绑定报告；新 commit 重新绑定，tree 改变则重新测试，不能仅复制其他 commit 的 note。
 3. **一次正式 release。** 默认 `ACTION=release`，`SOURCE_REF` 选择正式 `vX.Y.Z-pk.N` 标签（规范化为 `refs/tags/...`），`COMMIT_SHA`、`PACKAGE_ID` 留空。仅支持属于私库 main 历史、未占用版本的正式 tag；分支/裸 SHA 或 COMMIT_SHA 覆盖直接拒绝。源码选择不改变可信流水线 SCM。

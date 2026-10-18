@@ -63,7 +63,18 @@ python -B scripts/test-local.py --bind-commit HEAD --report /path/to/local-valid
 
 源码报告记录测试前后完全相同的工作区快照、暂存 tree、base_commit、真实命令与日志摘要；必须 `status=passed` 且 `source_eligible=true`。提交后绑定要求工作区干净、HEAD tree 完全一致且 base_commit 为最终 commit 的祖先；报告保留原执行时间，不假冒重新测试。`--publish-evidence` 将绑定报告发布到私库 `refs/notes/pk-source-validation`，不强制覆盖已有不同 note 或分叉。代码与 notes 都须到达私库，Jenkins 才能核验。最终合入或 tag commit 本身必须有报告；仅另一 commit 的 tree 相同不够，须重新绑定。已绑定报告仅可重新绑定到旧绑定 commit 的同 tree 后代，保留原测试证据并为最终 commit 生成独立 note；tree 改变则重新完整测试。
 
-正式发布仍须在当前请求授权范围内，按以下默认流程执行：
+### 正式 Jenkins 交接门禁（2026-10-19）
+
+用户明确要求：本项目“合并后交接 Jenkins 正式打包”包含准备并推送正式版本标签。助手必须完成下列交接检查，才能告诉用户可以执行正式 `release`；仅推送 `codex/vX.Y.Z-pk.N` 工作分支不算交接完成。普通源码合并不自动触发构建、发布或上线；已约定交接正式 Jenkins 打包时，不得遗漏标签准备。
+
+1. 核对私库最终 `main` 提交已经完成完整源码验证，该提交本身有匹配 commit/tree 的通过报告，`refs/notes/pk-source-validation` 已推送私库；合入产生新 commit 时须按现有规则重新绑定，tree 改变时重新完整验证。
+2. 核对目标正式版本 `vX.Y.Z-pk.N` 的本地/远端标签和私库 Release 未被其他版本占用，再为上述已验证提交创建并推送正式标签。已存在且已核实属于本次目标的标签保留；指向不符或版本被占用时停止交接，不能删除、移动或强推标签来凑齐条件。
+3. 从私库远端重新读取正式标签及最终提交并核对一致。附注标签须剥离 tag 对象后比较 commit，不能把 tag 对象 SHA 当源码提交；轻量标签和附注标签均可使用。确认标签提交属于私库 `main` 历史，源码 notes 绑定的也是该提交。
+4. 交付准确参数：`ACTION=release`、`SOURCE_REF=vX.Y.Z-pk.N`，`COMMIT_SHA` 和 `PACKAGE_ID` 均留空。用户亲自点击 Jenkins 构建；除非当次另有明确授权，助手不代为触发构建或发布。候选试包须明确标成 `ACTION=package`，分支/SHA 候选不等于可供网页升级的正式版本。
+
+**2026-10-19 交接记录：** `v0.2.17-pk.1` 已推送私库，远端附注标签剥离后为 `0557923542d291ffd4c4e5fc25487777ef3918aa`，与当时 `main` 一致；该提交已通过测试服务器隔离环境的 preflight 和九套件，并绑定、推送源码验证 notes。交给用户的参数为 `ACTION=release`、`SOURCE_REF=v0.2.17-pk.1`、`COMMIT_SHA`/`PACKAGE_ID` 留空。交接时尚未执行该版本的 Jenkins 构建、制品验收或发布，也未部署生产；既有标签不改写。此记录只证明该固定提交，不自动覆盖后续改动。
+
+正式发布仍须在当前请求授权范围内，按以下默认流程执行；向用户交接第 2 步前须完成上述检查：
 
 1. 在目标版本唯一分支/原 PR 完成二开核对、完整源码验证，再提交并绑定 notes。按授权准备合入 main 的最终结果；最终 commit 必须有匹配报告，随后才推送并使用未占用的正式 PK 标签。当前继续保护 `codex/jenkins-build` / PR #7 和固定 SCM 引用，不新建重复分支。
 2. Jenkins 默认选择 `ACTION=release`，从 `SOURCE_REF` 选择该 `vX.Y.Z-pk.N` 正式标签，规范化后为 `refs/tags/...`；`COMMIT_SHA`、`PACKAGE_ID` 留空。分支或裸 SHA 不能执行 release，标签 commit 须在私库 main 历史内。源码选择不改变可信流水线来源。
