@@ -6,14 +6,14 @@
 
 ## 版本工作分支
 
-2026-10-21 用户为当前版本明确指定不带 `codex/` 的 `v0.2.17-pk.2` 分支，该版本复用此命名例外，不另建带前缀副本。Jenkins 候选分支选择 `origin/v0.2.17-pk.2`；正式 `release` 仍要求通过验收且属于 main 历史的同名正式标签，不能把分支当作标签。
+2026-10-21 用户要求所有工作分支取消前缀，当前复用 `v0.2.17-pk.2`，不允许任何 `codex/`、`feat/`、`fix/`、`sync/` 或其他附加前缀。Jenkins 候选分支选择 `origin/v0.2.17-pk.2`；正式 `release` 仍要求通过验收且属于 main 历史的同名正式标签，不能把分支当作标签。
 
-新工作分支统一为 `codex/vX.Y.Z-pk.N`，对应目标发行标签 `vX.Y.Z-pk.N`；`codex/v0.2.13-pk.1` 仅为命名示例，不表示已经选定该版本。`main` 保持正式分支。完整约束见 [项目约束](PROJECT_CONSTRAINTS.md) 第 6 节。
+所有工作分支统一为 `vX.Y.Z-pk.N`，对应目标发行标签 `vX.Y.Z-pk.N`；版本名仅为格式，不表示已经发布。`main` 保持正式分支。完整约束见 [项目约束](PROJECT_CONSTRAINTS.md) 第 6 节。
 
 - 同一目标未发布版本只复用一个工作分支和一个 PR。功能、修复、文档、依赖调整及上游合并都在其中累积，不添加任务、日期、助手或功能后缀，也不为重试打包另建分支。
 - 新建前核对本地/私库远端分支、在途 PR、私库标签和当前目标版本。已有对应分支或 PR 就继续使用；版本尚未明确时先查在途工作，仍不明确再确认目标，不先创建临时分支。确需新建时，从已核对的私库 `main` 创建。
 - 默认只有一个在途版本，完成既定合入/发行流程后才开始下一版本；只有用户明确要求并行不同版本时例外，每个版本仍只使用一个分支和 PR。命名和复用规则不代替二开审查、测试或正式发布门禁。
-- 现有分支本次不删除、不改名。当前 Jenkins 固定引用的 `codex/jenkins-build` 继续完成既有迁移，收尾后按既定流程将流水线来源切换到已审阅的 `main`，不能提前删除该引用。
+- 用户已授权本次清理所有带前缀的本地/私库旧分支，先确认提交已保全且无 PR/Jenkins/worktree 引用。Jenkins 已固定读取私库 `main`；Git 的 `origin/` 显示前缀与作者仓库上游分支不在删除范围内。
 - 未来清理先确认工作已完成该变更既定的合入/发行流程、没有未保全的独有提交，且没有在途 PR、Jenkins 或 worktree 引用，再按当次授权处理；不强制删除，不靠复制大量分支备份正式版本。
 
 ## 提交前源码测试与 Jenkins 打包
@@ -67,7 +67,7 @@ python -B scripts/test-local.py --bind-commit HEAD --report /path/to/local-valid
 
 ### 正式 Jenkins 交接门禁（2026-10-19）
 
-用户明确要求：本项目“合并后交接 Jenkins 正式打包”包含准备并推送正式版本标签。助手必须完成下列交接检查，才能告诉用户可以执行正式 `release`；仅推送 `codex/vX.Y.Z-pk.N` 工作分支不算交接完成。普通源码合并不自动触发构建、发布或上线；已约定交接正式 Jenkins 打包时，不得遗漏标签准备。
+用户明确要求：本项目“合并后交接 Jenkins 正式打包”包含准备并推送正式版本标签。助手必须完成下列交接检查，才能告诉用户可以执行正式 `release`；仅推送 `vX.Y.Z-pk.N` 工作分支不算交接完成。普通源码合并不自动触发构建、发布或上线；已约定交接正式 Jenkins 打包时，不得遗漏标签准备。
 
 1. 核对私库最终 `main` 提交已经完成完整源码验证，该提交本身有匹配 commit/tree 的通过报告，`refs/notes/pk-source-validation` 已推送私库；合入产生新 commit 时须按现有规则重新绑定，tree 改变时重新完整验证。
 2. 核对目标正式版本 `vX.Y.Z-pk.N` 的本地/远端标签和私库 Release 未被其他版本占用，再为上述已验证提交创建并推送正式标签。已存在且已核实属于本次目标的标签保留；指向不符或版本被占用时停止交接，不能删除、移动或强推标签来凑齐条件。
@@ -78,7 +78,7 @@ python -B scripts/test-local.py --bind-commit HEAD --report /path/to/local-valid
 
 正式发布仍须在当前请求授权范围内，按以下默认流程执行；向用户交接第 2 步前须完成上述检查：
 
-1. 在目标版本唯一分支/原 PR 完成二开核对、完整源码验证，再提交并绑定 notes。按授权准备合入 main 的最终结果；最终 commit 必须有匹配报告，随后才推送并使用未占用的正式 PK 标签。当前继续保护 `codex/jenkins-build` / PR #7 和固定 SCM 引用，不新建重复分支。
+1. 在目标版本唯一分支/原 PR 完成二开核对、完整源码验证，再提交并绑定 notes。按授权准备合入 main 的最终结果；最终 commit 必须有匹配报告，随后才推送并使用未占用的正式 PK 标签。Jenkins 固定 SCM 为已审阅的 `main`，不新建前缀分支或重复版本分支。
 2. Jenkins 默认选择 `ACTION=release`，从 `SOURCE_REF` 选择该 `vX.Y.Z-pk.N` 正式标签，规范化后为 `refs/tags/...`；`COMMIT_SHA`、`PACKAGE_ID` 留空。分支或裸 SHA 不能执行 release，标签 commit 须在私库 main 历史内。源码选择不改变可信流水线来源。
 3. Jenkins 显式获取源码 notes，检查最终 commit/tree、base 祖先及九套件结果，保存 `source-validation.json`、SHA256 和 notes 出处。随后一次执行 build → inventory → runtime → seal → publish；同一次 Go 编译的二进制进入镜像和更新归档。
 4. 运行时脚本在专用 Docker daemon 上执行 `pk-artifact-v2` 十一项检查，不连接生产、不接收发布凭据；核对归档/镜像同一二进制、非 root 执行、持久化程序、同种子更新保留、backup 恢复和种子切换等。报告绑定 package_id、commit/tree 与制品 SHA256，失败不发布。
@@ -220,7 +220,7 @@ gh pr list --repo pengkang0322/sub2api --state open
 git fetch upstream --no-tags
 ```
 
-例如目标已明确为 `v0.2.13-pk.1` 时（仅示例），本地存在就用 `git switch codex/v0.2.13-pk.1`；只有远端存在就跟踪 `origin/codex/v0.2.13-pk.1`。只有确认该版本尚无分支/PR、且符合单一在途版本约束时，才从已核对的 `origin/main` 新建 `codex/v0.2.13-pk.1`。不要依次执行“复用”和“新建”两条路径。
+例如目标已明确为 `v0.2.13-pk.1` 时（仅示例），本地存在就用 `git switch v0.2.13-pk.1`；只有远端存在就跟踪 `origin/v0.2.13-pk.1`。只有确认该版本尚无分支/PR、且符合单一在途版本约束时，才从已核对的 `origin/main` 新建 `v0.2.13-pk.1`。不要依次执行“复用”和“新建”两条路径。
 
 随后 fetch 选定的作者标签或分支，记录固定上游 commit，在这个版本分支上合并该 commit 并保留父提交关系；不另开上游同步或功能分支，不直接合并到 `main`。不要用整目录覆盖、`reset --hard upstream/main`、强制推送或 `push --mirror` 更新自己的仓库。
 

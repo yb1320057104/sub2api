@@ -8,11 +8,11 @@
 
 控制器不执行构建，任务固定运行在 `pk-builder`。构建 agent 使用专用 Docker daemon，`DOCKER_HOST` 必须是独立 daemon 的 TCP 地址；不挂载生产主机 Docker socket。Agent 与专用 daemon 必须以相同绝对路径共享 `/home/jenkins/agent`，因为编译容器只挂载任务的 `source` 子目录。
 
-Jenkins 的 Pipeline from SCM 已在 2026-10-08 合入后切换到私库已审阅的 `main`，读取根目录 `Jenkinsfile`，对应任务为 `sub2api-package`。原维护分支 `codex/jenkins-build` 保留，不删除或改名。不能将流水线 SCM 分支改成用户选择的 `SOURCE_REF` 或填写的 `COMMIT_SHA`；这些参数只选择被打包的源码。有权修改任务或其可信 SCM 分支的人等同拥有该任务的发布权限。正式发行标签仍必须属于私库 `main` 历史。
+Jenkins 的 Pipeline from SCM 已在 2026-10-08 合入后切换到私库已审阅的 `main`，读取根目录 `Jenkinsfile`，对应任务为 `sub2api-package`。历史维护分支不再作为活动依赖，初始化配置同样使用 `main`。不能将流水线 SCM 分支改成用户选择的 `SOURCE_REF` 或填写的 `COMMIT_SHA`；这些参数只选择被打包的源码。有权修改任务或其可信 SCM 分支的人等同拥有该任务的发布权限。正式发行标签仍必须属于私库 `main` 历史。
 
-后续新工作分支按项目约束第 6 节统一为 `codex/vX.Y.Z-pk.N`，同一未发布版本复用一个分支与 PR。Jenkins 的 `SOURCE_REF` 可选择对应的 `origin/codex/vX.Y.Z-pk.N` 来打候选包；选择版本命名的分支仍是候选，只有正式标签才走标签包校验。当前 `codex/jenkins-build` 是既有迁移引用，切换完成前不得为整理分支而删改它；不因一次打包或重试新建分支。
+后续工作分支按项目约束第 6 节统一为不带任何附加前缀的 `vX.Y.Z-pk.N`，同一未发布版本复用一个分支与 PR。Jenkins 的 `SOURCE_REF` 选择 `origin/vX.Y.Z-pk.N` 来打候选包；版本分支仍是候选，只有正式标签才走标签包校验。不因打包、修复或重试新建前缀分支或重复版本分支。
 
-2026-10-21 用户明确指定当前版本分支为 `v0.2.17-pk.2`，去掉 `codex/`。现有 `^origin/.*$` 分支筛选与 `origin/` 规范化已经支持该名称，不修改 Jenkins 识别规则：`origin/v0.2.17-pk.2` 解析为 `refs/heads/v0.2.17-pk.2`，仅用于 `package` 候选；裸 `v0.2.17-pk.2` 解析为正式标签，仍须满足既有 `release` 门禁。
+2026-10-21 用户要求全面禁止工作分支名前缀，当前分支为 `v0.2.17-pk.2`。现有 `^origin/.*$` 分支筛选与 `origin/` 规范化已经支持该名称，不修改 Jenkins 识别规则：`origin/v0.2.17-pk.2` 解析为 `refs/heads/v0.2.17-pk.2`，仅用于 `package` 候选；裸 `v0.2.17-pk.2` 解析为正式标签，仍须满足既有 `release` 门禁。
 
 需要 Git、Git Parameter、Pipeline、Credentials Binding 插件及 agent 的 Python 3.11+、Bash、Git、Docker CLI、gzip/tar。Node 24、pnpm 9.15.9 和 `backend/go.mod` 指定的 Go 工具链由隔离编译容器提供。编译容器不挂载凭据、流水线代码、历史产物、测试证据或生产数据，也不挂载 Docker socket。默认每个编译容器最多 2 CPU / 4 GiB，可通过 agent 的 `PK_BUILD_CPUS`、`PK_BUILD_MEMORY` 调整。
 
@@ -118,7 +118,7 @@ docker compose -f compose.yaml ps
 
 ### 交给用户正式构建前（2026-10-19 明确要求）
 
-本项目“合并后交接 Jenkins 正式打包”包括准备、推送并核验正式 `vX.Y.Z-pk.N` 标签，不能只推送 `codex/vX.Y.Z-pk.N` 工作分支就宣称可以打正式包。普通源码合并不自动构建、发布或部署；已经约定正式打包交接时，助手须先完成以下事项，再把构建操作交给用户：
+本项目“合并后交接 Jenkins 正式打包”包括准备、推送并核验正式 `vX.Y.Z-pk.N` 标签，不能只推送 `vX.Y.Z-pk.N` 工作分支就宣称可以打正式包。普通源码合并不自动构建、发布或部署；已经约定正式打包交接时，助手须先完成以下事项，再把构建操作交给用户：
 
 - 核对最终私库 `main` 提交完整源码验证通过，并且该提交本身的 commit/tree 与已推送到 `refs/notes/pk-source-validation` 的通过报告匹配；新提交重新绑定、tree 改变重新验证的要求不变。
 - 核对本地/远端正式标签及私库 Release，确认目标版本未被其他版本占用，再创建并推送指向该已验证提交的正式标签。已存在且属于本次目标的标签仅核验，不重建或改写；指向不符或版本被占用时停止交接。

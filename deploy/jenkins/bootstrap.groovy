@@ -46,7 +46,7 @@ def node = new DumbSlave('pk-builder', 'Isolated Sub2API build agent', '/home/je
 j.addNode(node)
 new File(j.rootDir, '.pk-agent-secret').text = j.getComputer('pk-builder').getJnlpMac()
 def scm = new GitSCM([new UserRemoteConfig('git@github.com:pengkang0322/sub2api.git', null, null, 'pk-github-read')],
-  [new BranchSpec('*/codex/jenkins-build')], false, [], null, null, [])
+  [new BranchSpec('*/main')], false, [], null, null, [])
 def job = j.createProject(WorkflowJob, 'sub2api-package')
 job.setDefinition(new CpsScmFlowDefinition(scm, 'Jenkinsfile'))
 job.setDescription('Isolated source tests precede commits. release verifies their Git notes, builds once, validates the exact artifacts and publishes to private GitHub Release/GHCR. No production deployment.')
