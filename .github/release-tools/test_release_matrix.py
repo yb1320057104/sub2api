@@ -461,6 +461,20 @@ class JenkinsRuntimeTest(unittest.TestCase):
     def encode(value):
         return json.dumps(value, separators=(',', ':')).encode()
 
+    def test_runtime_version_accepts_current_and_legacy_brand_with_exact_identity(self):
+        validator = runtime.Validator(self.directory, {'checks': []})
+        validator.data = {'version': '9.8.7-pk.2', 'commit': 'a' * 40}
+        for brand in ('DP API', 'Sub2API'):
+            output = f"{brand} 9.8.7-pk.2 (commit: {'a' * 40}, built: 2026-10-21)"
+            with self.subTest(brand=brand), patch.object(validator, 'container', return_value=output):
+                validator.version()
+            for invalid in (output.replace('9.8.7-pk.2', '9.8.7-pk.1'),
+                            output.replace('a' * 40, 'b' * 40),
+                            output.replace(brand, 'OtherAPI')):
+                with self.subTest(output=invalid), patch.object(validator, 'container', return_value=invalid):
+                    with self.assertRaisesRegex(RuntimeError, 'Runtime version or commit mismatch'):
+                        validator.version()
+
     def archive(self, *, oci=True, bad_attestation=False, binary_mode=0o555, inline_attestation=False):
         self.files, self.paths = {}, {}
         binary = b'PK fixture binary; never executed'

@@ -192,8 +192,8 @@ export default {
 
   // Setup Wizard
   setup: {
-    title: 'Sub2API Setup',
-    description: 'Configure your Sub2API instance',
+    title: 'DP API Setup',
+    description: 'Configure your DP API instance',
     database: {
       title: 'Database Configuration',
       description: 'Connect to your PostgreSQL database',

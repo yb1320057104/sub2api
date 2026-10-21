@@ -1,17 +1,18 @@
 <template>
-  <AuthLayout>
-    <div class="space-y-6">
+  <LoginLayout>
+    <div class="login-form space-y-7">
       <!-- Title -->
-      <div class="text-center">
-        <h2 class="text-2xl font-bold text-gray-900 dark:text-white">
-          {{ t('auth.welcomeBack') }}
+      <div class="login-heading">
+        <p class="login-kicker">{{ t('auth.loginShowcase.panelEyebrow') }}</p>
+        <h2 class="text-gray-900 dark:text-white">
+          {{ t('auth.welcomeBack') }}<span aria-hidden="true">.</span>
         </h2>
         <p class="mt-2 text-sm text-gray-500 dark:text-dark-400">
           {{ t('auth.signInToAccount') }}
         </p>
       </div>
       <!-- Login Form -->
-      <form @submit.prevent="handleLogin" class="space-y-5">
+      <form @submit.prevent="handleLogin" class="space-y-6">
         <!-- Email Input -->
         <div>
           <label for="email" class="input-label">
@@ -60,6 +61,8 @@
               type="button"
               @click="showPassword = !showPassword"
               :disabled="authActionDisabled"
+              :aria-label="showPassword ? t('auth.loginShowcase.hidePassword') : t('auth.loginShowcase.showPassword')"
+              :aria-pressed="showPassword"
               class="absolute inset-y-0 right-0 flex items-center pr-3.5 text-gray-400 transition-colors hover:text-gray-600 dark:hover:text-dark-300"
             >
               <Icon v-if="showPassword" name="eyeOff" size="md" />
@@ -101,30 +104,33 @@
         <button
           type="submit"
           :disabled="authActionDisabled || (turnstileEnabled && !turnstileToken)"
-          class="btn btn-primary w-full"
+          class="btn btn-primary login-submit w-full"
         >
-          <svg
-            v-if="isLoading"
-            class="-ml-1 mr-2 h-4 w-4 animate-spin text-white"
-            fill="none"
-            viewBox="0 0 24 24"
-          >
-            <circle
-              class="opacity-25"
-              cx="12"
-              cy="12"
-              r="10"
-              stroke="currentColor"
-              stroke-width="4"
-            ></circle>
-            <path
-              class="opacity-75"
-              fill="currentColor"
-              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-            ></path>
-          </svg>
-          <Icon v-else name="login" size="md" class="mr-2" />
-          {{ isLoading ? t('auth.signingIn') : t('auth.signIn') }}
+          <span class="login-submit-label">
+            <svg
+              v-if="isLoading"
+              class="h-4 w-4 animate-spin"
+              fill="none"
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+            >
+              <circle
+                class="opacity-25"
+                cx="12"
+                cy="12"
+                r="10"
+                stroke="currentColor"
+                stroke-width="4"
+              ></circle>
+              <path
+                class="opacity-75"
+                fill="currentColor"
+                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+              ></path>
+            </svg>
+            {{ isLoading ? t('auth.signingIn') : t('auth.signIn') }}
+          </span>
+          <span class="login-submit-arrow" aria-hidden="true"><Icon name="arrowRight" size="md" /></span>
         </button>
 
         <LoginAgreementPrompt
@@ -208,7 +214,7 @@
         </router-link>
       </p>
     </template>
-  </AuthLayout>
+  </LoginLayout>
 
   <!-- 2FA Modal -->
   <TotpLoginModal
@@ -225,7 +231,7 @@
 import { computed, ref, reactive, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { AuthLayout } from '@/components/layout'
+import LoginLayout from '@/components/layout/LoginLayout.vue'
 import LinuxDoOAuthSection from '@/components/auth/LinuxDoOAuthSection.vue'
 import DingTalkOAuthSection from '@/components/auth/DingTalkOAuthSection.vue'
 import OidcOAuthSection from '@/components/auth/OidcOAuthSection.vue'
@@ -734,6 +740,104 @@ function handle2FACancel(): void {
 </script>
 
 <style scoped>
+.login-kicker {
+  margin-bottom: 16px;
+  color: var(--login-muted);
+  font-size: 12px;
+}
+
+.login-heading h2 {
+  color: var(--login-ink);
+  font-size: clamp(32px, 2.6vw, 48px);
+  font-weight: 800;
+  line-height: 1.2;
+  letter-spacing: -.06em;
+}
+
+.login-heading h2 > span {
+  color: var(--login-accent);
+}
+
+.login-heading > p:last-child {
+  margin-top: 16px;
+  line-height: 1.7;
+}
+
+.login-form .input-label {
+  margin-bottom: 10px;
+  font-size: 12px;
+}
+
+.login-form .input {
+  min-height: 56px;
+  border-radius: 15px;
+  font-size: 14px;
+}
+
+.login-form .login-submit {
+  min-height: 62px;
+  justify-content: space-between;
+  gap: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--login-accent);
+  border-radius: 16px;
+  color: var(--login-ink);
+  background: transparent;
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.login-submit-label {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 15px 22px;
+}
+
+.login-submit-label svg {
+  color: var(--login-accent);
+}
+
+.login-submit-arrow {
+  display: grid;
+  align-self: stretch;
+  flex: none;
+  width: 64px;
+  place-items: center;
+  color: var(--login-on-accent);
+  background: var(--login-accent);
+}
+
+.login-submit-arrow svg {
+  transition: transform .2s ease;
+}
+
+.login-submit:hover:not(:disabled) .login-submit-arrow svg {
+  transform: translateX(4px);
+}
+
+.login-form .btn-secondary {
+  min-height: 46px;
+  border-radius: 14px;
+}
+
+.login-form button:focus-visible {
+  outline: 2px solid var(--login-accent);
+  outline-offset: 4px;
+}
+
+@media (max-width: 479px) {
+  .login-form .input { font-size: 16px; }
+  .login-form .login-submit { min-height: 56px; }
+  .login-submit-arrow { width: 58px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .login-submit-arrow svg { transition: none; }
+}
+
 .fade-enter-active,
 .fade-leave-active {
   transition: all 0.3s ease;

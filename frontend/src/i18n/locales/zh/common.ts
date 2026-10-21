@@ -121,7 +121,7 @@ export default {
     blockingNotice: '继续使用控制台前，须完成部署与运营合规确认。',
     riskNotice: '本确认用于以清晰、显著、可留痕的方式提示自部署实例的合规义务与运营风险。',
     version: '协议版本',
-    openDocument: '在 GitHub 查看协议文件',
+    openDocument: '查看完整协议',
     documentSource: '协议正文来自本项目仓库中的 Markdown 文件。修改协议内容时必须同步递增协议版本；已确认的旧版本将失效，控制台使用者须重新确认。',
     inputLabel: '请逐字输入以下确认短语',
     inputPlaceholder: '输入确认短语以继续',
@@ -218,6 +218,22 @@ export default {
 
   // Auth
   auth: {
+    loginShowcase: {
+      eyebrow: '你的 AI 工作空间',
+      headlineFirst: '一个入口，',
+      headlineSecond: '连接你的 AI。',
+      description: '统一管理模型调用、API 密钥与用量，让每一次连接都清晰可控。',
+      unified: '多模型统一接入',
+      visible: '用量清晰可查',
+      models: '模型调用',
+      quota: '额度管理',
+      footer: '从这里，开始连接',
+      localTime: '本地时间',
+      accountAccess: '账户登录',
+      panelEyebrow: '继续你的工作空间',
+      showPassword: '显示密码',
+      hidePassword: '隐藏密码'
+    },
     welcomeBack: '欢迎回来',
     signInToAccount: '登录您的账户以继续',
     signIn: '登录',

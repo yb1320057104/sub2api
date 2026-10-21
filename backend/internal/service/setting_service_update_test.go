@@ -669,6 +669,7 @@ func TestSettingService_InitializeDefaultSettingsPersistsConfiguredForwardedClie
 	svc := NewSettingService(repo, cfg)
 
 	require.NoError(t, svc.InitializeDefaultSettings(context.Background()))
+	require.Equal(t, "DP API", repo.values[SettingKeySiteName])
 	require.JSONEq(t, `["X-Cdn-Ip","True-Client-Ip"]`, repo.values[SettingKeyForwardedClientIPHeaders])
 }
 

@@ -1,15 +1,14 @@
 <template>
-  <div class="min-h-screen bg-gray-50 dark:bg-dark-950">
-    <!-- Background Decoration -->
-    <div class="pointer-events-none fixed inset-0 bg-mesh-gradient"></div>
-
+  <div
+    class="app-layout min-h-screen bg-canvas dark:bg-dark-950"
+    :style="{ '--app-sidebar-width': sidebarCollapsed ? '72px' : '280px' }"
+  >
     <!-- Sidebar -->
     <AppSidebar />
 
     <!-- Main Content Area -->
     <div
-      class="relative min-h-screen transition-all duration-300"
-      :class="[sidebarCollapsed ? 'lg:ml-[72px]' : 'lg:ml-64']"
+      class="relative min-h-screen transition-[margin-left] duration-300 motion-reduce:transition-none lg:ml-[var(--app-sidebar-width)]"
     >
       <!-- Header -->
       <AppHeader />
@@ -50,3 +49,21 @@ onMounted(() => {
 
 defineExpose({ replayTour })
 </script>
+
+<style scoped>
+.app-layout {
+  --app-header-height: 4rem;
+  --app-content-padding: 1rem;
+}
+
+@media (min-width: 768px) {
+  .app-layout { --app-content-padding: 1.5rem; }
+}
+
+@media (min-width: 1024px) {
+  .app-layout {
+    --app-header-height: 5rem;
+    --app-content-padding: 2rem;
+  }
+}
+</style>

@@ -28,7 +28,7 @@ spec = importlib.util.spec_from_file_location("source_validation", ROOT / "scrip
 local = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(local)
 REMOTE_ROOT = "/srv/pk-source-validation/runs"
-IMAGE = "pk-source-tests:20261015"
+IMAGE = "pk-source-tests:go1.27.3-20261021"
 
 
 def require(condition, message):

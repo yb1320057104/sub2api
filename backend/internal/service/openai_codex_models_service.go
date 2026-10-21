@@ -328,7 +328,7 @@ func openAIConfiguredCodexModelIDsForGroup(accounts []Account, group *Group) []s
 
 const (
 	configuredCodexModelPriority       = 50
-	configuredCodexCustomDescription   = "Custom model routed through Sub2API."
+	configuredCodexCustomDescription   = "Custom model routed through DP API."
 	configuredCodexFallbackContext     = 272_000
 	configuredCodexDeepSeekV4Context   = 1_000_000
 	configuredCodexGrokContext         = 500_000
@@ -455,7 +455,7 @@ func newConfiguredCodexModelDescriptor(modelID string) configuredCodexModelDescr
 	if isDeepSeekCodexModel(modelID) {
 		defaultReasoningLevel := "high"
 		descriptor.DisplayName = deepSeekCodexDisplayName(modelID)
-		descriptor.Description = "DeepSeek coding and reasoning model routed through Sub2API."
+		descriptor.Description = "DeepSeek coding and reasoning model routed through DP API."
 		descriptor.DefaultReasoningLevel = &defaultReasoningLevel
 		descriptor.SupportedReasoningLevels = []configuredCodexReasoningLevel{
 			{Effort: "low", Description: "Fast responses with lighter reasoning"},
@@ -469,7 +469,7 @@ func newConfiguredCodexModelDescriptor(modelID string) configuredCodexModelDescr
 
 	if isGrokCodexModel(modelID) {
 		descriptor.DisplayName = grokCodexDisplayName(modelID)
-		descriptor.Description = "Grok coding and reasoning model routed through Sub2API."
+		descriptor.Description = "Grok coding and reasoning model routed through DP API."
 		descriptor.SupportsParallelToolCalls = true
 		descriptor.ContextWindow = grokCodexContextWindow(modelID)
 		descriptor.MaxContextWindow = descriptor.ContextWindow
@@ -486,7 +486,7 @@ func newConfiguredCodexModelDescriptor(modelID string) configuredCodexModelDescr
 			descriptor.MaxContextWindow = 1_000_000
 		}
 		descriptor.DisplayName = claudeCodexDisplayName(modelID)
-		descriptor.Description = "Claude coding and reasoning model routed through Sub2API."
+		descriptor.Description = "Claude coding and reasoning model routed through DP API."
 		descriptor.SupportsParallelToolCalls = true
 		if levels := configuredCodexClaudeReasoningLevels(modelID); len(levels) > 0 {
 			defaultReasoningLevel := claudeCodexDefaultReasoningLevel(levels)
@@ -500,7 +500,7 @@ func newConfiguredCodexModelDescriptor(modelID string) configuredCodexModelDescr
 
 	if isOpenAICodexGPTModel(modelID) {
 		descriptor.DisplayName = openaiCodexDisplayName(modelID)
-		descriptor.Description = "OpenAI GPT coding model routed through Sub2API."
+		descriptor.Description = "OpenAI GPT coding model routed through DP API."
 		descriptor.SupportsParallelToolCalls = true
 		descriptor.ServiceTiers = configuredCodexServiceTiersForModel(modelID)
 		if isOpenAICodexReasoningGPTModel(modelID) {

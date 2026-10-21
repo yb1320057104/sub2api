@@ -5,19 +5,20 @@ export default {
   theme: {
     extend: {
       colors: {
-        // 主色调 - Teal/Cyan 青色系
+        canvas: '#f6f8fc',
+        // 主色调 - 柔和蓝，与侧栏和工作区保持一致
         primary: {
-          50: '#f0fdfa',
-          100: '#ccfbf1',
-          200: '#99f6e4',
-          300: '#5eead4',
-          400: '#2dd4bf',
-          500: '#14b8a6',
-          600: '#0d9488',
-          700: '#0f766e',
-          800: '#115e59',
-          900: '#134e4a',
-          950: '#042f2e'
+          50: '#eff4ff',
+          100: '#e3ecfd',
+          200: '#ceddfb',
+          300: '#b2c9f7',
+          400: '#8faff0',
+          500: '#6089e8',
+          600: '#466dcc',
+          700: '#3656a9',
+          800: '#304a8a',
+          900: '#2d416e',
+          950: '#1b2845'
         },
         // 辅助色 - 深蓝灰
         accent: {
@@ -67,20 +68,21 @@ export default {
       boxShadow: {
         glass: '0 8px 32px rgba(0, 0, 0, 0.08)',
         'glass-sm': '0 4px 16px rgba(0, 0, 0, 0.06)',
-        glow: '0 0 20px rgba(20, 184, 166, 0.25)',
-        'glow-lg': '0 0 40px rgba(20, 184, 166, 0.35)',
-        card: '0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.06)',
-        'card-hover': '0 10px 40px rgba(0, 0, 0, 0.08)',
+        glow: '0 0 20px rgba(96, 137, 232, 0.18)',
+        'glow-lg': '0 0 40px rgba(96, 137, 232, 0.24)',
+        card: '0 2px 12px rgba(45, 65, 110, 0.035)',
+        'card-hover': '0 8px 28px rgba(45, 65, 110, 0.08)',
+        'sidebar-active': '0 4px 16px rgba(70, 109, 204, 0.12), 0 1px 3px rgba(70, 109, 204, 0.1)',
         'inner-glow': 'inset 0 1px 0 rgba(255, 255, 255, 0.1)'
       },
       backgroundImage: {
         'gradient-radial': 'radial-gradient(var(--tw-gradient-stops))',
-        'gradient-primary': 'linear-gradient(135deg, #14b8a6 0%, #0d9488 100%)',
+        'gradient-primary': 'linear-gradient(135deg, #6089e8 0%, #466dcc 100%)',
         'gradient-dark': 'linear-gradient(135deg, #1e293b 0%, #0f172a 100%)',
         'gradient-glass':
           'linear-gradient(135deg, rgba(255,255,255,0.1) 0%, rgba(255,255,255,0.05) 100%)',
         'mesh-gradient':
-          'radial-gradient(at 40% 20%, rgba(20, 184, 166, 0.12) 0px, transparent 50%), radial-gradient(at 80% 0%, rgba(6, 182, 212, 0.08) 0px, transparent 50%), radial-gradient(at 0% 50%, rgba(20, 184, 166, 0.08) 0px, transparent 50%)'
+          'radial-gradient(at 40% 20%, rgba(96, 137, 232, 0.08) 0px, transparent 50%), radial-gradient(at 80% 0%, rgba(143, 175, 240, 0.06) 0px, transparent 50%), radial-gradient(at 0% 50%, rgba(96, 137, 232, 0.05) 0px, transparent 50%)'
       },
       animation: {
         'fade-in': 'fadeIn 0.3s ease-out',
@@ -118,8 +120,8 @@ export default {
           '100%': { backgroundPosition: '200% 0' }
         },
         glow: {
-          '0%': { boxShadow: '0 0 20px rgba(20, 184, 166, 0.25)' },
-          '100%': { boxShadow: '0 0 30px rgba(20, 184, 166, 0.4)' }
+          '0%': { boxShadow: '0 0 20px rgba(96, 137, 232, 0.18)' },
+          '100%': { boxShadow: '0 0 30px rgba(96, 137, 232, 0.28)' }
         }
       },
       backdropBlur: {

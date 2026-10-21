@@ -520,13 +520,13 @@ onUnmounted(() => {
 <style scoped>
 .select-trigger {
   @apply flex w-full items-center justify-between gap-2;
-  @apply rounded-xl px-4 py-2.5 text-sm;
-  @apply bg-white dark:bg-dark-800;
-  @apply border border-gray-200 dark:border-dark-600;
+  @apply rounded-full px-4 py-2.5 text-sm;
+  @apply bg-canvas dark:bg-dark-800;
+  @apply border border-transparent dark:border-dark-600;
   @apply text-gray-900 dark:text-gray-100;
   @apply transition-all duration-200;
   @apply focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/30;
-  @apply hover:border-gray-300 dark:hover:border-dark-500;
+  @apply hover:border-primary-200 dark:hover:border-dark-500;
   @apply cursor-pointer;
 }
 
@@ -561,7 +561,7 @@ onUnmounted(() => {
 .select-dropdown-portal {
   @apply w-max min-w-[200px];
   @apply bg-white dark:bg-dark-800;
-  @apply rounded-xl;
+  @apply rounded-2xl;
   @apply border border-gray-200 dark:border-dark-700;
   @apply shadow-lg shadow-black/10 dark:shadow-black/30;
   @apply overflow-hidden;

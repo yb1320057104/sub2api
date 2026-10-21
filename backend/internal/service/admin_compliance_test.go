@@ -63,6 +63,11 @@ func TestAdminComplianceStatusRequiresAckWhenMissing(t *testing.T) {
 	require.Equal(t, AdminComplianceVersion, status.Version)
 	require.Equal(t, AdminComplianceAckPhraseZH, status.AckPhraseZH)
 	require.Equal(t, AdminComplianceDocumentPathZH, status.DocumentPathZH)
+	require.Equal(t, "v2026.10.21", status.Version)
+	require.Equal(t, "/legal/admin-compliance", status.DocumentURLZH)
+	require.Equal(t, "/legal/admin-compliance", status.DocumentURLEN)
+	require.Contains(t, status.AckPhraseZH, "DP API")
+	require.Contains(t, status.AckPhraseEN, "DP API")
 }
 
 func TestAcceptAdminComplianceRejectsWrongPhrase(t *testing.T) {
@@ -101,16 +106,18 @@ func TestAcceptAdminCompliancePersistsCurrentVersion(t *testing.T) {
 }
 
 func TestAdminComplianceStatusRequiresAckOnOldVersion(t *testing.T) {
-	old, err := json.Marshal(AdminComplianceAcknowledgement{Version: "v2026.01.01"})
+	old, err := json.Marshal(AdminComplianceAcknowledgement{Version: "v2026.06.10"})
 	require.NoError(t, err)
-	svc := NewSettingService(&adminComplianceRepoStub{
+	repo := &adminComplianceRepoStub{
 		values: map[string]string{adminComplianceAcknowledgementKey(1): string(old)},
-	}, &config.Config{})
+	}
+	svc := NewSettingService(repo, &config.Config{})
 
 	status, err := svc.GetAdminComplianceStatus(context.Background(), 1)
 	require.NoError(t, err)
 	require.True(t, status.Required)
 	require.Nil(t, status.Acknowledgement)
+	require.Equal(t, string(old), repo.values[adminComplianceAcknowledgementKey(1)], "reading the new version must preserve the historical acknowledgement")
 }
 
 func TestAdminComplianceStatusIsPerAdminUser(t *testing.T) {

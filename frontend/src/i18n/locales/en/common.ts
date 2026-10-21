@@ -121,7 +121,7 @@ export default {
     blockingNotice: 'Deployment and operation compliance acknowledgment is required before continuing to use the console.',
     riskNotice: 'This acknowledgment provides clear, conspicuous, and reproducible notice of compliance obligations and operation risks for self-hosted instances.',
     version: 'Document Version',
-    openDocument: 'Open the GitHub document',
+    openDocument: 'Read the full agreement',
     documentSource: 'The agreement text comes from Markdown files in this project repository. When the agreement content changes, the document version must be incremented; acknowledgments of older versions become invalid and console users must acknowledge again.',
     inputLabel: 'Type the following confirmation phrase exactly',
     inputPlaceholder: 'Type the confirmation phrase to continue',
@@ -218,6 +218,22 @@ export default {
 
   // Auth
   auth: {
+    loginShowcase: {
+      eyebrow: 'Your AI workspace',
+      headlineFirst: 'One gateway.',
+      headlineSecond: 'Your AI, connected.',
+      description: 'Manage model requests, API keys, and usage together. Keep every connection in view.',
+      unified: 'One gateway, many models',
+      visible: 'Usage at a glance',
+      models: 'Model requests',
+      quota: 'Quota management',
+      footer: 'Your next connection starts here',
+      localTime: 'Local time',
+      accountAccess: 'Account access',
+      panelEyebrow: 'Back to your workspace',
+      showPassword: 'Show password',
+      hidePassword: 'Hide password'
+    },
     welcomeBack: 'Welcome Back',
     signInToAccount: 'Sign in to your account to continue',
     signIn: 'Sign In',

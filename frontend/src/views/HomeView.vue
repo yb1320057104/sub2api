@@ -22,7 +22,7 @@
       <nav class="mx-auto flex max-w-5xl flex-wrap items-center justify-between gap-3 sm:gap-4">
         <div class="flex min-w-0 flex-1 items-center gap-3">
           <img
-            :src="siteLogo || '/logo.svg'"
+            :src="siteLogo || '/dp-api-logo.png'"
             alt="Logo"
             class="h-9 w-9 shrink-0 rounded-lg object-contain"
           />
@@ -70,7 +70,7 @@
     <main class="flex min-w-0 flex-1 items-center justify-center px-4 py-16 sm:px-6">
       <div class="min-w-0 max-w-2xl text-center">
         <img
-          :src="siteLogo || '/logo.svg'"
+          :src="siteLogo || '/dp-api-logo.png'"
           alt="Logo"
           class="mx-auto mb-6 h-20 w-20 rounded-2xl object-contain"
         />
@@ -120,7 +120,7 @@
         <!-- Logo -->
         <div class="flex items-center">
           <div class="h-10 w-10 overflow-hidden rounded-xl shadow-md">
-            <img :src="siteLogo || '/logo.svg'" alt="Logo" class="h-full w-full object-contain" />
+            <img :src="siteLogo || '/dp-api-logo.png'" alt="Logo" class="h-full w-full object-contain" />
           </div>
         </div>
 
@@ -469,7 +469,7 @@
         <p class="text-sm text-gray-500 dark:text-dark-400">
           &copy; {{ currentYear }} {{ siteName }}. {{ t('home.footer.allRightsReserved') }}
         </p>
-        <div class="flex items-center gap-4">
+        <div v-if="docUrl" class="flex items-center gap-4">
           <a
             v-if="docUrl"
             :href="docUrl"
@@ -478,14 +478,6 @@
             class="text-sm text-gray-500 transition-colors hover:text-gray-700 dark:text-dark-400 dark:hover:text-white"
           >
             {{ t('home.docs') }}
-          </a>
-          <a
-            :href="githubUrl"
-            target="_blank"
-            rel="noopener noreferrer"
-            class="text-sm text-gray-500 transition-colors hover:text-gray-700 dark:text-dark-400 dark:hover:text-white"
-          >
-            GitHub
           </a>
         </div>
       </div>
@@ -500,6 +492,7 @@ import { useAuthStore, useAppStore } from '@/stores'
 import LocaleSwitcher from '@/components/common/LocaleSwitcher.vue'
 import Icon from '@/components/icons/Icon.vue'
 import { sanitizeUrl } from '@/utils/url'
+import { resolveSiteName } from '@/utils/branding'
 import { FeatureFlags, isFeatureFlagEnabled } from '@/utils/featureFlags'
 
 const { t } = useI18n()
@@ -508,7 +501,7 @@ const authStore = useAuthStore()
 const appStore = useAppStore()
 
 // Site settings - directly from appStore (already initialized from injected config)
-const siteName = computed(() => appStore.cachedPublicSettings?.site_name || appStore.siteName || 'Sub2API')
+const siteName = computed(() => resolveSiteName(appStore.cachedPublicSettings?.site_name || appStore.siteName))
 const siteLogo = computed(() => sanitizeUrl(appStore.cachedPublicSettings?.site_logo || appStore.siteLogo || '', { allowRelative: true, allowDataUrl: true }))
 const siteSubtitle = computed(() => appStore.cachedPublicSettings?.site_subtitle || 'AI API Gateway Platform')
 const docUrl = computed(() => sanitizeUrl(appStore.cachedPublicSettings?.doc_url || appStore.docUrl || ''))
@@ -525,9 +518,6 @@ const isHomeContentUrl = computed(() => {
 
 // Theme
 const isDark = ref(document.documentElement.classList.contains('dark'))
-
-// GitHub URL
-const githubUrl = 'https://github.com/Wei-Shaw/sub2api'
 
 // Auth state
 const isAuthenticated = computed(() => authStore.isAuthenticated)

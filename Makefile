@@ -7,7 +7,21 @@ FRONTEND_CRITICAL_VITEST := \
 	src/api/__tests__/payment.spec.ts \
 	src/api/__tests__/keys.bulkUpdate.spec.ts \
 	src/router/__tests__/feature-access.spec.ts \
+	src/router/__tests__/title.spec.ts \
+	src/stores/__tests__/app.spec.ts \
+	src/stores/__tests__/adminCompliance.reset.spec.ts \
+	src/utils/__tests__/branding.spec.ts \
+	src/views/__tests__/HomeView.compact.spec.ts \
 	src/components/layout/__tests__/AppSidebar.spec.ts \
+	src/components/layout/__tests__/TablePageLayout.spec.ts \
+	src/components/common/__tests__/Select.spec.ts \
+	src/components/common/__tests__/Select.keyboard.spec.ts \
+	src/components/common/__tests__/Select.ime.spec.ts \
+	src/components/common/__tests__/Select.searchHighlight.spec.ts \
+	src/components/common/__tests__/disabledSelectors.spec.ts \
+	src/components/common/__tests__/DateRangePicker.spec.ts \
+	src/components/common/__tests__/DateRangePicker.midnight.spec.ts \
+	src/components/common/__tests__/DateRangePicker.dismiss.spec.ts \
 	src/components/account/__tests__/OpenAIReferralCell.spec.ts \
 	src/components/account/__tests__/OpenAIReferralCell.transport.spec.ts \
 	src/components/account/__tests__/OpenAIQuotaResetCell.spark_shadow.spec.ts \
@@ -24,12 +38,18 @@ FRONTEND_CRITICAL_VITEST := \
 	src/components/account/__tests__/credentialsBuilder.spec.ts \
 	src/components/account/__tests__/OpenCodeGoProtocolRulesEditor.spec.ts \
 	src/components/keys/__tests__/BulkEditKeysModal.spec.ts \
+	src/components/keys/__tests__/UseKeyModal.spec.ts \
 	src/components/admin/user/__tests__/UserPlatformQuotaModal.spec.ts \
 	src/components/admin/usage/__tests__/UsageTable.spec.ts \
 	src/views/user/__tests__/KeysView.spec.ts \
+	src/views/user/__tests__/CustomPageView.spec.ts \
 	src/api/__tests__/channelMonitorV2.spec.ts \
 	src/views/auth/__tests__/LinuxDoCallbackView.spec.ts \
 	src/views/auth/__tests__/WechatCallbackView.spec.ts \
+	src/views/auth/__tests__/LoginView.spec.ts \
+	src/views/auth/__tests__/TencentCaptchaActionGate.spec.ts \
+	src/components/auth/__tests__/OAuthLoginSections.spec.ts \
+	src/components/auth/__tests__/TotpLoginModal.spec.ts \
 	src/views/user/__tests__/PaymentView.spec.ts \
 	src/views/user/__tests__/StripePaymentView.spec.ts \
 	src/views/user/__tests__/PaymentResultView.spec.ts \
@@ -37,6 +57,8 @@ FRONTEND_CRITICAL_VITEST := \
 	src/components/user/profile/__tests__/ProfileInfoCard.spec.ts \
 	src/components/user/profile/__tests__/ProfileIdentityBindingsSection.spec.ts \
 	src/views/admin/__tests__/SettingsView.spec.ts \
+	src/views/admin/__tests__/DashboardView.spec.ts \
+	src/features/prompt-audit/__tests__/PromptAuditView.spec.ts \
 	src/views/admin/__tests__/UsageView.spec.ts \
 	src/features/channel-monitor-v2/__tests__/designSystem.structure.spec.ts \
 	src/features/channel-monitor-v2/__tests__/monitorFormat.spec.ts \

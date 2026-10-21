@@ -31,7 +31,7 @@
               {{ t('adminCompliance.version') }}
             </p>
             <p class="mt-1 break-all font-mono text-gray-900 dark:text-white">
-              {{ complianceStore.status?.version || 'v2026.06.10' }}
+              {{ complianceStore.status?.version || 'v2026.10.21' }}
             </p>
           </div>
           <a
@@ -101,6 +101,7 @@ import { computed, ref, watch } from 'vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import { useI18n } from 'vue-i18n'
+import { useRoute } from 'vue-router'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import Input from '@/components/common/Input.vue'
 import Icon from '@/components/icons/Icon.vue'
@@ -110,6 +111,7 @@ import zhDocument from '../../../../docs/legal/admin-compliance.zh.md?raw'
 import enDocument from '../../../../docs/legal/admin-compliance.en.md?raw'
 
 const { t } = useI18n()
+const route = useRoute()
 const complianceStore = useAdminComplianceStore()
 const authStore = useAuthStore()
 const appStore = useAppStore()
@@ -121,16 +123,17 @@ marked.setOptions({
   gfm: true,
 })
 
-const visible = computed(() => authStore.isAuthenticated && authStore.isAdmin && complianceStore.shouldShow)
+const documentUrl = '/legal/admin-compliance'
+// Reading the public document does not accept it or bypass the console's gate.
+const readingComplianceDocument = computed(
+  () => route.name === 'LegalDocument' && route.path === documentUrl
+)
+const visible = computed(
+  () => authStore.isAuthenticated && authStore.isAdmin && complianceStore.shouldShow && !readingComplianceDocument.value
+)
 const expectedPhrase = computed(() => complianceStore.expectedPhrase)
 const canSubmit = computed(() => typedPhrase.value.trim() === expectedPhrase.value)
 const currentDocument = computed(() => getLocale() === 'zh' ? zhDocument : enDocument)
-const documentUrl = computed(() => {
-  if (getLocale() === 'zh') {
-    return complianceStore.status?.document_url_zh || 'https://github.com/Wei-Shaw/sub2api/blob/main/docs/legal/admin-compliance.zh.md'
-  }
-  return complianceStore.status?.document_url_en || 'https://github.com/Wei-Shaw/sub2api/blob/main/docs/legal/admin-compliance.en.md'
-})
 const inputError = computed(() => {
   if (!attemptedSubmit.value || canSubmit.value) {
     return ''

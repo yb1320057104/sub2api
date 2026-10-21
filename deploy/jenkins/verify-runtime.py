@@ -365,7 +365,7 @@ class Validator:
 
     def version(self, image=None):
         output = self.container("-version", image=image)
-        require(re.search(r"(?:^|\s)Sub2API " + re.escape(self.data["version"]) +
+        require(re.search(r"(?:^|\s)(?:DP API|Sub2API) " + re.escape(self.data["version"]) +
                           r" \(commit: " + re.escape(self.data["commit"]) + r", built: [^\r\n]+\)", output) is not None,
                 "Runtime version or commit mismatch")
 

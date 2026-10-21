@@ -314,7 +314,7 @@ class Runner:
             if not shutil.which(tool):
                 raise RuntimeError(f"Missing local dependency: {tool}; see PK_MAINTENANCE.md")
         versions = (
-            (["go", "version"], r"\bgo1\.27\.2\b", "Go 1.27.2"),
+            (["go", "version"], r"\bgo1\.27\.3\b", "Go 1.27.3"),
             (["node", "--version"], r"^v24\.", "Node.js 24"),
             (["pnpm", "--version"], r"^9\.", "pnpm 9"),
             (["golangci-lint", "version"], r"\b2\.14\.", "golangci-lint 2.14.x"),

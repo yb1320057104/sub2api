@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/servertiming"
@@ -150,51 +151,55 @@ func metricDuration(t *testing.T, header, metric string) float64 {
 }
 
 func TestServerTimingConnectorRecordsDriverCallsWithoutRowLifetime(t *testing.T) {
-	startedAt := time.Now()
-	collector := servertiming.New(startedAt)
-	ctx := servertiming.WithCollector(context.Background(), collector)
+	// Keep driver delays and row-processing time on one virtual clock so host
+	// scheduling cannot inflate DB time beyond the application gap.
+	synctest.Test(t, func(t *testing.T) {
+		startedAt := time.Now()
+		collector := servertiming.New(startedAt)
+		ctx := servertiming.WithCollector(context.Background(), collector)
 
-	wrapped := newServerTimingConnector(timingFakeConnector{conn: newTimingFakeConn()})
-	rawConn, err := wrapped.Connect(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	conn, ok := rawConn.(*serverTimingConn)
-	if !ok {
-		t.Fatalf("Connect() returned %T, want *serverTimingConn", rawConn)
-	}
+		wrapped := newServerTimingConnector(timingFakeConnector{conn: newTimingFakeConn()})
+		rawConn, err := wrapped.Connect(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		conn, ok := rawConn.(*serverTimingConn)
+		if !ok {
+			t.Fatalf("Connect() returned %T, want *serverTimingConn", rawConn)
+		}
 
-	if _, err := conn.ExecContext(ctx, "sensitive update", nil); err != nil {
-		t.Fatal(err)
-	}
-	rows, err := conn.QueryContext(ctx, "sensitive select", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	values := make([]driver.Value, 1)
-	if err := rows.Next(values); err != nil {
-		t.Fatal(err)
-	}
+		if _, err := conn.ExecContext(ctx, "sensitive update", nil); err != nil {
+			t.Fatal(err)
+		}
+		rows, err := conn.QueryContext(ctx, "sensitive select", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		values := make([]driver.Value, 1)
+		if err := rows.Next(values); err != nil {
+			t.Fatal(err)
+		}
 
-	// Application work between row reads must remain app time.
-	time.Sleep(30 * time.Millisecond)
-	if err := rows.Next(values); err != io.EOF {
-		t.Fatalf("rows.Next() = %v, want EOF", err)
-	}
-	if err := rows.Close(); err != nil {
-		t.Fatal(err)
-	}
+		// Application work between row reads must remain app time.
+		time.Sleep(30 * time.Millisecond)
+		if err := rows.Next(values); err != io.EOF {
+			t.Fatalf("rows.Next() = %v, want EOF", err)
+		}
+		if err := rows.Close(); err != nil {
+			t.Fatal(err)
+		}
 
-	header := collector.HeaderValue(time.Now(), "bypass")
-	if !strings.Contains(header, `queries=2`) {
-		t.Fatalf("header %q does not report two SQL operations", header)
-	}
-	if strings.Contains(header, "sensitive") {
-		t.Fatalf("SQL text leaked into header: %q", header)
-	}
-	if app, db := metricDuration(t, header, "app"), metricDuration(t, header, "db"); app <= db {
-		t.Fatalf("row processing gap was counted as DB time: app=%.1fms db=%.1fms header=%q", app, db, header)
-	}
+		header := collector.HeaderValue(time.Now(), "bypass")
+		if !strings.Contains(header, `queries=2`) {
+			t.Fatalf("header %q does not report two SQL operations", header)
+		}
+		if strings.Contains(header, "sensitive") {
+			t.Fatalf("SQL text leaked into header: %q", header)
+		}
+		if app, db := metricDuration(t, header, "app"), metricDuration(t, header, "db"); app <= db {
+			t.Fatalf("row processing gap was counted as DB time: app=%.1fms db=%.1fms header=%q", app, db, header)
+		}
+	})
 }
 
 func TestServerTimingPreparedStatementsAndTransactions(t *testing.T) {

@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 # Test tooling only. Application source and production configuration are never
 # copied into this image; release builds remain in the Jenkins package job.
-FROM golang:1.27.2-alpine AS go-tools
+FROM golang:1.27.3-alpine AS go-tools
 ENV GOTOOLCHAIN=local
 RUN GOMAXPROCS=8 GOBIN=/out go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
 

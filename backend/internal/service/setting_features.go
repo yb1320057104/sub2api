@@ -287,13 +287,22 @@ func parseAuditLogRetentionDays(value string) int {
 	return n
 }
 
+// resolveSiteName replaces only empty or legacy built-in branding on reads.
+// Custom names and persisted settings are left unchanged.
+func resolveSiteName(value string) string {
+	if strings.TrimSpace(value) == "" || value == "Sub2API" {
+		return defaultSiteName
+	}
+	return value
+}
+
 // GetSiteName 获取网站名称
 func (s *SettingService) GetSiteName(ctx context.Context) string {
 	value, err := s.settingRepo.GetValue(ctx, SettingKeySiteName)
-	if err != nil || value == "" {
-		return "Sub2API"
+	if err != nil {
+		return defaultSiteName
 	}
-	return value
+	return resolveSiteName(value)
 }
 
 // GetDefaultConcurrency 获取默认并发量

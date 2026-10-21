@@ -52,6 +52,63 @@ func (s *settingPublicRepoStub) Delete(ctx context.Context, key string) error {
 	panic("unexpected Delete call")
 }
 
+type siteNameRepoStub struct {
+	settingPublicRepoStub
+}
+
+func (s *siteNameRepoStub) GetValue(_ context.Context, key string) (string, error) {
+	if value, ok := s.values[key]; ok {
+		return value, nil
+	}
+	return "", ErrSettingNotFound
+}
+
+func (s *siteNameRepoStub) GetAll(context.Context) (map[string]string, error) {
+	return s.values, nil
+}
+
+func TestPKDefaultSiteNamePreservesCustomBranding(t *testing.T) {
+	require.Equal(t, "DP API", (*ContentModerationService)(nil).siteName(context.Background()))
+	for _, tc := range []struct {
+		name       string
+		configured string
+		missing    bool
+		want       string
+	}{
+		{name: "missing", missing: true, want: "DP API"},
+		{name: "empty", want: "DP API"},
+		{name: "whitespace", configured: "  ", want: "DP API"},
+		{name: "legacy default", configured: "Sub2API", want: "DP API"},
+		{name: "current default", configured: "DP API", want: "DP API"},
+		{name: "custom", configured: "My Team API", want: "My Team API"},
+		{name: "custom with legacy prefix", configured: "Sub2API Team", want: "Sub2API Team"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			values := map[string]string{}
+			if !tc.missing {
+				values[SettingKeySiteName] = tc.configured
+			}
+			repo := &siteNameRepoStub{settingPublicRepoStub{values: values}}
+			svc := NewSettingService(repo, &config.Config{})
+
+			public, err := svc.GetPublicSettings(context.Background())
+			require.NoError(t, err)
+			require.Equal(t, tc.want, public.SiteName)
+			admin, err := svc.GetAllSettings(context.Background())
+			require.NoError(t, err)
+			require.Equal(t, tc.want, admin.SiteName)
+			require.Equal(t, tc.want, svc.GetSiteName(context.Background()))
+			require.Equal(t, tc.want, (&BalanceNotifyService{settingRepo: repo}).getSiteName(context.Background()))
+			require.Equal(t, tc.want, (&NotificationEmailService{settingRepo: repo}).siteName(context.Background()))
+			require.Equal(t, tc.want, (&ContentModerationService{settingRepo: repo}).siteName(context.Background()))
+
+			stored, exists := values[SettingKeySiteName]
+			require.Equal(t, !tc.missing, exists, "reading the name must not persist defaults")
+			require.Equal(t, tc.configured, stored, "reading the name must not rewrite custom or legacy values")
+		})
+	}
+}
+
 func TestSettingService_GetPublicSettings_ExposesRegistrationEmailSuffixWhitelist(t *testing.T) {
 	repo := &settingPublicRepoStub{
 		values: map[string]string{

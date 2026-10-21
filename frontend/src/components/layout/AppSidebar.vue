@@ -1,8 +1,8 @@
 <template>
   <aside
-    class="sidebar"
+    class="sidebar motion-reduce:transition-none"
     :class="[
-      sidebarCollapsed ? 'w-[72px]' : 'w-64',
+      sidebarCollapsed ? 'w-[72px]' : 'w-[280px]',
       { '-translate-x-full lg:translate-x-0': !mobileOpen }
     ]"
   >
@@ -11,10 +11,10 @@
       <!-- Custom Logo or Default Logo -->
       <router-link
         :to="homePath"
-        class="sidebar-logo flex h-9 w-9 items-center justify-center overflow-hidden rounded-xl shadow-glow transition-opacity hover:opacity-80"
+        class="sidebar-logo flex h-9 w-9 items-center justify-center overflow-hidden rounded-xl transition-opacity hover:opacity-80"
         @click="handleMenuItemClick(homePath)"
       >
-        <img v-if="settingsLoaded" :src="siteLogo || '/logo.svg'" alt="Logo" class="h-full w-full object-contain" />
+        <img v-if="settingsLoaded" :src="siteLogo || '/dp-api-logo.png'" alt="Logo" class="h-full w-full object-contain" />
       </router-link>
       <div class="sidebar-brand" :class="{ 'sidebar-brand-collapsed': sidebarCollapsed }" :aria-hidden="sidebarCollapsed ? 'true' : 'false'">
         <router-link
@@ -56,13 +56,13 @@
                 >
                   <span class="min-w-0 truncate">{{ item.label }}</span>
                   <ChevronDownIcon
-                    class="h-4 w-4 flex-shrink-0 transition-transform duration-200"
+                    class="h-4 w-4 flex-shrink-0 transition-transform duration-200 motion-reduce:transition-none"
                     :class="isGroupExpanded(item) ? 'rotate-180' : ''"
                   />
                 </span>
               </button>
               <!-- Children -->
-              <div v-if="!sidebarCollapsed && isGroupExpanded(item)" class="mb-1 ml-4 border-l border-gray-200 pl-2 dark:border-dark-600">
+              <div v-if="!sidebarCollapsed && isGroupExpanded(item)" class="mb-1 ml-4 border-l border-primary-100 pl-2 dark:border-dark-700">
                 <router-link
                   v-for="child in item.children"
                   :key="child.path"
@@ -148,7 +148,7 @@
     </nav>
 
     <!-- Bottom Section -->
-    <div class="mt-auto border-t border-gray-100 p-3 dark:border-dark-800">
+    <div class="mt-auto px-3 pb-4 pt-3">
       <!-- Theme Toggle -->
       <button
         @click="toggleTheme"
@@ -1049,7 +1049,7 @@ onBeforeUnmount(() => {
   right: 0.75rem;
   top: 50%;
   height: 1px;
-  background: rgb(229 231 235);
+  background: rgb(218 226 239);
   opacity: 0;
   transform: translateY(-50%);
   transition: opacity 0.18s ease;
@@ -1105,5 +1105,15 @@ onBeforeUnmount(() => {
   display: block;
   width: 1.25rem;
   height: 1.25rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-header,
+  .sidebar-brand,
+  .sidebar-label,
+  .sidebar-section-title-text,
+  .sidebar-section-title::after {
+    transition: none;
+  }
 }
 </style>

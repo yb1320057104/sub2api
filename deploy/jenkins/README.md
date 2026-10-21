@@ -12,6 +12,8 @@ Jenkins 的 Pipeline from SCM 已在 2026-10-08 合入后切换到私库已审�
 
 后续新工作分支按项目约束第 6 节统一为 `codex/vX.Y.Z-pk.N`，同一未发布版本复用一个分支与 PR。Jenkins 的 `SOURCE_REF` 可选择对应的 `origin/codex/vX.Y.Z-pk.N` 来打候选包；选择版本命名的分支仍是候选，只有正式标签才走标签包校验。当前 `codex/jenkins-build` 是既有迁移引用，切换完成前不得为整理分支而删改它；不因一次打包或重试新建分支。
 
+2026-10-21 用户明确指定当前版本分支为 `v0.2.17-pk.2`，去掉 `codex/`。现有 `^origin/.*$` 分支筛选与 `origin/` 规范化已经支持该名称，不修改 Jenkins 识别规则：`origin/v0.2.17-pk.2` 解析为 `refs/heads/v0.2.17-pk.2`，仅用于 `package` 候选；裸 `v0.2.17-pk.2` 解析为正式标签，仍须满足既有 `release` 门禁。
+
 需要 Git、Git Parameter、Pipeline、Credentials Binding 插件及 agent 的 Python 3.11+、Bash、Git、Docker CLI、gzip/tar。Node 24、pnpm 9.15.9 和 `backend/go.mod` 指定的 Go 工具链由隔离编译容器提供。编译容器不挂载凭据、流水线代码、历史产物、测试证据或生产数据，也不挂载 Docker socket。默认每个编译容器最多 2 CPU / 4 GiB，可通过 agent 的 `PK_BUILD_CPUS`、`PK_BUILD_MEMORY` 调整。
 
 源码 `go test`、Vitest、lint 和安全审计在提交前的独立验证环境完成，默认是用户指定服务器的受控临时容器，不连接生产数据/服务。Jenkins 编译阶段运行 `vue-tsc -b`、`vite build` 和 Go 发行构建，不重复执行 `pnpm run build` 内置的 Vitest。默认 release 随后在专用 daemon 隔离容器执行同制品运行时检查；容器不连接生产、不挂载源码或发布凭据。该检查使用固定可信 pipeline checkout 的 `verify-runtime.py`，不能执行参数所选源码中的替代验收脚本。

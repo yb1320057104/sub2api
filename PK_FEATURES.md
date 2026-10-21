@@ -9,7 +9,7 @@
 - 2026-10-02 合并上游 `v0.2.12`（commit `5106065716e494204fc0e8db16f68f6e9d576be0`，tag 对象 `cbe9966432317e6757b47f598a103d2132ec27db`），合并前私库为 `162a58972bee08078a43eefa761da1b245f667fa`。逐项核对见 [0.2.12 合并记录](docs/PK_UPSTREAM_0.2.12_REVIEW.md)，正式发布目标为 `v0.2.12-pk.1`；发布与线上更新分别记录。
 - 2026-10-02 合并上游 `v0.2.11`（commit `96f4c115c9749078f90cbf210a01d39baf3f53b6`），合并前私库为 `32f068dcbdc75063ff7f6488aef6c85912d7bf3f`。逐项核对及本次验证见 [合并记录](docs/PK_UPSTREAM_0.2.11_REVIEW.md)；合并源码不代表已发布或更新线上。
 - 本次清点覆盖从该上游基线到私库 `23e5fe663338c86cd0cebbf2f688c8a75dd8c152` 的全部二开提交；应用发行参照 `v0.2.10-pk.7`，另登记本次新增的项目约束机制。此处是代码核对基线，不代表线上当前版本。
-- 以下 PK-001 至 PK-028 均为有效保护项；PK-029、PK-030 已按用户授权移除，保留原 ID 与回退记录，不得复用。文件路径用于定位，不是完整修改白名单；所有新调用入口、迁移和旁路都要检查。
+- 以下 PK-001 至 PK-028 及 PK-031 均为有效保护项；PK-029、PK-030 已按用户授权移除，保留原 ID 与回退记录，不得复用。文件路径用于定位，不是完整修改白名单；所有新调用入口、迁移和旁路都要检查。
 - 每项说明“必须保持”的行为。文末另列验证入口与已知边界；测试存在、历史验证通过和本次候选通过是三件不同的事。
 - 2026-10-08 用户最新要求取代早前本次测试禁令：完整源码测试通过后才提交和推送，默认在用户指定测试服务器的隔离环境验证，本机 Linux/WSL 仍可用。Jenkins 一次 `ACTION=release` 完成构建、制品运行时验收和私库发布，不使用 GitHub Actions。下文历史“后续获准”及迁移禁令只记录当时状态，现行门禁以 PK-017 为准；服务器结果不写成本机通过，历史证据不代表本次已经执行。
 
@@ -52,6 +52,7 @@
 | PK-028 | OpenAI 账号 Kilo 桥接 | 独立默认关闭、用户模型映射、账号代理、ultra 转 max、工具参数保真 |
 | PK-029 | 账号隐藏计费倍率及下游用量缩放 | 已授权移除；恢复 pk.1 计费与输出，保留历史记录 |
 | PK-030 | 原始 Token 趋势统计 | 已授权移除；恢复 pk.1 趋势口径，保留历史数据 |
+| PK-031 | DP API 品牌与柔蓝主题 | 渐变标志、统一名称、胶囊导航、移除友链，保留权限、响应式与深色模式 |
 
 ## PK-001
 
@@ -320,6 +321,9 @@
 - 入口：`Jenkinsfile`、`deploy/jenkins/{control.py,package.sh,verify-runtime.py,Dockerfile.source-tests}`、`scripts/test-server.py`、`scripts/test-local.{ps1,py}`、Dockerfile、`deploy/` 下相关脚本、Compose 与文档。验证边界见下文，不能把“发布已完成”当成“线上已更新”。
 
 - 2026-10-15 跟随上游 Go 1.27.2 / golangci-lint 2.14.x，服务器工具镜像更新为 `pk-source-tests:20261015`；上游 Actions 中的源码/部署/security 检查仍由现有九套件执行，关键前端列表合并保留双方条目。
+- 2026-10-21 为通过提交前安全门禁，按 Go 官方 2026-10-19 补丁发布将当前 Go 工具链统一为 1.27.3，修复扫描命中的 `GO-2026-6809`（`crypto/x509`）。同步 `backend/go.mod`、三个应用 Dockerfile、源码测试工具镜像、严格 preflight 版本与维护命令；新工具镜像为 `pk-source-tests:go1.27.3-20261021`。不添加漏洞豁免、不关闭扫描，不在本地构建应用发行物，正式发行仍走 Jenkins。
+- 同次验证将原有 `TestServerTimingConnectorRecordsDriverCallsWithoutRowLifetime` 放入标准库 `testing/synctest` 虚拟时钟，保留原睡眠时长、应用时间/数据库时间关系、查询计数和 SQL 不泄露断言，避免测试服务器调度延迟造成误失败；不修改生产 SQL 包装器、计时采集或响应头输出。
+- 同次前端安全扫描命中 Axios 间接依赖 `follow-redirects 1.16.0` 的两项高危公告（`GHSA-q3jh-wrc6-jgq8`、`GHSA-8r9p-f939-6h3c`）；通过现有 pnpm override 机制固定修复版 `1.16.1` 并同步锁文件，不更改 Axios 版本，不增加或扩大漏洞豁免。
 
 - 2026-10-19 合入 v0.2.17：将原有 `StripePaymentView.spec.ts` 纳入 `FRONTEND_CRITICAL_VITEST`，保证订单本地快照/client_secret 绑定的上游安全修复进入默认源码验收。工具链、九套件、notes 和 Jenkins 私库门禁不变；不扩大审计豁免。
 
@@ -512,6 +516,32 @@
 - 原入口为 `usage_original_tokens.go`、`usage_log_original_tokens.go`、usage repository/聚合及 `TokenUsageTrend.vue`；新增迁移 `247_usage_original_tokens.sql` 随源码回退。已存在的数据库追加列与迁移记录保留，pk.1 的迁移 runner 不要求删除数据库中多出的 246/247 记录。
 - 验证方式与 PK-029 相同；本次不连接生产数据库，不将历史费用或图表口径恢复解释为数据回滚。PK-029、PK-030 的原 ID 永久保留，后续重新引入须明确登记。
 
+## PK-031
+
+**DP API 品牌与用户中心、管理后台柔蓝主题。** 状态：有效。引入依据：2026-10-21 用户提供界面截图，要求浅灰蓝配色、白色胶囊导航，并确认用户中心与管理后台都调整；随后指定 DP API 品牌、渐变标志、全部内置显示文案更名和移除 GitHub 友链。目标版本 `v0.2.17-pk.2`。
+
+- 用户中心与管理后台共享浅灰蓝页面背景、柔蓝强调色、白色胶囊选中导航；按钮、筛选控件和卡片采用一致的圆角、边框与轻阴影。品牌显示规则见下文，不改变业务接口结构、计费算法、权限边界或既有配置存储结构，不新增依赖。
+- 默认标志为 `frontend/public/dp-api-logo.png`，采用透明背景的 DP 组合与蓝紫渐变；侧栏、首页、登录注册布局、Key 使用页、模型广场、法律文档页和 favicon 使用该资源，已配置的自定义 Logo 仍优先。图像生成提示保留在 `docs/DP_API_LOGO_PROMPT.md`。不在图片内重复放置站点名称，文字继续由站点设置渲染。
+- 同日按用户追加要求，浏览器 favicon 使用从现有 DP 标志等比生成的 `frontend/public/dp-api-favicon.png`（64px）与 `favicon.ico`（16/32/48/64px），不重新绘制品牌。静态入口、无自定义 Logo 以及清空 Logo 后均回退到专用 PNG；`main.ts` 监听公开站点 Logo 的异步加载/变化，`utils/branding.ts` 保留合法自定义图片优先并按真实扩展或 data MIME 声明图标格式，未知格式交给浏览器识别，非法 URL 不替换当前图标。原有 `utils/__tests__/branding.spec.ts` 扩展格式、清空回退和动态替换回归，仍由现有前端关键套件执行。
+- GitHub 友链移除入口包括首页/Key 使用页页脚、顶栏用户菜单、版本弹层的发布页外跳和支付设置的 GitHub 文档链接；合规原文入口改为站内页面。保留 GitHub OAuth 登录及必要配置入口、PK-014/015 私库更新与回退请求、手动恢复命令中的真实私库地址和校验链。多语言内置文案及前端使用指引同步品牌；协议、环境变量、持久化键和服务名不因显示更名而改变。
+- 原 `views/admin/__tests__/SettingsView.spec.ts` 的支付说明用例同步上述已授权的 GitHub 友链移除行为：确认外跳链接不存在，同时保留支付说明和商品名称配置的正向断言，不恢复已移除的友链来迁就旧断言。
+- 2026-10-21 用户继续指定站点名称为 `DP API`。后端公开/管理员设置读取及 `GetSiteName`、余额/配额通知和统一邮件通知、前端注入配置/缓存、登录注册/验证、首页、模型广场、法律文档页、Key 使用页与浏览器标题统一使用该默认名；空白值或旧内置名 `Sub2API` 在读取时显示为 `DP API`，新实例默认值同样为 `DP API`。非默认自定义站点名优先并保留既有显示规则，不迁移或重写现有数据库记录，不替换 Go 模块/仓库路径、机器协议标识、User-Agent 或用户自定义配置；后续全局显示及合规文档调整见下文。名称规则集中在 `backend/internal/service/setting_features.go` 和 `frontend/src/utils/branding.ts`，`balance_notify_service.go` 的既有共享默认常量、`notification_email_service.go` 的名称读取、设置解析/公开接口及各显示入口复用；统一邮件通知与页面标题保留原有去除首尾空白的规则。
+- 同日用户进一步要求全部内置 `Sub2API` 显示文字改为 `DP API`，并移除界面 GitHub 友链/外跳入口。后端包含安装/启动提示、插件兼容提示与 schema 显示标题、模型说明、默认支付商品名、账号测试文案、设备证明错误提示，以及新建 WebAuthn/TOTP 的显示名称；不改插件协议字段、模块名、User-Agent、可执行文件名、既有密钥、认证算法、第三方版权/许可声明或已配置的自定义商品名/前后缀。
+- 合规文档 `docs/legal/admin-compliance.{zh,en}.md` 仅作品牌文字修订，责任、义务和条款保持完整；为遵守上游“内容修改需递增版本”的审计规则，版本更新为 `v2026.10.21`。`admin_compliance.go` 与 `frontend/src/stores/adminCompliance.ts` 同步新确认短语和版本；文档链接改为站内 `/legal/admin-compliance`，按站点当前语言展示。原有确认记录保留，旧版本按既有门禁要求管理员重新确认，不自动接受、不删除历史记录、不降低确认或访问要求。既有 `admin_compliance_test.go` 与 `adminCompliance.reset.spec.ts` 覆盖新品牌/站内链接、旧版本需确认与记录保留。
+- 合规全文阅读仅在精确的只读 `LegalDocument` 路由 `/legal/admin-compliance` 暂不显示全局确认弹窗，避免全文再次被遮挡；其他法律路径不在此范围，返回控制台立即恢复原确认要求。既有确认状态、历史记录、接受接口及后端访问门禁不变，原 `adminCompliance.reset.spec.ts` 补充全文阅读、路由往返和状态不变回归。
+- 主题使用现有布局、公共样式与 Tailwind 配置。保留原有浅色/深色模式切换、主题偏好保存与深色下文字/控件可读性，不增加新的主题配置或持久化字段；状态、错误、禁用及键盘焦点仍须可辨识。
+- `AppLayout` 统一提供响应式顶栏高度和主区内边距变量，`TablePageLayout` 与 `CustomPageView` 的全屏高度按同一变量计算，兼容桌面 80px 顶栏及小屏布局；原有表格横向滚动、分页与自定义内容交互不变，对应既有回归纳入关键前端套件。
+- 2026-10-21 用户指定登录页采用参考截图的左侧品牌文案/旋转刻度盘、右侧登录卡片排布，并明确沿用当前柔蓝主题色。登录页独立使用 `frontend/src/components/layout/LoginLayout.vue`，SVG 刻度盘封装在 `components/auth/LoginDial.vue`；颜色从现有 Tailwind `primary`、`dark` 和 `canvas` 派生，保留 `theme` 偏好键及浅色/深色切换，不使用参考站橙色、名称或业务文案。站点名、Logo、自定义副标题沿用公开设置与 URL 清理，缺省使用 DP API 品牌；不修改共享 `AuthLayout.vue` 的其他认证页面布局。桌面显示品牌区、主题色滚动条与鼠标跟随刻度盘，窄屏优先完整登录表单；减少动态效果偏好、不可见页面和组件卸载时停止对应动画/监听，不生成虚构用量或在线状态。
+- 登录改版保留 `views/auth/LoginView.vue` 的邮箱/密码、三种验证码、Passkey、六种 OAuth、登录条款同意/修订门禁、TOTP 二步认证、注册/重置密码开关、邀请信息清理与登录后跳转逻辑；GitHub OAuth 仍作为认证方式保留。仅调整模板、局部样式及密码显隐按钮的可访问名称。原 `LoginView.spec.ts` 扩展公开设置未加载、后台模式、条款、密码显隐和实际登录请求回归，原 `TencentCaptchaActionGate.spec.ts` 同步布局替身；两者与原 `OAuthLoginSections.spec.ts`、`TotpLoginModal.spec.ts` 纳入 `FRONTEND_CRITICAL_VITEST`。通过与否以本次测试服务器报告为准，桌面/移动端及浅色/深色实际截图另行核对；本扩展沿用 PK-031，无新增 ID。
+- 用户与管理员的业务菜单、路由、功能开关、简易模式和自定义菜单继续遵循原有可见性与访问权限；仅移除上述已授权的友链入口。保留菜单组展开、滚动位置、72px 侧栏折叠，以及移动端遮罩、菜单展开/关闭和内容布局，不扩大权限。
+- 保留 PK-013 的“版本号 + PK出版”标识、管理员版本更新/回退入口及弹层可用性；保留 PK-022 币安自助充值与 PK-026 耻辱排行榜在对应角色下的独立入口、原有操作与权限。PK-010 使用记录指标权限及其余既有二开不因全局样式调整而变化。
+- `-version` 输出品牌更新为 DP API；PK-017 的 `deploy/jenkins/verify-runtime.py` 同时识别新品牌与历史 Sub2API 输出，仍严格匹配版本、完整 commit 与构建字段，不放宽制品/来源校验。既有 `test_release_matrix.py` 增加两种品牌与错误版本/提交/名称的回归，随 `release-helpers` 源码套件执行。
+- 主要代码入口：`frontend/tailwind.config.js`、`frontend/src/style.css`、`frontend/src/components/layout/AppLayout.vue`、`AppHeader.vue`、`AppSidebar.vue`。公共选择器 `frontend/src/components/common/Select.vue`、`DateRangePicker.vue` 以及复用公共样式的用户/管理员页面属于联动检查范围；筛选值、事件、键盘操作与弹层定位保持原有语义。展开侧栏为280px，主区与 `features/prompt-audit/PromptAuditView.vue` 固定保存栏共用布局宽度变量，折叠时同步至72px，避免遮挡配置开关；原 `PromptAuditView.spec.ts` 纳入关键回归列表。
+- 现有回归入口：`frontend/src/components/layout/__tests__/AppSidebar.spec.ts` 检查排行榜菜单、订阅开关、折叠组、滚动位置、自定义图标和版本弹层不被裁剪；`frontend/src/components/user/dashboard/__tests__/UserDashboardStats.spec.ts` 检查平台统计卡片及简易模式。二者继续保留在 `Makefile` 的 `FRONTEND_CRITICAL_VITEST` 中；本次将管理员 `frontend/src/views/admin/__tests__/DashboardView.spec.ts`、公共选择器原有 `Select*.spec.ts`、`DateRangePicker*.spec.ts` 和 `disabledSelectors.spec.ts` 一并纳入，保护筛选、键盘、输入法、禁用态与日期边界。实际结果仍须核对当次源码套件原始日志，不能仅因列入清单即声称通过。
+- 验证计划与边界：按 PK-017 在用户指定测试服务器隔离环境运行完整九套件及 preflight，提交相同 tree 后绑定最终 commit 的原报告及 notes；本条登记时尚未以本次报告确认通过，不沿用历史测试结果。补充核对用户/管理员、浅色/深色、桌面展开/72px 折叠/移动端，以及筛选、卡片、菜单和版本弹层；现有源码断言和 jsdom 交互用例不能代替真实浏览器视觉验收，实际结果与未覆盖范围另随交付说明记录。发行构建仍只在 Jenkins，新增临时测试文件在验证后清理。
+- 邮件品牌入口还包括 `content_moderation.go` 的内容审计通知、`user_service.go` 的通知邮箱验证码，以及 `auth_email_binding.go`、`auth_oauth_email_flow.go`、`auth_service.go` 的绑定/注册/OAuth验证码与密码重置：默认值统一复用 `defaultSiteName`，直接读库的名称走同一兼容规则；保留通知流程、权限、收件人、验证码、SMTP发件名与原有去空白规则。
+- 名称兼容回归扩展于原有 `setting_service_public_test.go`、`setting_service_update_test.go`、`backend/internal/server/api_contract_test.go`、`frontend/src/utils/__tests__/branding.spec.ts`、`stores/__tests__/app.spec.ts` 与 `router/__tests__/title.spec.ts`：核对默认/旧内置名、非默认自定义名、公开/管理员/邮件及内容审计通知读取一致、读取不写库，以及前端注入/请求/缓存与标题一致；API契约保留旧内置名输入并验证新默认名输出。名称需求追加后，先前源码结果不代表最终树通过，须重新执行完整验证。
+
 ## 验证入口与现有边界
 
 ### 已有回归入口
@@ -526,6 +556,7 @@
 | PK-016～017 | `Jenkinsfile`、`scripts/test-server.py`、`scripts/test-local.py`、现有 `deploy/tests/` 和制品验收流程 | 发布构建不等于生产已部署；测试清单/矩阵改变时同步核查 |
 | PK-018～019 | `concurrency_service_test.go`、`wire_test.go`、`batch_image_cleanup_test.go` | 需要门控/停止并发行为证据，不能仅搜索到 env 键即认为有效 |
 | PK-020～021 | 维护流程、固定 commit 的隔离验收和静态文档核对 | 提交前源码测试与 Jenkins 发行构建分开；不把历史线上/探测报告当作本次新代码验证 |
+| PK-031 | `AppSidebar.spec.ts`、`UserDashboardStats.spec.ts`、管理员 `DashboardView.spec.ts` 与公共选择器既有回归 | 核对实际 `frontend` 执行列表；菜单与交互回归不代替浅色/深色、桌面/移动端的浏览器视觉验收 |
 
 提交前源码验证的 `backend-integration` 执行数据库 integration 的 `TestPKUsageFirstResponsePersistence`，报告生成器要求其实际通过；`backend-race` 保留旧候选/Release 选择器及 PostgreSQL 15 专项。Jenkins 前端发行构建不能代替 `frontend` 源码套件。修改功能须检查真实执行列表，在用户指定服务器隔离环境或本机 Linux/WSL 补足验证并记录真实环境；未执行项保留待验证，不能只列测试名或将服务器通过写成本机通过。已登记但未覆盖的业务路径仍须独立验收。
 
@@ -545,7 +576,7 @@
 
 ## 新增条目模板
 
-新增独立能力使用下一个未用 ID，当前下一个为 `PK-031`；多项变更并行新增时在合并前消除 ID 冲突，已有 ID 不重用。同步更新索引、有效条目范围和此处的下一个 ID。
+新增独立能力使用下一个未用 ID，当前下一个为 `PK-032`；多项变更并行新增时在合并前消除 ID 冲突，已有 ID 不重用。同步更新索引、有效条目范围和此处的下一个 ID。
 
 ```markdown
 ## PK-NNN

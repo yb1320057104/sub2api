@@ -16,17 +16,20 @@ func TestEvaluatePluginCompatibility(t *testing.T) {
 	require.True(t, result.Compatible)
 	assert.True(t, result.Tested)
 	assert.Equal(t, "compatible", result.Status)
+	assert.Equal(t, "当前 DP API 版本已由插件声明测试", result.Message)
 
 	manifest.Requires.TestedSub2APIVersions = []string{"0.1.178"}
 	result = EvaluatePluginCompatibility(manifest, host)
 	require.True(t, result.Compatible)
 	assert.False(t, result.Tested)
 	assert.Equal(t, "untested", result.Status)
+	assert.Equal(t, "版本范围兼容，但插件未声明已测试当前 DP API 版本", result.Message)
 
 	manifest.Requires.Sub2API = ">=0.2.0 <0.3.0"
 	result = EvaluatePluginCompatibility(manifest, host)
 	assert.False(t, result.Compatible)
 	assert.Equal(t, "incompatible", result.Status)
+	assert.Contains(t, result.Message, "当前 DP API")
 }
 
 func TestEvaluatePluginCompatibilityRejectsProtocolMismatch(t *testing.T) {
@@ -37,6 +40,7 @@ func TestEvaluatePluginCompatibilityRejectsProtocolMismatch(t *testing.T) {
 
 	assert.False(t, result.Compatible)
 	assert.Equal(t, "incompatible", result.Status)
+	assert.Equal(t, "插件协议版本与当前 DP API 不兼容", result.Message)
 }
 
 func TestMatchesSemverRange(t *testing.T) {

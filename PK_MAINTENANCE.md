@@ -6,6 +6,8 @@
 
 ## 版本工作分支
 
+2026-10-21 用户为当前版本明确指定不带 `codex/` 的 `v0.2.17-pk.2` 分支，该版本复用此命名例外，不另建带前缀副本。Jenkins 候选分支选择 `origin/v0.2.17-pk.2`；正式 `release` 仍要求通过验收且属于 main 历史的同名正式标签，不能把分支当作标签。
+
 新工作分支统一为 `codex/vX.Y.Z-pk.N`，对应目标发行标签 `vX.Y.Z-pk.N`；`codex/v0.2.13-pk.1` 仅为命名示例，不表示已经选定该版本。`main` 保持正式分支。完整约束见 [项目约束](PROJECT_CONSTRAINTS.md) 第 6 节。
 
 - 同一目标未发布版本只复用一个工作分支和一个 PR。功能、修复、文档、依赖调整及上游合并都在其中累积，不添加任务、日期、助手或功能后缀，也不为重试打包另建分支。
@@ -22,7 +24,7 @@ Jenkins 的安装、凭据、任务参数和制品目录见 [Jenkins 运维说�
 
 Jenkins 打包的 npm/npx、pnpm、Go modules/build 缓存由专用 daemon 的命名卷保留，独立于临时工作区。新正式流程、手动正式包、候选包使用不同缓存域，完整性和源码/制品验收门禁不变；首次运行仍需填充缓存。项目 `node_modules` 和每轮测试环境不因此持久化。卷命名、权限、清理及占位文件恢复边界见 [Jenkins 缓存说明](deploy/jenkins/README.md#依赖与编译缓存)，不对整个 Docker 环境执行清理来释放缓存。
 
-源码验证环境需要 Linux amd64、Go 1.27.2、Node.js 24、pnpm 9、Python 3.12+、PyYAML 6.0.3、GNU make、Bash/POSIX 工具、GCC、golangci-lint 2.14.x、govulncheck 及可用的隔离 Docker/Compose。服务器入口提供受控容器环境，不使用生产 Docker 对象或卷。若选择本机验证，需本机 Linux 或已安装发行版的 WSL 2、对应 Docker Desktop 集成和本地 Unix socket；WSL 空壳或仅 Windows 工具不足。依赖下载需要访问 Go/npm/PyPI、容器仓库和漏洞数据库。
+源码验证环境需要 Linux amd64、Go 1.27.3、Node.js 24、pnpm 9、Python 3.12+、PyYAML 6.0.3、GNU make、Bash/POSIX 工具、GCC、golangci-lint 2.14.x、govulncheck 及可用的隔离 Docker/Compose。服务器入口提供受控容器环境，不使用生产 Docker 对象或卷。若选择本机验证，需本机 Linux 或已安装发行版的 WSL 2、对应 Docker Desktop 集成和本地 Unix socket；WSL 空壳或仅 Windows 工具不足。依赖下载需要访问 Go/npm/PyPI、容器仓库和漏洞数据库。
 
 PostgreSQL/Redis 由原有 Testcontainers 测试自动建立隔离容器：常规 PostgreSQL 为 `postgres:18.1-alpine3.23`、Redis 为 `redis:8.4-alpine`，币安与自动禁用 race 专项另跑 `postgres:15-alpine`。不连接生产数据库，不需要复制生产 `.env` 或密钥。原有可选真实模型、TLS 抓包与插件测试并未因此变为全覆盖；默认仍不执行这些额外验收，报告列出 Go 跳过项，受保护 `TestPK*` 被跳过会失败。
 
@@ -35,7 +37,7 @@ PostgreSQL/Redis 由原有 Testcontainers 测试自动建立隔离容器：常�
 服务器首次准备时，从私库取得已审阅的 `deploy/jenkins/Dockerfile.source-tests`，在服务器执行工具镜像构建（不编译应用发行物，不包含源码或生产配置）：
 
 ```sh
-docker build -t pk-source-tests:20261015 - < deploy/jenkins/Dockerfile.source-tests
+docker build -t pk-source-tests:go1.27.3-20261021 - < deploy/jenkins/Dockerfile.source-tests
 ```
 
 每轮验证使用独立 UUID 的 DinD 容器和 `/srv/pk-source-validation/runs/<运行ID>`，限 8 CPU/16 GiB，仅挂载该轮目录，不挂宿主 Docker socket/生产卷/SSH 凭据。它需要 privileged 运行嵌套 Docker，但不共享宿主网络/PID 或已有 Docker 数据。执行完整源码套件后回传原报告及日志，并清理该轮容器、匿名 daemon 卷和远端目录；清理失败须如实报告，不删除不属于本轮的对象。

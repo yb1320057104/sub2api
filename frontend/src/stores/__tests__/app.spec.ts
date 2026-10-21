@@ -396,6 +396,33 @@ describe('useAppStore', () => {
       consoleError.mockRestore()
     })
 
+    it.each(['', 'Sub2API'])('normalizes the injected default site name %s without changing the source config', (name) => {
+      const injected = createPublicSettings({ site_name: name })
+      window.__APP_CONFIG__ = injected
+      const store = useAppStore()
+
+      expect(store.siteName).toBe('DP API')
+      expect(store.initFromInjectedConfig()).toBe(true)
+      expect(store.siteName).toBe('DP API')
+      expect(store.cachedPublicSettings?.site_name).toBe('DP API')
+      expect(window.__APP_CONFIG__?.site_name).toBe('DP API')
+      expect(injected.site_name).toBe(name)
+    })
+
+    it.each(['', 'Sub2API', 'My Team API'])('keeps fetched and cached site names consistent for %s', async (name) => {
+      const config = createPublicSettings({ site_name: name })
+      vi.mocked(getPublicSettings).mockResolvedValue(config)
+      const store = useAppStore()
+      const expected = name === 'My Team API' ? name : 'DP API'
+
+      expect((await store.fetchPublicSettings())?.site_name).toBe(expected)
+      expect((await store.fetchPublicSettings())?.site_name).toBe(expected)
+      expect(store.siteName).toBe(expected)
+      expect(store.cachedPublicSettings?.site_name).toBe(expected)
+      expect(window.__APP_CONFIG__?.site_name).toBe(expected)
+      expect(config.site_name).toBe(name)
+    })
+
     it('从 window.__APP_CONFIG__ 初始化', () => {
       const windowAny = window as any
       windowAny.__APP_CONFIG__ = {
