@@ -14,6 +14,27 @@ export default {
     login: 'Login',
     getStarted: 'Get Started',
     goToDashboard: 'Go to Dashboard',
+    redesign: {
+      home: 'Home',
+      eyebrow: 'AI access, built for teams',
+      titleLead: 'One key.',
+      titleAccent: 'More AI possibilities.',
+      description: 'Connect to Claude, GPT, Gemini and more.\nKeep your team focused on creating and building.',
+      browseModels: 'Explore Models',
+      docs: 'Documentation',
+      unifiedApi: 'One API',
+      smartRouting: 'Flexible Routing',
+      usageTracking: 'Clear Usage',
+      gatewayLabel: 'One API key connects to Claude, GPT, Gemini and Antigravity through {siteName}',
+      features: {
+        connectTitle: 'Connect Once',
+        connectDescription: 'One API endpoint. Less configuration.',
+        routingTitle: 'Flexible Routing',
+        routingDescription: 'Automatic account switching and load balancing.',
+        usageTitle: 'Clear Usage',
+        usageDescription: 'Usage-based billing, quotas and clear usage records.'
+      }
+    },
     // User-focused value proposition
     heroSubtitle: 'One Key, All AI Models',
     heroDescription: 'No need to manage multiple subscriptions. Access Claude, GPT, Gemini and more with a single API key',

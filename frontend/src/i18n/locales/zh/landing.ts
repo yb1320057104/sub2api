@@ -14,6 +14,27 @@ export default {
     login: '登录',
     getStarted: '立即开始',
     goToDashboard: '进入控制台',
+    redesign: {
+      home: '首页',
+      eyebrow: '为团队而生的 AI 接入平台',
+      titleLead: '一个密钥，',
+      titleAccent: '连接多种 AI 可能',
+      description: '统一接入 Claude、GPT、Gemini 等模型，\n让团队更专注于创作与开发。',
+      browseModels: '查看模型',
+      docs: '接入文档',
+      unifiedApi: '统一接口',
+      smartRouting: '灵活调度',
+      usageTracking: '用量可查',
+      gatewayLabel: '一个 API 密钥，通过 {siteName} 连接 Claude、GPT、Gemini 和 Antigravity',
+      features: {
+        connectTitle: '一键接入',
+        connectDescription: '统一 API 入口，减少重复配置。',
+        routingTitle: '灵活调度',
+        routingDescription: '多账号协同，自动切换与负载均衡。',
+        usageTitle: '用量可查',
+        usageDescription: '按量计费与配额管理，使用明细清晰可见。'
+      }
+    },
     // 新增：面向用户的价值主张
     heroSubtitle: '一个密钥，畅用多个 AI 模型',
     heroDescription: '无需管理多个订阅账号，一站式接入 Claude、GPT、Gemini 等主流 AI 服务',
