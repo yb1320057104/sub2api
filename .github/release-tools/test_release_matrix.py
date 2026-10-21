@@ -1,4 +1,5 @@
 import argparse
+import contextlib
 import copy
 import gzip
 import hashlib
@@ -196,7 +197,7 @@ class ReleaseMatrixTest(unittest.TestCase):
 
 
 class JenkinsValidationTest(unittest.TestCase):
-    """Fail closed before publishing when a source or artifact binding changes."""
+    """Preserve exact-artifact gates and the evidence on legacy sealed packages."""
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -208,7 +209,7 @@ class JenkinsValidationTest(unittest.TestCase):
             'binary_sha256': 'c' * 64, 'binary_archive_sha256': 'd' * 64,
             'image_archive_sha256': 'e' * 64, 'image_id': 'sha256:' + 'f' * 64,
             'source_notes_ref': control.NOTES_REF, 'source_notes_commit': 'd' * 40,
-            'source_note_blob': 'e' * 40, 'validation_profile': control.VALIDATION_PROFILE,
+            'source_note_blob': 'e' * 40, 'validation_profile': control.LEGACY_VALIDATION_PROFILE,
         }
         snapshot = {'head': 'c' * 40, 'tree': self.data['tree'], 'worktree_matches_index': True, 'status': 'M staged'}
         self.source = {
@@ -241,6 +242,15 @@ class JenkinsValidationTest(unittest.TestCase):
         control.write_json(self.directory / 'artifact-validation.json', self.runtime)
         self.data['artifact_validation_sha256'] = control.sha256(self.directory / 'artifact-validation.json')
 
+    def use_artifact_only_profile(self):
+        for field in control.SOURCE_EVIDENCE_FIELDS:
+            self.data.pop(field)
+        (self.directory / 'source-validation.json').unlink()
+        self.runtime.pop('source_validation_sha256')
+        self.data['validation_profile'] = control.VALIDATION_PROFILE
+        self.runtime['validation_profile'] = control.VALIDATION_PROFILE
+        self.save_runtime()
+
     def test_release_requires_formal_tag_without_commit_override(self):
         env = {'ACTION': 'release', 'PK_REPOSITORY': control.REPOSITORY, 'PK_IMAGE': control.IMAGE,
                'SOURCE_REF': 'refs/tags/v9.8.7-pk.1', 'COMMIT_SHA': ''}
@@ -255,6 +265,98 @@ class JenkinsValidationTest(unittest.TestCase):
                     control.parameters()
         with patch.dict(os.environ, {**env, 'ACTION': 'package', 'SOURCE_REF': 'refs/heads/main'}, clear=True):
             control.parameters()
+
+    def test_release_without_source_reports_keeps_artifact_checks_through_publication(self):
+        package_root = self.directory / 'packages'
+        package_root.mkdir()
+        env = {'ACTION': 'release', 'PK_REPOSITORY': control.REPOSITORY, 'PK_IMAGE': control.IMAGE,
+               'SOURCE_REF': 'refs/tags/v9.8.7-pk.1', 'COMMIT_SHA': '', 'BUILD_NUMBER': '5',
+               'PK_PACKAGE_ROOT': str(package_root), 'PK_API_TOKEN': 'fixture-api-token',
+               'PK_REGISTRY_TOKEN': 'fixture-registry-token', 'PK_REGISTRY_USER': 'fixture-user',
+               'DOCKER_HOST': 'tcp://fixture:2376'}
+
+        def fake_git(*args):
+            values = {
+                ('status', '--porcelain'): '',
+                ('remote', 'get-url', 'origin'): 'git@github.com:' + control.REPOSITORY + '.git',
+                ('rev-parse', 'HEAD'): self.data['commit'],
+                ('rev-parse', 'HEAD^{tree}'): self.data['tree'],
+                ('rev-parse', env['SOURCE_REF'] + '^{commit}'): self.data['commit'],
+                ('merge-base', '--is-ancestor', self.data['commit'], 'refs/remotes/origin/main'): '',
+            }
+            self.assertIn(args, values, 'No notes or other Git operations are required')
+            return values[args]
+
+        def fake_api(path, method='GET', data=None, token=None, allow_404=False):
+            repository_path = '/repos/' + control.REPOSITORY
+            if path == repository_path:
+                return {'private': True, 'full_name': control.REPOSITORY} if token else None
+            if path == repository_path + '/git/ref/tags/v9.8.7-pk.1':
+                return {'object': {'type': 'commit', 'sha': self.data['commit']}}
+            if path == repository_path + '/compare/' + self.data['commit'] + '...main':
+                return {'status': 'identical'}
+            if path == repository_path + '/releases/tags/v9.8.7-pk.1':
+                return None
+            if path == '/users/pengkang0322/packages/container/sub2api':
+                return {'visibility': 'private'}
+            if path == '/users/pengkang0322/packages/container/sub2api/versions?per_page=100&page=1':
+                return []
+            if path == repository_path + '/releases' and method == 'POST':
+                self.assertIn('source validation is not required', data['body'])
+                self.assertNotIn('source tests', data['body'])
+                return {'id': 7}
+            if path == repository_path + '/releases/7' and method == 'PATCH':
+                return {'html_url': 'https://github.com/' + control.REPOSITORY + '/releases/tag/v9.8.7-pk.1'}
+            self.fail('Unexpected API call: ' + method + ' ' + path)
+
+        with contextlib.chdir(self.directory), patch.dict(os.environ, env, clear=True), \
+                patch.object(control, 'git', side_effect=fake_git), \
+                patch.object(control, 'request', side_effect=fake_api), \
+                patch.object(control, 'source_evidence') as source_gate, \
+                patch.object(control, 'evidence') as manual_gate:
+            control.prepare()
+            output = Path('output')
+            data = control.manifest(output)
+            self.assertEqual(data['validation_profile'], control.VALIDATION_PROFILE)
+            self.assertFalse((output / 'source-validation.json').exists())
+            self.assertTrue(all(field not in data for field in control.SOURCE_EVIDENCE_FIELDS))
+
+            # Build outputs and the runtime check outcomes are unit-test fixtures;
+            # the real inventory, integrity, seal and publication bindings run below.
+            binary = b'fixture binary, never executed'
+            with tarfile.open(output / data['binary_archive'], 'w:gz') as archive:
+                member = tarfile.TarInfo('sub2api')
+                member.size = len(binary)
+                member.mode = 0o755
+                archive.addfile(member, io.BytesIO(binary))
+            (output / data['image_archive']).write_bytes(b'fixture image, never loaded')
+            (output / 'binary-sha256.txt').write_text(hashlib.sha256(binary).hexdigest())
+            (output / 'image-id.txt').write_text(self.data['image_id'])
+            control.inventory()
+            report = {'schema_version': 2, 'tests_profile': 'pk-artifact-v2', 'status': 'passed',
+                      'checks': copy.deepcopy(self.runtime['checks'])}
+            runtime.Validator(output, report).artifacts()
+            self.assertEqual(report['validation_profile'], control.VALIDATION_PROFILE)
+            self.assertNotIn('source_validation_sha256', report)
+            control.write_json(output / 'artifact-validation.json', report)
+            control.seal()
+            self.assertIn('source validation is not required', control.manifest(output)['validation'])
+
+            shutil.rmtree(output)
+            with patch.dict(os.environ, ACTION='publish', PACKAGE_ID=data['package_id']):
+                control.restore()
+            control.ready()
+            with patch.object(control, 'command', return_value=self.data['image_id']) as commands, \
+                    patch.object(control, 'upload_asset') as upload:
+                control.publish()
+            names = [call.args[1].name for call in upload.call_args_list]
+            self.assertEqual(names, [data['binary_archive'], 'checksums.txt', 'manifest.json',
+                                     'artifact-validation.json'])
+            self.assertTrue(all(call.args[0] == 'docker' for call in commands.call_args_list))
+            self.assertTrue(all(call.args[1] not in ('build', 'run', 'start') for call in commands.call_args_list))
+            source_gate.assert_not_called()
+            manual_gate.assert_not_called()
+            self.assertFalse(json.loads((output / 'published.json').read_text())['production_deployed'])
 
     def test_source_report_must_be_complete_passed_and_bound(self):
         control.source_evidence(self.source, self.data)
@@ -293,18 +395,55 @@ class JenkinsValidationTest(unittest.TestCase):
     def test_sealed_source_and_runtime_reports_are_accepted_together(self):
         control.package_evidence(self.directory, self.data)
 
+    def test_new_profile_accepts_only_artifact_runtime_evidence(self):
+        self.use_artifact_only_profile()
+        with patch.object(control, 'source_evidence') as source_gate:
+            control.package_evidence(self.directory, self.data)
+        source_gate.assert_not_called()
+        self.assertFalse((self.directory / 'source-validation.json').exists())
+
+    def test_source_evidence_cannot_be_discarded_by_changing_profiles(self):
+        for profile in (control.VALIDATION_PROFILE, None, 'unknown'):
+            with self.subTest(profile=profile), self.assertRaises(RuntimeError):
+                control.package_evidence(self.directory, dict(self.data, validation_profile=profile))
+        # Removing manifest fields is insufficient while its sealed source report remains.
+        data = {key: value for key, value in self.data.items() if key not in control.SOURCE_EVIDENCE_FIELDS}
+        data['validation_profile'] = control.VALIDATION_PROFILE
+        with self.assertRaisesRegex(RuntimeError, 'Source evidence requires the legacy'):
+            control.package_evidence(self.directory, data)
+        (self.directory / 'source-validation.json').unlink()
+        self.runtime['validation_profile'] = control.VALIDATION_PROFILE
+        self.save_runtime()
+        data['artifact_validation_sha256'] = self.data['artifact_validation_sha256']
+        with self.assertRaisesRegex(RuntimeError, 'Runtime source evidence requires the legacy'):
+            control.package_evidence(self.directory, data)
+
+    def test_artifact_only_profile_must_match_runtime_report(self):
+        self.use_artifact_only_profile()
+        for profile in (None, control.LEGACY_VALIDATION_PROFILE, 'unknown'):
+            self.runtime['validation_profile'] = profile
+            self.save_runtime()
+            with self.subTest(profile=profile), self.assertRaisesRegex(RuntimeError, 'Runtime validation profile'):
+                control.package_evidence(self.directory, self.data)
+
     def test_missing_or_changed_sealed_report_is_rejected(self):
-        for filename in ('source-validation.json', 'artifact-validation.json'):
-            path = self.directory / filename
-            original = path.read_bytes()
-            for replacement in (None, original + b' '):
-                if replacement is None:
-                    path.unlink()
-                else:
-                    path.write_bytes(replacement)
-                with self.subTest(filename=filename, missing=replacement is None), self.assertRaises(RuntimeError):
-                    control.package_evidence(self.directory, self.data)
-                path.write_bytes(original)
+        for profile in (control.LEGACY_VALIDATION_PROFILE, control.VALIDATION_PROFILE):
+            if profile == control.VALIDATION_PROFILE:
+                self.use_artifact_only_profile()
+            filenames = (('source-validation.json', 'artifact-validation.json')
+                         if profile == control.LEGACY_VALIDATION_PROFILE else ('artifact-validation.json',))
+            for filename in filenames:
+                path = self.directory / filename
+                original = path.read_bytes()
+                for replacement in (None, original + b' '):
+                    if replacement is None:
+                        path.unlink()
+                    else:
+                        path.write_bytes(replacement)
+                    with self.subTest(profile=profile, filename=filename, missing=replacement is None):
+                        with self.assertRaises(RuntimeError):
+                            control.package_evidence(self.directory, self.data)
+                    path.write_bytes(original)
 
     def test_runtime_must_match_all_source_and_artifact_bindings(self):
         for key in ('repository', 'commit', 'tree', 'package_id', 'version', 'binary_sha256',
@@ -316,16 +455,51 @@ class JenkinsValidationTest(unittest.TestCase):
                 control.package_evidence(self.directory, self.data)
             self.runtime[key] = original
 
+    def test_new_profile_runtime_bindings_cannot_be_missing_null_or_empty(self):
+        self.use_artifact_only_profile()
+        original_data, original_runtime = copy.deepcopy(self.data), copy.deepcopy(self.runtime)
+        for key in control.RUNTIME_BINDINGS:
+            for value in (None, '', 'different', 'missing'):
+                self.data, self.runtime = copy.deepcopy(original_data), copy.deepcopy(original_runtime)
+                if value == 'missing':
+                    self.data.pop(key)
+                    self.runtime.pop(key)
+                elif value == 'different':
+                    self.runtime[key] = value
+                else:
+                    self.data[key] = self.runtime[key] = value
+                self.save_runtime()
+                with self.subTest(key=key, value=value), self.assertRaises(RuntimeError):
+                    control.package_evidence(self.directory, self.data)
+
     def test_runtime_requires_cleanup_and_every_unique_check(self):
-        original = copy.deepcopy(self.runtime)
-        for changes in (dict(status='failed'), dict(checks=self.runtime['checks'][:-1]),
-                        dict(checks=[self.runtime['checks'][0]] * len(control.RUNTIME_CHECKS)),
-                        dict(checks=[dict(item, status='failed') if item['name'] == 'cleanup' else item
-                                     for item in self.runtime['checks']])):
-            self.runtime = {**copy.deepcopy(original), **changes}
-            self.save_runtime()
-            with self.subTest(changes=list(changes)), self.assertRaises(RuntimeError):
-                control.package_evidence(self.directory, self.data)
+        for profile in (control.LEGACY_VALIDATION_PROFILE, control.VALIDATION_PROFILE):
+            if profile == control.VALIDATION_PROFILE:
+                self.use_artifact_only_profile()
+            original = copy.deepcopy(self.runtime)
+            for changes in (dict(status='failed'), dict(checks=original['checks'][:-1]),
+                            dict(checks=[original['checks'][0]] * len(control.RUNTIME_CHECKS)),
+                            dict(checks=[dict(item, status='failed') if item['name'] == 'cleanup' else item
+                                         for item in original['checks']]),
+                            dict(checks=[dict(item, exit_code=False) if item['name'] == 'cleanup' else item
+                                         for item in original['checks']])):
+                self.runtime = {**copy.deepcopy(original), **changes}
+                self.save_runtime()
+                with self.subTest(profile=profile, changes=list(changes)), self.assertRaises(RuntimeError):
+                    control.package_evidence(self.directory, self.data)
+            self.runtime = original
+
+    def test_manual_package_keeps_legacy_evidence_path(self):
+        data = {key: value for key, value in self.data.items()
+                if key != 'validation_profile' and key not in control.SOURCE_EVIDENCE_FIELDS}
+        with patch.object(control, 'manifest', return_value=data), \
+                patch.object(control, 'verify_artifacts'), patch.object(control, 'write_json'), \
+                patch.object(control, 'release_ready'), \
+                patch.object(control, 'package_evidence') as automatic_gate, \
+                patch.object(control, 'evidence', return_value={'status': 'passed'}) as manual_gate:
+            control.ready()
+        automatic_gate.assert_not_called()
+        manual_gate.assert_called_once_with(data)
 
     def test_candidate_never_reaches_release_api(self):
         with patch.object(control, 'request') as api:

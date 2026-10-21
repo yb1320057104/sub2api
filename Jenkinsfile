@@ -10,12 +10,12 @@ pipeline {
         buildDiscarder(logRotator(numToKeepStr: '30', artifactNumToKeepStr: '10'))
     }
     parameters {
-        choice(name: 'ACTION', choices: ['release', 'package', 'publish'], description: 'release：校验提交前源码测试、打包、验收并发布；package：仅打包；publish：发布已有合格制品，不重新编译。')
-        gitParameter(name: 'SOURCE_REF', type: 'PT_BRANCH_TAG', defaultValue: 'origin/main',
-            branchFilter: '^origin/.*$', tagFilter: 'v*-pk.*', selectedValue: 'DEFAULT',
+        choice(name: 'ACTION', choices: ['release', 'package', 'publish'], description: 'release：正式标签打包、制品运行时验收并发布，无需源码测试报告或 notes；package：仅打包；publish：发布已有合格制品，不重新编译。')
+        gitParameter(name: 'SOURCE_REF', type: 'PT_BRANCH_TAG', defaultValue: '',
+            branchFilter: '^origin/.*$', tagFilter: 'v*-pk.*', selectedValue: 'NONE',
             sortMode: 'DESCENDING_SMART', quickFilterEnabled: true,
             useRepository: '^git@github[.]com:pengkang0322/sub2api[.]git$',
-            description: 'release 必须选正式 vX.Y.Z-pk.N 标签；package 也可选私库分支生成候选包。publish 忽略此项。')
+            description: 'release 请选择尚未发布的正式 vX.Y.Z-pk.N 标签（不带 origin/）；origin/ 开头的私库分支仅供 package 候选打包。publish 忽略此项。')
         string(name: 'COMMIT_SHA', defaultValue: '', description: '高级选项，通常留空。填写完整的 40 位小写提交 SHA 时，覆盖上方选择，仅打候选包。')
         string(name: 'PACKAGE_ID', defaultValue: '', description: 'release/package 留空；仅 publish 填写已封存且验收合格、尚未发布的产物 ID。')
     }
@@ -63,9 +63,6 @@ pipeline {
                 dir('source') {
                     script {
                         def refs = '+refs/heads/*:refs/remotes/origin/* +refs/tags/*:refs/tags/*'
-                        if (params.ACTION == 'release') {
-                            refs += ' +refs/notes/pk-source-validation:refs/notes/pk-source-validation'
-                        }
                         checkout([$class: 'GitSCM', branches: [[name: env.SOURCE_REF]],
                             userRemoteConfigs: [[url: 'git@github.com:pengkang0322/sub2api.git', credentialsId: 'pk-github-read',
                                 refspec: refs]],

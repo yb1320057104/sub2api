@@ -217,18 +217,20 @@ With the v0.2.14 bootstrap changes, a fresh installation generates a random admi
 
 ### Development and Packaging
 
-Source validation must pass before committing and pushing changes. The default is an isolated environment on the user's designated test server; local Linux/WSL remains supported. This supersedes the earlier migration test restriction. Jenkins builds all candidate/release artifacts; GitHub Actions does not build or test this fork. Production data and services are excluded from source tests.
+The user's 2026-10-21 instruction replaces the earlier source-test prerequisite: review the protected features and final diff, then commit, merge and push private `main` together with one unused formal `vX.Y.Z-pk.N` tag. Full source suites and `refs/notes/pk-source-validation` are optional, not prerequisites for committing, merging or a new formal release. Do not run the full suites automatically or describe tests that were not run as passing. Follow [the maintenance workflow](PK_MAINTENANCE.md) and keep existing features and published tags intact.
 
-Follow [the maintenance workflow](PK_MAINTENANCE.md) to stage the complete tested tree, preserve the nine-suite `pk-source-v2` report and original logs, then commit that same tree and bind evidence to the final commit. Reports must name the actual execution environment; server results must not be described as local tests. Credentials stay in ignored local configuration, never in source or documentation.
+The user starts Jenkins with `ACTION=release`, `SOURCE_REF=vX.Y.Z-pk.N` (the formal tag without `origin/`), and empty `COMMIT_SHA`/`PACKAGE_ID`. Jenkins requires the tag's commit to be in private `main` history; it rejects branch/SHA sources and commit overrides for release. New packages use `validation_profile=pk-artifact-only-v1` without requiring source notes. Jenkins builds once, runs all eleven isolated `pk-artifact-v2` runtime checks on those exact artifacts, verifies private sources, tag/main ancestry, unused versions and SHA256, then seals and publishes the same binary in both the image and update archive. Do not move existing formal tags, start Jenkins automatically or deploy to production without authorization.
+
+Run source checks only when requested or needed for investigation. The optional server entry point uses an isolated environment; local Linux/WSL remains supported. Production data and services are excluded, credentials stay in ignored local configuration, and reports name the actual environment, scope and result. A full `pk-source-v2` passing report still requires all nine suites and preflight, matching commit/tree and original log hashes; partial or historical results cannot stand in for it.
 
 ```bash
-# After reviewing and staging all intended changes; see the setup requirements.
+# Optional full source validation after reviewing and staging the intended tree.
 python -B scripts/test-server.py
-# Commit only after the full report passes, then bind it to that exact commit.
+# Optional evidence: bind only a genuinely passing report matching HEAD's tree.
 python -B scripts/test-local.py --bind-commit HEAD --report /path/to/local-validation.json --publish-evidence
 ```
 
-For optional local validation use `scripts/test-local.ps1` on Windows/WSL or `python3 scripts/test-local.py` on Linux. Every final merge/tag commit needs its own bound note under `refs/notes/pk-source-validation`; a matching tree on another commit is insufficient. Jenkins defaults to `ACTION=release` with a formal `vX.Y.Z-pk.N` tag in private `main` history, rejects `COMMIT_SHA` overrides, verifies source evidence, then builds once, runs eleven isolated artifact checks, seals and publishes the same package. The private formal Release retains its update archive and `checksums.txt` for the existing web updater. Publishing does not update production. Manual `package`/`publish` and legacy same-artifact validation remain available; see [Jenkins instructions](deploy/jenkins/README.md). Do not compile release artifacts locally.
+Optional local entries are `scripts/test-local.ps1` on Windows/WSL and `python3 scripts/test-local.py` on Linux. Old sealed `pk-source-artifact-v2` packages still require their original source and runtime evidence, and the legacy manual `pk-local-v1` path retains its ten-suite evidence requirements; never change a package profile to bypass validation. See [Jenkins instructions](deploy/jenkins/README.md) for manual `package`/`publish`. The private formal Release retains its update archive and `checksums.txt` for the web updater. Only Jenkins builds candidate/release artifacts; GitHub Actions does not build or test this fork, and release artifacts must not be built locally. Publishing does not update production.
 
 **Key configuration in `config.yaml`:**
 

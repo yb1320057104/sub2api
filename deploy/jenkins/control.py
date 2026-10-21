@@ -33,7 +33,16 @@ REQUIRED_SUITES = {
 }
 SOURCE_SUITES = REQUIRED_SUITES - {"artifact-runtime"}
 NOTES_REF = "refs/notes/pk-source-validation"
-VALIDATION_PROFILE = "pk-source-artifact-v2"
+VALIDATION_PROFILE = "pk-artifact-only-v1"
+LEGACY_VALIDATION_PROFILE = "pk-source-artifact-v2"
+JENKINS_VALIDATION_PROFILES = {VALIDATION_PROFILE, LEGACY_VALIDATION_PROFILE}
+SOURCE_EVIDENCE_FIELDS = (
+    "source_validation_sha256", "source_notes_ref", "source_notes_commit", "source_note_blob",
+)
+RUNTIME_BINDINGS = (
+    "repository", "commit", "tree", "package_id", "binary_sha256", "binary_archive_sha256",
+    "image_archive_sha256", "image_id", "version",
+)
 RUNTIME_CHECKS = {
     "artifact-integrity", "image-provenance", "image-loaded", "binary-identity",
     "runtime-nonroot", "same-seed-preservation", "interrupted-update-recovery",
@@ -157,23 +166,11 @@ def prepare() -> None:
         "image_tag": IMAGE + ":" + version,
         "binary_archive": f"sub2api_{version}_linux_amd64.tar.gz",
         "image_archive": f"sub2api_{version}_linux_amd64.docker.tar.gz",
-        "validation": "Pending local source and artifact-runtime tests; this package is not published",
+        "validation": "Pending legacy local source and artifact-runtime validation; this package is not published",
     }
-    if os.environ.get("ACTION") == "release":
-        # Notes travel with the private source fetch, outside the source tree so
-        # recording the actual tested commit does not change that tested tree.
-        note_blob = git("notes", "--ref=" + NOTES_REF, "list", commit)
-        require(bool(re.fullmatch(r"[0-9a-f]{40}", note_blob)), "Missing source-validation note for this commit")
-        raw = subprocess.check_output(["git", "cat-file", "blob", note_blob], cwd="source")
-        proof = json.loads(raw)
-        source_evidence(proof, manifest)
-        git("merge-base", "--is-ancestor", proof["base_commit"], commit)
-        (output / "source-validation.json").write_bytes(raw)
+    if os.environ.get("ACTION", "release") == "release":
         manifest.update(validation_profile=VALIDATION_PROFILE,
-                        source_validation_sha256=sha256(output / "source-validation.json"),
-                        source_notes_ref=NOTES_REF, source_notes_commit=git("rev-parse", NOTES_REF),
-                        source_note_blob=note_blob,
-                        validation="Pre-commit source passed; exact-artifact Jenkins validation pending")
+                        validation="Pending Jenkins exact-artifact runtime validation; source validation is not required")
     write_json(output / "manifest.json", manifest)
     print(f"Packaging {commit} as {version}; no GitHub Actions build or production deployment")
 
@@ -192,7 +189,13 @@ def manifest(directory: Path) -> dict:
     require(data.get("image_tag") == IMAGE + ":" + version, "Unexpected package image")
     require(data.get("binary_archive") == f"sub2api_{version}_linux_amd64.tar.gz", "Unexpected binary archive name")
     require(data.get("image_archive") == f"sub2api_{version}_linux_amd64.docker.tar.gz", "Unexpected image archive name")
-    require(data.get("validation_profile") in (None, VALIDATION_PROFILE), "Unsupported package validation profile")
+    profile = data.get("validation_profile")
+    require(profile in (None, *JENKINS_VALIDATION_PROFILES), "Unsupported package validation profile")
+    if profile != LEGACY_VALIDATION_PROFILE:
+        require(not any(field in data for field in SOURCE_EVIDENCE_FIELDS)
+                and not (directory / "source-validation.json").exists()
+                and not (directory / "source-validation.json").is_symlink(),
+                "Source evidence requires the legacy validation profile; it may not be discarded")
     return data
 
 
@@ -239,7 +242,7 @@ def inventory() -> None:
 def verify_source_checkout(data: dict) -> None:
     require(git("rev-parse", "HEAD") == data["commit"] and git("rev-parse", "HEAD^{tree}") == data["tree"],
             "Source commit or tree changed during packaging")
-    require(not git("status", "--porcelain"), "Packaging modified the validated source checkout")
+    require(not git("status", "--porcelain"), "Packaging modified the source checkout")
 
 
 def seal() -> None:
@@ -247,10 +250,12 @@ def seal() -> None:
     data = manifest(output)
     verify_artifacts(output, data)
     verify_source_checkout(data)
-    if data.get("validation_profile") == VALIDATION_PROFILE:
+    if data.get("validation_profile") in JENKINS_VALIDATION_PROFILES:
         data["artifact_validation_sha256"] = sha256(output / "artifact-validation.json")
         package_evidence(output, data)
-        data["validation"] = "Pre-commit source and Jenkins exact-artifact validation passed"
+        data["validation"] = ("Pre-commit source and Jenkins exact-artifact validation passed"
+                              if data["validation_profile"] == LEGACY_VALIDATION_PROFILE else
+                              "Jenkins exact-artifact runtime validation passed; source validation is not required")
         write_json(output / "manifest.json", data)
     destination = package_path(data["package_id"])
     require(not destination.exists(), "A package ID may never be overwritten")
@@ -266,8 +271,8 @@ def seal() -> None:
         staged.rename(destination)
         destination.chmod(0o550)
     print("PACKAGE_ID=" + data["package_id"])
-    if data.get("validation_profile") == VALIDATION_PROFILE:
-        print("Source and exact-artifact evidence sealed; the same package is ready for the private release gate.")
+    if data.get("validation_profile") in JENKINS_VALIDATION_PROFILES:
+        print("Exact-artifact evidence sealed; the same package is ready for the private release gate.")
     else:
         print("Manual package: complete legacy local source/runtime validation before publish.")
 
@@ -314,20 +319,36 @@ def source_evidence(proof: dict, data: dict) -> None:
 
 
 def package_evidence(directory: Path, data: dict) -> None:
-    """Validate the source and runtime reports sealed alongside this exact package."""
-    require(data.get("source_notes_ref") == NOTES_REF, "Unexpected source evidence notes ref")
-    for field in ("source_notes_commit", "source_note_blob"):
-        require(bool(re.fullmatch(r"[0-9a-f]{40}", str(data.get(field, "")))), "Missing source note provenance")
-    for filename, field in (("source-validation.json", "source_validation_sha256"),
-                            ("artifact-validation.json", "artifact_validation_sha256")):
-        require(sha256(directory / filename) == data.get(field), "Sealed validation report changed: " + filename)
-    source_evidence(json.loads((directory / "source-validation.json").read_bytes()), data)
+    """Validate runtime evidence, retaining source checks for legacy sealed packages."""
+    profile = data.get("validation_profile")
+    require(profile in JENKINS_VALIDATION_PROFILES, "Unsupported Jenkins validation profile")
+    bindings = RUNTIME_BINDINGS
+    if profile == LEGACY_VALIDATION_PROFILE:
+        require(data.get("source_notes_ref") == NOTES_REF, "Unexpected source evidence notes ref")
+        for field in ("source_notes_commit", "source_note_blob"):
+            require(bool(re.fullmatch(r"[0-9a-f]{40}", str(data.get(field, "")))), "Missing source note provenance")
+        require(sha256(directory / "source-validation.json") == data.get("source_validation_sha256"),
+                "Sealed validation report changed: source-validation.json")
+        source_evidence(json.loads((directory / "source-validation.json").read_bytes()), data)
+        bindings += ("source_validation_sha256",)
+    else:
+        require(not any(field in data for field in SOURCE_EVIDENCE_FIELDS)
+                and not (directory / "source-validation.json").exists()
+                and not (directory / "source-validation.json").is_symlink(),
+                "Source evidence requires the legacy validation profile; it may not be discarded")
+    require(sha256(directory / "artifact-validation.json") == data.get("artifact_validation_sha256"),
+            "Sealed validation report changed: artifact-validation.json")
     proof = json.loads((directory / "artifact-validation.json").read_bytes())
     require(isinstance(proof, dict) and proof.get("schema_version") == 2
             and proof.get("tests_profile") == "pk-artifact-v2" and proof.get("status") == "passed",
             "Jenkins artifact validation did not pass")
-    for key in ("repository", "commit", "tree", "package_id", "binary_sha256", "binary_archive_sha256",
-                "image_archive_sha256", "image_id", "version", "source_validation_sha256"):
+    if profile == VALIDATION_PROFILE:
+        require(proof.get("validation_profile") == profile, "Runtime validation profile does not match package")
+        require("source_validation_sha256" not in proof, "Runtime source evidence requires the legacy validation profile")
+    elif "validation_profile" in proof:
+        require(proof["validation_profile"] == profile, "Runtime validation profile does not match package")
+    for key in bindings:
+        require(isinstance(data.get(key), str) and bool(data[key]), f"Missing package runtime binding: {key}")
         require(proof.get(key) == data[key], f"Jenkins runtime evidence does not match package {key}")
     checks = proof.get("checks")
     require(isinstance(checks, list) and len(checks) == len(RUNTIME_CHECKS)
@@ -379,13 +400,13 @@ def release_ready(data: dict) -> None:
 def ready() -> None:
     data = manifest(Path("output"))
     verify_artifacts(Path("output"), data)
-    if data.get("validation_profile") == VALIDATION_PROFILE:
+    if data.get("validation_profile") in JENKINS_VALIDATION_PROFILES:
         package_evidence(Path("output"), data)
     else:
         proof = evidence(data)
         write_json(Path("output/local-test-evidence.json"), proof)
     release_ready(data)
-    print("Source and exact-artifact validation passed; private tag and main ancestry verified.")
+    print("Required package evidence passed; private tag and main ancestry verified.")
 
 
 def package_registry_ready(data: dict, credential: str) -> None:
@@ -445,9 +466,15 @@ def publish() -> None:
         package = request("/users/pengkang0322/packages/container/sub2api", token=registry_token)
         require(package.get("visibility") == "private", "GHCR package privacy changed; refuse release")
         tag = "v" + data["version"]
-        validation = ("Pre-commit source tests and Jenkins exact-artifact runtime validation passed. "
-                      if data.get("validation_profile") == VALIDATION_PROFILE else
-                      "Local source and exact-artifact runtime validation passed. ")
+        if data.get("validation_profile") == LEGACY_VALIDATION_PROFILE:
+            validation = "Pre-commit source tests and Jenkins exact-artifact runtime validation passed. "
+            reports = ["source-validation.json", "artifact-validation.json"]
+        elif data.get("validation_profile") == VALIDATION_PROFILE:
+            validation = "Jenkins exact-artifact runtime validation passed; source validation is not required. "
+            reports = ["artifact-validation.json"]
+        else:
+            validation = "Local source and exact-artifact runtime validation passed. "
+            reports = ["local-test-evidence.json"]
         notes = (f"PK出版。\n\nSource: `{data['commit']}`\nImage: `{data['image_tag']}`\n"
                  f"Binary SHA256: `{data['binary_sha256']}`\nJenkins package: `{data['package_id']}`\n\n"
                  "Built by Jenkins; " + validation +
@@ -456,8 +483,6 @@ def publish() -> None:
                           data={"tag_name": tag, "target_commitish": data["commit"],
                                 "name": data["version"] + " PK出版", "body": notes,
                                 "draft": True, "prerelease": False})
-        reports = (["source-validation.json", "artifact-validation.json"]
-                   if data.get("validation_profile") == VALIDATION_PROFILE else ["local-test-evidence.json"])
         for name in [data["binary_archive"], "checksums.txt", "manifest.json", *reports]:
             upload_asset(release["id"], Path("output") / name, credential)
         released = request("/repos/" + REPOSITORY + "/releases/" + str(release["id"]),

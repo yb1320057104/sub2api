@@ -21,11 +21,11 @@
 
 ## 发布
 
-仅在当前请求包含发布时执行本节。读取私库当前 `Jenkinsfile`、`deploy/jenkins/README.md` 和 `PK_MAINTENANCE.md`；核实提交、notes、PR、标签与正式发布的触发链，确认不会引发未授权的生产部署。2026-10-08 最新授权取代此前本次测试禁令：默认先完整源码测试通过再提交和推送，Jenkins 一次 release 完成发行构建、同制品运行时验收与私库发布。GitHub Actions 不打包或测试，本地不编译发行程序。Jenkins 仅监听 `127.0.0.1:18081`，用户自行配置域名反代，不开放公网端口。
+仅在当前请求包含发布或正式打包交接时执行本节。读取私库当前 `Jenkinsfile`、`deploy/jenkins/README.md` 和 `PK_MAINTENANCE.md`；核实提交、PR、标签与正式发布的触发链，确认不会引发未授权的生产部署。2026-10-21 用户取消完整源码测试及 validation notes 对提交、推送、合入 `main` 和正式 `release` 的前置要求，覆盖 2026-10-08、2026-10-19 的相关旧规则。默认在二开保留、静态核对和清单同步后直接提交、推送并准备正式标签，用户手动点击 Jenkins `release`，由同次构建完成发行、十一项制品运行时验收与私库发布。GitHub Actions 不打包或测试，本地不编译发行程序。Jenkins 仅监听 `127.0.0.1:18081`，用户自行配置域名反代，不开放公网端口。
 
 版本为 `上游版本-pk.修订号`；当前版本完成既定合入/发行后，规划同一上游版本的下一次发行时才核对标签并递增修订号；未发布版本内的修复和重新打包不递增，不复用已使用的标签。页面在机器版本后追加 `PK出版`，不能把中文写入机器版本。
 
-工作分支以目标未发布版本命名为 `vX.Y.Z-pk.N`，禁止任何附加前缀，例如 `v0.2.13-pk.1` 只是格式示例。同一目标版本的功能、修复、文档和上游合并复用一个分支及一个 PR，不为反复修复/打包递增版本或添加任务、日期、助手、功能后缀。新建前核对本地/私库远端分支、在途 PR 和私库标签；目标版本未明确时先明确，不先建临时分支。默认只有一个在途版本，确需并行不同版本须用户明确要求；新版本分支从已核对的私库 `main` 创建，`main` 的原审核、测试和发布门禁不变。
+工作分支以目标未发布版本命名为 `vX.Y.Z-pk.N`，禁止任何附加前缀，例如 `v0.2.13-pk.1` 只是格式示例。同一目标版本的功能、修复、文档和上游合并复用一个分支及一个 PR，不为反复修复/打包递增版本或添加任务、日期、助手、功能后缀。新建前核对本地/私库远端分支、在途 PR 和私库标签；目标版本未明确时先明确，不先建临时分支。默认只有一个在途版本，确需并行不同版本须用户明确要求；新版本分支从已核对的私库 `main` 创建。保留二开、静态审查、来源与制品验收要求，不再以完整源码测试或 notes 作为 `main` 合入前置。
 
 2026-10-21 用户授权清理本地与私库所有带前缀旧分支；先核对提交已保全、无在途 PR/Jenkins/worktree 引用，再删除分支引用，不丢弃独有提交。Jenkins 可信 SCM 及初始化使用已审阅的 `main`，不得恢复对已停用前缀分支的依赖。
 
@@ -33,27 +33,31 @@
 
 ### 每次正式发布的执行顺序
 
-默认顺序为 **提交前源码测试 → 提交并绑定最终 commit 的 notes → 一次 Jenkins `release` → 按授权网页更新**。GitHub 保存源码、验收 notes、Release 和私有镜像，不承担打包或测试。
+默认顺序为 **二开保留与静态核对 → 直接提交、推送并合入 main → 推送正式标签 → 用户手动 Jenkins `release` → 按授权网页更新**。GitHub 保存源码、Release、私有镜像及已有历史 notes，不承担打包或测试。没有源码报告或 notes 不触发额外审批，也不阻止这个流程。
 
-1. **验证完整暂存源码。** 检查范围后将源码全部 `git add` 暂存，不能有未解决冲突、未暂存改动或非忽略未跟踪文件。默认运行控制端 `python -B scripts/test-server.py`，在用户指定服务器隔离环境验证；本机 Linux/WSL 仍可运行原 test-local 入口。报告 `local-validation.json` 为 schema2 / `pk-source-v2`，独立 preflight 和九套件全通过、`source_eligible=true`、前后 tree/快照一致；远端注明 `execution_environment=server-isolated`，不能写成本机通过。保留仓库外原报告及相邻日志 SHA256，个别诊断不合格。
-2. **提交同一 tree 并绑定。** 测试通过后才提交相同 tree，在干净最终 HEAD 执行 `python -B scripts/test-local.py --bind-commit HEAD --report /path/to/local-validation.json --publish-evidence`。此绑定可在 Windows Python 运行，不需 WSL。保留真实环境、执行时间和 base_commit，验证其为最终提交祖先；推送代码及 `refs/notes/pk-source-validation`，不强制改写 notes。合入/正式 tag 指向的新 commit 本身须有报告，即使 tree 一样也需重新绑定；tree 改变须重新测试。环境不可用或失败时保留改动，不提交、合入或发布。
-3. **选择一次正式 release。** Jenkins `sub2api-package` 默认 `ACTION=release`，`SOURCE_REF` 选择未占用的正式 `vX.Y.Z-pk.N`（规范化为 `refs/tags/...`），COMMIT_SHA 和 PACKAGE_ID 留空。标签 commit 必须在私库 main 历史内且有匹配 notes；分支/SHA 不允许 release，禁止 COMMIT_SHA 覆盖，不改变可信 SCM 分支。
-4. **核对同次证据及制品。** Jenkins 显式 fetch notes，校验最终 commit/tree、base 祖先、九套件结果，并保全 `source-validation.json`、SHA256 和 notes 出处；随后 build → inventory → 专用 daemon runtime → seal → publish。运行时 `pk-artifact-v2` 十一项检查绑定 package_id、归档/二进制/镜像 SHA256，容器不连接生产或发布凭据。源码证据或 runtime 失败均不发布。成功后原制品封存于 `/srv/jenkins-packages/sub2api/{PACKAGE_ID}/`，发布不重编译；不混用不同构建文件。
+1. **核对并直接提交。** 审查实际变更范围、冲突、二开保留与清单同步，只暂存当前授权的内容，保留其他会话或用户的未提交改动。完成静态核对后直接提交、推送，并按授权合入私库 `main`；不自动运行完整源码测试，不强制生成、绑定或推送 notes。实际功能冲突和遗漏仍须处理；测试未运行、失败、部分执行或取消均据实记录。
+2. **准备并推送正式标签。** 核对最终提交在私库 `main` 历史内，确认 `vX.Y.Z-pk.N` 正式标签、Release 和已有发布状态未占用，再创建并推送标签。使用完整 `refs/tags/...` 区分同名工作分支，从远端读取并剥离附注标签后核对 commit；已推送正式标签不得移动或覆盖。交付标签名不带 `origin/`，不能只推工作分支就称为可正式打包。
+3. **交给用户点击正式 release。** Jenkins `sub2api-package` 使用 `ACTION=release`，`SOURCE_REF` 默认留空，由用户从分支/标签列表选择 `vX.Y.Z-pk.N`，`COMMIT_SHA` 和 `PACKAGE_ID` 留空。Jenkins 内部可规范化为 `refs/tags/...`，用户选择和交付值不带 `origin/`。标签 commit 必须在私库 main 历史内；不要求源码 notes，分支/SHA 不允许 release，禁止 COMMIT_SHA 覆盖，不改变可信 SCM 分支。没有另行授权时不代为触发。
+4. **核对同次制品及运行时证据。** 新 Jenkins 使用 `pk-artifact-only-v1` 封存配置，不 fetch 或读取源码 notes，不把源码报告或九套件结果作为前置，直接执行 build → inventory → 专用 daemon runtime → seal → publish。运行时 `pk-artifact-v2` 十一项检查绑定 package_id、归档/二进制/镜像 SHA256，容器不连接生产或发布凭据。制品来源、版本、完整性或 runtime 验收失败仍不发布。成功后原制品封存于 `/srv/jenkins-packages/sub2api/{PACKAGE_ID}/`，发布不重编译；不混用不同构建文件。
 5. **确认正式发布与网页更新。** 核对私有正式非 prerelease Release、二进制归档、checksums.txt、版本镜像与 latest。网页入口此时可发现版本；是否执行更新按当前授权。release/publish 不升级或重启生产，发布完成与线上升级分别记录。
 
 ### 旧手动流程兼容
 
-用户只要求试打包时显式选 `ACTION=package`，保留原六项基础制品。SOURCE_REF 可选分支/正式标签，40 位小写 COMMIT_SHA 只在 package 覆盖选择；分支和 SHA 生成 candidate，不进入网页正式更新。正式 tag 必须属于 main，得到待验收 release 包，package 本身不发布。
+用户只要求试打包时显式选 `ACTION=package`，保留原六项基础制品；不能因缺少源码 notes 把用户要求的正式 `release` 改为 `package`。SOURCE_REF 可选分支/正式标签，40 位小写 COMMIT_SHA 只在 package 覆盖选择；分支和 SHA 生成 candidate，不进入网页正式更新。正式 tag 必须属于 main，得到待验收 release 包，package 本身不发布。
 
-旧手动正式流程仍为 package → 下载同包 → 本地 `--artifact-dir` → 上传报告 → publish。在干净的相同 commit/tree 执行 `scripts/test-local.ps1 -ArtifactDirectory <制品目录>` 或 `python3 scripts/test-local.py --artifact-dir <制品目录>`，生成旧 `pk-local-v1` 十套件报告（含 artifact-runtime），须 `publish_eligible=true` 且 package_id、binary_sha256、image_archive_sha256 匹配。将原报告上传 `/srv/jenkins-evidence/sub2api/{PACKAGE_ID}.json`，再 `ACTION=publish` 指定 PACKAGE_ID，发布原包而不重编译。候选包不能直接改成正式版。
+旧 `pk-local-v1` 手动路径仅作格式兼容，不是新正式发布的默认前置。明确使用该旧路径时，流程为 package → 下载同包 → `--artifact-dir` → 上传报告 → publish；工具要求在干净的相同 commit/tree 执行 `scripts/test-local.ps1 -ArtifactDirectory <制品目录>` 或 `python3 scripts/test-local.py --artifact-dir <制品目录>`。它生成十套件报告（含 artifact-runtime），只有实际 `publish_eligible=true` 且 package_id、binary_sha256、image_archive_sha256 匹配才是有效旧格式证据。原报告位于 `/srv/jenkins-evidence/sub2api/{PACKAGE_ID}.json`，`ACTION=publish` 指定 PACKAGE_ID 后发布原包而不重编译。不要为了执行新流程额外要求这套历史验证，候选包也不能直接改成正式版。
 
-新 release 流程已验收封存、但尚未对外发布的包也可用 publish。此时使用封存的源码/运行时证据，不能凭后来变动的 notes 或手填通过值放行。入口和文档不代表动态验收完成，报告和套件日志必须来自真实环境执行。测试生成临时文件及夹具用完删除，仓库原有回归保留。
+新 release 流程已验收封存、但尚未对外发布的包也可用 publish。新 `pk-artifact-only-v1` 核对封存清单、运行时报告和全部文件哈希，不要求补建源码证据。旧 `pk-source-artifact-v2` 必须继续核对 source 与 runtime 两套证据及其哈希、来源；旧 `pk-local-v1` 继续按原手动格式验证。不能删除、改写旧包的源码报告/notes 出处或凭后来变动的 notes 绕过完整性校验。历史 notes 可以保留、查看，但不能冒充本次动态验证；所有报告和套件日志必须来自真实执行，不手填通过值。测试生成临时文件及夹具用完删除，仓库原有回归保留。
 
-### 服务器隔离源码验证
+### 可选的服务器隔离源码验证
 
-控制端入口为 `python -B scripts/test-server.py`，可用 `--output-dir` 指定仓库外新建的绝对报告目录。需要 Python 3.12+/Paramiko 和预先核验的 `~/.ssh/known_hosts`；Windows 可直接运行及绑定报告，无需 WSL。未知或不符的主机指纹失败，不能自动信任。凭据默认位于 `.codex/servers/sub2api-test.json`，必须被 Git 忽略且未跟踪，目标限用户授权的测试服务器；不在 skill/文档/普通日志填写密码，也不把 SSH 凭据上传到测试容器。
+仅在用户要求执行源码测试时使用，不作为默认提交、推送、合入或正式发布前置。控制端入口为 `python -B scripts/test-server.py`，可用 `--output-dir` 指定仓库外新建的绝对报告目录。需要 Python 3.12+/Paramiko 和预先核验的 `~/.ssh/known_hosts`；Windows 可直接运行及绑定报告，无需 WSL。未知或不符的主机指纹失败，不能自动信任。凭据默认位于 `.codex/servers/sub2api-test.json`，必须被 Git 忽略且未跟踪，目标限用户授权的测试服务器；不在 skill/文档/普通日志填写密码，也不把 SSH 凭据上传到测试容器。
 
-服务器先用已审阅的 `deploy/jenkins/Dockerfile.source-tests` 一次构建工具镜像 `pk-source-tests:20261008`，这不是应用发行编译。入口仅上传 HEAD Git bundle 和暂存树 Git 对象包；远端解包后直接恢复暂存树，保留原始 blob、文件 mode、tree 和 base HEAD，不重新 `git add` 规范化或生成临时 commit。每轮在 `/srv/pk-source-validation/runs/<运行ID>` 建独立 UUID 的 privileged DinD 环境，8 CPU/16 GiB，只挂本轮目录，不挂宿主 socket、生产数据/卷或凭据，不共用宿主网络/PID。源码及 PostgreSQL/Redis 测试对象隔离，不能重启/操作生产服务。完成后自动回传原报告与日志、删除本轮容器/匿名 daemon 卷/远端目录；清理失败如实报告，不扩大删除范围。具体准备步骤以当前工作区 `PK_MAINTENANCE.md` 为准。
+该可选工具要求完整待测 tree 已暂存，无未解决冲突、未暂存源码或非忽略未跟踪文件；不得为满足工具要求覆盖其他人的改动。只有独立 preflight 和九套件真实全通过、`source_eligible=true`、前后 tree/快照一致，才能称为完整源码验证通过；零匹配、部分诊断、失败和取消不能替代。报告 `local-validation.json` 为 schema2 / `pk-source-v2`，远端注明 `execution_environment=server-isolated`，保留仓库外原报告及相邻日志 SHA256，不写成本机执行。
+
+如需保存可选验证证据，可在相同 tree 的干净最终 HEAD 执行 `python -B scripts/test-local.py --bind-commit HEAD --report /path/to/local-validation.json --publish-evidence`。工具按真实环境、执行时间、base_commit 和 tree 校验绑定，已有 notes 不强制改写；改变 tree 后旧报告不能作为新 tree 的通过证明。绑定或推送 notes 本身仍是可选操作，不是新 Jenkins `release` 的输入要求。
+
+服务器使用已审阅的 `deploy/jenkins/Dockerfile.source-tests` 对应工具镜像，准确镜像标签以当前 `scripts/test-server.py` 为准；准备工具镜像不是应用发行编译。入口仅上传 HEAD Git bundle 和暂存树 Git 对象包；远端解包后直接恢复暂存树，保留原始 blob、文件 mode、tree 和 base HEAD，不重新 `git add` 规范化或生成临时 commit。每轮在 `/srv/pk-source-validation/runs/<运行ID>` 建独立 UUID 的 privileged DinD 环境，8 CPU/16 GiB，只挂本轮目录，不挂宿主 socket、生产数据/卷或凭据，不共用宿主网络/PID。源码及 PostgreSQL/Redis 测试对象隔离，不能重启/操作生产服务。完成后自动回传原报告与日志、删除本轮容器/匿名 daemon 卷/远端目录；清理失败如实报告，不扩大删除范围。具体准备步骤以当前工作区 `PK_MAINTENANCE.md` 为准。
 
 发布部分失败可能已占用版本或留下草稿，先核查日志、Release 与镜像状态，保留原制品及证据，不盲目覆盖重试或重建包。若版本已占用，按维护文档处理；需要改用未占用的新 PK 修订时，重新走该版本的打包和验收流程。若正式 Release 已完成而仅镜像 `latest` 失败，先核对再处理该移动标签，不把已经发布的版本重新打包覆盖。
 

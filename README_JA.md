@@ -218,18 +218,20 @@ v0.2.14 の初期設定では、新規インストール時に管理者メール
 
 ### 開発とパッケージ作成
 
-ソースの全検証に合格してからコミットと push を行います。既定ではユーザー指定のテストサーバー上の隔離環境を使い、ローカル Linux/WSL も利用できます。この許可は以前の移行時のテスト禁止に優先します。候補版・正式版のビルドは Jenkins のみで行い、GitHub Actions は使用しません。ソーステストは本番データや本番サービスに接続しません。
+2026-10-21 のユーザー指示により、従来のソーステストの事前必須条件を廃止しました。保護対象の機能と最終差分を確認した後、コミットをプライベート `main` に反映して push し、未使用の正式 `vX.Y.Z-pk.N` タグを一つ作成・push します。全ソーステストと `refs/notes/pk-source-validation` は任意であり、コミット、マージ、新しい正式リリースの前提条件ではありません。全テストを自動実行せず、未実行を合格と記録しないでください。[保守手順](PK_MAINTENANCE.md) に従い、既存機能と公開済みタグを保持します。
 
-[保守手順](PK_MAINTENANCE.md) に従って変更全体をステージし、9 スイートの `pk-source-v2` レポートと元のログを保存します。合格した同一 tree をコミットし、最終 commit に証拠を関連付けます。実際の実行環境を記録し、サーバーの結果をローカル実行と表現しません。認証情報は Git 対象外のローカル設定に保存し、ソースや文書には含めません。
+Jenkins はユーザー自身が開始し、`ACTION=release`、`SOURCE_REF=vX.Y.Z-pk.N`（`origin/` のない正式タグ）を指定して、`COMMIT_SHA` と `PACKAGE_ID` は空欄にします。タグの commit はプライベート main の履歴に含まれる必要があり、release ではブランチ/SHA の指定と commit の上書きを拒否します。新しいパッケージは `validation_profile=pk-artifact-only-v1` を使用し、ソース notes を要求しません。一度だけビルドし、その同じ成果物に対して `pk-artifact-v2` の隔離実行時チェック 11 項目をすべて実行します。プライベートな取得元、tag/main の関係、未使用バージョン、SHA256 を確認してから封印・公開し、イメージと更新アーカイブには同一バイナリを使います。既存の正式タグを移動せず、許可なく Jenkins や本番更新を開始しないでください。
+
+ソースチェックはユーザーの依頼や調査上の必要がある場合だけ実行します。任意のサーバー検証は隔離環境を使用し、ローカル Linux/WSL も利用できます。本番データやサービスには接続せず、認証情報は Git 対象外のローカル設定に保存します。レポートには実際の環境、範囲、結果を記録します。完全な `pk-source-v2` 合格レポートには、9 スイートと preflight の合格、対応する commit/tree、元ログのハッシュが必要で、部分実行や過去の結果で代用できません。
 
 ```bash
-# 変更を確認して全体をステージします。環境の準備は保守手順を参照。
+# 任意の全ソース検証。対象の差分を確認し、全体をステージしてから実行します。
 python -B scripts/test-server.py
-# 全検証の合格後にコミットし、その最終 commit の notes を公開します。
+# 任意の証拠保存。実際に合格し、HEAD の tree と一致するレポートだけを関連付けます。
 python -B scripts/test-local.py --bind-commit HEAD --report /path/to/local-validation.json --publish-evidence
 ```
 
-ローカル検証を選ぶ場合は Windows/WSL の `scripts/test-local.ps1` または Linux の `python3 scripts/test-local.py` を使います。最終マージ/tag commit 自身に `refs/notes/pk-source-validation` の証拠が必要で、別 commit の tree が同じだけでは不十分です。Jenkins の既定 `ACTION=release` はプライベート main の履歴に含まれる正式 `vX.Y.Z-pk.N` タグを要求し、COMMIT_SHA の上書きを拒否します。ソース証拠を確認して一度だけビルドし、11 項目の隔離実行時検証、封印、同一成果物の公開を行います。正式 Release の更新アーカイブと `checksums.txt` は既存 Web 更新・ロールバックと互換性を保ち、公開だけでは本番を更新しません。旧手動 package/publish も利用できます。[Jenkins の説明](deploy/jenkins/README.md) を参照し、ローカルでリリース用ビルドは行わないでください。
+任意のローカル検証には Windows/WSL の `scripts/test-local.ps1` または Linux の `python3 scripts/test-local.py` を使います。封印済みの旧 `pk-source-artifact-v2` パッケージには従来のソース証拠と実行時証拠が引き続き必要で、旧手動 `pk-local-v1` 経路も同一成果物の 10 スイート証拠を厳密に確認します。検証を回避するために profile を変更しないでください。手動 package/publish は [Jenkins の説明](deploy/jenkins/README.md) を参照してください。正式なプライベート Release は更新アーカイブと `checksums.txt` を保持し、既存の Web 更新・ロールバックに対応します。候補版・正式版のビルドは Jenkins のみで行い、GitHub Actions でのビルド・テストやローカルのリリース用ビルドは行いません。公開だけでは本番環境を更新しません。
 
 **`config.yaml` の主要設定:**
 

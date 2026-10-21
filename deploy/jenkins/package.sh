@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Compilation and packaging only. Source tests run before committing;
-# the release pipeline checks these exact artifacts before sealing/publication.
+# Compilation and packaging only; the release pipeline checks these exact
+# artifacts before sealing/publication without requiring source-test reports.
 set -euo pipefail
 set +x
 root=$(pwd -P)
@@ -22,7 +22,7 @@ build_gid=$(id -g)
 [[ "$build_uid" != 0 ]] || { echo 'PK source builds must run as a non-root user.' >&2; exit 1; }
 
 # Keep candidate sources away from every formal package cache. The legacy
-# manual tag workflow also stays separate from releases checked by source notes.
+# manual tag workflow also stays separate from the automatic release workflow.
 case "${ACTION:-package}:$build_type" in
     release:release) cache_domain=release ;;
     package:release) cache_domain=manual-release ;;

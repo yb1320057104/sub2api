@@ -182,6 +182,8 @@ class Validator:
         require(regular(self.directory / "checksums.txt").read_text() == expected, "Unexpected release checksums")
         self.report.update({key: data[key] for key in BINDINGS})
         self.report["artifact"] = {key: data[key] for key in BINDINGS}
+        if "validation_profile" in data:
+            self.report["validation_profile"] = data["validation_profile"]
         if "source_validation_sha256" in data:
             self.report["source_validation_sha256"] = data["source_validation_sha256"]
 

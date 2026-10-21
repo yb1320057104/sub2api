@@ -243,18 +243,20 @@ fast_mode = true
 
 ### 源码开发与打包
 
-先完整源码测试通过，再提交和推送。默认使用用户指定测试服务器的隔离环境，本机 Linux/WSL 仍可用；此授权取代早前迁移测试禁令。候选和正式发行构建只在 Jenkins 进行，GitHub Actions 不打包或测试，源码测试不连接生产数据或影响生产服务。
+2026-10-21 用户最新授权取代原源码测试前置：先核对保护功能与最终差异，再直接提交、合入并推送私库 `main` 及唯一未占用的正式 `vX.Y.Z-pk.N` 标签。全套源码测试和 `refs/notes/pk-source-validation` 改为可选，不再是提交、合入或新正式发行的前置；不自动运行全套测试，未测不写成通过。按 [维护流程](PK_MAINTENANCE.md) 保留已有功能，已推送正式标签不得移动或覆盖。
 
-按 [维护流程](PK_MAINTENANCE.md) 完整暂存待测 tree，保留九套件 `pk-source-v2` 报告与原日志；通过后提交相同 tree，再绑定最终 commit。报告注明真实执行环境，服务器通过不写成本机通过。凭据只保存在 Git 忽略的本机配置中，不进入源码或文档。
+由用户亲自点击 Jenkins，填写 `ACTION=release`、`SOURCE_REF=vX.Y.Z-pk.N`（不带 `origin/` 的正式标签），`COMMIT_SHA`/`PACKAGE_ID` 留空。标签提交必须属于私库 main 历史，release 拒绝分支/SHA 来源及 commit 覆盖。新包使用 `validation_profile=pk-artifact-only-v1`，不要求源码 notes；Jenkins 一次构建，对同一制品执行全部十一项 `pk-artifact-v2` 隔离运行时检查，核验私库来源、tag/main 归属、版本未占用和 SHA256，再封存并发布原包。镜像与更新归档使用同一二进制，不默认代用户触发构建或上线。
+
+源码检查仅按用户要求或实际排查需要执行。可选服务器入口使用隔离环境，本机 Linux/WSL 仍可用；不连接生产数据或影响生产服务，凭据只存 Git 忽略的本机配置，报告记录真实环境、范围和结果。完整 `pk-source-v2` 通过报告仍须九套件及 preflight 全部通过，commit/tree 和原日志哈希匹配；子集检查或历史结果不能冒充完整通过。
 
 ```bash
-# 先核对并完整暂存本次变更；环境准备见维护文档。
+# 可选完整源码检查：先核对并暂存待测范围。
 python -B scripts/test-server.py
-# 完整报告通过后才提交，再绑定该最终 commit 并发布私库 notes。
+# 可选证据保存：仅绑定真实通过且与 HEAD tree 一致的报告。
 python -B scripts/test-local.py --bind-commit HEAD --report /path/to/local-validation.json --publish-evidence
 ```
 
-可选本机验证使用 Windows/WSL `scripts/test-local.ps1` 或 Linux `python3 scripts/test-local.py`。最终合入/标签 commit 本身必须有 `refs/notes/pk-source-validation` 绑定报告，不能仅凭另一 commit 的 tree 相同放行。Jenkins 默认 `ACTION=release` 选择属于私库 main 历史的正式 `vX.Y.Z-pk.N` 标签，禁止 COMMIT_SHA 覆盖；核验源码证据后一次构建、完成十一项隔离制品检查、封存并发布原包。私有正式 Release 保留更新归档与 `checksums.txt`，原网页一键更新及回退可继续使用；发布不自动升级生产。旧手动 package/publish 与同包验收仍兼容，见 [Jenkins 说明](deploy/jenkins/README.md)。不在本机编译发行程序。
+可选本机入口为 Windows/WSL `scripts/test-local.ps1` 或 Linux `python3 scripts/test-local.py`。旧封存 `pk-source-artifact-v2` 包继续严格核验原源码与运行时证据；旧手动 `pk-local-v1` 路径仍需十套件同包报告，不能改 profile 绕过验收。手动 `package`/`publish` 详见 [Jenkins 说明](deploy/jenkins/README.md)。私有正式 Release 保留更新归档与 `checksums.txt`，供原网页更新及回退使用。候选和正式发行物只在 Jenkins 构建，GitHub Actions 不打包或测试，本机不编译发行程序；发布不自动升级生产。
 
 **`config.yaml` 关键配置：**
 
