@@ -15,6 +15,10 @@ import (
 const intelligenceTestKeyPrefix = "sk-iq-"
 const intelligenceTestTokenHeader = "X-Sub2api-Intelligence-Token"
 
+// Up to 2,000 selected groups can run both modes together. Leave room for
+// authorizations belonging to a cancelling generation until its requests exit.
+const intelligenceTestPendingAuthorizationLimit = 8192
+
 // These one-use capabilities exist only in this process. A loopback reverse
 // proxy alone cannot authenticate a browser request, even with a leaked key.
 var intelligenceTestCapabilities = struct {
@@ -62,7 +66,7 @@ func AuthorizeIntelligenceTestRequest(req *http.Request) error {
 			delete(intelligenceTestCapabilities.items, hash)
 		}
 	}
-	if len(intelligenceTestCapabilities.items) >= 1024 {
+	if len(intelligenceTestCapabilities.items) >= intelligenceTestPendingAuthorizationLimit {
 		return errors.New("too many pending intelligence test authorizations")
 	}
 	intelligenceTestCapabilities.items[sha256.Sum256([]byte(token))] = intelligenceTestCapability{
@@ -70,6 +74,23 @@ func AuthorizeIntelligenceTestRequest(req *http.Request) error {
 	}
 	req.Header.Set(intelligenceTestTokenHeader, token)
 	return nil
+}
+
+// Release a capability that never reached gateway authentication, for example
+// after a connection failure or cancellation. Consumed capabilities are already
+// absent, so every scheduled request can defer this without changing validation.
+func releaseIntelligenceTestRequest(req *http.Request) {
+	if req == nil {
+		return
+	}
+	token := req.Header.Get(intelligenceTestTokenHeader)
+	if token == "" {
+		return
+	}
+	hash := sha256.Sum256([]byte(token))
+	intelligenceTestCapabilities.Lock()
+	delete(intelligenceTestCapabilities.items, hash)
+	intelligenceTestCapabilities.Unlock()
 }
 
 // ValidateIntelligenceTestRequest runs on every gateway authentication, before

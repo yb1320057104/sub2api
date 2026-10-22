@@ -60,6 +60,7 @@ func (s *IntelligenceTestService) callModel(ctx context.Context, key, mode strin
 	if err := AuthorizeIntelligenceTestRequest(req); err != nil {
 		return "", intelligenceTestFailure("internal_authorization_failed", "未能建立本次测试的内部调用授权。")
 	}
+	defer releaseIntelligenceTestRequest(req)
 	response, err := s.client.Do(req)
 	if err != nil {
 		if ctx.Err() != nil {

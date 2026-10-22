@@ -89,16 +89,18 @@ type IntelligenceTestService struct {
 	done          chan struct{}
 	wake          chan struct{}
 	active        map[int64]context.CancelFunc
+	inflight      map[intelligenceTestJob]*intelligenceTestWorker
+	workers       sync.WaitGroup
 }
 
 func NewIntelligenceTestService(db *sql.DB, groupRepo GroupRepository, settingRepo SettingRepository, apiKeyService *APIKeyService, apiKeyRepo APIKeyRepository, cfg *config.Config) *IntelligenceTestService {
-	s := &IntelligenceTestService{db: db, groupRepo: groupRepo, settingRepo: settingRepo, apiKeyService: apiKeyService, apiKeyRepo: apiKeyRepo, cfg: cfg, active: make(map[int64]context.CancelFunc), wake: make(chan struct{}, 1)}
+	s := &IntelligenceTestService{db: db, groupRepo: groupRepo, settingRepo: settingRepo, apiKeyService: apiKeyService, apiKeyRepo: apiKeyRepo, cfg: cfg, active: make(map[int64]context.CancelFunc), wake: make(chan struct{}, 1), inflight: make(map[intelligenceTestJob]*intelligenceTestWorker)}
 	if apiKeyService != nil {
 		s.userRepo = apiKeyService.userRepo
 	}
 	s.client = &http.Client{Timeout: intelligenceTestTimeout, Transport: &http.Transport{
 		Proxy: nil, DialContext: (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
-		MaxConnsPerHost: 2, MaxIdleConnsPerHost: 2, IdleConnTimeout: 30 * time.Second,
+		MaxIdleConns: 128, MaxIdleConnsPerHost: 64, IdleConnTimeout: 30 * time.Second,
 		ResponseHeaderTimeout: 30 * time.Second, MaxResponseHeaderBytes: 64 * 1024,
 	}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	return s
@@ -193,14 +195,6 @@ func validIntelligenceTestEffort(effort string) bool {
 		return true
 	}
 	return false
-}
-
-func (s *IntelligenceTestService) cancelActiveIntelligenceTests() {
-	s.mu.Lock()
-	for _, cancel := range s.active {
-		cancel()
-	}
-	s.mu.Unlock()
 }
 
 func (s *IntelligenceTestService) ListGroups(ctx context.Context) ([]IntelligenceTestGroup, error) {
@@ -306,85 +300,9 @@ func (s *IntelligenceTestService) Stop() {
 	}
 }
 
-func (s *IntelligenceTestService) loop(ctx context.Context, done chan struct{}) {
-	defer close(done)
-	// Wait for the HTTP server and migrations before the first loopback request.
-	timer := time.NewTimer(15 * time.Second)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return
-	case <-timer.C:
-	}
-	for {
-		if ctx.Err() != nil {
-			return
-		}
-		// Coalesce saves made before this batch; planning always reads the newest
-		// committed generation. The startup activation delay is still respected.
-		select {
-		case <-s.wake:
-		default:
-		}
-		s.runScheduledBatch(ctx)
-		timer.Reset(5 * time.Second)
-		select {
-		case <-ctx.Done():
-			return
-		case <-timer.C:
-		case <-s.wake:
-		}
-	}
-}
-
-// Scheduling owns no database connection while a model runs. Claims below use a
-// transaction advisory lock plus persistent leases across all instances, so even
-// a one-connection pool can serve settings, credentials and ordinary gateway work.
-func (s *IntelligenceTestService) runScheduledBatch(ctx context.Context) {
-	cfg, keyRevision, jobs, err := s.planIntelligenceTests(ctx)
-	if err != nil || len(jobs) == 0 {
-		return
-	}
-	batchCtx, batchCancel := context.WithCancel(ctx)
-	defer batchCancel()
-	var wg sync.WaitGroup
-	for _, j := range jobs {
-		wg.Add(1)
-		go func(j intelligenceTestJob) { defer wg.Done(); s.runOne(batchCtx, j.groupID, j.mode, cfg) }(j)
-	}
-	finished := make(chan struct{})
-	go func() { wg.Wait(); close(finished) }()
-	watch := time.NewTicker(5 * time.Second)
-	defer watch.Stop()
-	for {
-		select {
-		case <-finished:
-			return
-		case <-ctx.Done():
-			batchCancel()
-			<-finished
-			return
-		case <-s.wake:
-		case <-watch.C:
-		}
-		// A wake may arrive after planning already read the saved generation.
-		// Only changed state cancels work; a late notification cannot kill the
-		// freshly restarted batch and postpone it by another full interval.
-		checkCtx, checkCancel := context.WithTimeout(ctx, 3*time.Second)
-		latest, readErr := s.GetConfig(checkCtx)
-		var latestKeyRevision int64
-		keyErr := s.db.QueryRowContext(checkCtx, `SELECT COALESCE(MAX(api_key_id),0) FROM pk_intelligence_test_keys`).Scan(&latestKeyRevision)
-		checkCancel()
-		if readErr != nil || !sameIntelligenceTestConfig(cfg, latest) || keyErr != nil || latestKeyRevision != keyRevision {
-			batchCancel()
-			<-finished
-			s.wakeIntelligenceTests()
-			return
-		}
-	}
-}
-
-func (s *IntelligenceTestService) runOne(parent context.Context, groupID int64, mode string, cfg *IntelligenceTestConfig) {
+// claimed reports whether a durable attempt was created. Failed claims do not
+// wake the scheduler themselves and cannot create an immediate retry loop.
+func (s *IntelligenceTestService) runOne(parent context.Context, groupID int64, mode string, cfg *IntelligenceTestConfig) (claimed bool) {
 	if cfg == nil || (mode != "svg" && mode != "candy") {
 		return
 	}
@@ -412,9 +330,9 @@ func (s *IntelligenceTestService) runOne(parent context.Context, groupID int64, 
 		return
 	}
 	defer func() { _ = tx.Rollback() }()
-	// Serialize only the brief durable claim. HTTP calls never hold this lock or
-	// an idle SQL session. Rechecking all leases makes the concurrency cap global.
-	if _, err = tx.ExecContext(queryCtx, `SELECT pg_advisory_xact_lock(706832,1)`); err != nil {
+	// Different pairs may claim concurrently. The shared gate still excludes a
+	// reset/planning transaction, and the pair's conditional UPDATE owns its lease.
+	if _, err = tx.ExecContext(queryCtx, `SELECT pg_advisory_xact_lock_shared(706832,1)`); err != nil {
 		queryCancel()
 		return
 	}
@@ -423,11 +341,6 @@ func (s *IntelligenceTestService) runOne(parent context.Context, groupID int64, 
 	latest, configErr := intelligenceTestConfigInTransaction(queryCtx, tx)
 	if configErr != nil || latest == nil || !sameIntelligenceTestConfig(cfg, latest) || !latest.Enabled ||
 		(mode == "svg" && !latest.SVG.Enabled) || (mode == "candy" && !latest.Candy.Enabled) {
-		queryCancel()
-		return
-	}
-	var leased int
-	if err = tx.QueryRowContext(queryCtx, `SELECT COUNT(*) FROM pk_intelligence_test_state WHERE lease_until>NOW()`).Scan(&leased); err != nil || leased >= 2 {
 		queryCancel()
 		return
 	}
@@ -461,6 +374,7 @@ func (s *IntelligenceTestService) runOne(parent context.Context, groupID int64, 
 	if err != nil {
 		return
 	}
+	claimed = true
 	s.mu.Lock()
 	s.active[id] = cancel
 	s.mu.Unlock()
@@ -528,6 +442,7 @@ func (s *IntelligenceTestService) runOne(parent context.Context, groupID int64, 
 	if _, err = s.db.ExecContext(finishCtx, `UPDATE pk_intelligence_test_results SET status=$2,passed=$3,artifact=$4,finished_at=$5,duration_ms=$6,answer_text=$7,error_code=$8,error_detail=$9 WHERE id=$1 AND status='running'`, id, status, passed, artifact, finished.UTC(), duration, answerText, errorCode, errorDetail); err == nil {
 		_, _ = s.db.ExecContext(finishCtx, `UPDATE pk_intelligence_test_state SET lease_until=NULL,active_result_id=NULL WHERE group_id=$1 AND mode=$2 AND active_result_id=$3`, groupID, mode, id)
 	}
+	return claimed
 }
 
 func (s *IntelligenceTestService) intelligenceEndpoint() (string, error) {

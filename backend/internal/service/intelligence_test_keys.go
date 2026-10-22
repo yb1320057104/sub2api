@@ -153,6 +153,10 @@ func (s *IntelligenceTestService) SyncKeys(ctx context.Context, adminID int64, g
 		}
 		result.Groups = append(result.Groups, state)
 	}
+	// Capture only workers that existed before the replacement became visible.
+	// A delayed post-commit cancellation must not stop fresh-key requests started
+	// by the independent scheduler after this transaction commits.
+	activeCancels := s.activeIntelligenceTestCancels()
 	if err = tx.Commit(); err != nil {
 		return nil, err
 	}
@@ -160,7 +164,10 @@ func (s *IntelligenceTestService) SyncKeys(ctx context.Context, adminID int64, g
 	// retains their credentials. Cancel old work only after the replacement is
 	// committed; rolled-back rotations leave existing scheduled work intact.
 	revokeIntelligenceTestCapabilities(revoked)
-	s.cancelActiveIntelligenceTests()
+	for _, cancelActive := range activeCancels {
+		cancelActive()
+	}
+	s.wakeIntelligenceTests()
 	invalidationCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
 	for _, key := range invalidate {

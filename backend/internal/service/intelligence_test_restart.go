@@ -146,8 +146,9 @@ type intelligenceTestJob struct {
 	mode    string
 }
 
-// Planning and reset use the same lock as claims. An older planner therefore
-// cannot postpone a just-reset next_run_at with a stale interval or settings.
+// Planning/reset take the exclusive side of the claims' shared gate. An older
+// planner cannot postpone a reset with stale settings, while independent pairs
+// can claim together after this brief planning transaction commits.
 func (s *IntelligenceTestService) planIntelligenceTests(ctx context.Context) (*IntelligenceTestConfig, int64, []intelligenceTestJob, error) {
 	queryCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -172,7 +173,7 @@ func (s *IntelligenceTestService) planIntelligenceTests(ctx context.Context) (*I
 		return nil, 0, nil, err
 	}
 	// A soft-deleted group can still have a cancelling request in another
-	// process. Keep its live lease in the global capacity count until released.
+	// process. Keep its pair's live lease until the owning worker releases it.
 	if _, err = tx.ExecContext(queryCtx, `DELETE FROM pk_intelligence_test_state s USING groups g WHERE s.group_id=g.id AND g.deleted_at IS NOT NULL AND (s.lease_until IS NULL OR s.lease_until<=NOW())`); err != nil {
 		return nil, 0, nil, err
 	}
@@ -192,12 +193,12 @@ func (s *IntelligenceTestService) planIntelligenceTests(ctx context.Context) (*I
 	if err = tx.QueryRowContext(queryCtx, `SELECT COALESCE(MAX(api_key_id),0) FROM pk_intelligence_test_keys`).Scan(&keyRevision); err != nil {
 		return nil, 0, nil, err
 	}
-	rows, err := tx.QueryContext(queryCtx, `SELECT s.group_id,s.mode FROM pk_intelligence_test_state s JOIN groups g ON g.id=s.group_id JOIN pk_intelligence_test_keys k ON k.group_id=s.group_id WHERE g.status='active' AND g.deleted_at IS NULL AND s.next_run_at<=NOW() AND (s.lease_until IS NULL OR s.lease_until<=NOW()) AND ((s.mode='svg' AND $1) OR (s.mode='candy' AND $2)) ORDER BY s.next_run_at,s.group_id,s.mode LIMIT GREATEST(0,2-(SELECT COUNT(*) FROM pk_intelligence_test_state WHERE lease_until>NOW()))`, cfg.SVG.Enabled, cfg.Candy.Enabled)
+	rows, err := tx.QueryContext(queryCtx, `SELECT s.group_id,s.mode FROM pk_intelligence_test_state s JOIN groups g ON g.id=s.group_id JOIN pk_intelligence_test_keys k ON k.group_id=s.group_id WHERE g.status='active' AND g.deleted_at IS NULL AND s.next_run_at<=NOW() AND (s.lease_until IS NULL OR s.lease_until<=NOW()) AND ((s.mode='svg' AND $1) OR (s.mode='candy' AND $2)) ORDER BY s.next_run_at,s.group_id,s.mode`, cfg.SVG.Enabled, cfg.Candy.Enabled)
 	if err != nil {
 		return nil, 0, nil, err
 	}
 	defer func() { _ = rows.Close() }()
-	jobs := make([]intelligenceTestJob, 0, 2)
+	jobs := make([]intelligenceTestJob, 0)
 	for rows.Next() {
 		var job intelligenceTestJob
 		if err = rows.Scan(&job.groupID, &job.mode); err != nil {
