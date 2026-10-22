@@ -7,6 +7,7 @@ export interface IntelligenceTestGroup {
   name: string
   platform: string
   key_configured: boolean
+  selected: boolean
 }
 
 export interface IntelligenceTestGroupOverride {
@@ -66,7 +67,7 @@ export const intelligenceTestAPI = {
   async saveConfig(config: IntelligenceTestConfig) {
     return (await apiClient.put<IntelligenceTestConfig>('/admin/intelligence-test/config', config)).data
   },
-  async syncKeys() {
+  async syncKeys(groupIDs: number[]) {
     return (await apiClient.post<{
       created: number
       updated: number
@@ -74,7 +75,7 @@ export const intelligenceTestAPI = {
       failed: number
       groups: { group_id: number; group_name: string; configured: boolean; error?: string }[]
     }>(
-      '/admin/intelligence-test/keys/sync', {},
+      '/admin/intelligence-test/keys/sync', { group_ids: [...groupIDs] },
     )).data
   },
 }

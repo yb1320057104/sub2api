@@ -58,6 +58,7 @@ type IntelligenceTestGroup struct {
 	ID            int64  `json:"id"`
 	Name          string `json:"name"`
 	Platform      string `json:"platform"`
+	Selected      bool   `json:"selected"`
 	KeyConfigured bool   `json:"key_configured"`
 }
 
@@ -229,25 +230,28 @@ func (s *IntelligenceTestService) ListGroups(ctx context.Context) ([]Intelligenc
 	if err != nil {
 		return nil, err
 	}
+	selected := map[int64]bool{}
 	configured := map[int64]bool{}
-	rows, err := s.db.QueryContext(ctx, `SELECT k.group_id FROM pk_intelligence_test_keys k JOIN api_keys a ON a.id=k.api_key_id AND a.group_id=k.group_id JOIN users u ON u.id=a.user_id AND u.status='active' AND u.role='admin' AND u.deleted_at IS NULL WHERE a.deleted_at IS NULL AND a.status='active' AND a.key LIKE $1`, intelligenceTestKeyPrefix+"%")
+	rows, err := s.db.QueryContext(ctx, `SELECT k.group_id,(a.id IS NOT NULL AND u.id IS NOT NULL) FROM pk_intelligence_test_keys k LEFT JOIN api_keys a ON a.id=k.api_key_id AND a.group_id=k.group_id AND a.deleted_at IS NULL AND a.status='active' AND a.key LIKE $1 LEFT JOIN users u ON u.id=a.user_id AND u.status='active' AND u.role='admin' AND u.deleted_at IS NULL`, intelligenceTestKeyPrefix+"%")
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var id int64
-		if err := rows.Scan(&id); err != nil {
+		var keyConfigured bool
+		if err := rows.Scan(&id, &keyConfigured); err != nil {
 			return nil, err
 		}
-		configured[id] = true
+		selected[id] = true
+		configured[id] = keyConfigured
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 	result := make([]IntelligenceTestGroup, 0, len(groups))
 	for _, group := range groups {
-		result = append(result, IntelligenceTestGroup{ID: group.ID, Name: group.Name, Platform: group.Platform, KeyConfigured: configured[group.ID]})
+		result = append(result, IntelligenceTestGroup{ID: group.ID, Name: group.Name, Platform: group.Platform, Selected: selected[group.ID], KeyConfigured: configured[group.ID]})
 	}
 	return result, nil
 }

@@ -77,19 +77,26 @@
             <h3 class="font-semibold text-gray-900 dark:text-white">{{ t('intelligenceTest.keyManagement') }}</h3>
             <p class="mt-2 text-sm leading-6 text-gray-500 dark:text-dark-400">{{ t('intelligenceTest.keyHint') }}</p>
             <p class="mt-1 text-xs leading-5 text-gray-400 dark:text-dark-500">{{ t('intelligenceTest.keyPrivate') }}</p>
+            <p id="intelligence-group-selection-hint" class="mt-2 text-xs leading-5 text-gray-500 dark:text-dark-400">{{ t('intelligenceTest.groupSelectionHint') }}</p>
           </div>
-          <button type="button" class="btn btn-secondary shrink-0" :disabled="syncing || saving" @click="syncKeys">{{ t(syncing ? 'intelligenceTest.syncing' : 'intelligenceTest.syncKeys') }}</button>
+          <button type="button" class="btn btn-secondary shrink-0" :disabled="!groupsLoaded || syncing || saving" @click="syncKeys">{{ t(syncing ? 'intelligenceTest.syncing' : 'intelligenceTest.syncKeys') }}</button>
         </div>
         <div v-if="syncReport" class="mt-4 space-y-2 text-sm" role="status">
           <p class="text-gray-700 dark:text-dark-200">{{ t('intelligenceTest.syncResult', syncReport) }}</p>
           <p v-for="group in failedGroups" :key="group.group_id" class="text-amber-700 dark:text-amber-400">{{ group.group_name }}：{{ group.error }}</p>
         </div>
-        <div v-if="groups.length" class="mt-4 flex flex-wrap gap-2">
-          <span v-for="group in groups" :key="group.id" class="inline-flex items-center gap-2 rounded-lg bg-gray-50 px-3 py-2 text-xs dark:bg-dark-800">
-            <span class="h-1.5 w-1.5 rounded-full" :class="group.key_configured ? 'bg-emerald-500' : 'bg-amber-400'" />
+        <div class="mt-4 flex flex-wrap items-center gap-3 text-xs">
+          <span class="text-gray-500 dark:text-dark-400" aria-live="polite">{{ t('intelligenceTest.selectedGroups', { count: selectedVisibleGroupIDs.length, total: groups.length }) }}</span>
+          <button type="button" class="font-medium text-primary-600 hover:underline disabled:opacity-50 dark:text-primary-400" :disabled="syncing || saving || !groups.length" @click="selectAllGroups">{{ t('intelligenceTest.selectAllGroups') }}</button>
+          <button type="button" class="font-medium text-gray-500 hover:underline disabled:opacity-50 dark:text-dark-400" :disabled="syncing || saving || !selectedVisibleGroupIDs.length" @click="clearGroupSelection">{{ t('intelligenceTest.clearGroupSelection') }}</button>
+        </div>
+        <div v-if="groups.length" class="mt-3 flex flex-wrap gap-2" role="group" :aria-label="t('intelligenceTest.groupLabel')" aria-describedby="intelligence-group-selection-hint">
+          <label v-for="group in groups" :key="group.id" class="inline-flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-xs" :class="selectedGroupIDs.includes(group.id) ? 'border-primary-200 bg-primary-50 dark:border-primary-800 dark:bg-primary-950/30' : 'border-transparent bg-gray-50 dark:bg-dark-800'">
+            <input type="checkbox" class="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500 disabled:cursor-not-allowed dark:border-dark-600" :checked="selectedGroupIDs.includes(group.id)" :disabled="syncing || saving" @change="toggleGroupSelection(group.id, ($event.target as HTMLInputElement).checked)" />
             <span class="text-gray-700 dark:text-dark-200">{{ group.name }}</span>
+            <span class="h-1.5 w-1.5 rounded-full" :class="group.key_configured ? 'bg-emerald-500' : 'bg-amber-400'" aria-hidden="true" />
             <span class="text-gray-400">{{ t(group.key_configured ? 'intelligenceTest.keyReady' : 'intelligenceTest.keyMissing') }}</span>
-          </span>
+          </label>
         </div>
       </section>
       <div class="flex flex-col items-start justify-between gap-3 border-t border-gray-100 px-5 py-4 dark:border-dark-700 sm:flex-row sm:items-center sm:px-6">
@@ -102,14 +109,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Toggle from '@/components/common/Toggle.vue'
 import { intelligenceTestAPI, type IntelligenceTestConfig, type IntelligenceTestGroup, type IntelligenceTestMode } from '@/api/intelligenceTest'
 import { useAppStore } from '@/stores/app'
 import { useIntelligenceTestStore } from '@/stores/intelligenceTest'
 
-defineProps<{ groups: IntelligenceTestGroup[] }>()
+const props = defineProps<{ groups: IntelligenceTestGroup[]; groupsLoaded: boolean }>()
 const emit = defineEmits<{ saved: []; keysSynced: [] }>()
 const { t } = useI18n()
 const app = useAppStore()
@@ -123,6 +130,36 @@ const syncing = ref(false)
 const error = ref('')
 const syncReport = ref<Awaited<ReturnType<typeof intelligenceTestAPI.syncKeys>> | null>(null)
 const failedGroups = computed(() => syncReport.value?.groups.filter(group => group.error) ?? [])
+const selectedGroupIDs = ref<number[]>([])
+const selectedVisibleGroupIDs = computed(() => props.groups.filter(group => selectedGroupIDs.value.includes(group.id)).map(group => group.id))
+let groupSelectionInitialized = false
+
+function alignGroupSelection(groups: IntelligenceTestGroup[]) {
+  selectedGroupIDs.value = groups.filter(group => group.selected === true).map(group => group.id)
+  groupSelectionInitialized = true
+}
+
+watch(() => [props.groupsLoaded, props.groups] as const, ([loaded, groups]) => {
+  // Parent polling may refresh key validity, but must not overwrite a draft.
+  if (loaded && !groupSelectionInitialized) alignGroupSelection(groups)
+}, { immediate: true })
+
+function toggleGroupSelection(groupID: number, selected: boolean) {
+  groupSelectionInitialized = true
+  selectedGroupIDs.value = selected
+    ? [...new Set([...selectedGroupIDs.value, groupID])]
+    : selectedGroupIDs.value.filter(id => id !== groupID)
+}
+
+function selectAllGroups() {
+  groupSelectionInitialized = true
+  selectedGroupIDs.value = props.groups.map(group => group.id)
+}
+
+function clearGroupSelection() {
+  groupSelectionInitialized = true
+  selectedGroupIDs.value = []
+}
 
 function normalized(value: IntelligenceTestConfig): IntelligenceTestConfig {
   return {
@@ -201,12 +238,21 @@ function validModel(value: string) {
 }
 
 async function syncKeys() {
-  if (syncing.value) return
+  if (!props.groupsLoaded || syncing.value) return
+  groupSelectionInitialized = true
   syncing.value = true
   error.value = ''
   try {
-    syncReport.value = await intelligenceTestAPI.syncKeys()
+    syncReport.value = await intelligenceTestAPI.syncKeys(selectedVisibleGroupIDs.value)
     emit('keysSynced')
+    // Keep the submitted selection available for retry after partial failures.
+    if (syncReport.value.failed === 0) {
+      try {
+        alignGroupSelection(await intelligenceTestAPI.groups())
+      } catch {
+        error.value = t('intelligenceTest.groupSelectionRefreshFailed')
+      }
+    }
   } catch {
     error.value = t('intelligenceTest.syncFailed')
   } finally {

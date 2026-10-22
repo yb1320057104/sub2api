@@ -172,12 +172,15 @@ func (h *IntelligenceTestHandler) SyncKeys(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if !decodeIntelligenceTestInput(c, &struct{}{}, true) {
+	var input struct {
+		GroupIDs []int64 `json:"group_ids"`
+	}
+	if !decodeIntelligenceTestInput(c, &input, false) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
 	defer cancel()
-	result, err := h.service.SyncKeys(ctx, subject.UserID)
+	result, err := h.service.SyncKeys(ctx, subject.UserID, input.GroupIDs)
 	if response.ErrorFrom(c, err) {
 		return
 	}

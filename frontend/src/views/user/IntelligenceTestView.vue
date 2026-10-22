@@ -9,7 +9,7 @@
         <button v-if="auth.isAdmin" type="button" class="btn btn-secondary" :aria-expanded="showSettings" aria-controls="intelligence-settings" @click="showSettings = !showSettings">{{ t(showSettings ? 'intelligenceTest.hideSettings' : 'intelligenceTest.settings') }}</button>
       </header>
 
-      <IntelligenceTestSettings v-if="auth.isAdmin && showSettings" id="intelligence-settings" :groups="groups" @saved="reload" @keys-synced="loadGroups" />
+      <IntelligenceTestSettings v-if="auth.isAdmin && showSettings" id="intelligence-settings" :groups="groups" :groups-loaded="groupsLoaded" @saved="reload" @keys-synced="loadGroups" />
 
       <p v-if="auth.isAdmin && status.loaded && !status.enabled" class="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300">{{ t('intelligenceTest.disabledHint') }}</p>
 
@@ -84,6 +84,7 @@ const modes: IntelligenceTestMode[] = ['svg', 'candy']
 const mode = ref<IntelligenceTestMode>('svg')
 const selectedGroup = ref<number | null>(null)
 const groups = ref<IntelligenceTestGroup[]>([])
+const groupsLoaded = ref(false)
 const results = ref<IntelligenceTestResult[]>([])
 const loading = ref(true)
 const readError = ref(false)
@@ -98,6 +99,7 @@ async function loadGroups() {
     const response = await intelligenceTestAPI.groups()
     if (disposed) return
     groups.value = response
+    groupsLoaded.value = true
     groupsLoadedAt = Date.now()
     if (!groups.value.some(group => group.id === selectedGroup.value)) selectedGroup.value = groups.value[0]?.id ?? null
     if (!selectedGroup.value) {

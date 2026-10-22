@@ -9,6 +9,8 @@ import (
 	"html"
 	"strings"
 	"time"
+
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 )
 
 type IntelligenceTestKeyGroupStatus struct {
@@ -33,13 +35,27 @@ type intelligenceTestManagedKey struct {
 }
 
 // SyncKeys fully rotates the keys explicitly owned by the feature mapping on
-// every call. Human-readable names never make ordinary keys feature-owned.
+// every call, rebuilding only explicitly selected active groups. Human-readable
+// names never make ordinary keys feature-owned.
 // Revocation, creation and mapping replacement share one transaction and lock:
 // write failures roll everything back, and concurrent clicks rotate serially.
-func (s *IntelligenceTestService) SyncKeys(ctx context.Context, adminID int64) (*IntelligenceTestKeySyncResult, error) {
+func (s *IntelligenceTestService) SyncKeys(ctx context.Context, adminID int64, groupIDs []int64) (*IntelligenceTestKeySyncResult, error) {
 	admin, err := s.userRepo.GetByID(ctx, adminID)
 	if err != nil || admin == nil || !admin.IsAdmin() || !admin.IsActive() {
 		return nil, ErrInsufficientPerms
+	}
+	if groupIDs == nil {
+		return nil, infraerrors.BadRequest("INTELLIGENCE_TEST_GROUP_SELECTION_REQUIRED", "请明确选择需要生成智商测试 Key 的分组")
+	}
+	if len(groupIDs) > 2000 {
+		return nil, infraerrors.BadRequest("INVALID_INTELLIGENCE_TEST_GROUP_SELECTION", "最多选择 2000 个分组")
+	}
+	selectedIDs := make(map[int64]struct{}, len(groupIDs))
+	for _, groupID := range groupIDs {
+		if groupID <= 0 {
+			return nil, infraerrors.BadRequest("INVALID_INTELLIGENCE_TEST_GROUP_SELECTION", "请选择有效分组")
+		}
+		selectedIDs[groupID] = struct{}{}
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -53,11 +69,22 @@ func (s *IntelligenceTestService) SyncKeys(ctx context.Context, adminID int64) (
 	if err != nil {
 		return nil, err
 	}
+	selectedGroups := make([]Group, 0, len(selectedIDs))
+	for _, group := range groups {
+		if _, selected := selectedIDs[group.ID]; selected {
+			selectedGroups = append(selectedGroups, group)
+		}
+	}
+	// Validate the complete selection under the transaction's group locks before
+	// revoking any key. An empty (but explicit) selection intentionally clears all.
+	if len(selectedGroups) != len(selectedIDs) {
+		return nil, infraerrors.BadRequest("INVALID_INTELLIGENCE_TEST_GROUP_SELECTION", "所选分组不存在或已停用，请刷新后重新选择")
+	}
 	managed, err := intelligenceTestMappedKeys(ctx, tx)
 	if err != nil {
 		return nil, err
 	}
-	result := &IntelligenceTestKeySyncResult{Groups: make([]IntelligenceTestKeyGroupStatus, 0, len(groups))}
+	result := &IntelligenceTestKeySyncResult{Groups: make([]IntelligenceTestKeyGroupStatus, 0, len(selectedGroups))}
 	var invalidate []string
 	var revoked []string
 	for _, key := range managed {
@@ -91,7 +118,7 @@ func (s *IntelligenceTestService) SyncKeys(ctx context.Context, adminID int64) (
 	if _, err = tx.ExecContext(ctx, "DELETE FROM pk_intelligence_test_keys"); err != nil {
 		return nil, err
 	}
-	for _, group := range groups {
+	for _, group := range selectedGroups {
 		state := IntelligenceTestKeyGroupStatus{GroupID: group.ID, GroupName: group.Name}
 		ownerActive, canBind, accessErr := intelligenceTestOwnerAccess(ctx, tx, adminID, group)
 		if accessErr != nil {
@@ -144,7 +171,7 @@ func (s *IntelligenceTestService) SyncKeys(ctx context.Context, adminID int64) (
 
 func intelligenceTestSyncGroups(ctx context.Context, tx *sql.Tx) ([]Group, error) {
 	rows, err := tx.QueryContext(ctx, `SELECT id, name, is_exclusive, subscription_type FROM groups
-		WHERE deleted_at IS NULL ORDER BY id FOR SHARE`)
+		WHERE deleted_at IS NULL AND status = 'active' ORDER BY id FOR SHARE`)
 	if err != nil {
 		return nil, err
 	}
