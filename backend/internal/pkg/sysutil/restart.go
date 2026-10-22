@@ -5,34 +5,42 @@ import (
 	"log"
 	"os"
 	"runtime"
+	"syscall"
 	"time"
 )
 
-// RestartService triggers a service restart by gracefully exiting.
+// RestartService signals this process so the main server can shut down and run
+// its deferred cleanup before the supervisor restarts it. The setup server has
+// no background workers and retains the signal's normal process-exit behavior.
 //
-// This relies on systemd's Restart=always configuration to automatically
-// restart the service after it exits. This is the industry-standard approach:
-//   - Simple and reliable
-//   - No sudo permissions needed
-//   - No complex process management
-//   - Leverages systemd's native restart capability
+// This relies on systemd's Restart=always or Docker's restart policy to start
+// the service again after it exits. No privileged supervisor operation is used.
 //
 // Prerequisites:
-//   - Linux OS with systemd
-//   - Service configured with Restart=always in systemd unit file
+//   - Linux OS
+//   - A supervisor configured to restart the service after exit
 func RestartService() error {
 	if runtime.GOOS != "linux" {
 		log.Println("Service restart via exit only works on Linux with systemd")
 		return nil
 	}
 
-	log.Println("Initiating service restart by graceful exit...")
-	log.Println("systemd will automatically restart the service (Restart=always)")
+	process, err := os.FindProcess(os.Getpid())
+	if err != nil {
+		return err
+	}
+
+	log.Println("Initiating service restart by graceful shutdown (SIGTERM)...")
+	log.Println("The service supervisor will restart the process after cleanup")
 
 	// Give a moment for logs to flush and response to be sent
 	go func() {
+		defer func() { _ = process.Release() }()
 		time.Sleep(100 * time.Millisecond)
-		os.Exit(0)
+		if err := process.Signal(syscall.SIGTERM); err != nil {
+			log.Printf("Service restart failed: %v", err)
+			log.Println("Please restart the service manually: sudo systemctl restart sub2api")
+		}
 	}()
 
 	return nil

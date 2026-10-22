@@ -168,6 +168,10 @@ func runMainServer() {
 		}
 	}
 
+	// Register shutdown signals before accepting requests that can restart us.
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+
 	// 启动服务器
 	go func() {
 		if err := app.Server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -178,8 +182,6 @@ func runMainServer() {
 	log.Printf("Server started on %s", app.Server.Addr)
 
 	// 等待中断信号
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
 	log.Println("Shutting down server...")

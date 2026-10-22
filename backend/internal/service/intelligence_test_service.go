@@ -436,12 +436,13 @@ func (s *IntelligenceTestService) runOne(parent context.Context, groupID int64, 
 	if duration < 0 {
 		duration = 0
 	}
-	finishCtx, finishCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer finishCancel()
-	// A whole-row terminal update ensures failures never retain output or a pass flag.
-	if _, err = s.db.ExecContext(finishCtx, `UPDATE pk_intelligence_test_results SET status=$2,passed=$3,artifact=$4,finished_at=$5,duration_ms=$6,answer_text=$7,error_code=$8,error_detail=$9 WHERE id=$1 AND status='running'`, id, status, passed, artifact, finished.UTC(), duration, answerText, errorCode, errorDetail); err == nil {
-		_, _ = s.db.ExecContext(finishCtx, `UPDATE pk_intelligence_test_state SET lease_until=NULL,active_result_id=NULL WHERE group_id=$1 AND mode=$2 AND active_result_id=$3`, groupID, mode, id)
-	}
+	// HTTP is finished before releasing this worker's fenced lease. The helper
+	// reports only fixed stage/identity metadata if persistence or release fails.
+	_ = s.finalizeIntelligenceTestResult(intelligenceTestCompletion{
+		id: id, groupID: groupID, mode: mode, status: status, passed: passed,
+		artifact: artifact, answerText: answerText, errorCode: errorCode, errorDetail: errorDetail,
+		finishedAt: finished, durationMS: duration,
+	})
 	return claimed
 }
 
