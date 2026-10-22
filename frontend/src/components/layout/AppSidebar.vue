@@ -199,6 +199,7 @@ import { sanitizeUrl } from '@/utils/url'
 import { FeatureFlags, makeSidebarFlag } from '@/utils/featureFlags'
 import { resolveSiteBillingMode } from '@/utils/siteBillingMode'
 import { useBatchImageAccess } from '@/composables/useBatchImageAccess'
+import { useIntelligenceTestStore } from '@/stores/intelligenceTest'
 
 interface NavItem {
   path: string
@@ -245,6 +246,8 @@ const authStore = useAuthStore()
 const onboardingStore = useOnboardingStore()
 const adminSettingsStore = useAdminSettingsStore()
 const { canUseBatchImage, refreshBatchImageAccess } = useBatchImageAccess()
+const intelligenceTestStore = useIntelligenceTestStore()
+let intelligenceStatusTimer: ReturnType<typeof setInterval> | undefined
 
 const sidebarCollapsed = computed(() => appStore.sidebarCollapsed)
 const mobileOpen = computed(() => appStore.mobileOpen)
@@ -651,6 +654,12 @@ const ShieldIcon = {
     )
 }
 
+const IntelligenceIcon = {
+  render: () => h('svg', { fill: 'none', viewBox: '0 0 24 24', stroke: 'currentColor', 'stroke-width': '1.5', 'aria-hidden': 'true' }, [
+    h('path', { 'stroke-linecap': 'round', 'stroke-linejoin': 'round', d: 'M9 3a3 3 0 0 0-3 3v.5A3.5 3.5 0 0 0 4.5 13a3.5 3.5 0 0 0 2 6.5A3 3 0 0 0 12 18V6a3 3 0 0 0-3-3Zm6 0a3 3 0 0 1 3 3v.5a3.5 3.5 0 0 1 1.5 6.5 3.5 3.5 0 0 1-2 6.5A3 3 0 0 1 12 18V6a3 3 0 0 1 3-3ZM8 9l4 2 4-2M8 16l4-2 4 2' }),
+  ]),
+}
+
 const PriceTagIcon = {
   render: () =>
     h(
@@ -727,6 +736,7 @@ function buildSelfNavItems(withDashboard: boolean): NavItem[] {
     { path: '/batch-image', label: t('nav.batchImage'), icon: BatchImageIcon, hideInSimpleMode: true, featureFlag: flagBatchImageAccess },
     { path: '/usage', label: t('nav.usage'), icon: ChartIcon, hideInSimpleMode: true },
     { path: '/security-policy-ranking', label: t('securityPolicyRanking.title'), icon: ShieldIcon, featureFlag: () => !authStore.isAdmin },
+    { path: '/intelligence-test', label: t('intelligenceTest.title'), icon: IntelligenceIcon, featureFlag: () => !authStore.isAdmin && intelligenceTestStore.enabled },
     { path: '/available-channels', label: t('nav.availableChannels'), icon: ChannelIcon, hideInSimpleMode: true, featureFlag: flagAvailableChannels },
     { path: '/monitor', label: t('nav.channelStatus'), icon: SignalIcon, featureFlag: flagChannelMonitor },
     { path: '/subscriptions', label: t('nav.mySubscriptions'), icon: CreditCardIcon, hideInSimpleMode: true, featureFlag: flagSubscription },
@@ -839,6 +849,7 @@ const adminNavItems = computed((): NavItem[] => {
     },
     { path: '/admin/usage', label: t('nav.usage'), icon: ChartIcon },
     { path: '/security-policy-ranking', label: t('securityPolicyRanking.title'), icon: ShieldIcon },
+    { path: '/admin/intelligence-test', label: t('intelligenceTest.title'), icon: IntelligenceIcon },
     { path: '/binance-recharge', label: t('binanceRecharge.title'), icon: RechargeSubscriptionIcon, hideInSimpleMode: true },
     { path: '/admin/audit-logs', label: t('nav.auditLogs'), icon: ShieldIcon, hideInSimpleMode: true }
   ]
@@ -959,6 +970,9 @@ watch(
 
 onMounted(() => {
   void refreshBatchImageAccess()
+  void intelligenceTestStore.refresh()
+  intelligenceStatusTimer = setInterval(refreshIntelligenceStatus, 30000)
+  window.addEventListener('focus', refreshIntelligenceStatus)
   if (isAdmin.value) {
     adminSettingsStore.fetch()
   }
@@ -973,9 +987,20 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  if (intelligenceStatusTimer) clearInterval(intelligenceStatusTimer)
+  window.removeEventListener('focus', refreshIntelligenceStatus)
   if (sidebarNavRef.value) {
     appStore.sidebarScrollTop = sidebarNavRef.value.scrollTop
   }
+})
+
+function refreshIntelligenceStatus() {
+  if (!document.hidden) void intelligenceTestStore.refresh()
+}
+
+watch(() => authStore.user?.id, () => {
+  intelligenceTestStore.reset()
+  void intelligenceTestStore.refresh()
 })
 </script>
 

@@ -5,6 +5,7 @@ import channelMonitorV2 from './channelMonitorV2'
 import batchImage from './batchImage'
 import binanceRecharge from './binanceRecharge'
 import securityPolicyRanking from './securityPolicyRanking'
+import intelligenceTest from './intelligenceTest'
 import admin from './admin'
 import misc from './misc'
 
@@ -16,6 +17,7 @@ export default {
   ...batchImage,
   ...binanceRecharge,
   ...securityPolicyRanking,
+  ...intelligenceTest,
   admin,
   ...misc,
 }

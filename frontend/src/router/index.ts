@@ -8,6 +8,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useAppStore } from '@/stores/app'
 import { useAdminSettingsStore } from '@/stores/adminSettings'
 import { useAdminComplianceStore } from '@/stores/adminCompliance'
+import { useIntelligenceTestStore } from '@/stores/intelligenceTest'
 import { useNavigationLoadingState } from '@/composables/useNavigationLoading'
 import { useRoutePrefetch } from '@/composables/useRoutePrefetch'
 import { getSetupStatus } from '@/api/setup'
@@ -187,6 +188,30 @@ const routes: RouteRecordRaw[] = [
   },
 
   // ==================== User Routes ====================
+  {
+    path: '/intelligence-test',
+    name: 'IntelligenceTest',
+    component: () => import('@/views/user/IntelligenceTestView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: false,
+      title: 'Intelligence Test',
+      titleKey: 'intelligenceTest.title',
+      descriptionKey: 'intelligenceTest.description',
+    },
+  },
+  {
+    path: '/admin/intelligence-test',
+    name: 'AdminIntelligenceTest',
+    component: () => import('@/views/user/IntelligenceTestView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'Intelligence Test',
+      titleKey: 'intelligenceTest.title',
+      descriptionKey: 'intelligenceTest.description',
+    },
+  },
   {
     path: '/',
     redirect: '/home'
@@ -911,6 +936,14 @@ router.beforeEach(async (to, _from, next) => {
     // User is authenticated but not admin, redirect to user dashboard
     next('/dashboard')
     return
+  }
+
+  if (to.path === '/intelligence-test' && !authStore.isAdmin) {
+    const enabled = await useIntelligenceTestStore().refresh(true)
+    if (!enabled) {
+      next('/dashboard')
+      return
+    }
   }
 
   if (requiresAdmin && authStore.isAdmin) {

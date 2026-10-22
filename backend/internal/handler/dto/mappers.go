@@ -110,6 +110,11 @@ func APIKeyFromService(k *service.APIKey) *APIKey {
 		User:               UserFromServiceShallow(k.User),
 		Group:              GroupFromServiceShallow(k.Group),
 	}
+	if service.IsIntelligenceTestKey(k.Key) {
+		// Managed scheduler credentials never leave the backend, including in
+		// admin key lists, user records and nested usage-log API key objects.
+		out.Key = "sk-iq-***"
+	}
 	if k.Window5hStart != nil && !service.IsWindowExpired(k.Window5hStart, service.RateLimitWindow5h) {
 		t := k.Window5hStart.Add(service.RateLimitWindow5h)
 		out.Reset5hAt = &t

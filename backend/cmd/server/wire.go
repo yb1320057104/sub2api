@@ -123,6 +123,7 @@ func provideCleanup(
 	paymentOrderExpiry *service.PaymentOrderExpiryService,
 	binanceRecharge *service.BinanceRechargeService,
 	channelMonitorRunner *service.ChannelMonitorRunner,
+	intelligenceTest *service.IntelligenceTestService,
 	channelMonitorV2Aggregator *service.ChannelMonitorV2Aggregator,
 	quotaFlusher *service.UserPlatformQuotaUsageFlusher,
 	upstreamBillingProbe *service.UpstreamBillingProbeService,
@@ -374,6 +375,12 @@ func provideCleanup(
 			{"ChannelMonitorV2Aggregator", func() error {
 				if channelMonitorV2Aggregator != nil {
 					channelMonitorV2Aggregator.Stop()
+				}
+				return nil
+			}},
+			{"IntelligenceTestService", func() error {
+				if intelligenceTest != nil {
+					intelligenceTest.Stop()
 				}
 				return nil
 			}},

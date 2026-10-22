@@ -96,6 +96,12 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 		}
 
 		// ── 2. 验证 Key 存在 ─────────────────────────────────────────
+		if !service.ValidateIntelligenceTestRequest(c.Request, apiKeyString) {
+			recordInvalidAuthFailure(c, apiKeyService)
+			MarkIngressRejected(c, IngressRejectInvalidAPIKey)
+			AbortWithError(c, http.StatusForbidden, "INTELLIGENCE_TEST_INTERNAL_ONLY", "This API key is reserved for server scheduled tests")
+			return
+		}
 
 		apiKey, err := apiKeyService.GetByKey(c.Request.Context(), apiKeyString)
 		if err != nil {

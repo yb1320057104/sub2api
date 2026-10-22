@@ -532,6 +532,9 @@ func (s *APIKeyService) Create(ctx context.Context, userID int64, req CreateAPIK
 
 	// 判断是否使用自定义Key
 	if req.CustomKey != nil && *req.CustomKey != "" {
+		if IsIntelligenceTestKey(*req.CustomKey) {
+			return nil, infraerrors.BadRequest("API_KEY_RESERVED_PREFIX", "sk-iq- is reserved for server-managed intelligence tests")
+		}
 		// 检查限流（仅对自定义key进行限流）
 		if err := s.checkAPIKeyRateLimit(ctx, userID); err != nil {
 			return nil, err
@@ -805,6 +808,10 @@ func (s *APIKeyService) Update(ctx context.Context, id int64, userID int64, req 
 	// 验证所有权
 	if apiKey.UserID != userID {
 		return nil, ErrInsufficientPerms
+	}
+	if IsIntelligenceTestKey(apiKey.Key) && req.GroupID != nil &&
+		(apiKey.GroupID == nil || *req.GroupID != *apiKey.GroupID) {
+		return nil, infraerrors.BadRequest("API_KEY_MANAGED_GROUP", "智商测试专用 Key 的分组由智商测试管理页面同步")
 	}
 
 	// 验证 IP 白名单格式

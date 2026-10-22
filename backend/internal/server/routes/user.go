@@ -25,6 +25,12 @@ func RegisterUserRoutes(
 	// 用户管理面变更类操作入审计（含 TOTP 启用/禁用、step-up 验证、密码修改等安全事件）
 	authenticated.Use(gin.HandlerFunc(auditLog))
 	{
+		if h.IntelligenceTest != nil {
+			authenticated.GET("/intelligence-test/status", h.IntelligenceTest.Status)
+			authenticated.GET("/intelligence-test/groups", h.IntelligenceTest.Groups)
+			authenticated.GET("/intelligence-test/results", panelRateLimiter.Heavy(), h.IntelligenceTest.Results)
+			authenticated.GET("/intelligence-test/artifact", panelRateLimiter.Heavy(), h.IntelligenceTest.Artifact)
+		}
 		authenticated.GET("/security-policy-ranking", panelRateLimiter.Heavy(), h.Admin.Usage.CyberPolicyPublicRanking)
 		// 用户接口
 		user := authenticated.Group("/user")

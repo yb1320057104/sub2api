@@ -31,6 +31,11 @@ func RegisterAdminRoutes(
 	admin.Use(gin.HandlerFunc(auditLog))
 	admin.Use(middleware.AdminComplianceGuard(settingService))
 	{
+		if h.IntelligenceTest != nil {
+			admin.GET("/intelligence-test/config", h.IntelligenceTest.GetConfig)
+			admin.PUT("/intelligence-test/config", h.IntelligenceTest.UpdateConfig)
+			admin.POST("/intelligence-test/keys/sync", panelRateLimiter.Heavy(), h.IntelligenceTest.SyncKeys)
+		}
 		// 部署与运营合规确认
 		registerAdminComplianceRoutes(admin, h)
 

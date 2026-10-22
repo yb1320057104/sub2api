@@ -9,7 +9,7 @@
 - 2026-10-02 合并上游 `v0.2.12`（commit `5106065716e494204fc0e8db16f68f6e9d576be0`，tag 对象 `cbe9966432317e6757b47f598a103d2132ec27db`），合并前私库为 `162a58972bee08078a43eefa761da1b245f667fa`。逐项核对见 [0.2.12 合并记录](docs/PK_UPSTREAM_0.2.12_REVIEW.md)，正式发布目标为 `v0.2.12-pk.1`；发布与线上更新分别记录。
 - 2026-10-02 合并上游 `v0.2.11`（commit `96f4c115c9749078f90cbf210a01d39baf3f53b6`），合并前私库为 `32f068dcbdc75063ff7f6488aef6c85912d7bf3f`。逐项核对及本次验证见 [合并记录](docs/PK_UPSTREAM_0.2.11_REVIEW.md)；合并源码不代表已发布或更新线上。
 - 本次清点覆盖从该上游基线到私库 `23e5fe663338c86cd0cebbf2f688c8a75dd8c152` 的全部二开提交；应用发行参照 `v0.2.10-pk.7`，另登记本次新增的项目约束机制。此处是代码核对基线，不代表线上当前版本。
-- 以下 PK-001 至 PK-028 及 PK-031 均为有效保护项；PK-029、PK-030 已按用户授权移除，保留原 ID 与回退记录，不得复用。文件路径用于定位，不是完整修改白名单；所有新调用入口、迁移和旁路都要检查。
+- 以下 PK-001 至 PK-028 及 PK-031、PK-032 均为有效保护项；PK-029、PK-030 已按用户授权移除，保留原 ID 与回退记录，不得复用。文件路径用于定位，不是完整修改白名单；所有新调用入口、迁移和旁路都要检查。
 - 每项说明“必须保持”的行为。文末另列验证入口与已知边界；测试存在、历史验证通过和本次候选通过是三件不同的事。
 - 2026-10-21 用户最新要求取代 2026-10-08/19 的源码测试及 notes 前置门禁：核对二开保护和变更后直接提交、合入私库 main 并推送不带 `origin/` 的正式版本标签，交给用户点击 Jenkins `ACTION=release`。不再默认运行完整源码测试，不要求源码验证 notes；Jenkins 继续执行构建、同制品运行时验收和私库发布，不使用 GitHub Actions。可选测试如实记录，未执行不能声称通过。下文历史门禁仅说明当时状态，现行规则以 PK-017 为准。
 
@@ -53,6 +53,7 @@
 | PK-029 | 账号隐藏计费倍率及下游用量缩放 | 已授权移除；恢复 pk.1 计费与输出，保留历史记录 |
 | PK-030 | 原始 Token 趋势统计 | 已授权移除；恢复 pk.1 趋势口径，保留历史数据 |
 | PK-031 | DP API 品牌与柔蓝主题 | 渐变标志、统一名称、胶囊导航、移除友链，保留权限、响应式与深色模式 |
+| PK-032 | 服务端定时智商测试 | SVG/糖果双层分组页签、总开关、管理员专用 Key 全量轮换、回环调用、最近30条 |
 
 ## PK-001
 
@@ -333,6 +334,8 @@
 
 - 2026-10-19 确立的正式标签交接继续保留，2026-10-21 取消其中“完整源码测试及匹配 notes”的前置：交给用户点击 Jenkins `release` 前，推送已审阅的 main 提交和未占用正式标签，核对远端标签剥离后的 commit。工作分支不能代替正式标签；交付 `ACTION=release`、`SOURCE_REF=正式标签`，其他两项留空，不默认替用户点击构建。规则同步 AGENTS、项目约束、维护文档及 Jenkins 说明。
 
+2026-10-23 智商测试接入时，服务器安全检查命中 DOMPurify 3.4.14 的新安全公告，按官方修复版本将前端声明、override 和锁文件同步到 3.4.17；不新增安全豁免、不升级无关依赖。SVG 预览的净化、无脚本沙箱和 CSP 继续独立保留，动态结果记录在本次交接记录。
+
 ## PK-018
 
 **旁路实例启动时保护现有并发。** 引入：`66671398d`。
@@ -351,7 +354,7 @@
 - 停止流程先调用 `StopPendingBackgroundStarts()`，取消尚未启动的任务并等待正在执行的启动回调，再停止各服务。`wire.go` 和 `wire_gen.go` 顺序必须一致。
 - `BatchImageCleanupService` 保留未启动即停止、立即停止、幂等生命周期保护，不能因启动门等待导致退出死锁。
 - worker 关闭捕获的局部 `done` channel，不能改回读取可能被 Stop 清空的 `s.done` 字段。
-- 当前20项受控后台：BatchImageCleanup、TokenRefresh、CNProviderBalanceCheck、DashboardAggregation、AccountExpiry、OpenAICodexVersionSync、ClaudeCodeVersionSync、ProxyExpiry、SubscriptionExpiry、OpsMetricsCollector、OpsAggregation、OpsAlertEvaluator、IdempotencyCleanup、ScheduledTestRunner、OpsScheduledReport、PaymentOrderExpiry、ChannelMonitorRunner、ChannelMonitorV2Aggregator、BinanceRechargeService、GeminiCachedContentService。币安轮询随同原后台交接，仍以数据库唯一约束和事务防止重复入账。新增后台服务时必须审查是否需要同样交接，并同步本条。
+- 当前21项受控后台：BatchImageCleanup、TokenRefresh、CNProviderBalanceCheck、DashboardAggregation、AccountExpiry、OpenAICodexVersionSync、ClaudeCodeVersionSync、ProxyExpiry、SubscriptionExpiry、OpsMetricsCollector、OpsAggregation、OpsAlertEvaluator、IdempotencyCleanup、ScheduledTestRunner、OpsScheduledReport、PaymentOrderExpiry、ChannelMonitorRunner、ChannelMonitorV2Aggregator、BinanceRechargeService、GeminiCachedContentService、IntelligenceTestService。币安轮询随同原后台交接，仍以数据库唯一约束和事务防止重复入账。2026-10-23 新增的智商测试同样经过启动门，退出时取消模型请求并等待工作结束；其他后台的门控顺序不改变。
 - 门控不暂停全部任务，不是数据库只读模式；请求处理、必要记账、缓存失效及已有锁保护的必要工作仍应可用。
 - 入口：`backend/internal/service/{background_start_gate,wire,batch_image_cleanup}.go`、`backend/cmd/server/{wire,wire_gen}.go`。
 - 验证：六项 `TestBackgroundStartGate_*`，以及 `TestBatchImageCleanupLifecycle_StopWithoutStart`、`ImmediateStop`。
@@ -549,6 +552,22 @@
 - 邮件品牌入口还包括 `content_moderation.go` 的内容审计通知、`user_service.go` 的通知邮箱验证码，以及 `auth_email_binding.go`、`auth_oauth_email_flow.go`、`auth_service.go` 的绑定/注册/OAuth验证码与密码重置：默认值统一复用 `defaultSiteName`，直接读库的名称走同一兼容规则；保留通知流程、权限、收件人、验证码、SMTP发件名与原有去空白规则。
 - 名称兼容回归扩展于原有 `setting_service_public_test.go`、`setting_service_update_test.go`、`backend/internal/server/api_contract_test.go`、`frontend/src/utils/__tests__/branding.spec.ts`、`stores/__tests__/app.spec.ts` 与 `router/__tests__/title.spec.ts`：核对默认/旧内置名、非默认自定义名、公开/管理员/邮件及内容审计通知读取一致、读取不写库，以及前端注入/请求/缓存与标题一致；API契约保留旧内置名输入并验证新默认名输出。名称需求追加后，先前源码结果不代表最终树通过，须重新执行完整验证。
 
+## PK-032
+
+**服务端定时智商测试。** 状态：有效。引入依据：2026-10-23 用户要求参考本机“鹈鹕测试”，在本站新增 SVG/糖果题菜单；追加总开关、管理员账户生成测试 Key，以及每次一键更新全部撤销旧测试 Key 后重建。目标版本 `v0.2.17-pk.5`。
+
+- 菜单采用“SVG / 糖果题 → 当前有效分组”两层页签。普通用户只读最终作品或合格/不合格；正在运行仅显示“Agent工作中”，请求失败独立显示“测试失败”。显示真实测试时间及本机单调时钟测量的耗时，不公开提示词、推理、原始回答、请求头或上游错误正文。
+- 设置保存在 `settings.pk_intelligence_test_config`。总开关默认关闭，关闭时隐藏普通用户菜单，直接访问结果/作品接口也被拒绝；管理员始终保留配置入口。SVG、糖果各有独立开关（默认启用，受总开关控制）、完整可编辑提示词、模型、强度、1～1440分钟间隔及分组模型/强度覆盖。默认模型 `gpt-6-astra`、强度 `medium`、间隔5分钟；糖果答案默认21，可随改题配置0～1000000整数。提示词原文发送，不暗中附加额外要求。默认SVG词要求SVG/CSS动画，默认糖果词显式包含最终答案格式。
+- 管理员“一键生成 / 更新”每次在数据库事务和互斥锁内，撤销映射表记录的全部旧测试 Key、移除旧凭据，再为当前分组重新生成随机 Key，归当前有效管理员账户。名称以 `智商测试-分组名` 开头，凭据为后端专用 `sk-iq-` 前缀；`pk_intelligence_test_keys` 保存分组与真实 Key ID 的对应关系。不按名字接管或删除普通 Key，不从普通用户创建测试 Key。旧 Key 使用软删除和独立加密随机删除标记清除原凭据并保留必要计费历史，避免固定占位值与普通自定义 Key 唯一约束冲突；数据库写入或随机生成失败回滚整批轮换。
+- 分组授权、订阅、Key创建频率/数量、用户余额、模型白名单、内容审计、计费与并发限制继续走既有规则。权限不足的分组明确报告原因，不自动授权订阅或绕过收费；成功轮换后，此类组旧 Key 也撤销。普通分组授权/订阅需由管理员先配置，不能把“已生成”描述为真实模型调用已通过。新增组在下次更新加入，已删除组不重建，改名采用当前名称。
+- 专用 Key 的通用列表、详情和嵌套使用记录 DTO 同样脱敏，不向浏览器返回原值，不提供输入 Key、地址或手动触发模型的接口。专用 Key 不能通过普通编辑换组；普通 Key 的创建、编辑、删除、收费及输出保持原行为。
+- 调度器固定使用 `http://127.0.0.1:{server.port}/v1/responses`，端口取服务端配置，不接受浏览器参数，不使用环境代理、不跟随重定向。专用 Key 在所有网关鉴权入口额外要求真实回环对端地址和进程内生成的一次性随机凭证；不信任转发IP，只有预定的 POST Responses 入口可用。一次性凭证只在内存保存哈希，1分钟失效、使用即删除并移除请求头，日志脱敏包含该头。
+- SQL任务状态与租约防多实例重复执行，同组同类型不重叠，全局最多2个任务，单次5分钟超时；轮询和配置变更不提供直接执行旁路。停止/关闭/重配取消旧任务，跨实例每5秒检查配置和 Key 轮换；进程异常留下的记录超过6分钟标记失败。只接受完整成功终态，截断、失败和超限不能计为合格。
+- 每个功能每个分组最多30条完整结果，插入时同事务删除更旧记录；删组后清理对应结果与调度状态。单作品最多256KiB，单响应最多4MiB，不在本功能保存推理/原始流/完整糖果解答。原有网关计费与审计记录遵守原保留策略，不因测试结果轮换删除账务证据。
+- 列表只返回结果元数据，作品通过带登录和功能门控的只读JSON接口按需读取；前端仅缓存当前最近30条，切组/类型时释放。SVG/HTML先净化再放入无脚本、无同源权限的iframe和严格CSP，支持SVG/CSS动画，不执行JavaScript或外部资源。管理员提示词应使用可在该预览方式中展示的作品格式。
+- 入口：`backend/internal/service/intelligence_test_*.go`、`backend/internal/handler/intelligence_test_handler.go`、用户/管理员routes、两类API Key鉴权中间件、Key DTO和编辑保护、`backend/migrations/248_intelligence_tests.sql`、`backend/internal/service/wire.go`及`backend/cmd/server/{wire,wire_gen}.go`；前端 `api/intelligenceTest.ts`、`stores/intelligenceTest.ts`、`views/user/IntelligenceTestView.vue`、`components/intelligenceTest/`、菜单/路由和中英文文案。
+- 验证与边界：用户要求测试后，最后明确改为服务器隔离测试（此前本机前端检查结果单独记录），执行后清理新建临时测试文件；实际范围/结果见交接记录，不把局部源码检查称为完整或生产运行时通过。未连接生产、未实际消耗模型Token；Jenkins发行构建与同制品十一项验收仍由用户触发。分组须具有可用模型和本站Responses兼容能力；原有仅SystemOne平台限制不被绕过。完整范围与静态依据见 [智商测试交接记录](docs/PK_INTELLIGENCE_TEST_REVIEW.md)。
+
 ## 验证入口与现有边界
 
 ### 已有回归入口
@@ -583,7 +602,7 @@
 
 ## 新增条目模板
 
-新增独立能力使用下一个未用 ID，当前下一个为 `PK-032`；多项变更并行新增时在合并前消除 ID 冲突，已有 ID 不重用。同步更新索引、有效条目范围和此处的下一个 ID。
+新增独立能力使用下一个未用 ID，当前下一个为 `PK-033`；多项变更并行新增时在合并前消除 ID 冲突，已有 ID 不重用。同步更新索引、有效条目范围和此处的下一个 ID。
 
 ```markdown
 ## PK-NNN

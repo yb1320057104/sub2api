@@ -1348,6 +1348,9 @@ func (s *adminServiceImpl) AdminUpdateAPIKeyGroupID(ctx context.Context, keyID i
 		// nil 表示不修改，直接返回
 		return &AdminUpdateAPIKeyGroupIDResult{APIKey: apiKey}, nil
 	}
+	if IsIntelligenceTestKey(apiKey.Key) && (apiKey.GroupID == nil || *groupID != *apiKey.GroupID) {
+		return nil, infraerrors.BadRequest("API_KEY_MANAGED_GROUP", "智商测试专用 Key 的分组由智商测试管理页面同步")
+	}
 
 	if *groupID < 0 {
 		return nil, infraerrors.BadRequest("INVALID_GROUP_ID", "group_id must be non-negative")

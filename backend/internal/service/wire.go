@@ -990,6 +990,7 @@ var ProviderSet = wire.NewSet(
 	ProvideBalanceNotifyService,
 	ProvideChannelMonitorService,
 	ProvideChannelMonitorRunner,
+	ProvideIntelligenceTestService,
 	NewChannelMonitorQuotaFetcher,
 	ProvideChannelMonitorV2Service,
 	ProvideChannelMonitorV2Aggregator,
@@ -1086,6 +1087,14 @@ func ProvideChannelMonitorRunner(
 func ProvideChannelMonitorV2Service(repo ChannelMonitorV2Repository, settingService *SettingService) *ChannelMonitorV2Service {
 	svc := NewChannelMonitorV2Service(repo)
 	svc.SetRuntimeReader(settingService)
+	return svc
+}
+
+// Intelligence tests follow the same activation and shutdown boundaries as
+// existing scheduled work; merely visiting a page never starts a test.
+func ProvideIntelligenceTestService(db *sql.DB, groups GroupRepository, settings SettingRepository, keys *APIKeyService, keyRepo APIKeyRepository, cfg *config.Config) *IntelligenceTestService {
+	svc := NewIntelligenceTestService(db, groups, settings, keys, keyRepo, cfg)
+	startBackgroundAfterActivation("IntelligenceTestService", svc.Start)
 	return svc
 }
 

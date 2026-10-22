@@ -93,6 +93,7 @@ func TestProvideCleanup_WithMinimalDependencies_NoPanic(t *testing.T) {
 		nil, // paymentOrderExpiry
 		nil, // binanceRecharge
 		nil, // channelMonitorRunner
+		service.NewIntelligenceTestService(nil, nil, nil, nil, nil, cfg),
 		nil, // channelMonitorV2Aggregator
 		nil, // quotaFlusher
 		nil, // upstreamBillingProbe
