@@ -132,6 +132,30 @@ func (h *IntelligenceTestHandler) Artifact(c *gin.Context) {
 	response.Success(c, gin.H{"artifact": artifact})
 }
 
+func (h *IntelligenceTestHandler) Details(c *gin.Context) {
+	if !h.canRead(c) {
+		return
+	}
+	groupID, err := strconv.ParseInt(c.Query("group_id"), 10, 64)
+	resultID, idErr := strconv.ParseInt(c.Query("id"), 10, 64)
+	if err != nil || idErr != nil || groupID <= 0 || resultID <= 0 {
+		response.BadRequest(c, "请选择有效测试记录")
+		return
+	}
+	details, err := h.service.GetDetails(c.Request.Context(), groupID, resultID)
+	if response.ErrorFrom(c, err) {
+		return
+	}
+	if intelligenceTestAdmin(c) {
+		response.Success(c, gin.H{
+			"prompt": details.Prompt, "answer": details.Answer,
+			"error_code": details.ErrorCode, "error_detail": details.ErrorDetail,
+		})
+		return
+	}
+	response.Success(c, details)
+}
+
 // Reject unknown fields, including credentials and endpoint URLs. The browser
 // can only submit the explicit configuration schema, never a model request.
 func decodeIntelligenceTestInput(c *gin.Context, target any, emptyAllowed bool) bool {

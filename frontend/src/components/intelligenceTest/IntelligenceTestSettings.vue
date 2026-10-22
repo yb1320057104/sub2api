@@ -100,7 +100,10 @@
         </div>
       </section>
       <div class="flex flex-col items-start justify-between gap-3 border-t border-gray-100 px-5 py-4 dark:border-dark-700 sm:flex-row sm:items-center sm:px-6">
-        <p class="text-sm text-red-600 dark:text-red-400" role="alert">{{ error }}</p>
+        <div class="space-y-2">
+          <p class="text-xs leading-5 text-gray-500 dark:text-dark-400">{{ t('intelligenceTest.saveEffect') }}</p>
+          <p v-if="error" class="text-sm text-red-600 dark:text-red-400" role="alert">{{ error }}</p>
+        </div>
         <button type="submit" class="btn btn-primary shrink-0" :disabled="saving || syncing">{{ t(saving ? 'intelligenceTest.saving' : 'intelligenceTest.save') }}</button>
       </div>
       </fieldset>
@@ -196,7 +199,7 @@ function setOverride(mode: IntelligenceTestMode, groupID: number, field: 'model'
 }
 
 async function save() {
-  if (!config.value || saving.value) return
+  if (!config.value || saving.value || syncing.value) return
   error.value = ''
   const payload = normalized(config.value)
   for (const mode of modes) {
@@ -221,8 +224,10 @@ async function save() {
     const saved = await intelligenceTestAPI.saveConfig(payload)
     config.value = normalized(saved)
     status.setEnabled(saved.enabled)
-    app.showSuccess(t('intelligenceTest.saved'))
     emit('saved')
+    app.showSuccess(t(saved.enabled && (saved.svg.enabled || saved.candy.enabled)
+      ? 'intelligenceTest.savedAndRescheduled'
+      : 'intelligenceTest.savedAndStopped'))
   } catch {
     error.value = t('intelligenceTest.configSaveFailed')
   } finally {
@@ -238,7 +243,7 @@ function validModel(value: string) {
 }
 
 async function syncKeys() {
-  if (!props.groupsLoaded || syncing.value) return
+  if (!props.groupsLoaded || syncing.value || saving.value) return
   groupSelectionInitialized = true
   syncing.value = true
   error.value = ''

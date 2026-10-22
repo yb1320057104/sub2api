@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -49,9 +48,10 @@ type IntelligenceTestModeConfig struct {
 }
 
 type IntelligenceTestConfig struct {
-	Enabled bool                       `json:"enabled"`
-	SVG     IntelligenceTestModeConfig `json:"svg"`
-	Candy   IntelligenceTestModeConfig `json:"candy"`
+	Enabled    bool                       `json:"enabled"`
+	SVG        IntelligenceTestModeConfig `json:"svg"`
+	Candy      IntelligenceTestModeConfig `json:"candy"`
+	generation string
 }
 
 type IntelligenceTestGroup struct {
@@ -87,11 +87,12 @@ type IntelligenceTestService struct {
 	mu            sync.Mutex
 	cancel        context.CancelFunc
 	done          chan struct{}
+	wake          chan struct{}
 	active        map[int64]context.CancelFunc
 }
 
 func NewIntelligenceTestService(db *sql.DB, groupRepo GroupRepository, settingRepo SettingRepository, apiKeyService *APIKeyService, apiKeyRepo APIKeyRepository, cfg *config.Config) *IntelligenceTestService {
-	s := &IntelligenceTestService{db: db, groupRepo: groupRepo, settingRepo: settingRepo, apiKeyService: apiKeyService, apiKeyRepo: apiKeyRepo, cfg: cfg, active: make(map[int64]context.CancelFunc)}
+	s := &IntelligenceTestService{db: db, groupRepo: groupRepo, settingRepo: settingRepo, apiKeyService: apiKeyService, apiKeyRepo: apiKeyRepo, cfg: cfg, active: make(map[int64]context.CancelFunc), wake: make(chan struct{}, 1)}
 	if apiKeyService != nil {
 		s.userRepo = apiKeyService.userRepo
 	}
@@ -112,24 +113,14 @@ func defaultIntelligenceTestConfig() *IntelligenceTestConfig {
 }
 
 func (s *IntelligenceTestService) GetConfig(ctx context.Context) (*IntelligenceTestConfig, error) {
-	cfg := defaultIntelligenceTestConfig()
 	raw, err := s.settingRepo.GetValue(ctx, intelligenceTestSettingKey)
 	if errors.Is(err, ErrSettingNotFound) {
-		return cfg, nil
+		return defaultIntelligenceTestConfig(), nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(raw) == "" {
-		return cfg, nil
-	}
-	if err := json.Unmarshal([]byte(raw), cfg); err != nil {
-		return nil, errors.New("invalid intelligence test configuration")
-	}
-	if err := validateIntelligenceTestConfig(cfg); err != nil {
-		return nil, err
-	}
-	return cfg, nil
+	return decodeIntelligenceTestConfig(raw)
 }
 
 func (s *IntelligenceTestService) Enabled(ctx context.Context) (bool, error) {
@@ -150,6 +141,9 @@ func validateIntelligenceTestConfig(cfg *IntelligenceTestConfig) error {
 		mode.Effort = strings.TrimSpace(mode.Effort)
 		if !utf8.ValidString(mode.Prompt) || len(mode.Prompt) > 100000 || strings.TrimSpace(mode.Prompt) == "" {
 			return invalid("提示词不能为空，且最多 100,000 字节")
+		}
+		if strings.IndexByte(mode.Prompt, 0) >= 0 {
+			return invalid("提示词不能包含 NUL 字符")
 		}
 		if !validIntelligenceTestModel(mode.Model) {
 			return invalid("模型名称无效")
@@ -199,22 +193,6 @@ func validIntelligenceTestEffort(effort string) bool {
 		return true
 	}
 	return false
-}
-
-func (s *IntelligenceTestService) UpdateConfig(ctx context.Context, cfg *IntelligenceTestConfig) error {
-	if err := validateIntelligenceTestConfig(cfg); err != nil {
-		return err
-	}
-	data, err := json.Marshal(cfg)
-	if err != nil {
-		return err
-	}
-	if err = s.settingRepo.Set(ctx, intelligenceTestSettingKey, string(data)); err != nil {
-		return err
-	}
-	// Reconfiguration cancels existing work so disabled/changed schedules cannot keep spending.
-	s.cancelActiveIntelligenceTests()
-	return nil
 }
 
 func (s *IntelligenceTestService) cancelActiveIntelligenceTests() {
@@ -333,14 +311,29 @@ func (s *IntelligenceTestService) loop(ctx context.Context, done chan struct{}) 
 	// Wait for the HTTP server and migrations before the first loopback request.
 	timer := time.NewTimer(15 * time.Second)
 	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return
+	case <-timer.C:
+	}
 	for {
+		if ctx.Err() != nil {
+			return
+		}
+		// Coalesce saves made before this batch; planning always reads the newest
+		// committed generation. The startup activation delay is still respected.
+		select {
+		case <-s.wake:
+		default:
+		}
+		s.runScheduledBatch(ctx)
+		timer.Reset(5 * time.Second)
 		select {
 		case <-ctx.Done():
 			return
 		case <-timer.C:
+		case <-s.wake:
 		}
-		s.runScheduledBatch(ctx)
-		timer.Reset(5 * time.Second)
 	}
 }
 
@@ -348,69 +341,8 @@ func (s *IntelligenceTestService) loop(ctx context.Context, done chan struct{}) 
 // transaction advisory lock plus persistent leases across all instances, so even
 // a one-connection pool can serve settings, credentials and ordinary gateway work.
 func (s *IntelligenceTestService) runScheduledBatch(ctx context.Context) {
-	queryCtx, queryCancel := context.WithTimeout(ctx, 10*time.Second)
-	cfg, err := s.GetConfig(queryCtx)
-	if err != nil {
-		queryCancel()
-		return
-	}
-	// A crashed process leaves no partial answer; stale work becomes a plain failure.
-	_, err = s.db.ExecContext(queryCtx, `UPDATE pk_intelligence_test_results r SET status='failed',finished_at=NOW(),duration_ms=NULL WHERE r.status='running' AND NOT EXISTS (SELECT 1 FROM pk_intelligence_test_state s WHERE s.group_id=r.group_id AND s.mode=r.mode AND s.active_result_id=r.id AND s.lease_until>NOW())`)
-	if err == nil {
-		_, err = s.db.ExecContext(queryCtx, `DELETE FROM pk_intelligence_test_results r USING groups g WHERE r.group_id=g.id AND g.deleted_at IS NOT NULL`)
-	}
-	if err == nil {
-		_, err = s.db.ExecContext(queryCtx, `DELETE FROM pk_intelligence_test_state s USING groups g WHERE s.group_id=g.id AND g.deleted_at IS NOT NULL`)
-	}
-	if err != nil || !cfg.Enabled || (!cfg.SVG.Enabled && !cfg.Candy.Enabled) {
-		queryCancel()
-		return
-	}
-	var keyRevision int64
-	if err = s.db.QueryRowContext(queryCtx, `SELECT COALESCE(MAX(api_key_id),0) FROM pk_intelligence_test_keys`).Scan(&keyRevision); err != nil {
-		queryCancel()
-		return
-	}
-	_, err = s.db.ExecContext(queryCtx, `INSERT INTO pk_intelligence_test_state(group_id,mode) SELECT g.id,m.mode FROM groups g JOIN pk_intelligence_test_keys k ON k.group_id=g.id CROSS JOIN (VALUES ('svg'),('candy')) AS m(mode) WHERE g.status='active' AND g.deleted_at IS NULL ON CONFLICT DO NOTHING`)
-	if err != nil {
-		queryCancel()
-		return
-	}
-	// Interval edits take effect on the next scheduler tick, even if the previous
-	// schedule was a day away. Persisting the applied interval avoids resetting it
-	// on every tick and starving the next run.
-	_, err = s.db.ExecContext(queryCtx, `UPDATE pk_intelligence_test_state SET next_run_at=NOW()+((CASE WHEN mode='svg' THEN $1::integer ELSE $2::integer END)*INTERVAL '1 minute'),interval_minutes=CASE WHEN mode='svg' THEN $1::integer ELSE $2::integer END WHERE interval_minutes<>(CASE WHEN mode='svg' THEN $1::integer ELSE $2::integer END)`, cfg.SVG.IntervalMinutes, cfg.Candy.IntervalMinutes)
-	if err != nil {
-		queryCancel()
-		return
-	}
-	// This query is only a hint; the claim transaction rechecks capacity and due
-	// time under the shared SQL lock before making any model request.
-	rows, err := s.db.QueryContext(queryCtx, `SELECT s.group_id,s.mode FROM pk_intelligence_test_state s JOIN groups g ON g.id=s.group_id JOIN pk_intelligence_test_keys k ON k.group_id=s.group_id WHERE g.status='active' AND g.deleted_at IS NULL AND s.next_run_at<=NOW() AND (s.lease_until IS NULL OR s.lease_until<=NOW()) AND ((s.mode='svg' AND $1) OR (s.mode='candy' AND $2)) ORDER BY s.next_run_at,s.group_id,s.mode LIMIT GREATEST(0,2-(SELECT COUNT(*) FROM pk_intelligence_test_state WHERE lease_until>NOW()))`, cfg.SVG.Enabled, cfg.Candy.Enabled)
-	if err != nil {
-		queryCancel()
-		return
-	}
-	type job struct {
-		groupID int64
-		mode    string
-	}
-	jobs := make([]job, 0, 2)
-	for rows.Next() {
-		var j job
-		if err = rows.Scan(&j.groupID, &j.mode); err != nil {
-			break
-		}
-		jobs = append(jobs, j)
-	}
-	if rowErr := rows.Err(); rowErr != nil {
-		err = rowErr
-	}
-	if closeErr := rows.Close(); err == nil && closeErr != nil {
-		err = closeErr
-	}
-	queryCancel()
-	if err != nil {
+	cfg, keyRevision, jobs, err := s.planIntelligenceTests(ctx)
+	if err != nil || len(jobs) == 0 {
 		return
 	}
 	batchCtx, batchCancel := context.WithCancel(ctx)
@@ -418,7 +350,7 @@ func (s *IntelligenceTestService) runScheduledBatch(ctx context.Context) {
 	var wg sync.WaitGroup
 	for _, j := range jobs {
 		wg.Add(1)
-		go func(j job) { defer wg.Done(); s.runOne(batchCtx, j.groupID, j.mode, cfg) }(j)
+		go func(j intelligenceTestJob) { defer wg.Done(); s.runOne(batchCtx, j.groupID, j.mode, cfg) }(j)
 	}
 	finished := make(chan struct{})
 	go func() { wg.Wait(); close(finished) }()
@@ -432,22 +364,30 @@ func (s *IntelligenceTestService) runScheduledBatch(ctx context.Context) {
 			batchCancel()
 			<-finished
 			return
+		case <-s.wake:
 		case <-watch.C:
-			checkCtx, checkCancel := context.WithTimeout(ctx, 3*time.Second)
-			latest, readErr := s.GetConfig(checkCtx)
-			var latestKeyRevision int64
-			keyErr := s.db.QueryRowContext(checkCtx, `SELECT COALESCE(MAX(api_key_id),0) FROM pk_intelligence_test_keys`).Scan(&latestKeyRevision)
-			checkCancel()
-			before, _ := json.Marshal(cfg)
-			after, _ := json.Marshal(latest)
-			if readErr != nil || string(before) != string(after) || keyErr != nil || latestKeyRevision != keyRevision {
-				batchCancel()
-			}
+		}
+		// A wake may arrive after planning already read the saved generation.
+		// Only changed state cancels work; a late notification cannot kill the
+		// freshly restarted batch and postpone it by another full interval.
+		checkCtx, checkCancel := context.WithTimeout(ctx, 3*time.Second)
+		latest, readErr := s.GetConfig(checkCtx)
+		var latestKeyRevision int64
+		keyErr := s.db.QueryRowContext(checkCtx, `SELECT COALESCE(MAX(api_key_id),0) FROM pk_intelligence_test_keys`).Scan(&latestKeyRevision)
+		checkCancel()
+		if readErr != nil || !sameIntelligenceTestConfig(cfg, latest) || keyErr != nil || latestKeyRevision != keyRevision {
+			batchCancel()
+			<-finished
+			s.wakeIntelligenceTests()
+			return
 		}
 	}
 }
 
 func (s *IntelligenceTestService) runOne(parent context.Context, groupID int64, mode string, cfg *IntelligenceTestConfig) {
+	if cfg == nil || (mode != "svg" && mode != "candy") {
+		return
+	}
 	settings := cfg.SVG
 	if mode == "candy" {
 		settings = cfg.Candy
@@ -478,12 +418,20 @@ func (s *IntelligenceTestService) runOne(parent context.Context, groupID int64, 
 		queryCancel()
 		return
 	}
+	// Reset and claims share this lock. A job planned before any save (including
+	// an identical save) cannot insert another old-generation result afterward.
+	latest, configErr := intelligenceTestConfigInTransaction(queryCtx, tx)
+	if configErr != nil || latest == nil || !sameIntelligenceTestConfig(cfg, latest) || !latest.Enabled ||
+		(mode == "svg" && !latest.SVG.Enabled) || (mode == "candy" && !latest.Candy.Enabled) {
+		queryCancel()
+		return
+	}
 	var leased int
 	if err = tx.QueryRowContext(queryCtx, `SELECT COUNT(*) FROM pk_intelligence_test_state WHERE lease_until>NOW()`).Scan(&leased); err != nil || leased >= 2 {
 		queryCancel()
 		return
 	}
-	result, err := tx.ExecContext(queryCtx, `UPDATE pk_intelligence_test_state SET next_run_at=NOW()+($3::integer*INTERVAL '1 minute'),lease_until=NOW()+($4::integer*INTERVAL '1 second') WHERE group_id=$1 AND mode=$2 AND next_run_at<=NOW() AND (lease_until IS NULL OR lease_until<=NOW())`, groupID, mode, settings.IntervalMinutes, int(intelligenceTestLease.Seconds()))
+	result, err := tx.ExecContext(queryCtx, `UPDATE pk_intelligence_test_state s SET next_run_at=NOW()+($3::integer*INTERVAL '1 minute'),lease_until=NOW()+($4::integer*INTERVAL '1 second') WHERE s.group_id=$1 AND s.mode=$2 AND s.next_run_at<=NOW() AND (s.lease_until IS NULL OR s.lease_until<=NOW()) AND EXISTS (SELECT 1 FROM pk_intelligence_test_keys k JOIN groups g ON g.id=k.group_id AND g.status='active' AND g.deleted_at IS NULL WHERE k.group_id=s.group_id)`, groupID, mode, settings.IntervalMinutes, int(intelligenceTestLease.Seconds()))
 	if err != nil {
 		queryCancel()
 		return
@@ -495,7 +443,11 @@ func (s *IntelligenceTestService) runOne(parent context.Context, groupID int64, 
 	}
 	var id int64
 	started := time.Now()
-	err = tx.QueryRowContext(queryCtx, `INSERT INTO pk_intelligence_test_results(group_id,mode,status,started_at) VALUES($1,$2,'running',$3) RETURNING id`, groupID, mode, started.UTC()).Scan(&id)
+	promptSnapshot := ""
+	if mode == "candy" {
+		promptSnapshot = settings.Prompt
+	}
+	err = tx.QueryRowContext(queryCtx, `INSERT INTO pk_intelligence_test_results(group_id,mode,status,started_at,prompt_snapshot) VALUES($1,$2,'running',$3,$4) RETURNING id`, groupID, mode, started.UTC(), promptSnapshot).Scan(&id)
 	if err == nil {
 		_, err = tx.ExecContext(queryCtx, `UPDATE pk_intelligence_test_state SET active_result_id=$3 WHERE group_id=$1 AND mode=$2`, groupID, mode, id)
 	}
@@ -513,20 +465,32 @@ func (s *IntelligenceTestService) runOne(parent context.Context, groupID int64, 
 	s.active[id] = cancel
 	s.mu.Unlock()
 	defer func() { s.mu.Lock(); delete(s.active, id); s.mu.Unlock() }()
-	status, artifact := "failed", ""
+	status, artifact, answerText := "failed", "", ""
 	var passed *bool
+	var runErr error
 	key, keyErr := s.keyForGroup(ctx, groupID)
 	// Register cancellation before this final configuration check: a local save
 	// either cancels this context or is observed here, including the claim/register gap.
-	latest, configErr := s.GetConfig(ctx)
-	before, _ := json.Marshal(cfg)
-	after, _ := json.Marshal(latest)
-	if configErr != nil || latest == nil || !latest.Enabled || string(before) != string(after) {
+	latest, configErr = s.GetConfig(ctx)
+	switch {
+	case ctx.Err() != nil:
+		runErr = ctx.Err()
+	case configErr != nil:
+		runErr = intelligenceTestFailure("configuration_unavailable", "无法读取当前智商测试配置，已停止本次请求。")
 		cancel()
+	case latest == nil || !sameIntelligenceTestConfig(cfg, latest) || !latest.Enabled:
+		runErr = intelligenceTestFailure("configuration_changed", "测试配置已重新保存，本次旧任务已取消。")
+		cancel()
+	case keyErr != nil:
+		runErr = intelligenceTestFailure("test_key_unavailable", "此分组的智商测试 Key 不可用，请管理员重新生成。")
 	}
-	if keyErr == nil && ctx.Err() == nil {
+	if runErr == nil && ctx.Err() == nil {
 		answer, callErr := s.callModel(ctx, key, mode, settings)
-		if callErr == nil {
+		if callErr != nil {
+			runErr = callErr
+		} else if strings.IndexByte(answer, 0) >= 0 || !utf8.ValidString(answer) {
+			runErr = intelligenceTestFailure("invalid_final_answer_text", "最终回复包含无法保存的文本字符，本次不保留不完整回答。")
+		} else {
 			answer = strings.ReplaceAll(answer, key, "[REDACTED]")
 			if mode == "svg" {
 				artifact = intelligenceExtractHTML(answer)
@@ -534,15 +498,25 @@ func (s *IntelligenceTestService) runOne(parent context.Context, groupID int64, 
 					status = "completed"
 				} else {
 					artifact = ""
+					runErr = intelligenceTestFailure("invalid_svg_artifact", "最终回复未包含可完整提取且符合大小限制的 SVG 或 HTML 作品。")
 				}
 			} else {
 				number := intelligenceExtractAnswer(answer)
 				ok := number != nil && *number == settings.ExpectedAnswer
 				passed = &ok
+				answerText = answer
 				status = "completed"
 			}
 		}
 	}
+	if status == "failed" && runErr == nil {
+		runErr = ctx.Err()
+		if runErr == nil {
+			runErr = intelligenceTestFailure("test_incomplete", "本次测试未完成，未保存最终回答。")
+		}
+	}
+	errorCode, errorDetail := intelligenceTestErrorInfo(runErr)
+	errorDetail = intelligenceTestSanitizeErrorDetail(errorDetail, key)
 	finished := time.Now()
 	duration := finished.Sub(started).Milliseconds()
 	if duration < 0 {
@@ -551,7 +525,7 @@ func (s *IntelligenceTestService) runOne(parent context.Context, groupID int64, 
 	finishCtx, finishCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer finishCancel()
 	// A whole-row terminal update ensures failures never retain output or a pass flag.
-	if _, err = s.db.ExecContext(finishCtx, `UPDATE pk_intelligence_test_results SET status=$2,passed=$3,artifact=$4,finished_at=$5,duration_ms=$6 WHERE id=$1 AND status='running'`, id, status, passed, artifact, finished.UTC(), duration); err == nil {
+	if _, err = s.db.ExecContext(finishCtx, `UPDATE pk_intelligence_test_results SET status=$2,passed=$3,artifact=$4,finished_at=$5,duration_ms=$6,answer_text=$7,error_code=$8,error_detail=$9 WHERE id=$1 AND status='running'`, id, status, passed, artifact, finished.UTC(), duration, answerText, errorCode, errorDetail); err == nil {
 		_, _ = s.db.ExecContext(finishCtx, `UPDATE pk_intelligence_test_state SET lease_until=NULL,active_result_id=NULL WHERE group_id=$1 AND mode=$2 AND active_result_id=$3`, groupID, mode, id)
 	}
 }

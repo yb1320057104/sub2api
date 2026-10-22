@@ -5,7 +5,7 @@
     sandbox=""
     referrerpolicy="no-referrer"
     loading="lazy"
-    class="h-[320px] w-full border-0 bg-white sm:h-[380px]"
+    class="h-44 w-full border-0 bg-white"
   />
 </template>
 
@@ -75,6 +75,6 @@ const document = computed(() => {
   const body = window.document.implementation.createHTMLDocument('').createElement('div')
   body.append(fragment)
   const policy = "default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; font-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
-  return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${policy}"><meta charset="utf-8"><meta name="referrer" content="no-referrer"><style>html,body{margin:0;min-height:100%;background:#fff}body{display:grid;place-items:center;padding:12px;box-sizing:border-box;overflow:auto}svg{max-width:100%;max-height:350px}*{box-sizing:border-box}</style></head><body>${body.innerHTML}</body></html>`
+  return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${policy}"><meta charset="utf-8"><meta name="referrer" content="no-referrer"><style>html,body{margin:0;height:100%;background:#fff}body{display:grid;place-items:center;padding:8px;box-sizing:border-box;overflow:auto}svg{max-width:100%;max-height:156px}*{box-sizing:border-box}</style></head><body>${body.innerHTML}</body></html>`
 })
 </script>

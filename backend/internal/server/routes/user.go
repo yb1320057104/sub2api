@@ -30,6 +30,7 @@ func RegisterUserRoutes(
 			authenticated.GET("/intelligence-test/groups", h.IntelligenceTest.Groups)
 			authenticated.GET("/intelligence-test/results", panelRateLimiter.Heavy(), h.IntelligenceTest.Results)
 			authenticated.GET("/intelligence-test/artifact", panelRateLimiter.Heavy(), h.IntelligenceTest.Artifact)
+			authenticated.GET("/intelligence-test/details", panelRateLimiter.Heavy(), h.IntelligenceTest.Details)
 		}
 		authenticated.GET("/security-policy-ranking", panelRateLimiter.Heavy(), h.Admin.Usage.CyberPolicyPublicRanking)
 		// 用户接口

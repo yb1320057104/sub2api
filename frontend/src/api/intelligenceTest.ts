@@ -44,6 +44,13 @@ export interface IntelligenceTestResult {
   duration_ms?: number
 }
 
+export interface IntelligenceTestDetails {
+  prompt: string
+  answer: string
+  error_code?: string
+  error_detail?: string
+}
+
 export const intelligenceTestAPI = {
   async status() {
     return (await apiClient.get<{ enabled: boolean }>('/intelligence-test/status')).data
@@ -58,6 +65,11 @@ export const intelligenceTestAPI = {
   },
   async artifact(groupID: number, id: number, signal?: AbortSignal) {
     return (await apiClient.get<{ artifact: string }>('/intelligence-test/artifact', {
+      params: { group_id: groupID, id }, signal,
+    })).data
+  },
+  async details(groupID: number, id: number, signal?: AbortSignal) {
+    return (await apiClient.get<IntelligenceTestDetails>('/intelligence-test/details', {
       params: { group_id: groupID, id }, signal,
     })).data
   },
