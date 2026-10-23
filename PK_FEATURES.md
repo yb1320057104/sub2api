@@ -551,7 +551,7 @@
 - `-version` 输出品牌更新为 DP API；PK-017 的 `deploy/jenkins/verify-runtime.py` 同时识别新品牌与历史 Sub2API 输出，仍严格匹配版本、完整 commit 与构建字段，不放宽制品/来源校验。既有 `test_release_matrix.py` 增加两种品牌与错误版本/提交/名称的回归，随 `release-helpers` 源码套件执行。
 - 主要代码入口：`frontend/tailwind.config.js`、`frontend/src/style.css`、`frontend/src/components/layout/AppLayout.vue`、`AppHeader.vue`、`AppSidebar.vue`。公共选择器 `frontend/src/components/common/Select.vue`、`DateRangePicker.vue` 以及复用公共样式的用户/管理员页面属于联动检查范围；筛选值、事件、键盘操作与弹层定位保持原有语义。展开侧栏为16rem（默认256px），主区与 `features/prompt-audit/PromptAuditView.vue` 固定保存栏共用布局宽度变量，折叠时同步至72px，避免遮挡配置开关；原 `PromptAuditView.spec.ts` 纳入关键回归列表。
 - 2026-10-24 用户反馈左侧菜单过宽并要求恢复原宽度、无需测试直接提交，目标 `v0.2.17-pk.13`。沿用 PK-031，无新增 ID；依据品牌改版提交 `b99ca3ab9` 的父版本，将 `AppSidebar.vue` 与 `style.css` 从280px恢复为原 `w-64`（16rem），`AppLayout.vue` 的共享宽度变量同步为16rem。静态核对展开/72px折叠、主内容区及提示词审计固定保存栏的间距联动；菜单权限、功能开关、品牌样式及移动端开关保持原实现。按本次要求未运行测试或构建、未生成测试文件，不将历史回归结果作为本轮通过证据。
-- 同日pk.14按用户追加要求扩展首页导航及首页/登录/用户仪表盘展示，详见PK-032和PK-033；原首页三种模式、登录认证流程、仪表盘统计和256px侧栏保持，导航在中屏提前换行以容纳两个新锚点。仅静态核对，不冒称浏览器视觉验收通过。
+- 同日pk.14扩展首页导航及联系方式/智商测试展示，详见PK-032和PK-033；pk.15按用户澄清，智商测试展示在首页，联系方式展示在首页/登录/用户仪表盘顶部。原首页三种模式、登录认证流程、仪表盘统计和256px侧栏保持，导航在中屏提前换行以容纳两个新锚点。仅静态核对，不冒称浏览器视觉验收通过。
 - 现有回归入口：`frontend/src/components/layout/__tests__/AppSidebar.spec.ts` 检查排行榜菜单、订阅开关、折叠组、滚动位置、自定义图标和版本弹层不被裁剪；`frontend/src/components/user/dashboard/__tests__/UserDashboardStats.spec.ts` 检查平台统计卡片及简易模式。二者继续保留在 `Makefile` 的 `FRONTEND_CRITICAL_VITEST` 中；本次将管理员 `frontend/src/views/admin/__tests__/DashboardView.spec.ts`、公共选择器原有 `Select*.spec.ts`、`DateRangePicker*.spec.ts` 和 `disabledSelectors.spec.ts` 一并纳入，保护筛选、键盘、输入法、禁用态与日期边界。实际结果仍须核对当次源码套件原始日志，不能仅因列入清单即声称通过。
 - 验证计划与边界：按 PK-017 在用户指定测试服务器隔离环境运行完整九套件及 preflight，提交相同 tree 后绑定最终 commit 的原报告及 notes；本条登记时尚未以本次报告确认通过，不沿用历史测试结果。补充核对用户/管理员、浅色/深色、桌面展开/72px 折叠/移动端，以及筛选、卡片、菜单和版本弹层；现有源码断言和 jsdom 交互用例不能代替真实浏览器视觉验收，实际结果与未覆盖范围另随交付说明记录。发行构建仍只在 Jenkins，新增临时测试文件在验证后清理。
 - 邮件品牌入口还包括 `content_moderation.go` 的内容审计通知、`user_service.go` 的通知邮箱验证码，以及 `auth_email_binding.go`、`auth_oauth_email_flow.go`、`auth_service.go` 的绑定/注册/OAuth验证码与密码重置：默认值统一复用 `defaultSiteName`，直接读库的名称走同一兼容规则；保留通知流程、权限、收件人、验证码、SMTP发件名与原有去空白规则。
@@ -559,11 +559,13 @@
 
 ## PK-032
 
-2026-10-24 `v0.2.17-pk.14` 按用户要求将已有结果展示到公开首页 `/home`，并追加到登录后的用户仪表盘 `/dashboard`；沿用本 ID，不改变生成任务。首页顶部“智商测试”锚点随实际展示内容出现，点击滚动并聚焦结果区；无配置、关闭、无已选有效分组或无已完成结果时，整个区块和锚点隐藏。SVG/糖果类型与分组切换展示最近最多30条真实完成结果、当次模型/强度、时间与耗时，糖果答错仍显示不合格，不展示失败卡片或虚构数据。
+2026-10-24 `v0.2.17-pk.14` 按用户要求将已有结果展示到公开首页 `/home`；沿用本 ID，不改变生成任务。首页顶部“智商测试”锚点随实际展示内容出现，点击滚动并聚焦结果区；无配置、关闭、无已选有效分组或无已完成结果时，整个区块和锚点隐藏。SVG/糖果类型与分组切换展示最近最多30条真实完成结果、当次模型/强度、时间与耗时，糖果答错仍显示不合格，不展示失败卡片或虚构数据。
+
+- 同日 `v0.2.17-pk.15` 用户明确澄清“仪表盘顶部显示联系方式，不是智商测试”，因此撤销pk.14在用户仪表盘追加的智商测试结果区及导入，保留顶部联系方式。首页结果与原智商测试独立页面继续保留；不涉及配置、历史结果、后台任务或数据库变更。本轮仅静态核对，未运行测试或构建。
 
 - 新增独立只读 `/api/v1/public/intelligence-test/{groups,results,artifact,details}`，用于用户明确授权的公开展示；原登录/管理员接口权限保持原样。每次请求直读数据库总开关和类型开关，并在结果查询中匹配同一配置原值、当前分组选择映射及有效分组，避免保存/关闭并发时沿用旧配置。只返回 `completed`，作品和详情同时核对原分组/结果ID和类型，未开放或不存在返回空列表/404；不返回凭证、Key状态、管理员诊断、原始模型流或后台配置，不提供执行模型的公开入口。
-- 公开组列表最多2000组，仅包含有已完成结果的启用类型及分组；单组单类型最多30条。响应 `no-store`，读取预算5秒，保留公开面板限流并增加独立每IP每分钟240次上限，Redis限流不可用时拒绝读取；单作品、提示词和回复继续受原有数据库长度边界保护。首页与用户仪表盘复用 `HomeIntelligenceResults.vue`，独立公共API不携带Bearer凭证、不进行登录刷新或重定向；60秒刷新当前类型/分组，页面隐藏暂停，切换、清空和卸载取消旧请求。SVG继续使用原净化、严格CSP、无脚本/无同源sandbox，糖果详情继续转义展示。
-- 本轮入口：`backend/internal/service/intelligence_test_public.go`、`handler/intelligence_test_public_handler.go`、`server/routes/intelligence_test_public.go`及router；`frontend/src/api/publicIntelligenceTest.ts`、`components/home/HomeIntelligenceResults.vue`、`HomeView.vue`与`views/user/DashboardView.vue`。原ResultArtifact/ResultDetails仅增加可选读取函数，默认仍使用登录接口；调度、无限重试、租约、测试Key、计费和迁移未变。本轮仅静态核对，未运行测试/构建，历史pk.12动态结果仍只证明原范围。
+- 公开组列表最多2000组，仅包含有已完成结果的启用类型及分组；单组单类型最多30条。响应 `no-store`，读取预算5秒，保留公开面板限流并增加独立每IP每分钟240次上限，Redis限流不可用时拒绝读取；单作品、提示词和回复继续受原有数据库长度边界保护。首页使用 `HomeIntelligenceResults.vue`，独立公共API不携带Bearer凭证、不进行登录刷新或重定向；60秒刷新当前类型/分组，页面隐藏暂停，切换、清空和卸载取消旧请求。SVG继续使用原净化、严格CSP、无脚本/无同源sandbox，糖果详情继续转义展示。
+- 公开展示入口：`backend/internal/service/intelligence_test_public.go`、`handler/intelligence_test_public_handler.go`、`server/routes/intelligence_test_public.go`及router；`frontend/src/api/publicIntelligenceTest.ts`、`components/home/HomeIntelligenceResults.vue`与`HomeView.vue`。原ResultArtifact/ResultDetails仅增加可选读取函数，默认仍使用登录接口；调度、无限重试、租约、测试Key、计费和迁移未变。本轮仅静态核对，未运行测试/构建，历史pk.12动态结果仍只证明原范围。
 
 **服务端定时智商测试。** 状态：有效。引入依据：2026-10-23 用户要求参考本机“鹈鹕测试”，在本站新增 SVG/糖果题菜单；追加总开关、管理员账户生成测试 Key，以及每次一键更新全部撤销旧测试 Key 后重建。目标版本 `v0.2.17-pk.5`。
 

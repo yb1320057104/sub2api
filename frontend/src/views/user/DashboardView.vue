@@ -11,7 +11,6 @@
           <div class="lg:col-span-1"><UserDashboardQuickActions /></div>
         </div>
       </template>
-      <HomeIntelligenceResults />
     </div>
   </AppLayout>
 </template>
@@ -25,7 +24,6 @@ import type { UsageLog, TrendDataPoint, ModelStat, PlatformQuotaItem } from '@/t
 import { getMyPlatformQuotas } from '@/api/user'
 import { formatDateLocalInput } from '@/utils/format'
 import SiteContact from '@/components/common/SiteContact.vue'
-import HomeIntelligenceResults from '@/components/home/HomeIntelligenceResults.vue'
 
 const authStore = useAuthStore(); const user = computed(() => authStore.user)
 const stats = ref<UserStatsType | null>(null); const loading = ref(false); const loadingUsage = ref(false); const loadingCharts = ref(false)

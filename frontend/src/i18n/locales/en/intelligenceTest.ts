@@ -43,7 +43,7 @@ export default {
     settings: 'Manage settings',
     hideSettings: 'Hide settings',
     schedule: 'Scheduled tests',
-    scheduleHint: 'Enable scheduled tests, show this menu to users, and display completed results on the public homepage and user dashboard. Disabling stops tests and hides these entries and results.',
+    scheduleHint: 'Enable scheduled tests, show this menu to users, and display completed results on the public homepage. Disabling stops tests and hides these entries and results.',
     enabled: 'Enabled',
     disabled: 'Disabled',
     disabledHint: 'Scheduled tests are disabled and this menu is hidden from users. Administrators can still manage settings and view history.',
