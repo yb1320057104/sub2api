@@ -49,6 +49,7 @@ export default {
     model: 'Model',
     effort: 'Reasoning effort',
     effortDefault: 'Model default',
+    notRecorded: 'Not recorded',
     interval: 'Test interval (minutes)',
     expectedAnswer: 'Correct candy puzzle answer',
     overrides: 'Model and effort by group',

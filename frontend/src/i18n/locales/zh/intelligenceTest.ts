@@ -49,6 +49,7 @@ export default {
     model: '模型',
     effort: '思考强度',
     effortDefault: '模型默认',
+    notRecorded: '未记录',
     interval: '测试间隔（分钟）',
     expectedAnswer: '糖果题正确答案',
     overrides: '各分组模型与强度',

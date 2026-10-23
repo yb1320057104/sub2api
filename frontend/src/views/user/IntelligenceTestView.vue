@@ -47,6 +47,16 @@
                     {{ resultLabel(result) }}
                   </span>
                   <time :datetime="result.started_at" :title="t('intelligenceTest.startedAt')" class="block break-words text-xs leading-5 tabular-nums text-gray-400">{{ formatTime(result.started_at) }}</time>
+                  <dl class="space-y-1 text-xs leading-5">
+                    <div>
+                      <dt class="mr-1 inline text-gray-400">{{ t('intelligenceTest.model') }}</dt>
+                      <dd class="inline break-all font-mono text-gray-600 dark:text-dark-300">{{ result.model ?? t('intelligenceTest.notRecorded') }}</dd>
+                    </div>
+                    <div>
+                      <dt class="mr-1 inline text-gray-400">{{ t('intelligenceTest.effort') }}</dt>
+                      <dd class="inline break-all text-gray-600 dark:text-dark-300">{{ result.effort == null ? t('intelligenceTest.notRecorded') : result.effort === '' ? t('intelligenceTest.effortDefault') : result.effort }}</dd>
+                    </div>
+                  </dl>
                 </div>
                 <template v-if="mode === 'svg'">
                   <ResultArtifact v-if="result.status === 'completed' && result.has_artifact" :group-id="result.group_id" :result-id="result.id" />

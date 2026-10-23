@@ -67,6 +67,8 @@ type IntelligenceTestResult struct {
 	GroupID     int64      `json:"group_id"`
 	Mode        string     `json:"mode"`
 	Status      string     `json:"status"`
+	Model       *string    `json:"model"`
+	Effort      *string    `json:"effort"`
 	Passed      *bool      `json:"passed,omitempty"`
 	HasArtifact bool       `json:"has_artifact"`
 	StartedAt   time.Time  `json:"started_at"`
@@ -239,7 +241,7 @@ func (s *IntelligenceTestService) ListResults(ctx context.Context, groupID int64
 	if group == nil || !group.IsActive() {
 		return nil, ErrGroupNotFound
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id,group_id,mode,status,passed,(artifact<>''),started_at,finished_at,duration_ms FROM pk_intelligence_test_results WHERE group_id=$1 AND mode=$2 ORDER BY id DESC LIMIT 30`, groupID, mode)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,group_id,mode,status,request_model,request_effort,passed,(artifact<>''),started_at,finished_at,duration_ms FROM pk_intelligence_test_results WHERE group_id=$1 AND mode=$2 ORDER BY id DESC LIMIT 30`, groupID, mode)
 	if err != nil {
 		return nil, err
 	}
@@ -247,7 +249,7 @@ func (s *IntelligenceTestService) ListResults(ctx context.Context, groupID int64
 	results := make([]IntelligenceTestResult, 0, 30)
 	for rows.Next() {
 		var result IntelligenceTestResult
-		if err := rows.Scan(&result.ID, &result.GroupID, &result.Mode, &result.Status, &result.Passed, &result.HasArtifact, &result.StartedAt, &result.FinishedAt, &result.DurationMS); err != nil {
+		if err := rows.Scan(&result.ID, &result.GroupID, &result.Mode, &result.Status, &result.Model, &result.Effort, &result.Passed, &result.HasArtifact, &result.StartedAt, &result.FinishedAt, &result.DurationMS); err != nil {
 			return nil, err
 		}
 		results = append(results, result)
@@ -360,7 +362,9 @@ func (s *IntelligenceTestService) runOne(parent context.Context, groupID int64, 
 	if mode == "candy" {
 		promptSnapshot = settings.Prompt
 	}
-	err = tx.QueryRowContext(queryCtx, `INSERT INTO pk_intelligence_test_results(group_id,mode,status,started_at,prompt_snapshot) VALUES($1,$2,'running',$3,$4) RETURNING id`, groupID, mode, started.UTC(), promptSnapshot).Scan(&id)
+	// Snapshot the same resolved settings later passed to the local Responses
+	// request; these are not the gateway's eventual upstream model mappings.
+	err = tx.QueryRowContext(queryCtx, `INSERT INTO pk_intelligence_test_results(group_id,mode,status,started_at,prompt_snapshot,request_model,request_effort) VALUES($1,$2,'running',$3,$4,$5,$6) RETURNING id`, groupID, mode, started.UTC(), promptSnapshot, settings.Model, settings.Effort).Scan(&id)
 	if err == nil {
 		_, err = tx.ExecContext(queryCtx, `UPDATE pk_intelligence_test_state SET active_result_id=$3 WHERE group_id=$1 AND mode=$2`, groupID, mode, id)
 	}
