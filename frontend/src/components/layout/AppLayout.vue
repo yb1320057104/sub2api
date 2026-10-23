@@ -1,7 +1,7 @@
 <template>
   <div
     class="app-layout min-h-screen bg-canvas dark:bg-dark-950"
-    :style="{ '--app-sidebar-width': sidebarCollapsed ? '72px' : '280px' }"
+    :style="{ '--app-sidebar-width': sidebarCollapsed ? '72px' : '16rem' }"
   >
     <!-- Sidebar -->
     <AppSidebar />
