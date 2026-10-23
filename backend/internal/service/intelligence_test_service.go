@@ -241,7 +241,7 @@ func (s *IntelligenceTestService) ListResults(ctx context.Context, groupID int64
 	if group == nil || !group.IsActive() {
 		return nil, ErrGroupNotFound
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id,group_id,mode,status,request_model,request_effort,passed,(artifact<>''),started_at,finished_at,duration_ms FROM pk_intelligence_test_results WHERE group_id=$1 AND mode=$2 ORDER BY id DESC LIMIT 30`, groupID, mode)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,group_id,mode,status,request_model,request_effort,passed,(artifact<>''),started_at,finished_at,duration_ms FROM pk_intelligence_test_results WHERE group_id=$1 AND mode=$2 AND status<>'failed' ORDER BY id DESC LIMIT 30`, groupID, mode)
 	if err != nil {
 		return nil, err
 	}
@@ -323,7 +323,7 @@ func (s *IntelligenceTestService) runOne(parent context.Context, groupID int64, 
 			settings.Effort = override.Effort
 		}
 	}
-	ctx, cancel := context.WithTimeout(parent, intelligenceTestTimeout)
+	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	queryCtx, queryCancel := context.WithTimeout(ctx, 5*time.Second)
 	tx, err := s.db.BeginTx(queryCtx, nil)
@@ -343,6 +343,15 @@ func (s *IntelligenceTestService) runOne(parent context.Context, groupID int64, 
 	latest, configErr := intelligenceTestConfigInTransaction(queryCtx, tx)
 	if configErr != nil || latest == nil || !sameIntelligenceTestConfig(cfg, latest) || !latest.Enabled ||
 		(mode == "svg" && !latest.SVG.Enabled) || (mode == "candy" && !latest.Candy.Enabled) {
+		queryCancel()
+		return
+	}
+	if _, err = tx.ExecContext(queryCtx, `SELECT pg_advisory_xact_lock_shared(706832,2)`); err != nil {
+		queryCancel()
+		return
+	}
+	var keyID int64
+	if err = tx.QueryRowContext(queryCtx, `SELECT api_key_id FROM pk_intelligence_test_keys WHERE group_id=$1`, groupID).Scan(&keyID); err != nil {
 		queryCancel()
 		return
 	}
@@ -383,58 +392,17 @@ func (s *IntelligenceTestService) runOne(parent context.Context, groupID int64, 
 	s.active[id] = cancel
 	s.mu.Unlock()
 	defer func() { s.mu.Lock(); delete(s.active, id); s.mu.Unlock() }()
-	status, artifact, answerText := "failed", "", ""
-	var passed *bool
-	var runErr error
-	key, keyErr := s.keyForGroup(ctx, groupID)
-	// Register cancellation before this final configuration check: a local save
-	// either cancels this context or is observed here, including the claim/register gap.
-	latest, configErr = s.GetConfig(ctx)
-	switch {
-	case ctx.Err() != nil:
-		runErr = ctx.Err()
-	case configErr != nil:
-		runErr = intelligenceTestFailure("configuration_unavailable", "无法读取当前智商测试配置，已停止本次请求。")
-		cancel()
-	case latest == nil || !sameIntelligenceTestConfig(cfg, latest) || !latest.Enabled:
-		runErr = intelligenceTestFailure("configuration_changed", "测试配置已重新保存，本次旧任务已取消。")
-		cancel()
-	case keyErr != nil:
-		runErr = intelligenceTestFailure("test_key_unavailable", "此分组的智商测试 Key 不可用，请管理员重新生成。")
-	}
-	if runErr == nil && ctx.Err() == nil {
-		answer, callErr := s.callModel(ctx, key, mode, settings)
-		if callErr != nil {
-			runErr = callErr
-		} else if strings.IndexByte(answer, 0) >= 0 || !utf8.ValidString(answer) {
-			runErr = intelligenceTestFailure("invalid_final_answer_text", "最终回复包含无法保存的文本字符，本次不保留不完整回答。")
-		} else {
-			answer = strings.ReplaceAll(answer, key, "[REDACTED]")
-			if mode == "svg" {
-				artifact = intelligenceExtractHTML(answer)
-				if artifact != "" && len(artifact) <= intelligenceTestArtifactLimit {
-					status = "completed"
-				} else {
-					artifact = ""
-					runErr = intelligenceTestFailure("invalid_svg_artifact", "最终回复未包含可完整提取且符合大小限制的 SVG 或 HTML 作品。")
-				}
-			} else {
-				number := intelligenceExtractAnswer(answer)
-				ok := number != nil && *number == settings.ExpectedAnswer
-				passed = &ok
-				answerText = answer
-				status = "completed"
-			}
+	finalized := false
+	defer func() {
+		if !finalized {
+			_ = s.abandonIntelligenceTestResult(groupID, mode, id)
 		}
+	}()
+	outcome, attemptErr := s.runIntelligenceTestAttempts(ctx, groupID, mode, id, keyID, cfg, settings)
+	if attemptErr != nil || ctx.Err() != nil {
+		return claimed
 	}
-	if status == "failed" && runErr == nil {
-		runErr = ctx.Err()
-		if runErr == nil {
-			runErr = intelligenceTestFailure("test_incomplete", "本次测试未完成，未保存最终回答。")
-		}
-	}
-	errorCode, errorDetail := intelligenceTestErrorInfo(runErr)
-	errorDetail = intelligenceTestSanitizeErrorDetail(errorDetail, key)
+	finalized = true
 	finished := time.Now()
 	duration := finished.Sub(started).Milliseconds()
 	if duration < 0 {
@@ -443,8 +411,8 @@ func (s *IntelligenceTestService) runOne(parent context.Context, groupID int64, 
 	// HTTP is finished before releasing this worker's fenced lease. The helper
 	// reports only fixed stage/identity metadata if persistence or release fails.
 	_ = s.finalizeIntelligenceTestResult(intelligenceTestCompletion{
-		id: id, groupID: groupID, mode: mode, status: status, passed: passed,
-		artifact: artifact, answerText: answerText, errorCode: errorCode, errorDetail: errorDetail,
+		id: id, groupID: groupID, mode: mode, status: "completed", passed: outcome.passed,
+		artifact: outcome.artifact, answerText: outcome.answerText,
 		finishedAt: finished, durationMS: duration,
 	})
 	return claimed

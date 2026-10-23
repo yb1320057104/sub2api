@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"html"
-	"strings"
 	"time"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
@@ -302,19 +301,4 @@ func intelligenceTestKeyName(groupName string) string {
 		name = name[:len(name)-1]
 	}
 	return html.EscapeString("智商测试-" + string(name))
-}
-
-// keyForGroup never returns credentials to a DTO. The live mapping and group
-// binding are checked again before each scheduled request, without auth cache.
-func (s *IntelligenceTestService) keyForGroup(ctx context.Context, groupID int64) (string, error) {
-	var key string
-	err := s.db.QueryRowContext(ctx, `SELECT k.key FROM pk_intelligence_test_keys m
-		JOIN api_keys k ON k.id = m.api_key_id AND k.group_id = m.group_id AND k.deleted_at IS NULL
-		JOIN groups g ON g.id = m.group_id AND g.deleted_at IS NULL AND g.status = 'active'
-		JOIN users u ON u.id = k.user_id AND u.deleted_at IS NULL AND u.status = 'active' AND u.role = 'admin'
-		WHERE m.group_id = $1`, groupID).Scan(&key)
-	if err != nil || !IsIntelligenceTestKey(key) {
-		return "", errors.New("分组未配置可用的智商测试 Key，请管理员先同步")
-	}
-	return strings.TrimSpace(key), nil
 }

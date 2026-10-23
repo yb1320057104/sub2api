@@ -164,9 +164,16 @@ func (s *IntelligenceTestService) planIntelligenceTests(ctx context.Context) (*I
 	if err != nil {
 		return nil, 0, nil, err
 	}
-	// A lost worker cannot manufacture a measured duration or an answer. Reset
-	// removes old rows entirely, so this cleanup never recreates erased history.
-	if _, err = tx.ExecContext(queryCtx, `UPDATE pk_intelligence_test_results r SET status='failed',finished_at=NOW(),duration_ms=NULL,error_code='worker_interrupted',error_detail='任务执行中断或租约已过期，未收到最终结果' WHERE r.status='running' AND NOT EXISTS (SELECT 1 FROM pk_intelligence_test_state s WHERE s.group_id=r.group_id AND s.mode=r.mode AND s.active_result_id=r.id AND s.lease_until>NOW())`); err != nil {
+	// Recover only an expired unfinished owner. A completed test whose release
+	// failed keeps its normal interval; a lost test must retry without waiting it.
+	if _, err = tx.ExecContext(queryCtx, `UPDATE pk_intelligence_test_state s SET next_run_at=NOW(),lease_until=NULL,active_result_id=NULL
+		WHERE s.active_result_id IS NOT NULL AND (s.lease_until IS NULL OR s.lease_until<=NOW())
+		AND NOT EXISTS (SELECT 1 FROM pk_intelligence_test_results r WHERE r.id=s.active_result_id AND r.group_id=s.group_id AND r.mode=s.mode AND r.status IN ('completed','failed'))`); err != nil {
+		return nil, 0, nil, err
+	}
+	// Never reuse an abandoned result ID: that would let a late old worker clear
+	// the next worker's fence. Normal in-process retries keep their original row.
+	if _, err = tx.ExecContext(queryCtx, `DELETE FROM pk_intelligence_test_results r WHERE r.status='running' AND NOT EXISTS (SELECT 1 FROM pk_intelligence_test_state s WHERE s.group_id=r.group_id AND s.mode=r.mode AND s.active_result_id=r.id AND s.lease_until>NOW())`); err != nil {
 		return nil, 0, nil, err
 	}
 	if _, err = tx.ExecContext(queryCtx, `DELETE FROM pk_intelligence_test_results r USING groups g WHERE r.group_id=g.id AND g.deleted_at IS NOT NULL`); err != nil {
@@ -193,7 +200,10 @@ func (s *IntelligenceTestService) planIntelligenceTests(ctx context.Context) (*I
 	if err = tx.QueryRowContext(queryCtx, `SELECT COALESCE(MAX(api_key_id),0) FROM pk_intelligence_test_keys`).Scan(&keyRevision); err != nil {
 		return nil, 0, nil, err
 	}
-	rows, err := tx.QueryContext(queryCtx, `SELECT s.group_id,s.mode FROM pk_intelligence_test_state s JOIN groups g ON g.id=s.group_id JOIN pk_intelligence_test_keys k ON k.group_id=s.group_id WHERE g.status='active' AND g.deleted_at IS NULL AND s.next_run_at<=NOW() AND (s.lease_until IS NULL OR s.lease_until<=NOW()) AND ((s.mode='svg' AND $1) OR (s.mode='candy' AND $2)) ORDER BY s.next_run_at,s.group_id,s.mode`, cfg.SVG.Enabled, cfg.Candy.Enabled)
+	rows, err := tx.QueryContext(queryCtx, `SELECT s.group_id,s.mode FROM pk_intelligence_test_state s JOIN groups g ON g.id=s.group_id JOIN pk_intelligence_test_keys k ON k.group_id=s.group_id
+		JOIN api_keys a ON a.id=k.api_key_id AND a.group_id=k.group_id AND a.deleted_at IS NULL AND a.key LIKE $3
+		JOIN users u ON u.id=a.user_id AND u.status='active' AND u.role='admin' AND u.deleted_at IS NULL
+		WHERE g.status='active' AND g.deleted_at IS NULL AND s.next_run_at<=NOW() AND (s.lease_until IS NULL OR s.lease_until<=NOW()) AND ((s.mode='svg' AND $1) OR (s.mode='candy' AND $2)) ORDER BY s.next_run_at,s.group_id,s.mode`, cfg.SVG.Enabled, cfg.Candy.Enabled, intelligenceTestKeyPrefix+"%")
 	if err != nil {
 		return nil, 0, nil, err
 	}

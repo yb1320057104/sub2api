@@ -34,7 +34,14 @@ func (s *IntelligenceTestService) finalizeIntelligenceTestResult(completion inte
 	if writeErr != nil {
 		slog.Warn("intelligence_test_finalization_failed", "stage", "result_write", "group_id", completion.groupID, "mode", completion.mode, "result_id", completion.id)
 	}
-	leaseErr := s.releaseIntelligenceTestLease(completion.groupID, completion.mode, completion.id)
+	var leaseErr error
+	if writeErr != nil {
+		// No final record was confirmed. Make this original pair due again rather
+		// than waiting a normal success interval after a persistence failure.
+		leaseErr = s.requeueIntelligenceTestLease(completion.groupID, completion.mode, completion.id)
+	} else {
+		leaseErr = s.releaseIntelligenceTestLease(completion.groupID, completion.mode, completion.id)
+	}
 	if leaseErr != nil {
 		slog.Warn("intelligence_test_finalization_failed", "stage", "lease_release", "group_id", completion.groupID, "mode", completion.mode, "result_id", completion.id)
 	}
@@ -44,12 +51,42 @@ func (s *IntelligenceTestService) finalizeIntelligenceTestResult(completion inte
 // Zero affected rows are harmless: a save may have removed the result, or a
 // newer owner may already hold this pair. Never clear a different active ID.
 func (s *IntelligenceTestService) releaseIntelligenceTestLease(groupID int64, mode string, resultID int64) error {
+	return s.releaseIntelligenceTestLeaseWithRequeue(groupID, mode, resultID, false)
+}
+
+func (s *IntelligenceTestService) requeueIntelligenceTestLease(groupID int64, mode string, resultID int64) error {
+	return s.releaseIntelligenceTestLeaseWithRequeue(groupID, mode, resultID, true)
+}
+
+// Cancelled or interrupted attempts are not failures shown to users. Delete only
+// this unfinished row; neither a completed result nor a newer owner's lease is
+// removed. A future attempt always receives a new result ID and a new fence.
+func (s *IntelligenceTestService) abandonIntelligenceTestResult(groupID int64, mode string, resultID int64) error {
+	leaseErr := s.requeueIntelligenceTestLease(groupID, mode, resultID)
+	if leaseErr != nil {
+		slog.Warn("intelligence_test_finalization_failed", "stage", "pending_abandon", "group_id", groupID, "mode", mode, "result_id", resultID)
+	}
+	return leaseErr
+}
+
+func (s *IntelligenceTestService) releaseIntelligenceTestLeaseWithRequeue(groupID int64, mode string, resultID int64, requeue bool) error {
 	ctx, cancel := context.WithTimeout(context.Background(), intelligenceTestLeaseReleaseTimeout)
 	defer cancel()
+	query := `UPDATE pk_intelligence_test_state SET lease_until=NULL,active_result_id=NULL WHERE group_id=$1 AND mode=$2 AND active_result_id=$3`
+	if requeue {
+		// Delete and release together. A connection error cannot leave a deleted
+		// pending row while its old long-interval schedule remains stranded. The
+		// statement snapshot also preserves a confirmed terminal record/interval.
+		query = `WITH discarded AS (
+			DELETE FROM pk_intelligence_test_results WHERE id=$3 AND group_id=$1 AND mode=$2 AND status='running' RETURNING id
+		) UPDATE pk_intelligence_test_state s SET
+			next_run_at=CASE WHEN EXISTS (SELECT 1 FROM pk_intelligence_test_results r WHERE r.id=$3 AND r.group_id=$1 AND r.mode=$2 AND r.status IN ('completed','failed')) THEN s.next_run_at ELSE NOW() END,
+			lease_until=NULL,active_result_id=NULL WHERE s.group_id=$1 AND s.mode=$2 AND s.active_result_id=$3`
+	}
 	var lastErr error
 	for attempt := 0; attempt < intelligenceTestLeaseReleaseAttempts; attempt++ {
 		attemptCtx, attemptCancel := context.WithTimeout(ctx, intelligenceTestLeaseReleaseAttemptTimeout)
-		_, lastErr = s.db.ExecContext(attemptCtx, `UPDATE pk_intelligence_test_state SET lease_until=NULL,active_result_id=NULL WHERE group_id=$1 AND mode=$2 AND active_result_id=$3`, groupID, mode, resultID)
+		_, lastErr = s.db.ExecContext(attemptCtx, query, groupID, mode, resultID)
 		attemptCancel()
 		if lastErr == nil {
 			return nil
