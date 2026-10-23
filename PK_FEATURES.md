@@ -582,6 +582,7 @@
 - 入口：`backend/internal/service/intelligence_test_*.go`、`backend/internal/handler/intelligence_test_handler.go`、用户/管理员routes、两类API Key鉴权中间件、Key DTO和编辑保护、`backend/migrations/{248_intelligence_tests,249_intelligence_test_details}.sql`、`backend/internal/service/wire.go`及`backend/cmd/server/{wire,wire_gen}.go`；前端 `api/intelligenceTest.ts`、`stores/intelligenceTest.ts`、`views/user/IntelligenceTestView.vue`、`components/intelligenceTest/`、菜单/路由和中英文文案。
 - pk.5 验证与边界：用户要求测试后，最后明确改为服务器隔离测试（此前本机前端检查结果单独记录），执行后清理新建临时测试文件；实际范围/结果见交接记录，不把局部源码检查称为完整或生产运行时通过。未连接生产、未实际消耗模型Token；Jenkins发行构建与同制品十一项验收仍由用户触发。分组须具有可用模型和本站Responses兼容能力；原有仅SystemOne平台限制不被绕过。完整范围与静态依据见 [智商测试交接记录](docs/PK_INTELLIGENCE_TEST_REVIEW.md)。
 - pk.9验证：服务器独立DinD内预检和完整九套件全部通过，额外unit/integration竞态回归通过，覆盖SIGTERM清理、4组双类型并发、Stop取消、保存代次及真实PostgreSQL租约隔离/写入失败；测试树与原报告SHA256见同一交接记录。本次3个临时测试文件测完删除，原有测试保留；删除后生产实现与测试树完全一致，不将含临时测试的报告绑定为不同最终tree的notes。本机未运行测试/构建，生产仅只读排查，Jenkins制品验收另行执行。
+- pk.10交接：2026-10-23按用户明确要求递增版本并重推分支，完整继承pk.9业务实现及所有有效二开；只同步版本交接文档，不新增功能、配置、迁移或测试。既有服务器证据保持原tree归属，本轮不重新执行测试/构建；正式标签为`v0.2.17-pk.10`，旧标签保持，用户自行启动Jenkins正式发行后再网页更新。
 
 ## 验证入口与现有边界
 
