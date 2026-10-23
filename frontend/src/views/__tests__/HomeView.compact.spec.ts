@@ -49,6 +49,7 @@ function mountHome(settings: Record<string, unknown> = {}) {
       stubs: {
         RouterLink: RouterLinkStub,
         LocaleSwitcher: { template: '<div data-testid="locale-switcher" />' },
+        HomeIntelligenceResults: { template: '<div />' },
         Icon: { template: '<span data-testid="icon" />' },
       },
     },

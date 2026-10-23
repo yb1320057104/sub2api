@@ -17,7 +17,11 @@ import { useI18n } from 'vue-i18n'
 import { intelligenceTestAPI } from '@/api/intelligenceTest'
 import ArtifactPreview from './ArtifactPreview.vue'
 
-const props = defineProps<{ groupId: number; resultId: number }>()
+const props = defineProps<{
+  groupId: number
+  resultId: number
+  loadArtifact?: (groupId: number, resultId: number, signal?: AbortSignal) => Promise<{ artifact: string }>
+}>()
 const { t } = useI18n()
 const container = ref<HTMLElement | null>(null)
 const artifact = ref('')
@@ -34,7 +38,7 @@ async function load() {
   const controller = new AbortController()
   request = controller
   try {
-    const response = await intelligenceTestAPI.artifact(props.groupId, props.resultId, controller.signal)
+    const response = await (props.loadArtifact ?? intelligenceTestAPI.artifact)(props.groupId, props.resultId, controller.signal)
     if (disposed || controller.signal.aborted) return
     artifact.value = response.artifact
     if (!artifact.value) failed.value = true

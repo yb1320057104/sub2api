@@ -1,6 +1,7 @@
 <template>
   <AppLayout>
     <div class="space-y-6">
+      <SiteContact section-id="dashboard-contact" />
       <div v-if="loading" class="flex items-center justify-center py-12"><LoadingSpinner /></div>
       <template v-else-if="stats">
         <UserDashboardStats :stats="stats" :balance="user?.balance || 0" :is-simple="authStore.isSimpleMode" :platform-quotas="platformQuotas" />
@@ -10,6 +11,7 @@
           <div class="lg:col-span-1"><UserDashboardQuickActions /></div>
         </div>
       </template>
+      <HomeIntelligenceResults />
     </div>
   </AppLayout>
 </template>
@@ -22,6 +24,8 @@ import UserDashboardRecentUsage from '@/components/user/dashboard/UserDashboardR
 import type { UsageLog, TrendDataPoint, ModelStat, PlatformQuotaItem } from '@/types'
 import { getMyPlatformQuotas } from '@/api/user'
 import { formatDateLocalInput } from '@/utils/format'
+import SiteContact from '@/components/common/SiteContact.vue'
+import HomeIntelligenceResults from '@/components/home/HomeIntelligenceResults.vue'
 
 const authStore = useAuthStore(); const user = computed(() => authStore.user)
 const stats = ref<UserStatsType | null>(null); const loading = ref(false); const loadingUsage = ref(false); const loadingCharts = ref(false)

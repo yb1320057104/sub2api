@@ -3,11 +3,17 @@
 package service
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"image"
+	"image/jpeg"
+	"image/png"
 	"math"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -15,6 +21,52 @@ import (
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/stretchr/testify/require"
 )
+
+func TestNormalizeContactQRCodeAcceptsRasterImagesAndClear(t *testing.T) {
+	for _, value := range []string{"", " \n\t "} {
+		got, err := normalizeContactQRCode(value)
+		require.NoError(t, err)
+		require.Empty(t, got)
+	}
+	for _, format := range []string{"png", "jpeg"} {
+		t.Run(format, func(t *testing.T) {
+			var encoded bytes.Buffer
+			src := image.NewRGBA(image.Rect(0, 0, 2, 2))
+			if format == "png" {
+				require.NoError(t, png.Encode(&encoded, src))
+			} else {
+				require.NoError(t, jpeg.Encode(&encoded, src, nil))
+			}
+			value := "data:image/" + format + ";base64," + base64.StdEncoding.EncodeToString(encoded.Bytes())
+			got, err := normalizeContactQRCode(value)
+			require.NoError(t, err)
+			require.Equal(t, value, got)
+		})
+	}
+}
+
+func TestNormalizeContactQRCodeRejectsUnsafeMalformedAndOversizeImages(t *testing.T) {
+	var small, wide bytes.Buffer
+	require.NoError(t, png.Encode(&small, image.NewRGBA(image.Rect(0, 0, 2, 2))))
+	require.NoError(t, png.Encode(&wide, image.NewRGBA(image.Rect(0, 0, maxContactQRCodeDimension+1, 1))))
+	for name, value := range map[string]string{
+		"remote URL":  "https://example.com/qr.png",
+		"SVG":         "data:image/svg+xml;base64," + base64.StdEncoding.EncodeToString([]byte("<svg/>")),
+		"wrong MIME":  "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(small.Bytes()),
+		"fake PNG":    "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte("<svg/>")),
+		"empty image": "data:image/png;base64,",
+		"bad base64":  "data:image/png;base64,%%%",
+		"header only": "data:image/png;base64," + base64.StdEncoding.EncodeToString(small.Bytes()[:33]),
+		"oversize":    "data:image/png;base64," + strings.Repeat("A", base64.StdEncoding.EncodedLen(maxContactQRCodeBytes)+4),
+		"too wide":    "data:image/png;base64," + base64.StdEncoding.EncodeToString(wide.Bytes()),
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := normalizeContactQRCode(value)
+			require.Error(t, err)
+			require.Empty(t, got)
+		})
+	}
+}
 
 type settingUpdateRepoStub struct {
 	updates        map[string]string

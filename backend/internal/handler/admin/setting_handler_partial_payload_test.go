@@ -3,7 +3,11 @@
 package admin
 
 import (
+	"bytes"
+	"encoding/base64"
 	"encoding/json"
+	"image"
+	"image/png"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -20,6 +24,50 @@ import (
 // `{"risk_control_enabled":true}` used to clear site_name, after which
 // getStringOrDefault rendered the empty value as the built-in default and the
 // login page silently changed name.
+
+func TestUpdateSettingsContactQRCodePartialPayloadAndClear(t *testing.T) {
+	var encoded bytes.Buffer
+	require.NoError(t, png.Encode(&encoded, image.NewRGBA(image.Rect(0, 0, 2, 2))))
+	qr := "data:image/png;base64," + base64.StdEncoding.EncodeToString(encoded.Bytes())
+	h, repo := newStepUpSwitchTestHandler(t, map[string]string{
+		service.SettingKeyContactInfo: "Existing support",
+	})
+	updated := doUpdateSettings(t, h, map[string]any{"contact_qr_code": qr}, nil)
+	require.Equal(t, http.StatusOK, updated.Code)
+	var response struct {
+		Data dto.SystemSettings `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(updated.Body.Bytes(), &response))
+	require.Equal(t, qr, response.Data.ContactQRCode)
+	require.Equal(t, "Existing support", response.Data.ContactInfo)
+	require.Equal(t, qr, repo.values[service.SettingKeyContactQRCode])
+
+	updated = doUpdateSettings(t, h, map[string]any{"contact_info": "New support"}, nil)
+	require.Equal(t, http.StatusOK, updated.Code)
+	require.NoError(t, json.Unmarshal(updated.Body.Bytes(), &response))
+	require.Equal(t, qr, response.Data.ContactQRCode)
+	require.Equal(t, "New support", response.Data.ContactInfo)
+
+	cleared := doUpdateSettings(t, h, map[string]any{"contact_qr_code": ""}, nil)
+	require.Equal(t, http.StatusOK, cleared.Code)
+	require.Empty(t, repo.values[service.SettingKeyContactQRCode])
+	require.Equal(t, "New support", repo.values[service.SettingKeyContactInfo])
+	require.Equal(t, []string{service.SettingKeyContactQRCode}, diffSettings(
+		&service.SystemSettings{ContactQRCode: qr}, &service.SystemSettings{}, nil, nil, UpdateSettingsRequest{},
+	))
+}
+
+func TestUpdateSettingsContactQRCodeRejectsInvalidValuesWithoutWriting(t *testing.T) {
+	for _, value := range []any{nil, true, 1, "https://example.com/qr.png", "data:image/svg+xml;base64,PHN2Zy8+", "data:image/png;base64,invalid"} {
+		h, repo := newStepUpSwitchTestHandler(t, map[string]string{
+			service.SettingKeyContactInfo: "Existing support",
+		})
+		updated := doUpdateSettings(t, h, map[string]any{"contact_info": "Changed", "contact_qr_code": value}, nil)
+		require.Equal(t, http.StatusBadRequest, updated.Code)
+		require.Equal(t, "Existing support", repo.values[service.SettingKeyContactInfo])
+		require.NotContains(t, repo.values, service.SettingKeyContactQRCode)
+	}
+}
 
 func TestUpdateSettingsEarlyHeartbeatPartialPayloadAndResponse(t *testing.T) {
 	h, repo := newStepUpSwitchTestHandler(t, map[string]string{})

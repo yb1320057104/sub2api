@@ -84,6 +84,7 @@ const props = withDefaults(defineProps<{
   removeLabel?: string
   hint?: string
   maxSize?: number // bytes
+  acceptedImageTypes?: string[]
 }>(), {
   mode: 'image',
   size: 'md',
@@ -110,7 +111,7 @@ function removeImage() {
 const resolvedUploadLabel = computed(() => props.uploadLabel || t('common.upload'))
 const resolvedRemoveLabel = computed(() => props.removeLabel || t('common.remove'))
 
-const acceptTypes = computed(() => props.mode === 'svg' ? '.svg' : 'image/*')
+const acceptTypes = computed(() => props.mode === 'svg' ? '.svg' : props.acceptedImageTypes?.join(',') || 'image/*')
 
 const sanitizedValue = computed(() =>
   props.mode === 'svg' ? sanitizeSvg(props.modelValue ?? '') : ''
@@ -145,7 +146,7 @@ function handleUpload(event: Event) {
     }
     reader.readAsText(file)
   } else {
-    if (!file.type.startsWith('image/')) {
+    if (!file.type.startsWith('image/') || (props.acceptedImageTypes?.length && !props.acceptedImageTypes.includes(file.type))) {
       error.value = t('common.selectImageFile')
       input.value = ''
       return

@@ -6760,23 +6760,40 @@
                 </button>
               </div>
 
-              <!-- Contact Info -->
-              <div>
-                <label
-                  class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300"
-                >
-                  {{ t("admin.settings.site.contactInfo") }}
-                </label>
-                <input
-                  v-model="form.contact_info"
-                  type="text"
-                  class="input"
-                  :placeholder="t('admin.settings.site.contactInfoPlaceholder')"
-                />
-                <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
-                  {{ t("admin.settings.site.contactInfoHint") }}
-                </p>
-              </div>
+              <!-- Contact settings -->
+              <fieldset class="space-y-5 rounded-xl border border-gray-200 p-4 dark:border-dark-700">
+                <legend class="px-2 text-sm font-semibold text-gray-900 dark:text-white">{{ t("admin.settings.site.contactSettings") }}</legend>
+                <div>
+                  <label
+                    for="contact-info"
+                    class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300"
+                  >
+                    {{ t("admin.settings.site.contactInfo") }}
+                  </label>
+                  <input
+                    id="contact-info"
+                    v-model="form.contact_info"
+                    type="text"
+                    class="input"
+                    :placeholder="t('admin.settings.site.contactInfoPlaceholder')"
+                  />
+                  <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                    {{ t("admin.settings.site.contactInfoHint") }}
+                  </p>
+                </div>
+                <div>
+                  <p class="mb-2 text-sm font-medium text-gray-700 dark:text-gray-300">{{ t("admin.settings.site.contactQRCode") }}</p>
+                  <ImageUpload
+                    v-model="form.contact_qr_code"
+                    mode="image"
+                    :upload-label="t('admin.settings.site.uploadContactQRCode')"
+                    :remove-label="t('admin.settings.site.remove')"
+                    :hint="t('admin.settings.site.contactQRCodeHint')"
+                    :max-size="2 * 1024 * 1024"
+                    :accepted-image-types="['image/png', 'image/jpeg', 'image/webp']"
+                  />
+                </div>
+              </fieldset>
 
               <!-- Doc URL -->
               <div>
@@ -9778,6 +9795,7 @@ type SettingsForm = Omit<
   | "wechat_connect_mobile_enabled"
   | "openai_oauth_scheduling_rate_multiplier"
 > & {
+  contact_qr_code: string;
   /** Form always binds a concrete boolean (SystemSettings marks this optional). */
   channel_monitor_hide_throughput: boolean;
   channel_monitor_show_quota: boolean;
@@ -9872,6 +9890,7 @@ const form = reactive<SettingsForm>({
   site_subtitle: "Subscription to API Conversion Platform",
   api_base_url: "",
   contact_info: "",
+  contact_qr_code: "",
   doc_url: "",
   home_content: "",
   compact_home_enabled: false,
@@ -11623,6 +11642,7 @@ async function saveSettings() {
       site_subtitle: form.site_subtitle,
       api_base_url: form.api_base_url,
       contact_info: form.contact_info,
+      contact_qr_code: form.contact_qr_code,
       doc_url: form.doc_url,
       home_content: form.home_content,
       compact_home_enabled: form.compact_home_enabled,

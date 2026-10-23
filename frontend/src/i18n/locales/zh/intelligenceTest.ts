@@ -2,6 +2,9 @@ export default {
   intelligenceTest: {
     title: '智商测试',
     description: '查看各分组最近的 SVG 作品与糖果题测试结果。',
+    homeEyebrow: '模型实测',
+    homeDescription: '看看模型的真实表现：SVG 作品与糖果题结果，随定时测试持续更新。',
+    homeLatest: '最近 {count} 条已完成测试',
     svg: 'SVG',
     candy: '糖果题',
     modeLabel: '测试类型',
@@ -40,7 +43,7 @@ export default {
     settings: '管理配置',
     hideSettings: '收起配置',
     schedule: '定时测试',
-    scheduleHint: '开启后按配置定时测试，并向用户显示智商测试菜单；关闭后停止测试并隐藏菜单。',
+    scheduleHint: '开启后按配置定时测试，向用户显示智商测试菜单，并在公开首页和用户仪表盘展示已完成结果；关闭后停止测试并隐藏这些入口和结果。',
     enabled: '已开启',
     disabled: '已关闭',
     disabledHint: '定时测试已关闭，普通用户看不到此菜单。管理员仍可配置并查看历史结果。',

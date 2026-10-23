@@ -15,6 +15,27 @@ type settingPublicRepoStub struct {
 	err    error
 }
 
+func TestSettingService_PublicContactConfigurationAndInjection(t *testing.T) {
+	for _, configured := range []bool{false, true} {
+		values := map[string]string{}
+		if configured {
+			values[SettingKeyContactInfo] = "Team support"
+			values[SettingKeyContactQRCode] = "data:image/png;base64,stored-image"
+		}
+		svc := NewSettingService(&settingPublicRepoStub{values: values}, &config.Config{})
+		public, err := svc.GetPublicSettings(context.Background())
+		require.NoError(t, err)
+		require.Equal(t, values[SettingKeyContactInfo], public.ContactInfo)
+		require.Equal(t, values[SettingKeyContactQRCode], public.ContactQRCode)
+		raw, err := svc.GetPublicSettingsForInjection(context.Background())
+		require.NoError(t, err)
+		injected, ok := raw.(*PublicSettingsInjectionPayload)
+		require.True(t, ok)
+		require.Equal(t, public.ContactInfo, injected.ContactInfo)
+		require.Equal(t, public.ContactQRCode, injected.ContactQRCode)
+	}
+}
+
 func (s *settingPublicRepoStub) Get(ctx context.Context, key string) (*Setting, error) {
 	panic("unexpected Get call")
 }

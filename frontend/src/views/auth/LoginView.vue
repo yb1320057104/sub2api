@@ -200,6 +200,7 @@
           />
         </div>
       </form>
+      <SiteContact compact section-id="login-contact" />
     </div>
 
     <!-- Footer -->
@@ -232,6 +233,7 @@ import { computed, ref, reactive, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import LoginLayout from '@/components/layout/LoginLayout.vue'
+import SiteContact from '@/components/common/SiteContact.vue'
 import LinuxDoOAuthSection from '@/components/auth/LinuxDoOAuthSection.vue'
 import DingTalkOAuthSection from '@/components/auth/DingTalkOAuthSection.vue'
 import OidcOAuthSection from '@/components/auth/OidcOAuthSection.vue'

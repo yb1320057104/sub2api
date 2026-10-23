@@ -1,6 +1,10 @@
 <template>
   <!-- Custom Home Content: Full Page Mode -->
   <div v-if="hasHomeContent" class="min-h-screen">
+    <nav v-if="showIntelligenceAnchor || hasContact" class="home-custom-links" :aria-label="t('home.redesign.home')">
+      <a v-if="showIntelligenceAnchor" href="#home-intelligence-test" class="home-nav-link" @click="scrollToSection($event, 'home-intelligence-test')">{{ t('intelligenceTest.title') }}</a>
+      <a v-if="hasContact" href="#home-contact" class="home-contact-link" @click="scrollToSection($event, 'home-contact')">{{ t('common.contactSection') }}</a>
+    </nav>
     <!-- iframe mode -->
     <iframe
       v-if="isHomeContentUrl"
@@ -10,6 +14,10 @@
     ></iframe>
     <!-- HTML mode - SECURITY: homeContent is admin-only setting, XSS risk is acceptable -->
     <div v-else v-html="homeContent"></div>
+    <div class="home-container">
+      <HomeIntelligenceResults class="home-extra-section" @visibility-change="showIntelligenceAnchor = $event" />
+      <SiteContact class="home-extra-section" section-id="home-contact" />
+    </div>
   </div>
 
   <!-- Compact Home Page -->
@@ -29,6 +37,8 @@
           <span class="min-w-0 truncate text-base font-semibold">{{ siteName }}</span>
         </div>
         <div class="flex max-w-full shrink-0 flex-wrap items-center justify-end gap-2">
+          <a v-if="showIntelligenceAnchor" href="#home-intelligence-test" class="home-nav-link" @click="scrollToSection($event, 'home-intelligence-test')">{{ t('intelligenceTest.title') }}</a>
+          <a v-if="hasContact" href="#home-contact" class="home-contact-link" @click="scrollToSection($event, 'home-contact')">{{ t('common.contactSection') }}</a>
           <LocaleSwitcher />
           <a
             v-if="docUrl"
@@ -85,6 +95,11 @@
       </div>
     </main>
 
+    <div class="mx-auto w-full max-w-5xl px-4 sm:px-6">
+      <HomeIntelligenceResults class="home-extra-section" @visibility-change="showIntelligenceAnchor = $event" />
+      <SiteContact class="home-extra-section" section-id="home-contact" />
+    </div>
+
     <footer class="min-w-0 border-t border-gray-200 px-4 py-5 text-center text-sm text-gray-500 [overflow-wrap:anywhere] sm:px-6 dark:border-dark-800 dark:text-dark-400">
       &copy; {{ currentYear }} {{ siteName }}
     </footer>
@@ -106,6 +121,8 @@
           <router-link v-if="showModelPlazaEntry" to="/model-plaza" class="home-nav-link">
             {{ t('nav.modelPlaza') }}
           </router-link>
+          <a v-if="showIntelligenceAnchor" href="#home-intelligence-test" class="home-nav-link" @click="scrollToSection($event, 'home-intelligence-test')">{{ t('intelligenceTest.title') }}</a>
+          <a v-if="hasContact" href="#home-contact" class="home-contact-link" @click="scrollToSection($event, 'home-contact')">{{ t('common.contactSection') }}</a>
           <a v-if="docUrl" :href="docUrl" target="_blank" rel="noopener noreferrer" class="home-nav-link">
             {{ t('home.redesign.docs') }}
           </a>
@@ -192,6 +209,8 @@
             </div>
           </article>
         </section>
+        <HomeIntelligenceResults class="home-extra-section" @visibility-change="showIntelligenceAnchor = $event" />
+        <SiteContact class="home-extra-section" section-id="home-contact" />
       </div>
     </main>
 
@@ -215,6 +234,9 @@ import { useAuthStore, useAppStore } from '@/stores'
 import LocaleSwitcher from '@/components/common/LocaleSwitcher.vue'
 import Icon from '@/components/icons/Icon.vue'
 import HomeGatewayVisual from '@/components/home/HomeGatewayVisual.vue'
+import HomeIntelligenceResults from '@/components/home/HomeIntelligenceResults.vue'
+import SiteContact from '@/components/common/SiteContact.vue'
+import { useSiteContact } from '@/composables/useSiteContact'
 import { sanitizeUrl } from '@/utils/url'
 import { resolveSiteName } from '@/utils/branding'
 import { FeatureFlags, isFeatureFlagEnabled } from '@/utils/featureFlags'
@@ -223,6 +245,19 @@ const { t } = useI18n()
 
 const authStore = useAuthStore()
 const appStore = useAppStore()
+const { hasContact } = useSiteContact()
+const showIntelligenceAnchor = ref(false)
+
+function scrollToSection(event: MouseEvent, id: string) {
+  const section = document.getElementById(id)
+  if (!section) return
+  event.preventDefault()
+  section.scrollIntoView({
+    behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+    block: 'start',
+  })
+  section.focus({ preventScroll: true })
+}
 
 // Site settings - directly from appStore (already initialized from injected config)
 const siteName = computed(() => resolveSiteName(appStore.cachedPublicSettings?.site_name || appStore.siteName))
@@ -295,6 +330,14 @@ onMounted(() => {
 })
 </script>
 <style scoped>
+.home-extra-section { margin-block: clamp(2.5rem, 5vw, 4.5rem); }
+.home-custom-links {
+  @apply flex flex-wrap items-center justify-center gap-5 border-b border-primary-100 bg-white px-4 py-4 dark:border-dark-800 dark:bg-dark-950;
+}
+.home-contact-link {
+  @apply inline-flex shrink-0 items-center justify-center rounded-full bg-primary-100 px-4 py-2 text-sm font-semibold text-primary-700 transition-colors hover:bg-primary-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500 motion-reduce:transition-none dark:bg-primary-900 dark:text-primary-200 dark:hover:bg-primary-800;
+  white-space: nowrap;
+}
 .default-home {
   @apply flex min-h-screen flex-col bg-white text-gray-900 dark:bg-dark-950 dark:text-white;
 }
@@ -564,11 +607,16 @@ onMounted(() => {
 
 @media (max-width: 1100px) {
   .home-header-inner {
-    gap: 1.75rem;
+    flex-wrap: wrap;
+    gap: 1rem 1.75rem;
+    padding-block: 1rem;
   }
 
   .home-navigation {
-    gap: 1.5rem;
+    order: 3;
+    width: 100%;
+    flex-wrap: wrap;
+    gap: 0.25rem 1.5rem;
   }
 
   .home-header-actions {

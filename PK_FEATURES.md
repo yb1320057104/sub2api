@@ -9,7 +9,7 @@
 - 2026-10-02 合并上游 `v0.2.12`（commit `5106065716e494204fc0e8db16f68f6e9d576be0`，tag 对象 `cbe9966432317e6757b47f598a103d2132ec27db`），合并前私库为 `162a58972bee08078a43eefa761da1b245f667fa`。逐项核对见 [0.2.12 合并记录](docs/PK_UPSTREAM_0.2.12_REVIEW.md)，正式发布目标为 `v0.2.12-pk.1`；发布与线上更新分别记录。
 - 2026-10-02 合并上游 `v0.2.11`（commit `96f4c115c9749078f90cbf210a01d39baf3f53b6`），合并前私库为 `32f068dcbdc75063ff7f6488aef6c85912d7bf3f`。逐项核对及本次验证见 [合并记录](docs/PK_UPSTREAM_0.2.11_REVIEW.md)；合并源码不代表已发布或更新线上。
 - 本次清点覆盖从该上游基线到私库 `23e5fe663338c86cd0cebbf2f688c8a75dd8c152` 的全部二开提交；应用发行参照 `v0.2.10-pk.7`，另登记本次新增的项目约束机制。此处是代码核对基线，不代表线上当前版本。
-- 以下 PK-001 至 PK-028 及 PK-031、PK-032 均为有效保护项；PK-029、PK-030 已按用户授权移除，保留原 ID 与回退记录，不得复用。文件路径用于定位，不是完整修改白名单；所有新调用入口、迁移和旁路都要检查。
+- 以下 PK-001 至 PK-028 及 PK-031 至 PK-033 均为有效保护项；PK-029、PK-030 已按用户授权移除，保留原 ID 与回退记录，不得复用。文件路径用于定位，不是完整修改白名单；所有新调用入口、迁移和旁路都要检查。
 - 每项说明“必须保持”的行为。文末另列验证入口与已知边界；测试存在、历史验证通过和本次候选通过是三件不同的事。
 - 2026-10-21 用户最新要求取代 2026-10-08/19 的源码测试及 notes 前置门禁：核对二开保护和变更后直接提交、合入私库 main 并推送不带 `origin/` 的正式版本标签，交给用户点击 Jenkins `ACTION=release`。不再默认运行完整源码测试，不要求源码验证 notes；Jenkins 继续执行构建、同制品运行时验收和私库发布，不使用 GitHub Actions。可选测试如实记录，未执行不能声称通过。下文历史门禁仅说明当时状态，现行规则以 PK-017 为准。
 
@@ -54,6 +54,7 @@
 | PK-030 | 原始 Token 趋势统计 | 已授权移除；恢复 pk.1 趋势口径，保留历史数据 |
 | PK-031 | DP API 品牌与柔蓝主题 | 渐变标志、统一名称、胶囊导航、移除友链，保留权限、响应式与深色模式 |
 | PK-032 | 服务端定时智商测试 | 全分组/类型并发、失败自动重试、保存清空重启、当次模型/强度、糖果文案/回复、每行6张、专用 Key 轮换、回环调用、最近30条 |
+| PK-033 | 联系方式配置与展示 | 文字/二维码独立可选、上传校验、首页/登录/用户仪表盘、条件锚点及醒目展示 |
 
 ## PK-001
 
@@ -550,12 +551,19 @@
 - `-version` 输出品牌更新为 DP API；PK-017 的 `deploy/jenkins/verify-runtime.py` 同时识别新品牌与历史 Sub2API 输出，仍严格匹配版本、完整 commit 与构建字段，不放宽制品/来源校验。既有 `test_release_matrix.py` 增加两种品牌与错误版本/提交/名称的回归，随 `release-helpers` 源码套件执行。
 - 主要代码入口：`frontend/tailwind.config.js`、`frontend/src/style.css`、`frontend/src/components/layout/AppLayout.vue`、`AppHeader.vue`、`AppSidebar.vue`。公共选择器 `frontend/src/components/common/Select.vue`、`DateRangePicker.vue` 以及复用公共样式的用户/管理员页面属于联动检查范围；筛选值、事件、键盘操作与弹层定位保持原有语义。展开侧栏为16rem（默认256px），主区与 `features/prompt-audit/PromptAuditView.vue` 固定保存栏共用布局宽度变量，折叠时同步至72px，避免遮挡配置开关；原 `PromptAuditView.spec.ts` 纳入关键回归列表。
 - 2026-10-24 用户反馈左侧菜单过宽并要求恢复原宽度、无需测试直接提交，目标 `v0.2.17-pk.13`。沿用 PK-031，无新增 ID；依据品牌改版提交 `b99ca3ab9` 的父版本，将 `AppSidebar.vue` 与 `style.css` 从280px恢复为原 `w-64`（16rem），`AppLayout.vue` 的共享宽度变量同步为16rem。静态核对展开/72px折叠、主内容区及提示词审计固定保存栏的间距联动；菜单权限、功能开关、品牌样式及移动端开关保持原实现。按本次要求未运行测试或构建、未生成测试文件，不将历史回归结果作为本轮通过证据。
+- 同日pk.14按用户追加要求扩展首页导航及首页/登录/用户仪表盘展示，详见PK-032和PK-033；原首页三种模式、登录认证流程、仪表盘统计和256px侧栏保持，导航在中屏提前换行以容纳两个新锚点。仅静态核对，不冒称浏览器视觉验收通过。
 - 现有回归入口：`frontend/src/components/layout/__tests__/AppSidebar.spec.ts` 检查排行榜菜单、订阅开关、折叠组、滚动位置、自定义图标和版本弹层不被裁剪；`frontend/src/components/user/dashboard/__tests__/UserDashboardStats.spec.ts` 检查平台统计卡片及简易模式。二者继续保留在 `Makefile` 的 `FRONTEND_CRITICAL_VITEST` 中；本次将管理员 `frontend/src/views/admin/__tests__/DashboardView.spec.ts`、公共选择器原有 `Select*.spec.ts`、`DateRangePicker*.spec.ts` 和 `disabledSelectors.spec.ts` 一并纳入，保护筛选、键盘、输入法、禁用态与日期边界。实际结果仍须核对当次源码套件原始日志，不能仅因列入清单即声称通过。
 - 验证计划与边界：按 PK-017 在用户指定测试服务器隔离环境运行完整九套件及 preflight，提交相同 tree 后绑定最终 commit 的原报告及 notes；本条登记时尚未以本次报告确认通过，不沿用历史测试结果。补充核对用户/管理员、浅色/深色、桌面展开/72px 折叠/移动端，以及筛选、卡片、菜单和版本弹层；现有源码断言和 jsdom 交互用例不能代替真实浏览器视觉验收，实际结果与未覆盖范围另随交付说明记录。发行构建仍只在 Jenkins，新增临时测试文件在验证后清理。
 - 邮件品牌入口还包括 `content_moderation.go` 的内容审计通知、`user_service.go` 的通知邮箱验证码，以及 `auth_email_binding.go`、`auth_oauth_email_flow.go`、`auth_service.go` 的绑定/注册/OAuth验证码与密码重置：默认值统一复用 `defaultSiteName`，直接读库的名称走同一兼容规则；保留通知流程、权限、收件人、验证码、SMTP发件名与原有去空白规则。
 - 名称兼容回归扩展于原有 `setting_service_public_test.go`、`setting_service_update_test.go`、`backend/internal/server/api_contract_test.go`、`frontend/src/utils/__tests__/branding.spec.ts`、`stores/__tests__/app.spec.ts` 与 `router/__tests__/title.spec.ts`：核对默认/旧内置名、非默认自定义名、公开/管理员/邮件及内容审计通知读取一致、读取不写库，以及前端注入/请求/缓存与标题一致；API契约保留旧内置名输入并验证新默认名输出。名称需求追加后，先前源码结果不代表最终树通过，须重新执行完整验证。
 
 ## PK-032
+
+2026-10-24 `v0.2.17-pk.14` 按用户要求将已有结果展示到公开首页 `/home`，并追加到登录后的用户仪表盘 `/dashboard`；沿用本 ID，不改变生成任务。首页顶部“智商测试”锚点随实际展示内容出现，点击滚动并聚焦结果区；无配置、关闭、无已选有效分组或无已完成结果时，整个区块和锚点隐藏。SVG/糖果类型与分组切换展示最近最多30条真实完成结果、当次模型/强度、时间与耗时，糖果答错仍显示不合格，不展示失败卡片或虚构数据。
+
+- 新增独立只读 `/api/v1/public/intelligence-test/{groups,results,artifact,details}`，用于用户明确授权的公开展示；原登录/管理员接口权限保持原样。每次请求直读数据库总开关和类型开关，并在结果查询中匹配同一配置原值、当前分组选择映射及有效分组，避免保存/关闭并发时沿用旧配置。只返回 `completed`，作品和详情同时核对原分组/结果ID和类型，未开放或不存在返回空列表/404；不返回凭证、Key状态、管理员诊断、原始模型流或后台配置，不提供执行模型的公开入口。
+- 公开组列表最多2000组，仅包含有已完成结果的启用类型及分组；单组单类型最多30条。响应 `no-store`，读取预算5秒，保留公开面板限流并增加独立每IP每分钟240次上限，Redis限流不可用时拒绝读取；单作品、提示词和回复继续受原有数据库长度边界保护。首页与用户仪表盘复用 `HomeIntelligenceResults.vue`，独立公共API不携带Bearer凭证、不进行登录刷新或重定向；60秒刷新当前类型/分组，页面隐藏暂停，切换、清空和卸载取消旧请求。SVG继续使用原净化、严格CSP、无脚本/无同源sandbox，糖果详情继续转义展示。
+- 本轮入口：`backend/internal/service/intelligence_test_public.go`、`handler/intelligence_test_public_handler.go`、`server/routes/intelligence_test_public.go`及router；`frontend/src/api/publicIntelligenceTest.ts`、`components/home/HomeIntelligenceResults.vue`、`HomeView.vue`与`views/user/DashboardView.vue`。原ResultArtifact/ResultDetails仅增加可选读取函数，默认仍使用登录接口；调度、无限重试、租约、测试Key、计费和迁移未变。本轮仅静态核对，未运行测试/构建，历史pk.12动态结果仍只证明原范围。
 
 **服务端定时智商测试。** 状态：有效。引入依据：2026-10-23 用户要求参考本机“鹈鹕测试”，在本站新增 SVG/糖果题菜单；追加总开关、管理员账户生成测试 Key，以及每次一键更新全部撤销旧测试 Key 后重建。目标版本 `v0.2.17-pk.5`。
 
@@ -582,11 +590,22 @@
 - SQL任务状态与租约防多实例重复执行，同组同类型不重叠；所有到期的已选分组/已启用类型并发启动，并发任务数按实际分组数动态计算：N组双类型为2N项，关闭一项时为N项，不写死为8个。智商测试调度器或HTTP客户端不再两项一批。调度扫描独立于模型完成，不因其它慢任务阻塞已到期任务；每项正常成功仍按自身间隔运行，每次请求5分钟超时。停止/关闭/重配取消旧任务和退避等待，跨实例每5秒检查配置和Key轮换。取消或失去租约时清理未完成记录并只按自身ID释放/重新到期；进程异常仍保留原6分钟安全租约，过期后清理未完成记录，以新ID重新领取，不能复用失联worker的旧ID而破坏fence。旧failed历史仅从列表隐藏，不改写为成功。网关已有账户/通道并发与限额继续按正常请求生效。
 - pk.9任务HTTP结束后，结果写入与租约释放分开处理：总收尾预算仍为5秒，结果写入最多2秒，释放使用独立最多3秒上下文并有界重试；只按分组、类型及原`active_result_id`释放，不能误清新任务。结果已被保存清空或结果写入失败也执行释放；数据库持续不可用时保留租约自然到期，不伪造释放成功。正常网页重启应先取消/等待这些收尾再退出；强制杀进程、断电或持续数据库故障仍受原租约到期保护。
 - 每个功能每个分组最多30条完整结果，插入时同事务删除更旧记录；删组后清理对应结果与调度状态。单作品/最终助手回复最多256KiB，单响应最多4MiB，不保存推理事件或原始流。糖果题在领取任务时保存当次完整提示词快照（最多100000字节），仅在完成时保存最终助手回复；原有合格判定保留。迁移249仅新增有默认值的详情列及长度/终态约束，不修改旧迁移；历史记录缺失的文案、回复与原因明确显示不可还原，不能用当前配置冒充当次题目。原有网关计费与审计记录遵守原保留策略，不因测试结果轮换或配置保存删除账务证据。
-- 列表只返回结果元数据，作品和详情通过带登录、功能门控及既有管理面限流的只读JSON接口按需读取；前端仅缓存当前最近30条，切组/类型或保存清空时释放并取消在途读取。错误保存固定分类与最多2048字节的脱敏说明；HTTP仅提取最多32KiB JSON中的指定message字段，不保存原始响应体/请求头，详细说明仅管理员可读。SVG/HTML先净化再放入无脚本、无同源权限的iframe和严格CSP，支持SVG/CSS动画，不执行JavaScript或外部资源。糖果文字采用转义插值，不作为HTML执行。管理员提示词应使用可在该预览方式中展示的作品格式。
+- 原控制台列表只返回结果元数据，作品和详情继续通过带登录、功能门控及既有管理面限流的只读JSON接口按需读取；pk.14新增的公开展示使用本节单独登记的只读接口，不取消原接口鉴权。前端仅缓存当前最近30条，切组/类型或保存清空时释放并取消在途读取。错误保存固定分类与最多2048字节的脱敏说明；HTTP仅提取最多32KiB JSON中的指定message字段，不保存原始响应体/请求头，详细说明仅管理员可读。SVG/HTML先净化再放入无脚本、无同源权限的iframe和严格CSP，支持SVG/CSS动画，不执行JavaScript或外部资源。糖果文字采用转义插值，不作为HTML执行。管理员提示词应使用可在该预览方式中展示的作品格式。
 - 入口：`backend/internal/service/intelligence_test_*.go`、`backend/internal/handler/intelligence_test_handler.go`、用户/管理员routes、两类API Key鉴权中间件、Key DTO和编辑保护、`backend/migrations/{248_intelligence_tests,249_intelligence_test_details,250_intelligence_test_request_metadata}.sql`、`backend/internal/service/wire.go`及`backend/cmd/server/{wire,wire_gen}.go`；前端 `api/intelligenceTest.ts`、`stores/intelligenceTest.ts`、`views/user/IntelligenceTestView.vue`、`components/intelligenceTest/`、菜单/路由和中英文文案。
 - pk.5 验证与边界：用户要求测试后，最后明确改为服务器隔离测试（此前本机前端检查结果单独记录），执行后清理新建临时测试文件；实际范围/结果见交接记录，不把局部源码检查称为完整或生产运行时通过。未连接生产、未实际消耗模型Token；Jenkins发行构建与同制品十一项验收仍由用户触发。分组须具有可用模型和本站Responses兼容能力；原有仅SystemOne平台限制不被绕过。完整范围与静态依据见 [智商测试交接记录](docs/PK_INTELLIGENCE_TEST_REVIEW.md)。
 - pk.9验证：服务器独立DinD内预检和完整九套件全部通过，额外unit/integration竞态回归通过，覆盖SIGTERM清理、4组双类型并发、Stop取消、保存代次及真实PostgreSQL租约隔离/写入失败；测试树与原报告SHA256见同一交接记录。本次3个临时测试文件测完删除，原有测试保留；删除后生产实现与测试树完全一致，不将含临时测试的报告绑定为不同最终tree的notes。本机未运行测试/构建，生产仅只读排查，Jenkins制品验收另行执行。
 - pk.10交接：2026-10-23按用户明确要求递增版本并重推分支，完整继承pk.9业务实现及所有有效二开；只同步版本交接文档，不新增功能、配置、迁移或测试。既有服务器证据保持原tree归属，本轮不重新执行测试/构建；正式标签为`v0.2.17-pk.10`，旧标签保持，用户自行启动Jenkins正式发行后再网页更新。
+
+## PK-033
+
+**联系方式配置与页面展示。** 状态：有效。引入：2026-10-24 `v0.2.17-pk.14`，用户要求系统设置增加联系文字input与二维码上传，在首页、登录页显示；追加首页顶部联系方式锚点、醒目展示和登录后用户仪表盘展示。
+
+- 系统设置站点区域增加“联系方式配置”，文字复用已有 `settings.contact_info`，保留兑换页、个人资料及顶栏原入口和历史值；二维码新增 `settings.contact_qr_code`，默认空，无需数据库迁移。两项独立可选，trim后无文字/无合法二维码则整个展示区和首页联系方式锚点隐藏；只填一项只显示该项。二维码可上传、预览、移除，随原系统设置保存生效。
+- 二维码仅接受PNG/JPEG/WebP Base64 data URL，原图不超过2MiB、每边1～4096px，后端先检查编码大小/真实图像头与尺寸，再完整解码并规范化Base64；拒绝SVG、远程地址、类型不匹配、损坏或超限图片。前端上传限制相同类型/大小，公共展示只接受对应栅格data URL。文字采用Vue转义，长内容换行；二维码保持完整比例和白底，不裁剪。
+- 管理员读取/保存、审计、公开settings、HTML注入和前端缓存完整贯通；缺字段保留原值，显式空字符串清除，二维码null拒绝。沿用既有管理员鉴权、step-up、设置审计与缓存刷新；仅审计字段变化，不记录图片正文。不改变站点Logo上传策略及其他设置的局部保存语义。
+- 默认/简洁/自定义首页顶部有条件显示“智商测试”“联系方式”两个锚点，点击滚动到对应区域，尊重减少动态效果偏好并移动键盘焦点。联系方式使用深蓝独立卡片、醒目文字及白底二维码；登录表单下方采用紧凑联系卡片；用户仪表盘顶部展示联系卡片。所有入口同步设置，未配置不留占位。现有首页自定义内容、登录认证流程、仪表盘统计查询和菜单权限保持原实现；沿用PK-031品牌与256px侧栏。
+- 入口：后端`setting_contact.go`与setting keys/parse/update/public/DTO/admin handler/audit链；前端`components/common/SiteContact.vue`、`composables/useSiteContact.ts`、`SettingsView.vue`、`HomeView.vue`、`auth/LoginView.vue`、`user/DashboardView.vue`、settings API/types/app store及中英文文案。`ImageUpload.vue`仅增加可选图片类型限制，其余上传默认行为不变。
+- 验证与边界：静态核对完整保存/公开/注入链、局部保存和隐藏条件、锚点及响应式布局；扩展仓库原有设置校验、部分更新、公开注入与API契约回归文件，未新建测试文件，未运行任何测试或构建。二维码合法图片校验不保证其内容一定为可扫描二维码；未执行浏览器视觉验收，不冒称通过。本轮未发布制品或操作生产。
 
 ## 验证入口与现有边界
 
@@ -603,6 +622,7 @@
 | PK-018～019 | `concurrency_service_test.go`、`wire_test.go`、`batch_image_cleanup_test.go` | 需要门控/停止并发行为证据，不能仅搜索到 env 键即认为有效 |
 | PK-020～021 | 维护流程、固定 commit 的隔离验收和静态文档核对 | 提交前源码测试与 Jenkins 发行构建分开；不把历史线上/探测报告当作本次新代码验证 |
 | PK-031 | `AppSidebar.spec.ts`、`UserDashboardStats.spec.ts`、管理员 `DashboardView.spec.ts` 与公共选择器既有回归 | 核对实际 `frontend` 执行列表；菜单与交互回归不代替浅色/深色、桌面/移动端的浏览器视觉验收 |
+| PK-033 | 原有设置服务/局部更新/公开注入和API契约回归 | pk.14仅扩展既有用例与静态核对，未执行；不等于图片或页面动态验收通过 |
 
 可选完整源码验证的 `backend-integration` 执行数据库 integration 的 `TestPKUsageFirstResponsePersistence`，只有实际通过才能生成通过报告；`backend-race` 保留旧候选/Release 选择器及 PostgreSQL 15 专项。Jenkins 前端发行构建不等于执行了 `frontend` 源码套件。选择运行验证时，应检查真实执行列表并记录服务器隔离环境或本机 Linux/WSL；未执行项明确写未执行，不将服务器结果写成本机结果。2026-10-21 起这些源码检查不再是提交、合入或发布前置，功能保护核对和制品运行时验收仍按 PK-017 执行。
 
@@ -622,7 +642,7 @@
 
 ## 新增条目模板
 
-新增独立能力使用下一个未用 ID，当前下一个为 `PK-033`；多项变更并行新增时在合并前消除 ID 冲突，已有 ID 不重用。同步更新索引、有效条目范围和此处的下一个 ID。
+新增独立能力使用下一个未用 ID，当前下一个为 `PK-034`；多项变更并行新增时在合并前消除 ID 冲突，已有 ID 不重用。同步更新索引、有效条目范围和此处的下一个 ID。
 
 ```markdown
 ## PK-NNN

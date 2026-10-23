@@ -158,6 +158,7 @@ type UpdateSettingsRequest struct {
 	SiteSubtitle                string                `json:"site_subtitle"`
 	APIBaseURL                  string                `json:"api_base_url"`
 	ContactInfo                 string                `json:"contact_info"`
+	ContactQRCode               string                `json:"contact_qr_code"`
 	DocURL                      string                `json:"doc_url"`
 	HomeContent                 string                `json:"home_content"`
 	CompactHomeEnabled          bool                  `json:"compact_home_enabled"`
@@ -503,6 +504,10 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 	var req UpdateSettingsRequest
 	if err := c.ShouldBindBodyWith(&req, binding.JSON); err != nil {
 		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	if raw, sent := sentFields[service.SettingKeyContactQRCode]; sent && strings.TrimSpace(string(raw)) == "null" {
+		response.BadRequest(c, "contact_qr_code must be a string; use an empty string to clear it")
 		return
 	}
 	if _, sent := sentFields[service.SettingKeyStreamEarlyHeartbeatMode]; sent {
@@ -1655,6 +1660,7 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		SiteSubtitle:                           req.SiteSubtitle,
 		APIBaseURL:                             req.APIBaseURL,
 		ContactInfo:                            req.ContactInfo,
+		ContactQRCode:                          req.ContactQRCode,
 		DocURL:                                 req.DocURL,
 		HomeContent:                            req.HomeContent,
 		CompactHomeEnabled:                     req.CompactHomeEnabled,
@@ -2192,6 +2198,14 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		}
 	}
 
+	// Omitted contact fields were excluded from the write; keep the audit
+	// comparison consistent with that partial-update behavior as well.
+	if _, skipped := omitted[service.SettingKeyContactInfo]; skipped {
+		settings.ContactInfo = previousSettings.ContactInfo
+	}
+	if _, skipped := omitted[service.SettingKeyContactQRCode]; skipped {
+		settings.ContactQRCode = previousSettings.ContactQRCode
+	}
 	h.auditSettingsUpdate(c, previousSettings, settings, previousAuthSourceDefaults, authSourceDefaults, auditReq)
 
 	// 重新获取设置返回
@@ -2343,6 +2357,7 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		SiteSubtitle:                                           updatedSettings.SiteSubtitle,
 		APIBaseURL:                                             updatedSettings.APIBaseURL,
 		ContactInfo:                                            updatedSettings.ContactInfo,
+		ContactQRCode:                                          updatedSettings.ContactQRCode,
 		DocURL:                                                 updatedSettings.DocURL,
 		HomeContent:                                            updatedSettings.HomeContent,
 		CompactHomeEnabled:                                     updatedSettings.CompactHomeEnabled,

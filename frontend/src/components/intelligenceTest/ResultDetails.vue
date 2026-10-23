@@ -44,6 +44,7 @@ const props = defineProps<{
   mode: IntelligenceTestMode
   status: IntelligenceTestResult['status']
   showError: boolean
+  loadDetails?: (groupId: number, resultId: number, signal?: AbortSignal) => Promise<IntelligenceTestDetails>
 }>()
 const { t } = useI18n()
 const container = ref<HTMLElement | null>(null)
@@ -60,7 +61,7 @@ async function load() {
   request = controller
   readFailed.value = false
   try {
-    const response = await intelligenceTestAPI.details(props.groupId, props.resultId, controller.signal)
+    const response = await (props.loadDetails ?? intelligenceTestAPI.details)(props.groupId, props.resultId, controller.signal)
     if (!disposed && !controller.signal.aborted) details.value = response
   } catch {
     if (!disposed && !controller.signal.aborted) readFailed.value = true

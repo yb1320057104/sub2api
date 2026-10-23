@@ -2,6 +2,9 @@ export default {
   intelligenceTest: {
     title: 'Intelligence test',
     description: 'Recent SVG creations and candy puzzle results for each group.',
+    homeEyebrow: 'Models in action',
+    homeDescription: 'Explore real SVG creations and candy puzzle results, updated as scheduled tests finish.',
+    homeLatest: '{count} recent completed tests',
     svg: 'SVG',
     candy: 'Candy puzzle',
     modeLabel: 'Test type',
@@ -40,7 +43,7 @@ export default {
     settings: 'Manage settings',
     hideSettings: 'Hide settings',
     schedule: 'Scheduled tests',
-    scheduleHint: 'Enable scheduled tests and show this menu to users. Disabling stops tests and hides the menu.',
+    scheduleHint: 'Enable scheduled tests, show this menu to users, and display completed results on the public homepage and user dashboard. Disabling stops tests and hides these entries and results.',
     enabled: 'Enabled',
     disabled: 'Disabled',
     disabledHint: 'Scheduled tests are disabled and this menu is hidden from users. Administrators can still manage settings and view history.',
