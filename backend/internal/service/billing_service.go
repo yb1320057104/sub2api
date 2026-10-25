@@ -250,13 +250,32 @@ func isClaudeFable51Model(model string) bool {
 
 func reasoningEffortBillingMultiplier(effort string, multipliers map[string]float64) float64 {
 	effort = strings.ToLower(strings.TrimSpace(effort))
-	// Kilo translates ultra/persistent to max only on the upstream wire. Keep
-	// their original billing keys distinct so max pricing cannot replace them.
-	if effort != "none" && effort != "ultra" && effort != "persistent" {
+	if effort != "none" {
 		effort = NormalizeMaxReasoningEffort(effort)
 	}
 	if effort == "" {
 		return 1
+	}
+	multiplier := multipliers[effort]
+	if multiplier <= 0 || math.IsNaN(multiplier) || math.IsInf(multiplier, 0) {
+		return 1
+	}
+	return multiplier
+}
+
+// Only the customer-pricing copy of a Kilo request may use the original
+// ultra/persistent multiplier. Ordinary requests and account cost rules keep
+// the upstream normalization above, even when those keys remain configured.
+type kiloCustomerBillingContextKey struct{}
+
+func costInputReasoningEffortBillingMultiplier(input CostInput, multipliers map[string]float64) float64 {
+	kiloCustomerBilling := false
+	if input.Ctx != nil {
+		kiloCustomerBilling, _ = input.Ctx.Value(kiloCustomerBillingContextKey{}).(bool)
+	}
+	effort := strings.ToLower(strings.TrimSpace(input.ReasoningEffort))
+	if !kiloCustomerBilling || (effort != "ultra" && effort != "persistent") {
+		return reasoningEffortBillingMultiplier(input.ReasoningEffort, multipliers)
 	}
 	multiplier := multipliers[effort]
 	if multiplier <= 0 || math.IsNaN(multiplier) || math.IsInf(multiplier, 0) {
@@ -990,6 +1009,20 @@ func (s *BillingService) initFallbackPricing() {
 		LongContextOutputMultiplier:   2,
 	}
 
+	// xAI Grok 4.7 Fast (Cursor and Grok Build only): the same model on faster
+	// infrastructure at $4 input / $1 cached input / $12 output below 200k;
+	// long-context rates are $6 / $1.50 / $18 (1.5x of the Fast base card).
+	s.fallbackPrices["grok-4.7-fast"] = &ModelPricing{
+		InputPricePerToken:            4e-6,
+		OutputPricePerToken:           12e-6,
+		CacheReadPricePerToken:        1e-6,
+		SupportsCacheBreakdown:        false,
+		LongContextInputThreshold:     200000,
+		LongContextThresholdInclusive: true,
+		LongContextInputMultiplier:    1.5,
+		LongContextOutputMultiplier:   1.5,
+	}
+
 	// xAI Grok 4.3: $1.25 input / $0.20 cached / $2.50 output below 200k;
 	// long-context rates are $2.50 / $0.40 / $5.
 	s.fallbackPrices["grok-4.3"] = &ModelPricing{
@@ -1286,6 +1319,11 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 		return s.fallbackPrices["grok-4.6"]
 	case "grok-4.7", "grok-4.7-latest":
 		return s.fallbackPrices["grok-4.7"]
+	// Grok 4.7 Fast IDs (grok-4.7-fast, and the Grok Build ID
+	// grok-4.7-build-fast). Without these cases both fall into the unknown-Grok
+	// family card and bill at the standard 4.7 rate (#8119).
+	case "grok-4.7-fast", "grok-4.7-build-fast":
+		return s.fallbackPrices["grok-4.7-fast"]
 	case "grok-4.5", "grok-4.5-latest":
 		return s.fallbackPrices["grok-4.5"]
 	case "grok-3-mini":
@@ -1564,7 +1602,7 @@ func (s *BillingService) CalculateCostUnified(input CostInput) (*CostBreakdown, 
 			return nil, err
 		}
 		breakdown := s.computeTokenBreakdown(pricing, input.Tokens, input.RateMultiplier, input.ServiceTier, applyLongContextBilling && !input.DisableModelLongContextPricing)
-		applyCostBreakdownMultiplier(breakdown, reasoningEffortBillingMultiplier(input.ReasoningEffort, pricing.ReasoningEffortMultipliers))
+		applyCostBreakdownMultiplier(breakdown, costInputReasoningEffortBillingMultiplier(input, pricing.ReasoningEffortMultipliers))
 		return breakdown, nil
 	}
 
@@ -1589,7 +1627,7 @@ func (s *BillingService) CalculateCostUnified(input CostInput) (*CostBreakdown, 
 	case BillingModePerRequest, BillingModeImage, BillingModeVideo:
 		breakdown, err = s.calculatePerRequestCost(resolved, input)
 		if err == nil && resolved.channelPricing != nil {
-			applyCostBreakdownMultiplier(breakdown, reasoningEffortBillingMultiplier(input.ReasoningEffort, resolved.channelPricing.ReasoningEffortMultipliers))
+			applyCostBreakdownMultiplier(breakdown, costInputReasoningEffortBillingMultiplier(input, resolved.channelPricing.ReasoningEffortMultipliers))
 		}
 	default: // BillingModeToken
 		breakdown, err = s.calculateTokenCost(resolved, input)
@@ -1654,7 +1692,7 @@ func (s *BillingService) calculateTokenCost(resolved *ResolvedPricing, input Cos
 
 	breakdown := s.computeTokenBreakdown(pricing, input.Tokens, input.RateMultiplier, input.ServiceTier, applyLongCtx)
 	applyCostBreakdownMultiplier(breakdown, resolvedChannelTimeMultiplier(resolved, input.PricingAt))
-	applyCostBreakdownMultiplier(breakdown, reasoningEffortBillingMultiplier(input.ReasoningEffort, pricing.ReasoningEffortMultipliers))
+	applyCostBreakdownMultiplier(breakdown, costInputReasoningEffortBillingMultiplier(input, pricing.ReasoningEffortMultipliers))
 	return breakdown, nil
 }
 

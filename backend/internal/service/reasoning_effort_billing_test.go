@@ -20,7 +20,7 @@ func TestReasoningEffortBillingMultiplier(t *testing.T) {
 	}{
 		{"none", 0.5}, {"minimal", 0.75}, {"low", 0.9}, {"medium", 1.25},
 		{"high", 1.5}, {"xhigh", 2}, {"max", 3}, {" Extra-High ", 2},
-		{" MAX ", 3}, {"ultra", 4}, {" ULTRA ", 4}, {"persistent", 5}, {" PERSISTENT ", 5}, {"", 1}, {"unknown", 1},
+		{" MAX ", 3}, {"ultra", 1}, {" ULTRA ", 1}, {"persistent", 1}, {" PERSISTENT ", 1}, {"", 1}, {"unknown", 1},
 	} {
 		t.Run(tc.effort, func(t *testing.T) {
 			require.Equal(t, tc.want, reasoningEffortBillingMultiplier(tc.effort, multipliers))
@@ -28,7 +28,13 @@ func TestReasoningEffortBillingMultiplier(t *testing.T) {
 	}
 	require.Equal(t, 1.0, reasoningEffortBillingMultiplier("max", nil))
 	for _, effort := range []string{"ultra", "persistent"} {
-		require.Equal(t, 1.0, reasoningEffortBillingMultiplier(effort, map[string]float64{"max": 3}), "Kilo wire effort must not change the requested billing level")
+		input := CostInput{Ctx: context.WithValue(context.Background(), kiloCustomerBillingContextKey{}, true), ReasoningEffort: effort}
+		require.Equal(t, multipliers[effort], costInputReasoningEffortBillingMultiplier(input, multipliers))
+		require.Equal(t, 1.0, costInputReasoningEffortBillingMultiplier(input, map[string]float64{"max": 3}), "Kilo wire effort must not change the requested billing level")
+		for _, ordinaryCtx := range []context.Context{nil, context.Background(), context.WithValue(context.Background(), kiloCustomerBillingContextKey{}, false)} {
+			input.Ctx = ordinaryCtx
+			require.Equal(t, 1.0, costInputReasoningEffortBillingMultiplier(input, multipliers), "ordinary callers must ignore Kilo-only configured multipliers")
+		}
 	}
 	for _, invalid := range []float64{0, -1, math.NaN(), math.Inf(1)} {
 		require.Equal(t, 1.0, reasoningEffortBillingMultiplier("max", map[string]float64{"max": invalid}))
@@ -44,15 +50,20 @@ func TestReasoningEffortBillingSupportsAllModelsAndLevels(t *testing.T) {
 				ReasoningEffortMultipliers: map[string]float64{"none": 0.5, "high": 1.5, "max": 3, "ultra": 4, "persistent": 5},
 			}}, nil)
 			group := &Group{ID: 100, Platform: PlatformOpenAI}
-			for effort, multiplier := range map[string]float64{"none": 0.5, "high": 1.5, "max": 3, "ultra": 4, "persistent": 5, "low": 1, "": 1} {
-				cost, err := bs.CalculateTokenCostForRequest(TokenCostRequest{
-					Ctx: context.Background(), Model: model, Group: group, Resolver: resolver,
-					Tokens: UsageTokens{InputTokens: 1000, OutputTokens: 200}, RateMultiplier: 0.8,
-					ReasoningEffort: effort,
-				})
-				require.NoError(t, err)
-				require.InDelta(t, 0.0014*multiplier, cost.TotalCost, 1e-12, effort)
-				require.InDelta(t, cost.TotalCost*0.8, cost.ActualCost, 1e-12, effort)
+			for _, kilo := range []bool{false, true} {
+				for effort, multiplier := range map[string]float64{"none": 0.5, "high": 1.5, "max": 3, "ultra": 4, "persistent": 5, "low": 1, "": 1} {
+					if !kilo && (effort == "ultra" || effort == "persistent") {
+						multiplier = 1
+					}
+					cost, err := bs.CalculateTokenCostForRequest(TokenCostRequest{
+						Ctx: context.WithValue(context.Background(), kiloCustomerBillingContextKey{}, kilo), Model: model, Group: group, Resolver: resolver,
+						Tokens: UsageTokens{InputTokens: 1000, OutputTokens: 200}, RateMultiplier: 0.8,
+						ReasoningEffort: effort,
+					})
+					require.NoError(t, err)
+					require.InDelta(t, 0.0014*multiplier, cost.TotalCost, 1e-12, effort)
+					require.InDelta(t, cost.TotalCost*0.8, cost.ActualCost, 1e-12, effort)
+				}
 			}
 		})
 	}
@@ -122,20 +133,25 @@ func TestReasoningEffortBillingGroupOverrideAndUnitBilling(t *testing.T) {
 				InputPrice: testPtrFloat64(1e-6), PerRequestPrice: testPtrFloat64(0.1),
 				ReasoningEffortMultipliers: map[string]float64{"high": 1.25, "ultra": 2, "persistent": 2.5},
 			}}}
-			for effort, multiplier := range map[string]float64{"high": 1.25, "ultra": 2, "persistent": 2.5, "max": 1} {
-				input := CostInput{
-					Ctx: context.Background(), Model: "custom-model", Group: group, GroupID: &group.ID,
-					Tokens: UsageTokens{InputTokens: 1000}, RequestCount: 2, RateMultiplier: 0.8,
-					ReasoningEffort: effort, Resolver: resolver,
+			for _, kilo := range []bool{false, true} {
+				for effort, multiplier := range map[string]float64{"high": 1.25, "ultra": 2, "persistent": 2.5, "max": 1} {
+					if !kilo && (effort == "ultra" || effort == "persistent") {
+						multiplier = 1
+					}
+					input := CostInput{
+						Ctx: context.WithValue(context.Background(), kiloCustomerBillingContextKey{}, kilo), Model: "custom-model", Group: group, GroupID: &group.ID,
+						Tokens: UsageTokens{InputTokens: 1000}, RequestCount: 2, RateMultiplier: 0.8,
+						ReasoningEffort: effort, Resolver: resolver,
+					}
+					cost, err := bs.CalculateCostUnified(input)
+					require.NoError(t, err)
+					base := 0.2
+					if mode == BillingModeToken {
+						base = 0.001
+					}
+					require.InDelta(t, base*multiplier, cost.TotalCost, 1e-12)
+					require.InDelta(t, cost.TotalCost*0.8, cost.ActualCost, 1e-12)
 				}
-				cost, err := bs.CalculateCostUnified(input)
-				require.NoError(t, err)
-				base := 0.2
-				if mode == BillingModeToken {
-					base = 0.001
-				}
-				require.InDelta(t, base*multiplier, cost.TotalCost, 1e-12)
-				require.InDelta(t, cost.TotalCost*0.8, cost.ActualCost, 1e-12)
 			}
 		})
 	}
@@ -151,7 +167,7 @@ func TestAccountStatsCustomRulesUseOwnReasoningEffortMultipliers(t *testing.T) {
 					ReasoningEffortMultipliers: map[string]float64{"high": 1.5, "ultra": 4, "persistent": 5},
 				}},
 			}}}
-			for effort, multiplier := range map[string]float64{"high": 1.5, "max": 1, "ultra": 4, "persistent": 5, "low": 1} {
+			for effort, multiplier := range map[string]float64{"high": 1.5, "max": 1, "ultra": 1, "persistent": 1, "low": 1} {
 				cost := tryCustomRules(channel, 1, 100, PlatformAnthropic, "claude-fable-5-1", UsageTokens{InputTokens: 100}, 2, effort)
 				require.NotNil(t, cost)
 				base := 0.2

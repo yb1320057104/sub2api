@@ -242,13 +242,19 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	longContextBillingGate := openAILongContextBillingGate(billingAccount)
 	modelLongContextExempt := openAISubscriptionLongContextExempt(billingAccount, result)
 	customerBillingResult := openAICustomerBillingResult(account, result)
+	customerBillingCtx := ctx
+	if account.IsKiloBridgeEnabled() {
+		// Keep the extension local to customer pricing; provider cost rules
+		// continue using ctx and the actual forwarded effort below.
+		customerBillingCtx = context.WithValue(ctx, kiloCustomerBillingContextKey{}, true)
+	}
 	if cacheConversionErr != nil {
 		// A conversion failure still needs a usage record. Skip customer pricing
 		// so an unrelated pricing error cannot discard that evidence.
 		cost = &CostBreakdown{BillingMode: string(BillingModeToken)}
 	} else {
 		cost, err = s.calculateOpenAIRecordUsageCost(
-			ctx,
+			customerBillingCtx,
 			customerBillingResult,
 			apiKey,
 			billingModels,
@@ -293,7 +299,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		if identified, responseChannelPriced := s.hasIdentifiedOpenAIResponsePricing(ctx, responseModel, apiKey); identified {
 			responseModels := s.filterCNProviderBillingModelCandidates(ctx, account, apiKey, usageBillingModelCandidates(responseModel))
 			responseCost, responseErr := s.calculateOpenAIRecordUsageCost(
-				ctx, customerBillingResult, apiKey, responseModels, multiplier, imageMultiplier,
+				customerBillingCtx, customerBillingResult, apiKey, responseModels, multiplier, imageMultiplier,
 				videoMultiplier, baseMultiplier, tokens, serviceTier, longContextBillingGate, modelLongContextExempt, pricingAt,
 			)
 			// 基线定价源以 baselineBillingModel 为准：它正是 calculateOpenAIRecordUsageCost
@@ -314,7 +320,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	// the Standard tier using the same channel, peak, and long-context policy.
 	if cacheConversionErr == nil && groupBillsOpenAIFastAtStandard(apiKey, billingAccount, serviceTier) {
 		standardCost, standardErr := s.calculateOpenAIRecordUsageCost(
-			ctx,
+			customerBillingCtx,
 			customerBillingResult,
 			apiKey,
 			billingModels,

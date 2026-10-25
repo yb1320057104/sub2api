@@ -199,3 +199,104 @@ func TestPKKiloRecordUsageBillsRequestedEffort(t *testing.T) {
 		}
 	}
 }
+
+func TestPKDisabledExtensionsKeepUpstreamReasoningBilling(t *testing.T) {
+	for _, mode := range []BillingMode{BillingModeToken, BillingModePerRequest} {
+		for _, subscriptionBilling := range []bool{false, true} {
+			for _, tc := range []struct {
+				name       string
+				requested  string
+				forwarded  string
+				multiplier float64
+			}{
+				{"unknown_ultra", "ultra", "ultra", 1},
+				{"unknown_persistent", "persistent", "persistent", 1},
+				{"requested_ultra_forwarded_max", "ultra", "max", 3},
+				{"requested_max_forwarded_high", "max", "high", 1.5},
+			} {
+				path := "balance"
+				if subscriptionBilling {
+					path = "subscription"
+				}
+				t.Run(string(mode)+"/"+path+"/"+tc.name, func(t *testing.T) {
+					usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+					billingRepo := &openAIRecordUsageBillingRepoStub{}
+					svc := newOpenAIRecordUsageServiceForTest(usageRepo, &openAIRecordUsageUserRepoStub{}, &openAIRecordUsageSubRepoStub{}, nil)
+					svc.usageBillingRepo = billingRepo
+					groupID := int64(77)
+					model := "ordinary-compat-model"
+					pricing := ChannelModelPricing{
+						Models: []string{model}, BillingMode: mode,
+						InputPrice: testPtrFloat64(0.001), OutputPrice: testPtrFloat64(0.002),
+						CacheWritePrice: testPtrFloat64(0.005), CacheReadPrice: testPtrFloat64(0.0001), PerRequestPrice: testPtrFloat64(0.2),
+						ReasoningEffortMultipliers: map[string]float64{"high": 1.5, "max": 3, "ultra": 4, "persistent": 5},
+					}
+					cache := newEmptyChannelCache()
+					cache.channelByGroupID[groupID] = &Channel{ID: 1, Status: StatusActive,
+						AccountStatsPricingRules: []AccountStatsPricingRule{{AccountIDs: []int64{30}, Pricing: []ChannelModelPricing{pricing}}},
+					}
+					cache.groupPlatform[groupID] = PlatformOpenAI
+					cache.loadedAt = time.Now()
+					svc.channelService = &ChannelService{}
+					svc.channelService.cache.Store(cache)
+					svc.resolver = NewModelPricingResolver(svc.channelService, svc.billingService)
+					apiKey := &APIKey{ID: 10, GroupID: &groupID, Quota: 10, RateLimit5h: 100,
+						Group: &Group{ID: groupID, Platform: PlatformOpenAI, Status: StatusActive, Hydrated: true,
+							RateMultiplier: 0.5, ModelPricing: []ChannelModelPricing{pricing}},
+					}
+					var subscription *UserSubscription
+					if subscriptionBilling {
+						apiKey.Group.SubscriptionType = SubscriptionTypeSubscription
+						subscription = &UserSubscription{ID: 40}
+					}
+					account := &Account{ID: 30, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, RateMultiplier: testPtrFloat64(2),
+						Extra: map[string]any{
+							AccountExtraKiloBridgeEnabled: false, AccountExtraCacheConversionEnabled: false,
+							AccountExtraCacheConversionMultiplier: 99.0,
+							"quota_limit":                         100.0, "quota_daily_limit": 100.0,
+						},
+					}
+					rawUsage := OpenAIUsage{InputTokens: 130, OutputTokens: 50, CacheCreationInputTokens: 20, CacheReadInputTokens: 10}
+					result := &OpenAIForwardResult{RequestID: "ordinary_" + tc.name, Model: model, UpstreamModel: model,
+						Usage: rawUsage, ReasoningEffort: &tc.forwarded, RequestedReasoningEffort: &tc.requested,
+					}
+					require.NoError(t, svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
+						Result: result, APIKey: apiKey, User: &User{ID: 20}, Account: account,
+						Subscription: subscription, APIKeyService: &openAIRecordUsageAPIKeyQuotaStub{},
+					}))
+					// Upstream: 100 ordinary input + 50 output + 20 cache writes + 10 reads;
+					// only normalized forwarded efforts can select a configured multiplier.
+					base := 0.301
+					if mode == BillingModePerRequest {
+						base = 0.2
+					}
+					wantTotal, wantActual := base*tc.multiplier, base*tc.multiplier*0.5
+					require.Equal(t, rawUsage, result.Usage)
+					require.Equal(t, tc.forwarded, *result.ReasoningEffort)
+					log := usageRepo.lastLog
+					require.NotNil(t, log)
+					require.Equal(t, 100, log.InputTokens)
+					require.Equal(t, 20, log.CacheCreationTokens)
+					require.Equal(t, 10, log.CacheReadTokens)
+					require.InDelta(t, wantTotal, log.TotalCost, 1e-12)
+					require.InDelta(t, wantActual, log.ActualCost, 1e-12)
+					require.NotNil(t, log.AccountStatsCost)
+					require.InDelta(t, wantTotal, *log.AccountStatsCost, 1e-12, "account costs must also ignore Kilo-only effort keys")
+					require.Equal(t, 1, billingRepo.calls)
+					cmd := billingRepo.lastCmd
+					require.InDelta(t, wantActual, cmd.APIKeyQuotaCost, 1e-12)
+					require.InDelta(t, wantActual, cmd.APIKeyRateLimitCost, 1e-12)
+					require.InDelta(t, wantTotal*2, cmd.AccountQuotaCost, 1e-12)
+					require.True(t, cmd.AccountQuotaHasDailyLimit)
+					if subscriptionBilling {
+						require.Zero(t, cmd.BalanceCost)
+						require.InDelta(t, wantActual, cmd.SubscriptionCost, 1e-12)
+					} else {
+						require.InDelta(t, wantActual, cmd.BalanceCost, 1e-12)
+						require.Zero(t, cmd.SubscriptionCost)
+					}
+				})
+			}
+		}
+	}
+}

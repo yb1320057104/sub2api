@@ -528,7 +528,7 @@ func (w *earlySSEHeartbeatWriter) processSpaceFrameLocked(frame earlySpaceFrame)
 		return w.writeSpaceBytesLocked(frame.replaceData(payload))
 	}
 	if !s.active {
-		metadata := kind == "response.created" || kind == "response.in_progress" || kind == "response.queued"
+		metadata := kind == "response.created" || kind == "response.in_progress" || kind == "response.queued" || kind == "response.metadata"
 		if !metadata {
 			if kind == "ping" || kind == "keepalive" {
 				w.committed = true

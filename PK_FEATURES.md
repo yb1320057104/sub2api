@@ -4,6 +4,8 @@
 
 ## 基线与阅读方式
 
+- 2026-10-26 从私库 `v0.2.17-pk.16` / main（`f992259daaa56f4719bc7fc38420edde4ae09ee7`）合并上游 `v0.2.18`（`ac1b8f1271be0d674fa6f074403c1410f30a3a81`），唯一目标 `v0.2.18-pk.1`。无新增 ID，保留全部有效二开和 PK-029/030 已授权移除状态；按上游行为为主，在 PK-008/009/028 交叉处作必要适配。逐项静态依据、冲突处理、迁移及升级注意事项见 [0.2.18 合并记录](docs/PK_UPSTREAM_0.2.18_REVIEW.md)。本轮未运行任何测试或构建，未自行生成测试文件；不将上游或历史回归当作本次通过结果。按既定授权提交、合入 main 并准备正式标签，用户自行点击 Jenkins release，未操作生产。
+
 - 首次二开上游基线：`a60a29549f488a854966aaec9541abbe006cac22`（0.2.10）。首次二开保存：`6655dd8ca`，恢复标签 `pk-baseline-20260930`。
 - 2026-10-08 在唯一在途历史分支 `codex/jenkins-build` / 草稿 PR #7 合并上游 `v0.2.14`（commit `0363b8cdba8cec3e2ba4b2dbd49c4481143fa55d`，tag 对象 `1400a7b482974d98db5b284a8b2afbe3eaf9aaef`），合并前私库为 `3902278043ab5edb1bf590cd755b87e043be4d49`。逐项静态核对及当时待验证项见 [0.2.14 合并记录](docs/PK_UPSTREAM_0.2.14_REVIEW.md)。源码 VERSION 对齐 `0.2.14`，未创建发行标签。合并提交 `fc468013` 生成时仅作静态核对；后续 Jenkins #4 候选 `4-fc46801394b0` 已构建成功，十一项实际制品验收通过，证据只绑定该旧 commit。当前流程新 tree 的完整源码测试以新报告及 notes 为准，旧候选成功不代表当前已合入 main、正式发布或线上更新。
 - 2026-10-02 合并上游 `v0.2.12`（commit `5106065716e494204fc0e8db16f68f6e9d576be0`，tag 对象 `cbe9966432317e6757b47f598a103d2132ec27db`），合并前私库为 `162a58972bee08078a43eefa761da1b245f667fa`。逐项核对见 [0.2.12 合并记录](docs/PK_UPSTREAM_0.2.12_REVIEW.md)，正式发布目标为 `v0.2.12-pk.1`；发布与线上更新分别记录。
@@ -184,6 +186,8 @@
 - 验证：`TestPKEarlyHeartbeat_*`、`TestPKFirstResponse_DisabledHeartbeatStillRecordsBodyAndCopiesContext`，以及获准的隔离远端通过实际反代读取 SSE。
 - 空格扩展沿用 `openai_compact_sse_keepalive_test.go`：`TestPKEarlyHeartbeat_Space*` 覆盖 Chat 三帧、真实 Responses ID、terminal-only 正文/工具生命周期、快照字段、CRLF/分片、多行 data、短写、回退与取消。原 comment/ping 回归保留。新增用例由现有 CI/Release 的 `TestPKEarly` 选择器纳入；是否通过须核对本次提交的实际本地结果。
 
+2026-10-26 合入 v0.2.18：PK-008 的 Responses 空格转换将上游新增 `response.metadata` 识别为占位前元数据，避免其提前关闭占位；仍只从 `response.created` 获取真实 ID，保留结构化输出/已含正文回退、序号、usage及工具生命周期，不为 metadata 伪造响应 ID。仅静态核对，未运行测试或构建。
+
 ## PK-009
 
 **双计时与全部持久化路径。** 引入：`54b4372c2`，完善：`41958f4d4`。
@@ -197,6 +201,8 @@
 - 入口：`backend/internal/service/{openai_early_sse_heartbeat,openai_early_sse_space,usage_log,openai_gateway_usage,gateway_usage_billing}.go`、handler usage context、`backend/internal/repository/usage_log_repo_{insert,query}.go`。
 - 2026-10-02 上游新增 TypeSafe `/v1/systemone` 为非流式独立平台，不注入 SSE 或虚构首包值；其异步用量任务入队前必须快照渠道用量字段，闭包不得再访问原 Gin context。沿用 detached usage context、预留引用和原上游计时，扩展该入口已有回归并纳入候选及正式发布 race。
 - 验证：`TestPKFirstResponseSurvivesDetachedUsageContext`、`TestPKUsageFirstResponseInsertPaths`、integration `TestPKUsageFirstResponsePersistence`，以及 scan/insert shape 现有用例。
+
+2026-10-26 合入 v0.2.18：PK-009 的异步上下文边界覆盖原生 Anthropic 兼容 Chat/Responses 新共用 `submitForwardUsage`。在入队前同步保存纯值 `ChannelUsageFields`，成功及中断用量计费 worker 不再访问可回收 Gin context；原首包原子状态、预留引用、计费去重与 nullable 持久化保持。仅静态核对，未运行测试或构建。
 
 ## PK-010
 
@@ -254,6 +260,8 @@
 - 保留当前回退过滤/授权范围：读取最近15个 Release，过滤草稿、预发布、重复项及不旧于当前的版本，降序最多3个；远程回退目标必须在允许列表中，支持可选 `v` 前缀。这不是完整 SemVer 实现。
 - 入口：`frontend/src/components/common/VersionBadge.vue`、中英版本文案、`backend/internal/service/update_service.go`。
 - 验证：`TestUpdateServicePrivateRevisionUpdates`、`TestUpdateServicePrivateRevisionRollbackOrder`。其他模块同名版本比较测试不能代替这两个更新器场景。
+
+2026-10-26 合入 v0.2.18：上游标签内 VERSION 仍为0.2.17，本次在 PK-013 范围内将源码版本对齐0.2.18；Jenkins 正式机器版本由 `v0.2.18-pk.1` 标签注入，页面PK标识、更新排序和回退边界保持。
 
 ## PK-014
 
@@ -337,6 +345,8 @@
 - 2026-10-19 确立的正式标签交接继续保留，2026-10-21 取消其中“完整源码测试及匹配 notes”的前置：交给用户点击 Jenkins `release` 前，推送已审阅的 main 提交和未占用正式标签，核对远端标签剥离后的 commit。工作分支不能代替正式标签；交付 `ACTION=release`、`SOURCE_REF=正式标签`，其他两项留空，不默认替用户点击构建。规则同步 AGENTS、项目约束、维护文档及 Jenkins 说明。
 
 2026-10-23 智商测试接入时，服务器安全检查命中 DOMPurify 3.4.14 的新安全公告，按官方修复版本将前端声明、override 和锁文件同步到 3.4.17；不新增安全豁免、不升级无关依赖。SVG 预览的净化、无脚本沙箱和 CSP 继续独立保留，动态结果记录在本次交接记录。
+
+2026-10-26 合入 v0.2.18：PK-017 继续采用既有 Go 1.27.3/Jenkins 工具链，不恢复上游三个 Actions 构建/测试文件。前端保留 follow-redirects 1.16.1 精确覆盖及上游新增安全下限约束，锁文件同步，DOMPurify 3.4.17不回退；不增加审计豁免。仅静态核对，未执行构建、源码测试或制品验收。
 
 ## PK-018
 
@@ -509,6 +519,12 @@
 2026-10-19 合入 v0.2.17：普通/透传错误终态同时保留 Kilo 客户端错误脱敏和上游新增的 `created_at`、`sequence_number`；不改变管理员原始诊断、强度计费或 usage。原 `openai_response_model_rewrite_test.go` 新增 `TestPKKiloBridgeSynthesizedFailurePreservesUpstreamMetadata`，覆盖两条实际流式合成终态路径的时间、序号、真实响应 ID、正文、客户端脱敏和内部原错误保留，纳入现有 unit/race 选择器。
 
 同次审计发现的既有边界：强度倍率函数与校验由多类账号共享。第三方兼容 API Key 即使关闭 Kilo，若其 Chat→Responses 上游接受 ultra/persistent 且配置了同名倍率，仍可能使用该 PK 扩展键；真实 OpenAI 常规合法强度不受影响。详见[计费审计](docs/PK_OPENAI_KEY_BILLING_AUDIT_0.2.17.md)。本次登记并保留已有配置，不将这一缺口描述为所有普通账号都严格隔离，也不未经明确范围调整收费。
+
+2026-10-26 合入 v0.2.18：PK-028 的精简调度候选投影补入既有 `kilo_bridge_enabled`，避免 Kilo+透传账号在渠道上游模型限制筛选时误用普通透传逻辑，并保持初筛/最终完整账号的模型映射与强制HTTP策略一致。仅传递既有布尔配置，默认关闭、账号保存、强度倍率及工具转换不变；共享候选母本不作原地修改。静态核对发现并补齐该既有调度遗漏，无新增ID，未运行测试或构建。
+
+同次给 OpenAI 精简 meta 添加 `PKProjectionVersion=1`，旧无标记投影按既有未命中走回源/重建，避免升级后长期使用缺 Kilo 开关的 Redis 记录；非 OpenAI 旧投影、完整账号 JSON、上游缓存/桶版本/epoch及失效机制保持兼容。默认数据库回源开启；显式关闭时旧 OpenAI 投影需等待后台重建成功，不绕过关闭设置，不主动操作生产缓存。既有调度缓存回归文件扩展格式与旧投影边界，未运行、不新增测试文件。
+
+同轮用户明确要求“除了这两个开关，如果都在关闭的情况下，要跟上游一模一样”。据此修复上方 v0.2.17 审计登记的共享强度倍率隔离缺口：`reasoningEffortBillingMultiplier` 恢复固定上游的标准归一化；仅 Kilo 开启时，`RecordUsage` 为客户定价创建私有子 context，允许原始 ultra/persistent 倍率，并传给基线、响应模型重定价和免费Fast重算。账号成本仍使用原 context/实际转发强度；Kilo关闭时即使历史配置保留 ultra/persistent 倍率也按上游规则处理，不误用扩展键。缓存转换关闭时原始tokens及上下文选档不变；两开关独立，开启时保留对应规则。无需配置/数据库迁移，不修改历史账单；更新既有强度和网关计费回归，未运行测试或构建。历史审计第5项自本次代码修复后不再作为当前已知缺口。
 
 ## PK-029
 

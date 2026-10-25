@@ -110,7 +110,10 @@ func TestSchedulerCacheSnapshotAccountIDReusePreservesPayloadAndMembers(t *testi
 
 	wantFull, err := json.Marshal(validOne)
 	require.NoError(t, err)
-	wantMeta, err := json.Marshal(buildSchedulerMetadataAccount(validOne))
+	wantMeta, err := json.Marshal(struct {
+		service.Account
+		PKProjectionVersion int
+	}{Account: buildSchedulerMetadataAccount(validOne), PKProjectionVersion: 1})
 	require.NoError(t, err)
 	fullBefore, err := cache.rdb.Get(ctx, schedulerAccountKey("701")).Bytes()
 	require.NoError(t, err)
@@ -296,6 +299,86 @@ func TestMarshalSchedulerCacheAccountKeepsEncodingJSONWireFormat(t *testing.T) {
 			require.Equal(t, wantMeta, meta)
 		})
 	}
+}
+
+func TestSchedulerCacheOpenAIProjectionVersionCompatibility(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("old OpenAI metadata misses until republished", func(t *testing.T) {
+		cache := newSchedulerCacheUnit(t)
+		account := service.Account{
+			ID:       804,
+			Platform: service.PlatformOpenAI,
+			Type:     service.AccountTypeAPIKey,
+			Extra:    map[string]any{service.AccountExtraKiloBridgeEnabled: true},
+		}
+		bucket := service.SchedulerBucket{GroupID: 21, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeSingle}
+		token, err := cache.CaptureBucketWriteToken(ctx, bucket)
+		require.NoError(t, err)
+		require.NoError(t, cache.SetSnapshot(ctx, bucket, token, []service.Account{account}))
+
+		// Simulate the previous projection, which had neither the marker nor
+		// the Kilo flag. It must not be admitted as an ordinary OpenAI account.
+		legacy := buildSchedulerMetadataAccount(account)
+		delete(legacy.Extra, service.AccountExtraKiloBridgeEnabled)
+		legacyPayload, err := json.Marshal(legacy)
+		require.NoError(t, err)
+		require.NoError(t, cache.rdb.Set(ctx, schedulerAccountMetaKey("804"), legacyPayload, 0).Err())
+		snapshot, hit, err := cache.GetSnapshot(ctx, bucket)
+		require.NoError(t, err)
+		require.False(t, hit)
+		require.Nil(t, snapshot)
+		require.Nil(t, cache.lookupSnapshotEntry(bucket.String()))
+
+		// The full account uses the unchanged wire format and remains readable
+		// even while the old metadata is rejected.
+		full, err := cache.GetAccount(ctx, account.ID)
+		require.NoError(t, err)
+		require.NotNil(t, full)
+		require.True(t, full.IsKiloBridgeEnabled())
+		fullPayload, err := cache.rdb.Get(ctx, schedulerAccountKey("804")).Bytes()
+		require.NoError(t, err)
+		var fullFields map[string]json.RawMessage
+		require.NoError(t, json.Unmarshal(fullPayload, &fullFields))
+		require.NotContains(t, fullFields, "PKProjectionVersion")
+
+		// The existing DB fallback/background rebuild republishes via SetSnapshot.
+		require.NoError(t, cache.SetSnapshot(ctx, bucket, token, []service.Account{account}))
+		snapshot, hit, err = cache.GetSnapshot(ctx, bucket)
+		require.NoError(t, err)
+		require.True(t, hit)
+		require.Len(t, snapshot, 1)
+		require.True(t, snapshot[0].IsKiloBridgeEnabled())
+		require.True(t, snapshot[0].IsOpenAIWSForceHTTPEnabled())
+		metaPayload, err := cache.rdb.Get(ctx, schedulerAccountMetaKey("804")).Bytes()
+		require.NoError(t, err)
+		var metaFields map[string]json.RawMessage
+		require.NoError(t, json.Unmarshal(metaPayload, &metaFields))
+		require.JSONEq(t, "1", string(metaFields["PKProjectionVersion"]))
+		legacyReader, err := decodeCachedAccount(metaPayload)
+		require.NoError(t, err)
+		require.True(t, legacyReader.IsKiloBridgeEnabled(), "old readers ignore the new top-level metadata field")
+	})
+
+	t.Run("old non-OpenAI metadata remains compatible", func(t *testing.T) {
+		cache := newSchedulerCacheUnit(t)
+		account := service.Account{ID: 805, Platform: service.PlatformAnthropic, Type: service.AccountTypeOAuth}
+		bucket := service.SchedulerBucket{GroupID: 21, Platform: service.PlatformAnthropic, Mode: service.SchedulerModeSingle}
+		token, err := cache.CaptureBucketWriteToken(ctx, bucket)
+		require.NoError(t, err)
+		require.NoError(t, cache.SetSnapshot(ctx, bucket, token, []service.Account{account}))
+		legacyPayload, err := json.Marshal(buildSchedulerMetadataAccount(account))
+		require.NoError(t, err)
+		currentPayload, err := cache.rdb.Get(ctx, schedulerAccountMetaKey("805")).Bytes()
+		require.NoError(t, err)
+		require.Equal(t, legacyPayload, currentPayload, "other platforms keep their existing metadata wire format")
+		require.NoError(t, cache.rdb.Set(ctx, schedulerAccountMetaKey("805"), legacyPayload, 0).Err())
+		snapshot, hit, err := cache.GetSnapshot(ctx, bucket)
+		require.NoError(t, err)
+		require.True(t, hit)
+		require.Len(t, snapshot, 1)
+		require.Equal(t, account.ID, snapshot[0].ID)
+	})
 }
 
 func TestBuildSchedulerMetadataAccount_KeepsOpenAIWSFlags(t *testing.T) {
