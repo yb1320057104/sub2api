@@ -5,14 +5,19 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/cacheconversion"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 func TestRequiresBillableGrokChatUsage(t *testing.T) {
@@ -390,4 +395,262 @@ func TestPKKiloBridgeSettings(t *testing.T) {
 		require.Error(t, ValidateKiloBridgeExtra(PlatformAnthropic, extra))
 		require.False(t, (&Account{Platform: PlatformAnthropic, Extra: extra}).IsKiloBridgeEnabled())
 	}
+}
+
+type pkEarlyBillingCache struct {
+	*pkCacheConversionInflightCache
+	subscriptionCosts chan float64
+}
+
+func (c *pkEarlyBillingCache) UpdateSubscriptionUsage(_ context.Context, _, _ int64, cost float64) error {
+	c.subscriptionCosts <- cost
+	return nil
+}
+
+type pkEarlyBillingSnapshot struct {
+	costBits         []uint64
+	command          UsageBillingCommand
+	accountCostBits  uint64
+	balanceBits      uint64
+	rateLimitBits    uint64
+	subscriptionBits uint64
+}
+
+// Exercise the emitted wire through real protocol readers before recording the
+// observed usage. This deliberately separates reader/accounting parity from the
+// handler's decision to submit a partial result; handler regressions cover that
+// decision and retries. No provider endpoint or live model is used here.
+func TestPKEarlyHeartbeat_WireUsageAndBillingParity(t *testing.T) {
+	const model = "gpt-5.4"
+	const startingBalance = 100.0
+	const customerRate = 1.7
+	const accountRate = 1.3
+	raw := OpenAIUsage{InputTokens: 1200, OutputTokens: 13, CacheCreationInputTokens: 200, CacheReadInputTokens: 100}
+	pricingAt := time.Date(2026, time.October, 26, 0, 0, 0, 0, time.UTC)
+	readers := []struct {
+		name     string
+		protocol string
+		run      func(*OpenAIGatewayService, *gin.Context, *http.Response, *Account) (*OpenAIUsage, error)
+	}{
+		{"responses", "responses", func(s *OpenAIGatewayService, c *gin.Context, r *http.Response, a *Account) (*OpenAIUsage, error) {
+			result, err := s.handleStreamingResponse(c.Request.Context(), r, c, a, time.Now(), model, model)
+			if result == nil {
+				return nil, err
+			}
+			return result.usage, err
+		}},
+		{"responses_passthrough", "responses", func(s *OpenAIGatewayService, c *gin.Context, r *http.Response, a *Account) (*OpenAIUsage, error) {
+			result, err := s.handleStreamingResponsePassthrough(c.Request.Context(), r, c, a, time.Now(), model, model)
+			if result == nil {
+				return nil, err
+			}
+			return result.usage, err
+		}},
+		{"chat_raw", "chat", func(s *OpenAIGatewayService, c *gin.Context, r *http.Response, a *Account) (*OpenAIUsage, error) {
+			result, err := s.streamRawChatCompletions(c, r, a, model, model, model, nil, nil, time.Now(), 0)
+			if result == nil {
+				return nil, err
+			}
+			return &result.Usage, err
+		}},
+		{"messages_native", "messages", func(s *OpenAIGatewayService, c *gin.Context, r *http.Response, a *Account) (*OpenAIUsage, error) {
+			result, err := s.handleNativeAnthropicStreamingResponse(c.Request.Context(), r, c, a, model, model, model, nil, time.Now())
+			if result == nil {
+				return nil, err
+			}
+			return &result.Usage, err
+		}},
+	}
+	for _, reader := range readers {
+		for _, truncated := range []bool{false, true} {
+			for _, subscriptionBilling := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/without_completion_suffix=%t/subscription=%t", reader.name, truncated, subscriptionBilling), func(t *testing.T) {
+					var baseline *pkEarlyBillingSnapshot
+					for _, mode := range []string{"disabled", StreamEarlyHeartbeatModeComment, StreamEarlyHeartbeatModeDownstreamPing, StreamEarlyHeartbeatModeSpace} {
+						t.Run(mode, func(t *testing.T) {
+							wire, timingCtx := pkEarlyBillingWire(t, reader.protocol, mode, truncated)
+							accountMultiplier := accountRate
+							account := &Account{ID: 3, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, RateMultiplier: &accountMultiplier, Extra: map[string]any{
+								AccountExtraCacheConversionEnabled: false, AccountExtraCacheConversionMultiplier: 999.0,
+								AccountExtraKiloBridgeEnabled: false, "quota_limit": 100.0,
+							}}
+							readerCtx, _ := newCompactBridgeTestContext(t, false)
+							readerCtx.Request = httptest.NewRequest(http.MethodPost, pkEarlyBillingPath(reader.protocol), nil)
+							response := &http.Response{StatusCode: http.StatusOK, Header: http.Header{"X-Request-Id": []string{"pk-early-billing"}}, Body: io.NopCloser(strings.NewReader(wire))}
+							observed, readErr := reader.run(newCompactBridgeTestService(), readerCtx, response, account)
+							if truncated && reader.protocol != "chat" {
+								require.Error(t, readErr, "a placeholder must not turn an incomplete upstream stream into success")
+							} else {
+								// Raw Chat's upstream contract treats a usage object as a terminal
+								// signal even without finish_reason/[DONE]; preserve that policy.
+								require.NoError(t, readErr)
+							}
+							require.NotNil(t, observed)
+							require.Equal(t, raw, *observed, "only original provider usage may reach accounting, including progressive + terminal usage")
+
+							cache := &pkEarlyBillingCache{
+								pkCacheConversionInflightCache: &pkCacheConversionInflightCache{memInflightCache: newMemInflightCache(startingBalance), rateLimitCosts: make(chan float64, 2)},
+								subscriptionCosts:              make(chan float64, 2),
+							}
+							billingCache := newInflightSvc(t, cache, 60)
+							usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+							billingRepo := &openAIRecordUsageBillingRepoStub{}
+							svc := newOpenAIRecordUsageServiceWithBillingRepoForTest(usageRepo, billingRepo, nil, nil, nil)
+							svc.billingCacheService = billingCache
+							svc.cfg.Default.RateMultiplier = customerRate
+							svc.cfg.Billing.InflightReservation = billingCache.cfg.Billing.InflightReservation
+							// Fix the price card and pricing instant independently of live model metadata.
+							svc.billingService.fallbackPrices[model] = &ModelPricing{
+								InputPricePerToken: 2e-6, OutputPricePerToken: 10e-6,
+								CacheCreationPricePerToken: 3e-6, CacheReadPricePerToken: 0.1e-6,
+							}
+							group := &Group{ID: 4, Platform: PlatformOpenAI, RateMultiplier: customerRate}
+							user := &User{ID: 1, Balance: startingBalance}
+							key := &APIKey{ID: 2, User: user, GroupID: &group.ID, Group: group, Quota: 100, RateLimit5h: 100}
+							var subscription *UserSubscription
+							if subscriptionBilling {
+								group.SubscriptionType = SubscriptionTypeSubscription
+								subscription = &UserSubscription{ID: 5}
+							}
+							result := &OpenAIForwardResult{RequestID: "pk-early-billing", Model: model, UpstreamModel: model, Usage: *observed, Stream: true}
+							require.NoError(t, svc.RecordUsage(timingCtx, &OpenAIRecordUsageInput{
+								Result: result, APIKey: key, User: user, Account: account, Subscription: subscription,
+								APIKeyService: &openAIRecordUsageAPIKeyQuotaStub{}, PricingAt: pricingAt,
+							}))
+							billingCache.Stop() // Wait for the real cache-update queue before observing it.
+							require.Equal(t, 1, usageRepo.calls)
+							require.Equal(t, 1, billingRepo.calls)
+							log, command := usageRepo.lastLog, billingRepo.lastCmd
+							require.NotNil(t, log)
+							require.NotNil(t, command)
+							require.NotNil(t, log.FirstResponseMs, "timing remains present even when early output is disabled")
+							require.Equal(t, raw, result.Usage)
+							require.Equal(t, 900, log.InputTokens)
+							require.Equal(t, 200, log.CacheCreationTokens)
+							require.Equal(t, 100, log.CacheReadTokens)
+							require.InDelta(t, 900*2e-6+13*10e-6+200*3e-6+100*0.1e-6, log.TotalCost, 1e-15)
+							require.InDelta(t, (900*2e-6+13*10e-6+200*3e-6+100*0.1e-6)*customerRate, log.ActualCost, 1e-15)
+							require.NotNil(t, log.AccountRateMultiplier)
+							require.Equal(t, accountRate, *log.AccountRateMultiplier)
+							require.Nil(t, log.AccountStatsCost, "without channel pricing, account statistics use TotalCost times AccountRateMultiplier")
+							require.Equal(t, QuantizeUsageBillingAmount(log.ActualCost), command.APIKeyQuotaCost)
+							require.Equal(t, command.APIKeyQuotaCost, command.APIKeyRateLimitCost)
+							require.Equal(t, QuantizeUsageBillingAmount(log.TotalCost*accountRate), command.AccountQuotaCost)
+							require.Len(t, cache.rateLimitCosts, 1)
+							balance, err := cache.GetUserBalance(context.Background(), user.ID)
+							require.NoError(t, err)
+							snapshot := pkEarlyBillingSnapshot{
+								command: *command, accountCostBits: math.Float64bits(log.TotalCost * *log.AccountRateMultiplier),
+								balanceBits: math.Float64bits(balance), rateLimitBits: math.Float64bits(<-cache.rateLimitCosts),
+							}
+							for _, cost := range []float64{log.InputCost, log.OutputCost, log.CacheCreationCost, log.CacheReadCost, log.TotalCost, log.ActualCost} {
+								snapshot.costBits = append(snapshot.costBits, math.Float64bits(cost))
+							}
+							if subscriptionBilling {
+								require.Zero(t, command.BalanceCost)
+								require.Equal(t, command.APIKeyQuotaCost, command.SubscriptionCost)
+								require.Equal(t, startingBalance, balance)
+								require.Zero(t, cache.deducts.Load())
+								require.Len(t, cache.subscriptionCosts, 1)
+								snapshot.subscriptionBits = math.Float64bits(<-cache.subscriptionCosts)
+								require.Equal(t, math.Float64bits(log.ActualCost), snapshot.subscriptionBits)
+							} else {
+								require.Zero(t, command.SubscriptionCost)
+								require.Equal(t, command.APIKeyQuotaCost, command.BalanceCost)
+								require.Equal(t, int32(1), cache.deducts.Load())
+								require.Equal(t, startingBalance-log.ActualCost, balance)
+								require.Empty(t, cache.subscriptionCosts)
+							}
+							require.Equal(t, math.Float64bits(log.ActualCost), snapshot.rateLimitBits)
+							if baseline == nil {
+								baseline = &snapshot
+							} else {
+								require.Equal(t, *baseline, snapshot, "heartbeat mode must not change any float bit, settlement field, dedup fingerprint or cache deduction")
+							}
+						})
+					}
+				})
+			}
+		}
+	}
+}
+
+func pkEarlyBillingWire(t *testing.T, protocol, mode string, truncated bool) (string, context.Context) {
+	t.Helper()
+	c, rec := newCompactBridgeTestContext(t, false)
+	c.Request = httptest.NewRequest(http.MethodPost, pkEarlyBillingPath(protocol), nil)
+	c.Header("Content-Type", "text/event-stream")
+	stop := startEarlySSEHeartbeat(c, time.Now(), protocol, StreamEarlyHeartbeatSettings{
+		Enabled: mode != "disabled", Mode: mode, MinDelayMS: 30000, MaxDelayMS: 30000,
+	}, earlySpaceRequest{model: "gpt-5.4"})
+	t.Cleanup(stop)
+	if mode != "disabled" {
+		firePKEarlyHeartbeat(t, earlySSEWriterFromContext(c))
+	}
+	if mode == StreamEarlyHeartbeatModeComment || (mode == StreamEarlyHeartbeatModeSpace && protocol == "messages") {
+		require.Equal(t, ": keepalive\n\n", rec.Body.String(), "comment and Messages-space fallback must actually emit a heartbeat")
+	} else if mode == StreamEarlyHeartbeatModeDownstreamPing {
+		want := "data: {\"type\":\"ping\"}\n\n"
+		if protocol == "messages" {
+			want = "event: ping\n" + want
+		}
+		require.Equal(t, want, rec.Body.String(), "ping must actually be emitted before model output")
+	}
+	usage := `{"input_tokens":1200,"output_tokens":13,"total_tokens":1213,"input_tokens_details":{"cached_tokens":100,"cache_write_tokens":200}}`
+	var frames []string
+	switch protocol {
+	case "chat":
+		chatUsage := `{"prompt_tokens":1200,"completion_tokens":13,"total_tokens":1213,"prompt_tokens_details":{"cached_tokens":100,"cache_write_tokens":200}}`
+		frames = []string{"data: {\"id\":\"chat_real\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-5.4\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"}}],\"usage\":" + chatUsage + "}\n\n"}
+		if !truncated {
+			frames = append(frames, "data: {\"id\":\"chat_real\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":"+chatUsage+"}\n\n", "data: [DONE]\n\n")
+		}
+	case "messages":
+		frames = []string{
+			"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_real\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"gpt-5.4\",\"content\":[],\"usage\":{\"input_tokens\":900,\"output_tokens\":0,\"cache_creation_input_tokens\":200,\"cache_read_input_tokens\":100}}}\n\n",
+			"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n",
+			// The upstream Anthropic parser observes output usage on message_delta,
+			// not message_start. Supply the same measured output before either EOF
+			// or message_stop; a missing stop must still be reported as incomplete.
+			"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":null},\"usage\":{\"output_tokens\":13}}\n\n",
+		}
+		if !truncated {
+			frames = append(frames, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":13}}\n\n", "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+		}
+	default:
+		item := `{"id":"msg_real","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"hello","annotations":[]}]}`
+		frames = []string{
+			"event: response.created\ndata: {\"type\":\"response.created\",\"sequence_number\":0,\"response\":{\"id\":\"resp_real\",\"model\":\"gpt-5.4\",\"created_at\":17,\"output\":[]}}\n\n",
+			"event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"sequence_number\":1,\"output_index\":0,\"item\":{\"id\":\"msg_real\",\"type\":\"message\",\"role\":\"assistant\",\"status\":\"in_progress\",\"content\":[]}}\n\n",
+			"event: response.content_part.added\ndata: {\"type\":\"response.content_part.added\",\"sequence_number\":2,\"item_id\":\"msg_real\",\"output_index\":0,\"content_index\":0,\"part\":{\"type\":\"output_text\",\"text\":\"\",\"annotations\":[]}}\n\n",
+			"event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"sequence_number\":3,\"item_id\":\"msg_real\",\"output_index\":0,\"content_index\":0,\"delta\":\"hello\",\"usage\":" + usage + "}\n\n",
+		}
+		if !truncated {
+			frames = append(frames, "event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"sequence_number\":4,\"output_index\":0,\"item\":"+item+"}\n\n", "event: response.completed\ndata: {\"type\":\"response.completed\",\"sequence_number\":5,\"response\":{\"id\":\"resp_real\",\"status\":\"completed\",\"model\":\"gpt-5.4\",\"output\":["+item+"],\"usage\":"+usage+"}}\n\n")
+		}
+	}
+	for _, frame := range frames {
+		_, err := c.Writer.WriteString(frame)
+		require.NoError(t, err)
+	}
+	stop()
+	if mode == StreamEarlyHeartbeatModeSpace && protocol != "messages" {
+		foundSpace := false
+		forEachOpenAISSEFrame(rec.Body.String(), func(_ string, data []byte) {
+			v := gjson.ParseBytes(data)
+			if v.Get("delta").String() == " " || v.Get("choices.0.delta.content").String() == " " {
+				foundSpace = true
+				require.False(t, v.Get("usage").Exists(), "placeholder output must not invent usage")
+			}
+		})
+		require.True(t, foundSpace, "space case must exercise an actually emitted placeholder")
+	}
+	return rec.Body.String(), CopyFirstResponseTiming(c.Request.Context(), context.Background())
+}
+
+func pkEarlyBillingPath(protocol string) string {
+	if protocol == "chat" {
+		return "/v1/chat/completions"
+	}
+	return "/v1/" + protocol
 }

@@ -158,7 +158,11 @@ func TestGroupReasoningPricingRoundTripAndBilling(t *testing.T) {
 		requireReasoningPricingIntegrationMaps(t, loaded.ModelPricing, map[string]map[string]float64{"claude-fable-5-1": expected})
 		for _, effort := range []string{"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "persistent", ""} {
 			multiplier := 1.0
-			if configured, ok := expected[effort]; ok {
+			// PK contract: keep Kilo-only keys in storage, but enable their
+			// customer multipliers only for a Kilo-enabled account. This ordinary
+			// Anthropic calculation has no Kilo context, so ultra/persistent
+			// remain unknown levels with the upstream base multiplier of one.
+			if configured, ok := expected[effort]; ok && effort != "ultra" && effort != "persistent" {
 				multiplier = configured
 			}
 			cost, err := billing.CalculateTokenCostForRequest(service.TokenCostRequest{

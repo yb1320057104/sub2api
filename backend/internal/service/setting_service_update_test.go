@@ -45,6 +45,40 @@ func TestNormalizeContactQRCodeAcceptsRasterImagesAndClear(t *testing.T) {
 	}
 }
 
+func TestNormalizeContactQRCodeWebPAcceptsCompleteAndRejectsDamaged(t *testing.T) {
+	// Complete 442-byte VP8L fixture from the fixed Go image v0.45.0 tag:
+	// https://github.com/golang/image/blob/v0.45.0/testdata/gopher-doc.1bpp.lossless.webp
+	// SHA256: 335348a182a3fc65e0a1a59a53555cdea0c2cd60373acf44b091a0304ff2504a
+	const fixture = "UklGRrIBAABXRUJQVlA4TKUBAAAvSsAYAA8w//M///MfeJAkbXvaSG7m8Q3GfYSBJekwQztm/IcZlgwnmWIm" +
+		"n2BK7aFmBtnVir6q//8VOkFE/xm4baTIu8c48ArEo6+B3zFKYln3pqClSCKX0begFTAXFOLXHSyF8cCNcZEG4Oyw" +
+		"uA4KVVfJCiArU7GAgJI8+lJP/OKMT/fBAjevg1cYB7YVkFuWga2lyPi5I0HFy5YTpWIHg0RZpkniRVW9odHAKOwo" +
+		"sWuOGdxIyn2OvaCDvhg/we6TwadPBPbqBV58MsLmMJ8yZnOWk8SRz4N+QoyPL+MnamzMvcE1rHNEr91F9GKZPVUcS9w" +
+		"7PhhH36suB9qPeYb/oLk6cuTiJ0wOK3m5h1cKjW6EVZCYMK7dxcKCBdgP9HkKr9gkAO2P8GKZGWVdIAatQa+1IDpt" +
+		"6qyorVwdy01xdW8Jkfk6xjEXmVQQ+HQdFr6OKhIN34dXWq0+0qr6EJSCeeVLH9+gvGTLyqM65PQ44ihzlTXxQKjKb" +
+		"AvshXgir7Lil9w4L2bvMycmjQcqXaMCO6BlY28i+FOLzbfI1vEqxAhotocAAA=="
+	raw, err := base64.StdEncoding.DecodeString(fixture)
+	require.NoError(t, err)
+	require.Len(t, raw, 442)
+	value := "data:image/webp;base64," + fixture
+	got, err := normalizeContactQRCode(" \n" + value + "\t ")
+	require.NoError(t, err)
+	require.Equal(t, value, got)
+
+	invalidHeader := append([]byte(nil), raw...)
+	invalidHeader[20] = 0 // The VP8L bitstream signature must be 0x2f.
+	for name, payload := range map[string][]byte{
+		"header_only":             raw[:25],
+		"truncated_pixel_payload": raw[:len(raw)/2],
+		"invalid_lossless_header": invalidHeader,
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := normalizeContactQRCode("data:image/webp;base64," + base64.StdEncoding.EncodeToString(payload))
+			require.Error(t, err)
+			require.Empty(t, got, "a valid image header must not allow incomplete or malformed WebP to be published")
+		})
+	}
+}
+
 func TestNormalizeContactQRCodeRejectsUnsafeMalformedAndOversizeImages(t *testing.T) {
 	var small, wide bytes.Buffer
 	require.NoError(t, png.Encode(&small, image.NewRGBA(image.Rect(0, 0, 2, 2))))
