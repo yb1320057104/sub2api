@@ -41,8 +41,11 @@ const emit = defineEmits<{ test: []; details: [] }>()
 const { t } = useI18n()
 const statusText = computed(() => {
   if (!props.result) return t(props.error ? 'accountCandy.loadFailed' : props.loaded ? 'accountCandy.untested' : 'accountCandy.loading')
-  if (props.result.passed != null) return props.result.passed ? t('accountCandy.passed')
-    : `${t('accountCandy.notPassed')} · ${props.result.answer ?? t('accountCandy.noAnswer')}`
+  if (props.result.passed != null) {
+    if (props.result.passed) return t('accountCandy.passed')
+    if (props.result.model_results?.length) return t('accountCandy.notPassed')
+    return `${t('accountCandy.notPassed')} · ${props.result.answer ?? t('accountCandy.noAnswer')}`
+  }
   return props.result.status === 'completed' ? t('radar.unknown') : t(`accountCandy.${props.result.status}`)
 })
 const statusClass = computed(() => {

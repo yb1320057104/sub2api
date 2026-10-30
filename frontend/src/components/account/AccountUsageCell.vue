@@ -149,7 +149,7 @@
           refresh button is rendered via the pre-actions slot so the user sees a
           single row of related buttons instead of two stacked rows.
         -->
-        <OpenAIQuotaResetCell :account="account" @account-updated="handleQuotaResetAccountUpdated">
+        <OpenAIQuotaResetCell v-if="showActions" :account="account" @account-updated="handleQuotaResetAccountUpdated">
           <template #pre-actions>
             <button
               type="button"
@@ -192,6 +192,7 @@
         <div class="text-xs text-gray-400">-</div>
         <!-- Always allow on-demand upstream quota query, even before local data exists. -->
         <OpenAIQuotaResetCell
+          v-if="showActions"
           :account="account"
           class="mt-1"
           @account-updated="handleQuotaResetAccountUpdated"
@@ -733,6 +734,7 @@ const props = withDefaults(
     todayStats?: WindowStats | null
     todayStatsLoading?: boolean
     manualRefreshToken?: number
+    showActions?: boolean
     batchedUsage?: AccountUsageInfo | null
     batchedUsageError?: string | null
     batchedUsageLoading?: boolean
@@ -742,6 +744,7 @@ const props = withDefaults(
     todayStats: null,
     todayStatsLoading: false,
     manualRefreshToken: 0,
+    showActions: true,
     batchedUsage: null,
     batchedUsageError: null,
     batchedUsageLoading: false,

@@ -285,17 +285,20 @@
                 <span :class="['h-1.5 w-1.5 rounded-full', getOpenAICompactMeta(row)?.dotClass]" />
                 <span>{{ getOpenAICompactMeta(row)?.label }}</span>
               </div>
-              <AccountCandyTestCell
-                v-if="supportsAccountCandyTest(row)"
-                :result="candyResults[row.id]"
-                :starting="candyStartingIDs.has(row.id)"
-                :loaded="candyLoaded"
-                :error="candyLoadError"
-                :target-name="candyGroupName(candyResults[row.id]?.moved_to_group_id)"
-                @test="handleCandyTest(row)"
-                @details="openCandyDetails(row)"
-              />
             </div>
+          </template>
+          <template #cell-candy_test="{ row }">
+            <AccountCandyTestCell
+              v-if="supportsAccountCandyTest(row)"
+              :result="candyResults[row.id]"
+              :starting="candyStartingIDs.has(row.id)"
+              :loaded="candyLoaded"
+              :error="candyLoadError"
+              :target-name="candyGroupName(candyResults[row.id]?.moved_to_group_id)"
+              @test="handleCandyTest(row)"
+              @details="openCandyDetails(row)"
+            />
+            <span v-else class="text-xs text-gray-400">—</span>
           </template>
           <template #cell-capacity="{ row }">
             <AccountCapacityCell :account="row" />
@@ -1884,6 +1887,7 @@ const allColumns = computed(() => {
     { key: 'name', label: t('admin.accounts.columns.name'), sortable: true },
     { key: 'id', label: t('admin.accounts.columns.id'), sortable: true },
     { key: 'platform_type', label: t('admin.accounts.columns.platformType'), sortable: false },
+    { key: 'candy_test', label: t('accountCandy.title'), sortable: false },
     { key: 'capacity', label: t('admin.accounts.columns.capacity'), sortable: false },
     { key: 'status', label: t('admin.accounts.columns.status'), sortable: true },
     { key: 'schedulable', label: t('admin.accounts.columns.schedulable'), sortable: true },

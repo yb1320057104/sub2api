@@ -993,7 +993,7 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 			return s.testOpenAIAccountConnection(c, account, modelID, prompt, mode)
 		}
 		if candy != nil {
-			return candyProbeFailure(fmt.Sprintf("账号测试请求返回 HTTP %d；未转组。", resp.StatusCode))
+			return accountCandyUpstreamFailure(fmt.Sprintf("账号测试请求返回 HTTP %d", resp.StatusCode), body)
 		}
 		if resp.StatusCode == http.StatusTooManyRequests {
 			s.reconcileOpenAI429State(ctx, account, resp.Header, body)
@@ -2191,7 +2191,8 @@ func (s *AccountTestService) testOpenAIChatCompletionsConnection(
 
 	if resp.StatusCode != http.StatusOK {
 		if candyProbe(c) != nil {
-			return candyProbeFailure(fmt.Sprintf("账号测试请求返回 HTTP %d；未转组。", resp.StatusCode))
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, intelligenceTestErrorBodyLimit))
+			return accountCandyUpstreamFailure(fmt.Sprintf("账号测试请求返回 HTTP %d", resp.StatusCode), body)
 		}
 		body, _ := io.ReadAll(resp.Body)
 		if resp.StatusCode == http.StatusTooManyRequests {

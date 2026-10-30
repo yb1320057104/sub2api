@@ -3,7 +3,7 @@ package service
 import (
 	"context"
 	"log/slog"
-	"strings"
+	"sync"
 	"time"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
@@ -102,7 +102,7 @@ func (s *AccountCandyTestService) StartRadar(ctx context.Context, id int64, sour
 }
 
 func (s *AccountCandyTestService) executeRadar(parent context.Context, run *RadarRun, cfg *RadarConfig) {
-	ctx, cancel := context.WithTimeout(parent, time.Duration(len(run.ModelResults))*5*time.Minute+time.Minute)
+	ctx, cancel := context.WithTimeout(parent, 6*time.Minute)
 	defer cancel()
 	started := time.Now()
 	heartDone := make(chan struct{})
@@ -131,61 +131,25 @@ func (s *AccountCandyTestService) executeRadar(parent context.Context, run *Rada
 			}
 		}
 	}()
+	completions := make(chan radarModelCompletion, len(run.ModelResults))
+	var failedCommit sync.Mutex
+	for _, model := range run.ModelResults {
+		go func(model RadarModelResult) {
+			completions <- s.executeRadarModel(ctx, run, cfg, model, &failedCommit)
+		}(model)
+	}
 	var callErr error
-	for i := range run.ModelResults {
-		if err := ctx.Err(); err != nil {
-			callErr = err
-			break
+	for range run.ModelResults {
+		result := <-completions
+		if result.err != nil && callErr == nil {
+			callErr = result.err
+			cancel()
 		}
-		if err := s.renewRadar(ctx, run); err != nil {
-			callErr = err
-			break
-		}
-		if err := s.checkRadarIdentity(ctx, run); err != nil {
-			callErr = err
-			break
-		}
-		model := &run.ModelResults[i]
-		now := time.Now()
-		model.StartedAt = &now
-		model.Status = "running"
-		if err := s.writeRadarModel(ctx, run, model); err != nil {
-			callErr = err
-			break
-		}
-		modelCtx, modelCancel := context.WithTimeout(ctx, 5*time.Minute)
-		model.EgressIP, model.EgressCheckedAt, model.EgressError = probeRadarEgress(modelCtx, run.probeAccount)
-		run.EgressIP, run.EgressCheckedAt, run.EgressError = model.EgressIP, model.EgressCheckedAt, model.EgressError
-		if err := s.writeRadarModel(modelCtx, run, model); err != nil {
-			modelCancel()
-			callErr = err
-			break
-		}
-		probeCfg := &AccountCandyTestConfig{Model: model.Model, Effort: model.Effort}
-		text, err := s.testService.runAccountCandyProbe(modelCtx, run.probeAccount, run.credentialAccount, probeCfg)
-		modelCancel()
-		finished := time.Now()
-		elapsed := finished.Sub(now).Milliseconds()
-		model.FinishedAt = &finished
-		model.DurationMS = &elapsed
-		if err != nil {
-			model.Status = "failed"
-			// Another model can still yield a complete wrong answer and move the
-			// account. Describe this error's contribution, not the batch outcome.
-			model.ErrorMessage = strings.ReplaceAll(accountCandySafeError(err), "未转组", "此失败不作为转组依据")
-		} else {
-			model.Status = "completed"
-			model.ResponseText = text
-			model.Answer = intelligenceExtractAnswer(text)
-			passed := model.Answer != nil && *model.Answer == 21
-			model.Passed = &passed
-		}
-		persistCtx, persistCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		persistErr := s.writeRadarModel(persistCtx, run, model)
-		persistCancel()
-		if persistErr != nil {
-			callErr = persistErr
-			break
+		model := result.model
+		if model.EgressCheckedAt != nil && (run.EgressCheckedAt == nil || model.EgressCheckedAt.After(*run.EgressCheckedAt)) {
+			run.EgressIP, run.EgressCheckedAt, run.EgressError = model.EgressIP, model.EgressCheckedAt, model.EgressError
+		} else if run.EgressCheckedAt == nil && model.EgressError != "" {
+			run.EgressError = model.EgressError
 		}
 	}
 	if ctx.Err() != nil {

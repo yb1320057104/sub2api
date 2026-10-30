@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -67,6 +68,10 @@ func (s *AccountTestService) runAccountCandyProbe(ctx context.Context, account, 
 		return "", ctx.Err()
 	}
 	if err != nil {
+		var failure *accountCandyProbeError
+		if errors.As(err, &failure) {
+			return "", candyProbeFailure(redactCandyAccountError(failure.message, account, credentialAccount))
+		}
 		return "", err
 	}
 	if strings.TrimSpace(probe.text) == "" {
@@ -108,6 +113,7 @@ func finishAccountCandyProbe(c *gin.Context, response *http.Response, chat bool)
 }
 
 type accountCandyChatResponse struct {
+	Type    string          `json:"type"`
 	Error   json.RawMessage `json:"error"`
 	Choices []struct {
 		Index        int     `json:"index"`
@@ -130,6 +136,9 @@ func candyHasJSONValue(raw json.RawMessage) bool {
 }
 
 func accountCandyFinalText(response *intelligenceTestResponse) (string, error) {
+	if response != nil && candyHasJSONValue(response.Error) {
+		return "", accountCandyUpstreamFailure("模型返回错误", response.Error)
+	}
 	if response == nil || response.IncompleteDetails.Reason != "" {
 		return "", candyProbeFailure("模型响应不完整；未转组。")
 	}
@@ -146,7 +155,11 @@ func accountCandyFinalText(response *intelligenceTestResponse) (string, error) {
 			return "", candyProbeFailure("模型消息角色无效；未转组。")
 		}
 	}
-	return intelligenceTestFinalText(response)
+	text, err := intelligenceTestFinalText(response)
+	if err != nil {
+		return "", candyProbeFailure("模型响应未完整结束或缺少有效最终回复；未转组。")
+	}
+	return text, nil
 }
 
 func readAccountCandyReply(response *http.Response, chat bool) (string, error) {
@@ -208,6 +221,12 @@ func readAccountCandyReply(response *http.Response, chat bool) (string, error) {
 		if !utf8.Valid(data) {
 			return fail("响应包含无效文本编码；未转组。")
 		}
+		var envelope struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(data, &envelope) == nil && envelope.Type == "error" {
+			return "", accountCandyUpstreamFailure("模型返回错误", data)
+		}
 		if !chat {
 			var result intelligenceTestResponse
 			if json.Unmarshal(data, &result) != nil {
@@ -215,7 +234,7 @@ func readAccountCandyReply(response *http.Response, chat bool) (string, error) {
 			}
 			text, err := accountCandyFinalText(&result)
 			if err != nil {
-				return fail("JSON 响应未完整结束或缺少有效最终回复；未转组。")
+				return "", err
 			}
 			return text, nil
 		}
@@ -223,7 +242,10 @@ func readAccountCandyReply(response *http.Response, chat bool) (string, error) {
 		if json.Unmarshal(data, &result) != nil {
 			return fail("JSON 响应格式无效；未转组。")
 		}
-		if candyHasJSONValue(result.Error) || len(result.Choices) != 1 {
+		if candyHasJSONValue(result.Error) {
+			return "", accountCandyUpstreamFailure("模型返回错误", result.Error)
+		}
+		if len(result.Choices) != 1 {
 			return fail("JSON 响应未完整结束或缺少有效最终回复；未转组。")
 		}
 		choice := result.Choices[0]
@@ -267,8 +289,8 @@ func readAccountCandyReply(response *http.Response, chat bool) (string, error) {
 			if json.Unmarshal([]byte(data), &message) != nil {
 				return "", false, candyProbeFailure("响应事件格式无效；未转组。")
 			}
-			if candyHasJSONValue(message.Error) || (message.Response != nil && candyHasJSONValue(message.Response.Error)) {
-				return "", false, candyProbeFailure("模型返回错误；未转组。")
+			if candyHasJSONValue(message.Error) || (message.Response != nil && candyHasJSONValue(message.Response.Error)) || message.Type == "error" || message.Type == "response.failed" {
+				return "", false, accountCandyUpstreamFailure("模型返回错误", []byte(data))
 			}
 			if strings.Contains(message.Type, "_call") || strings.HasPrefix(message.Type, "response.mcp_list_tools.") ||
 				(message.Item.Type != "" && message.Item.Type != "message" && message.Item.Type != "reasoning") {
@@ -278,7 +300,7 @@ func readAccountCandyReply(response *http.Response, chat bool) (string, error) {
 			case "response.completed", "response.done":
 				final, err := accountCandyFinalText(message.Response)
 				if err != nil {
-					return "", false, candyProbeFailure("模型没有完整完成最终回复；未转组。")
+					return "", false, err
 				}
 				return final, true, nil
 			case "error", "response.failed", "response.incomplete", "response.canceled", "response.cancelled":
@@ -288,8 +310,11 @@ func readAccountCandyReply(response *http.Response, chat bool) (string, error) {
 			}
 		}
 		var message accountCandyChatResponse
-		if json.Unmarshal([]byte(data), &message) != nil || candyHasJSONValue(message.Error) {
+		if json.Unmarshal([]byte(data), &message) != nil {
 			return "", false, candyProbeFailure("模型响应事件无效；未转组。")
+		}
+		if candyHasJSONValue(message.Error) || message.Type == "error" {
+			return "", false, accountCandyUpstreamFailure("模型返回错误", []byte(data))
 		}
 		for _, choice := range message.Choices {
 			if choice.Index != 0 || candyHasJSONValue(choice.Delta.ToolCalls) || candyHasJSONValue(choice.Delta.FunctionCall) {

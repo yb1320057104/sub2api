@@ -87,7 +87,7 @@ func (s *AccountCandyTestService) claimRadar(ctx context.Context, id int64, sour
 		return nil, nil, infraerrors.Conflict("RADAR_NOT_DUE", "账号尚未到测试时间")
 	}
 	if old.Valid {
-		if _, err = tx.ExecContext(ctx, `UPDATE pk_radar_account_runs SET status='failed',verdict='unknown',error_message='任务租约已过期',finished_at=NOW() WHERE id=$1 AND status='running'`, old.Int64); err != nil {
+		if _, err = tx.ExecContext(ctx, `UPDATE pk_radar_account_runs SET status='failed',verdict=CASE WHEN verdict='fail' THEN 'fail' ELSE 'unknown' END,error_message='任务租约已过期',finished_at=NOW() WHERE id=$1 AND status='running'`, old.Int64); err != nil {
 			return nil, nil, err
 		}
 		if _, err = tx.ExecContext(ctx, `UPDATE pk_radar_account_model_results SET status='failed',error_message='任务租约已过期',finished_at=NOW() WHERE run_id=$1 AND status IN('pending','running')`, old.Int64); err != nil {
@@ -158,8 +158,16 @@ func (s *AccountCandyTestService) renewRadar(ctx context.Context, run *RadarRun)
 	return nil
 }
 
+type radarModelExecutor interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
 func (s *AccountCandyTestService) writeRadarModel(ctx context.Context, run *RadarRun, m *RadarModelResult) error {
-	result, err := s.db.ExecContext(ctx, `UPDATE pk_radar_account_model_results SET status=$2,passed=$3,answer=$4,response_text=$5,error_message=$6,egress_ip=NULLIF($7,'')::inet,egress_checked_at=$8,egress_error=$9,started_at=$10,finished_at=$11,duration_ms=$12 WHERE id=$1 AND run_id=$13 AND EXISTS(SELECT 1 FROM pk_radar_account_state WHERE account_id=$14 AND active_run_id=$13 AND lease_token=$15 AND lease_until>NOW()) AND EXISTS(SELECT 1 FROM pk_radar_account_config WHERE id=1 AND generation=$16)`, m.ID, m.Status, m.Passed, m.Answer, m.ResponseText, m.ErrorMessage, m.EgressIP, m.EgressCheckedAt, m.EgressError, m.StartedAt, m.FinishedAt, m.DurationMS, run.ID, run.AccountID, run.leaseToken, run.Generation)
+	return writeRadarModelWith(ctx, s.db, run, m)
+}
+
+func writeRadarModelWith(ctx context.Context, db radarModelExecutor, run *RadarRun, m *RadarModelResult) error {
+	result, err := db.ExecContext(ctx, `UPDATE pk_radar_account_model_results SET status=$2,passed=$3,answer=$4,response_text=$5,error_message=$6,egress_ip=NULLIF($7,'')::inet,egress_checked_at=$8,egress_error=$9,started_at=$10,finished_at=$11,duration_ms=$12 WHERE id=$1 AND run_id=$13 AND EXISTS(SELECT 1 FROM pk_radar_account_state WHERE account_id=$14 AND active_run_id=$13 AND lease_token=$15 AND lease_until>NOW()) AND EXISTS(SELECT 1 FROM pk_radar_account_config WHERE id=1 AND generation=$16)`, m.ID, m.Status, m.Passed, m.Answer, m.ResponseText, m.ErrorMessage, m.EgressIP, m.EgressCheckedAt, m.EgressError, m.StartedAt, m.FinishedAt, m.DurationMS, run.ID, run.AccountID, run.leaseToken, run.Generation)
 	if err != nil {
 		return err
 	}
@@ -194,6 +202,15 @@ func (s *AccountCandyTestService) finishRadar(ctx, executionCtx context.Context,
 	if err != nil {
 		return err
 	}
+	var previousVerdict, previousStatus, moveFailure string
+	var moved *int64
+	err = tx.QueryRowContext(ctx, `SELECT verdict,status,moved_to_group_id,move_error FROM pk_radar_account_runs WHERE id=$1 FOR UPDATE`, run.ID).Scan(&previousVerdict, &previousStatus, &moved, &moveFailure)
+	if err != nil {
+		return err
+	}
+	if previousStatus != "running" {
+		return nil
+	}
 	status, verdict, failure := "completed", "unknown", ""
 	if executionCtx.Err() != nil {
 		callErr = executionCtx.Err()
@@ -203,12 +220,12 @@ func (s *AccountCandyTestService) finishRadar(ctx, executionCtx context.Context,
 		failure = "测试已取消或配置已更新"
 	} else if callErr != nil {
 		status = "failed"
-		failure = accountCandySafeError(callErr)
+		failure = "本轮执行失败，请查看逐模型结果"
 	}
 	identity, identityErr := accountCandyIdentity(ctx, tx, run.AccountID)
 	if errors.Is(identityErr, sql.ErrNoRows) || identityErr == nil && identity != run.identity {
 		status = "cancelled"
-		failure = "账号或连接配置已更改，本轮判定已失效"
+		failure = "账号或连接配置已更改，剩余测试已取消"
 	} else if identityErr != nil {
 		return identityErr
 	}
@@ -234,16 +251,10 @@ func (s *AccountCandyTestService) finishRadar(ctx, executionCtx context.Context,
 			failure = "部分模型请求失败，请查看逐模型结果"
 		}
 	}
-	var moved *int64
-	moveFailure := ""
-	if verdict == "fail" && cfg.TargetGroupID != nil {
-		if executionCtx.Err() != nil {
-			return executionCtx.Err()
-		}
-		moved, moveFailure, err = s.moveAccount(ctx, tx, &run.AccountCandyTestResult, *cfg.TargetGroupID)
-		if err != nil {
-			return err
-		}
+	// A complete wrong answer and its move were already committed together.
+	// Later errors/cancellation must retain that evidence and never move twice.
+	if previousVerdict == "fail" {
+		verdict = "fail"
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE pk_radar_account_runs SET status=$2,verdict=$3,moved_to_group_id=$4,error_message=$5,move_error=$6,finished_at=NOW(),duration_ms=$7,egress_ip=NULLIF($8,'')::inet,egress_checked_at=$9,egress_error=$10 WHERE id=$1 AND status='running'`, run.ID, status, verdict, moved, failure, moveFailure, elapsed, run.EgressIP, run.EgressCheckedAt, run.EgressError); err != nil {
 		return err
@@ -253,9 +264,6 @@ func (s *AccountCandyTestService) finishRadar(ctx, executionCtx context.Context,
 	}
 	if _, err = tx.ExecContext(ctx, `DELETE FROM pk_radar_account_runs WHERE account_id=$1 AND id NOT IN(SELECT id FROM pk_radar_account_runs WHERE account_id=$1 ORDER BY id DESC LIMIT 30) AND status<>'running' AND id<>$2`, run.AccountID, run.ID); err != nil {
 		return err
-	}
-	if verdict == "fail" && executionCtx.Err() != nil {
-		return executionCtx.Err()
 	}
 	return tx.Commit()
 }
@@ -272,7 +280,7 @@ func (s *AccountCandyTestService) expireRadar(ctx context.Context) error {
 	if _, err = tx.ExecContext(ctx, `UPDATE pk_radar_account_model_results m SET status='failed',error_message='测试租约已过期',finished_at=NOW() FROM pk_radar_account_state st WHERE m.run_id=st.active_run_id AND st.lease_until<=NOW() AND m.status IN('pending','running')`); err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, `WITH expired AS MATERIALIZED(SELECT account_id,active_run_id FROM pk_radar_account_state WHERE active_run_id IS NOT NULL AND lease_until<=NOW() FOR UPDATE), closed AS(UPDATE pk_radar_account_runs r SET status='failed',verdict='unknown',error_message='测试租约已过期',finished_at=NOW() FROM expired e WHERE r.id=e.active_run_id AND r.status='running' RETURNING r.id)UPDATE pk_radar_account_state st SET latest_run_id=e.active_run_id,active_run_id=NULL,lease_token=NULL,lease_until=NULL,verdict='unknown',next_run_at=NOW() FROM expired e WHERE st.account_id=e.account_id AND st.active_run_id=e.active_run_id`); err != nil {
+	if _, err = tx.ExecContext(ctx, `WITH expired AS MATERIALIZED(SELECT account_id,active_run_id FROM pk_radar_account_state WHERE active_run_id IS NOT NULL AND lease_until<=NOW() FOR UPDATE), closed AS(UPDATE pk_radar_account_runs r SET status='failed',verdict=CASE WHEN r.verdict='fail' THEN 'fail' ELSE 'unknown' END,error_message='测试租约已过期',finished_at=NOW() FROM expired e WHERE r.id=e.active_run_id AND r.status='running' RETURNING r.id)UPDATE pk_radar_account_state st SET latest_run_id=e.active_run_id,active_run_id=NULL,lease_token=NULL,lease_until=NULL,verdict=CASE WHEN st.verdict='fail' THEN 'fail' ELSE 'unknown' END,next_run_at=NOW() FROM expired e WHERE st.account_id=e.account_id AND st.active_run_id=e.active_run_id`); err != nil {
 		return err
 	}
 	return tx.Commit()

@@ -153,21 +153,21 @@ func TestPKAccountCandyReplyRejectsIncompleteAndUnsafeBodies(t *testing.T) {
 		{name: "plain answer", body: "21", want: "类型不受支持"},
 		{name: "HTML error", body: "<html>upstream-secret</html>", want: "类型不受支持"},
 		{name: "invalid JSON", body: `{"status":`, want: "JSON 响应格式无效"},
-		{name: "JSON error", body: `{"error":{"message":"upstream-secret"}}`, want: "JSON 响应未完整结束"},
+		{name: "JSON error", body: `{"error":{"message":"Unsupported parameter","api_key":"upstream-secret"}}`, want: "Unsupported parameter"},
 		{name: "invalid UTF8", body: "\xff", want: "无效文本编码"},
 		{name: "delta without terminal", body: "data: {\"type\":\"response.output_text.delta\",\"delta\":\"21\"}\n\n", want: "缺少完整成功结束标记"},
 		{name: "DONE alone", body: "data: [DONE]\n\n", want: "缺少完整最终回复"},
-		{name: "done without completed status", body: terminal(strings.Replace(completed, `"status":"completed",`, "", 1)), want: "没有完整完成最终回复"},
-		{name: "done still in progress", body: terminal(strings.Replace(completed, `"status":"completed"`, `"status":"in_progress"`, 1)), want: "没有完整完成最终回复"},
-		{name: "done truncated", body: terminal(strings.Replace(completed, `{"status"`, `{"incomplete_details":{"reason":"max_output_tokens"},"status"`, 1)), want: "没有完整完成最终回复"},
-		{name: "done empty final text", body: terminal(strings.ReplaceAll(completed, "<final_answer>21</final_answer>", "")), want: "没有完整完成最终回复"},
-		{name: "done wrong role", body: terminal(strings.Replace(completed, `"role":"assistant"`, `"role":"user"`, 1)), want: "没有完整完成最终回复"},
-		{name: "done tool output", body: terminal(strings.Replace(completed, `"type":"message"`, `"type":"function_call"`, 1)), want: "没有完整完成最终回复"},
+		{name: "done without completed status", body: terminal(strings.Replace(completed, `"status":"completed",`, "", 1)), want: "模型响应未完整结束"},
+		{name: "done still in progress", body: terminal(strings.Replace(completed, `"status":"completed"`, `"status":"in_progress"`, 1)), want: "模型响应未完整结束"},
+		{name: "done truncated", body: terminal(strings.Replace(completed, `{"status"`, `{"incomplete_details":{"reason":"max_output_tokens"},"status"`, 1)), want: "模型响应不完整"},
+		{name: "done empty final text", body: terminal(strings.ReplaceAll(completed, "<final_answer>21</final_answer>", "")), want: "模型响应未完整结束"},
+		{name: "done wrong role", body: terminal(strings.Replace(completed, `"role":"assistant"`, `"role":"user"`, 1)), want: "模型消息角色无效"},
+		{name: "done tool output", body: terminal(strings.Replace(completed, `"type":"message"`, `"type":"function_call"`, 1)), want: "工具请求"},
 		{name: "prior tool output", body: "data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"function_call\"}}\n\n" + terminal(completed), want: "工具请求"},
 		{name: "prior tool arguments", body: "data: {\"type\":\"response.function_call_arguments.delta\",\"delta\":\"upstream-secret\"}\n\n" + terminal(completed), want: "工具请求"},
-		{name: "prior error", body: "data: {\"type\":\"error\",\"error\":{\"message\":\"upstream-secret\"}}\n\n" + terminal(completed), want: "模型返回错误"},
-		{name: "prior failed terminal", body: "data: {\"type\":\"response.failed\"}\n\n" + terminal(completed), want: "模型响应失败或未完成"},
-		{name: "oversized final text", body: terminal(strings.ReplaceAll(completed, "<final_answer>21</final_answer>", strings.Repeat("2", intelligenceTestArtifactLimit+1))), want: "没有完整完成最终回复"},
+		{name: "prior error", body: "data: {\"type\":\"error\",\"error\":{\"message\":\"Invalid model\",\"api_key\":\"upstream-secret\"}}\n\n" + terminal(completed), want: "Invalid model"},
+		{name: "prior failed terminal", body: "data: {\"type\":\"response.failed\"}\n\n" + terminal(completed), want: "模型返回错误"},
+		{name: "oversized final text", body: terminal(strings.ReplaceAll(completed, "<final_answer>21</final_answer>", strings.Repeat("2", intelligenceTestArtifactLimit+1))), want: "模型响应未完整结束"},
 		{name: "oversized SSE line", body: "data: " + strings.Repeat("x", 1024*1024) + "\n\n", want: "事件行超过 1 MiB"},
 		{name: "oversized leading whitespace line", body: strings.Repeat(" ", 1024*1024) + terminal(completed), want: "事件行超过 1 MiB"},
 		{name: "oversized event with trailing whitespace", body: "data: {\"type\":\"response.done\"," + strings.Repeat(" ", 600*1024) + "\ndata: \"response\":" + completed + "}" + strings.Repeat(" ", 600*1024) + "\n\n", want: "响应事件超过 1 MiB"},
@@ -193,6 +193,44 @@ func TestPKAccountCandyReplyReadFailureUsesSafeClassification(t *testing.T) {
 	require.Empty(t, text)
 	require.ErrorContains(t, err, "读取模型响应失败")
 	require.NotContains(t, err.Error(), "upstream-secret")
+}
+
+func TestPKAccountCandyUpstreamErrorDetails(t *testing.T) {
+	const diagnostic = `{"message":"Unsupported reasoning.effort for gpt-6-astra; credential=private-echo-value","code":"unsupported_parameter","type":"invalid_request_error","param":"reasoning.effort","api_key":"hidden-field"}`
+	for _, tt := range []struct {
+		name, body string
+		status     int
+	}{
+		{"HTTP error", `{"error":` + diagnostic + `}`, http.StatusBadRequest},
+		{"JSON error", `{"error":` + diagnostic + `}`, http.StatusOK},
+		{"top-level error", "data: " + strings.Replace(diagnostic, `"type":"invalid_request_error"`, `"type":"error"`, 1) + "\n\n", http.StatusOK},
+		{"failed response", `data: {"type":"response.failed","response":{"error":` + diagnostic + `}}` + "\n\n", http.StatusOK},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			upstream := &queuedHTTPUpstream{responses: []*http.Response{newJSONResponse(tt.status, tt.body)}}
+			svc := &AccountTestService{httpUpstream: upstream, cfg: &config.Config{}}
+			account := &Account{ID: 1819, Platform: PlatformOpenAI, Type: AccountTypeUpstream, Concurrency: 2, Credentials: map[string]any{"api_key": "private-echo-value", "base_url": "https://upstream.example.com"}}
+			text, err := svc.runAccountCandyProbe(context.Background(), account, account, defaultAccountCandyConfig())
+			require.Empty(t, text)
+			require.ErrorContains(t, err, "Unsupported reasoning.effort")
+			require.ErrorContains(t, err, "unsupported_parameter")
+			require.ErrorContains(t, err, "gpt-6-astra")
+			require.NotContains(t, err.Error(), "private-echo-value")
+			require.NotContains(t, err.Error(), "hidden-field")
+			require.Contains(t, accountCandySafeError(err), "unsupported_parameter")
+		})
+	}
+	for _, body := range []string{`{"error":` + diagnostic + `}`, `data: {"error":` + diagnostic + `}` + "\n\n"} {
+		text, err := readAccountCandyReply(newJSONResponse(http.StatusOK, body), true)
+		require.Empty(t, text)
+		require.ErrorContains(t, err, "unsupported_parameter")
+	}
+	account := &Account{Credentials: map[string]any{"api_key": strings.Repeat("credential-secret", 200)}, Proxy: &Proxy{Username: "proxy-user", Password: "proxy-pass"}}
+	detail := redactCandyAccountError("Bad credential: "+account.GetCredential("api_key")+" http://proxy-user:proxy-pass@example.com Bearer bearer-secret", account)
+	require.NotContains(t, detail, "credential-secret")
+	require.NotContains(t, detail, "proxy-pass")
+	require.NotContains(t, detail, "bearer-secret")
+	require.LessOrEqual(t, len([]rune(redactCandyAccountError(strings.Repeat("x", 3000)))), accountCandyErrorDetailLimit)
 }
 
 type openAIAccountTestRepo struct {

@@ -435,7 +435,8 @@ func (s *AccountCandyTestService) GetResult(ctx context.Context, accountID, resu
 }
 
 // Transport errors can contain credentials or raw upstream bodies. Persist
-// only fixed classifications; final assistant text is stored separately.
+// only fixed classifications or explicitly sanitized probe diagnostics; final
+// assistant text is stored separately.
 func accountCandySafeError(err error) string {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return "账号测试超时，未转组。"
