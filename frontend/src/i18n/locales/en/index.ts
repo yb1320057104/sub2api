@@ -1,3 +1,4 @@
+import adminAccessKeys from './adminAccessKeys'
 import landing from './landing'
 import common from './common'
 import dashboard from './dashboard'
@@ -6,10 +7,12 @@ import batchImage from './batchImage'
 import binanceRecharge from './binanceRecharge'
 import securityPolicyRanking from './securityPolicyRanking'
 import intelligenceTest from './intelligenceTest'
+import accountCandy from './accountCandy'
 import admin from './admin'
 import misc from './misc'
 
 export default {
+  adminAccessKeys,
   ...landing,
   ...common,
   ...dashboard,
@@ -18,6 +21,7 @@ export default {
   ...binanceRecharge,
   ...securityPolicyRanking,
   ...intelligenceTest,
+  ...accountCandy,
   admin,
   ...misc,
 }

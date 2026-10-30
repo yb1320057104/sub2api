@@ -798,8 +798,9 @@ func ProvideOpsIngressRejectAggregator(opsRepo OpsRepository, opsService *OpsSer
 }
 
 // ProvideSettingService wires SettingService with group reader and proxy repo.
-func ProvideSettingService(settingRepo SettingRepository, groupRepo GroupRepository, proxyRepo ProxyRepository, cfg *config.Config) *SettingService {
+func ProvideSettingService(scopedKeys ScopedAdminKeyRepository, settingRepo SettingRepository, groupRepo GroupRepository, proxyRepo ProxyRepository, cfg *config.Config) *SettingService {
 	svc := NewSettingService(settingRepo, cfg)
+	svc.scopedAdminKeyRepo = scopedKeys
 	svc.SetDefaultSubscriptionGroupReader(groupRepo)
 	svc.SetProxyRepository(proxyRepo)
 	if err := svc.LoadForwardedClientIPSettings(context.Background()); err != nil {
@@ -991,6 +992,7 @@ var ProviderSet = wire.NewSet(
 	ProvideChannelMonitorService,
 	ProvideChannelMonitorRunner,
 	ProvideIntelligenceTestService,
+	ProvideAccountCandyTestService,
 	NewChannelMonitorQuotaFetcher,
 	ProvideChannelMonitorV2Service,
 	ProvideChannelMonitorV2Aggregator,
@@ -1095,6 +1097,12 @@ func ProvideChannelMonitorV2Service(repo ChannelMonitorV2Repository, settingServ
 func ProvideIntelligenceTestService(db *sql.DB, groups GroupRepository, settings SettingRepository, keys *APIKeyService, keyRepo APIKeyRepository, cfg *config.Config) *IntelligenceTestService {
 	svc := NewIntelligenceTestService(db, groups, settings, keys, keyRepo, cfg)
 	startBackgroundAfterActivation("IntelligenceTestService", svc.Start)
+	return svc
+}
+
+func ProvideAccountCandyTestService(db *sql.DB, accounts AccountRepository, groups GroupRepository, settings SettingRepository, tests *AccountTestService) *AccountCandyTestService {
+	svc := NewAccountCandyTestService(db, accounts, groups, settings, tests)
+	startBackgroundAfterActivation("AccountCandyTestService", svc.Start)
 	return svc
 }
 

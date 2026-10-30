@@ -17,6 +17,10 @@
             @create="showCreate = true"
           >
             <template #after>
+              <button type="button" class="btn btn-secondary px-2 md:px-3" :title="t('accountCandy.settings')" @click="showCandySettings = true">
+                <Icon name="cog" size="sm" />
+                <span class="hidden md:inline">{{ t('accountCandy.settings') }}</span>
+              </button>
               <!-- Auto Refresh Dropdown -->
               <div class="relative" ref="autoRefreshDropdownRef">
                 <button
@@ -281,6 +285,16 @@
                 <span :class="['h-1.5 w-1.5 rounded-full', getOpenAICompactMeta(row)?.dotClass]" />
                 <span>{{ getOpenAICompactMeta(row)?.label }}</span>
               </div>
+              <AccountCandyTestCell
+                v-if="supportsAccountCandyTest(row)"
+                :result="candyResults[row.id]"
+                :starting="candyStartingIDs.has(row.id)"
+                :loaded="candyLoaded"
+                :error="candyLoadError"
+                :target-name="candyGroupName(candyResults[row.id]?.moved_to_group_id)"
+                @test="handleCandyTest(row)"
+                @details="openCandyDetails(row)"
+              />
             </div>
           </template>
           <template #cell-capacity="{ row }">
@@ -458,6 +472,8 @@
     <EditAccountModal :show="showEdit" :account="edAcc" :proxies="proxies" :groups="groups" @close="showEdit = false" @updated="handleAccountUpdated" />
     <ReAuthAccountModal :show="showReAuth" :account="reAuthAcc" @close="closeReAuthModal" @reauthorized="handleAccountUpdated" />
     <AccountTestModal :show="showTest" :account="testingAcc" @close="closeTestModal" />
+    <AccountCandyTestSettings :show="showCandySettings" @close="showCandySettings = false" @saved="refreshCandyResults" />
+    <AccountCandyTestDetails :show="candyDetailsResult !== null" :account-name="candyDetailsAccountName" :result="candyDetailsResult" :groups="groups" @close="candyDetailsResult = null" />
     <AccountStatsModal :show="showStats" :account="statsAcc" @close="closeStatsModal" />
     <ScheduledTestsPanel :show="showSchedulePanel" :account-id="scheduleAcc?.id ?? null" :model-options="scheduleModelOptions" @close="closeSchedulePanel" />
     <AccountActionMenu :show="menu.show" :account="menu.acc" :anchor-rect="menu.anchorRect" @close="menu.show = false" @test="handleTest" @stats="handleViewStats" @schedule="handleSchedule" @duplicate="handleDuplicateAccount" @reauth="handleReAuth" @refresh-token="handleRefresh" @recover-state="handleRecoverState" @reset-quota="handleResetQuota" @set-privacy="handleSetPrivacy" @create-spark-shadow="handleCreateSparkShadow" />
@@ -516,6 +532,11 @@ import AccountActionMenu from '@/components/admin/account/AccountActionMenu.vue'
 import ImportDataModal from '@/components/admin/account/ImportDataModal.vue'
 import ReAuthAccountModal from '@/components/admin/account/ReAuthAccountModal.vue'
 import AccountTestModal from '@/components/admin/account/AccountTestModal.vue'
+import AccountCandyTestCell from '@/components/admin/account/AccountCandyTestCell.vue'
+import AccountCandyTestSettings from '@/components/admin/account/AccountCandyTestSettings.vue'
+import AccountCandyTestDetails from '@/components/admin/account/AccountCandyTestDetails.vue'
+import { supportsAccountCandyTest, useAccountCandyTests } from '@/composables/useAccountCandyTests'
+import type { AccountCandyResult } from '@/api/admin/accountCandy'
 import AccountStatsModal from '@/components/admin/account/AccountStatsModal.vue'
 import ScheduledTestsPanel from '@/components/admin/account/ScheduledTestsPanel.vue'
 import type { SelectOption } from '@/components/common/Select.vue'
@@ -606,6 +627,9 @@ const showDeleteDialog = ref(false)
 const showCreateShadowDialog = ref(false)
 const showReAuth = ref(false)
 const showTest = ref(false)
+const showCandySettings = ref(false)
+const candyDetailsResult = ref<AccountCandyResult | null>(null)
+const candyDetailsAccountName = ref('')
 const showStats = ref(false)
 const showErrorPassthrough = ref(false)
 const showTLSFingerprintProfiles = ref(false)
@@ -1203,6 +1227,37 @@ const reload = async () => {
   await refreshTodayStatsBatch()
 }
 
+const {
+  results: candyResults,
+  startingIDs: candyStartingIDs,
+  loaded: candyLoaded,
+  loadError: candyLoadError,
+  refresh: refreshCandyResults,
+  start: startCandyTest,
+} = useAccountCandyTests(accounts, () => {
+  void load({ refreshTodayStats: false }).catch(error => {
+    appStore.showError(extractApiErrorMessage(error, t('common.error')))
+  })
+})
+
+const candyGroupName = (id: number | null | undefined) => id == null ? ''
+  : groupsByID.value.get(id)?.name ?? t('accountCandy.groupId', { id })
+
+async function handleCandyTest(account: AccountListItem) {
+  try {
+    if (await startCandyTest(account.id)) appStore.showSuccess(t('accountCandy.started'))
+  } catch (error) {
+    appStore.showError(extractApiErrorMessage(error, t('accountCandy.startFailed')))
+  }
+}
+
+function openCandyDetails(account: AccountListItem) {
+  const result = candyResults.value[account.id]
+  if (!result) return
+  candyDetailsAccountName.value = account.name
+  candyDetailsResult.value = result
+}
+
 const buildUpstreamBillingRateFilters = () => {
   const rawParams = toRaw(params) as Record<string, unknown>
   return {
@@ -1408,6 +1463,8 @@ const isAnyModalOpen = computed(() => {
     showDeleteDialog.value ||
     showReAuth.value ||
     showTest.value ||
+    showCandySettings.value ||
+    candyDetailsResult.value !== null ||
     showStats.value ||
     showSchedulePanel.value ||
     showErrorPassthrough.value ||

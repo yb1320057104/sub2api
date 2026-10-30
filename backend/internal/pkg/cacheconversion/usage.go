@@ -53,7 +53,7 @@ var nestedReadPaths = []string{
 }
 
 var rootReadPaths = []string{
-	"cache_read_input_tokens", "cache_read_tokens", "cached_tokens",
+	"cache_read_input_tokens", "cache_read_tokens", "cached_tokens", "prompt_cache_hit_tokens",
 }
 
 // ConvertReadTokens uses decimal floor so values such as 100 * 0.29 yield 29,

@@ -4,6 +4,8 @@
 
 ## 基线与阅读方式
 
+- 2026-10-30 目标 `v0.2.19-pk.1`：从私库 main / `v0.2.18-pk.2`（`d8d1c0a1fefed3b720d60afed29c1ef0055c3eab`）合并上游正式 `v0.2.19`（`dece26153621959ccd7635814f4b2d08304e681a`），新增账号级糖果测试 PK-034；现有分组测试 PK-032 保持独立。用户确认先覆盖 OpenAI 全部账号类型，完整回答不合格时移除全部原分组、仅加入指定组，请求失败不转组。逐项静态核对及兼容修复见 [0.2.19 合并记录](docs/PK_UPSTREAM_0.2.19_REVIEW.md)。本轮不运行本地构建或测试，不将历史服务器报告用作本轮通过证据。
+
 - 2026-10-26 后续目标 `v0.2.18-pk.2`：用户要求再次逐字节核对并在服务器回归通过后提交，特别确认首字开启不改变原始usage的计费/额度和记账次数。从pk.1提交 `7e0cbaca685a69212ec1959fbceb5788619b6c08` 继续，不移动旧标签；沿用PK-003/007～012/017/028/033，扩展既有回归及race选择器，修复服务器安全扫描发现的WebP依赖漏洞，无新增ID。固定字节依据、首字边界和服务器验证范围见 [首字与计费复核](docs/PK_BILLING_HEARTBEAT_0.2.18_REVIEW.md)，结果以匹配本轮tree的服务器报告为准，不预先声称通过。
 
 - 2026-10-26 从私库 `v0.2.17-pk.16` / main（`f992259daaa56f4719bc7fc38420edde4ae09ee7`）合并上游 `v0.2.18`（`ac1b8f1271be0d674fa6f074403c1410f30a3a81`），唯一目标 `v0.2.18-pk.1`。无新增 ID，保留全部有效二开和 PK-029/030 已授权移除状态；按上游行为为主，在 PK-008/009/028 交叉处作必要适配。逐项静态依据、冲突处理、迁移及升级注意事项见 [0.2.18 合并记录](docs/PK_UPSTREAM_0.2.18_REVIEW.md)。本轮未运行任何测试或构建，未自行生成测试文件；不将上游或历史回归当作本次通过结果。按既定授权提交、合入 main 并准备正式标签，用户自行点击 Jenkins release，未操作生产。
@@ -13,7 +15,7 @@
 - 2026-10-02 合并上游 `v0.2.12`（commit `5106065716e494204fc0e8db16f68f6e9d576be0`，tag 对象 `cbe9966432317e6757b47f598a103d2132ec27db`），合并前私库为 `162a58972bee08078a43eefa761da1b245f667fa`。逐项核对见 [0.2.12 合并记录](docs/PK_UPSTREAM_0.2.12_REVIEW.md)，正式发布目标为 `v0.2.12-pk.1`；发布与线上更新分别记录。
 - 2026-10-02 合并上游 `v0.2.11`（commit `96f4c115c9749078f90cbf210a01d39baf3f53b6`），合并前私库为 `32f068dcbdc75063ff7f6488aef6c85912d7bf3f`。逐项核对及本次验证见 [合并记录](docs/PK_UPSTREAM_0.2.11_REVIEW.md)；合并源码不代表已发布或更新线上。
 - 本次清点覆盖从该上游基线到私库 `23e5fe663338c86cd0cebbf2f688c8a75dd8c152` 的全部二开提交；应用发行参照 `v0.2.10-pk.7`，另登记本次新增的项目约束机制。此处是代码核对基线，不代表线上当前版本。
-- 以下 PK-001 至 PK-028 及 PK-031 至 PK-033 均为有效保护项；PK-029、PK-030 已按用户授权移除，保留原 ID 与回退记录，不得复用。文件路径用于定位，不是完整修改白名单；所有新调用入口、迁移和旁路都要检查。
+- 以下 PK-001 至 PK-028 及 PK-031 至 PK-034 均为有效保护项；PK-029、PK-030 已按用户授权移除，保留原 ID 与回退记录，不得复用。文件路径用于定位，不是完整修改白名单；所有新调用入口、迁移和旁路都要检查。
 - 每项说明“必须保持”的行为。文末另列验证入口与已知边界；测试存在、历史验证通过和本次候选通过是三件不同的事。
 - 2026-10-21 用户最新要求取代 2026-10-08/19 的源码测试及 notes 前置门禁：核对二开保护和变更后直接提交、合入私库 main 并推送不带 `origin/` 的正式版本标签，交给用户点击 Jenkins `ACTION=release`。不再默认运行完整源码测试，不要求源码验证 notes；Jenkins 继续执行构建、同制品运行时验收和私库发布，不使用 GitHub Actions。可选测试如实记录，未执行不能声称通过。下文历史门禁仅说明当时状态，现行规则以 PK-017 为准。
 
@@ -59,6 +61,7 @@
 | PK-031 | DP API 品牌与柔蓝主题 | 渐变标志、统一名称、胶囊导航、移除友链，保留权限、响应式与深色模式 |
 | PK-032 | 服务端定时智商测试 | 全分组/类型并发、失败自动重试、保存清空重启、当次模型/强度、糖果文案/回复、每行6张、专用 Key 轮换、回环调用、最近30条 |
 | PK-033 | 联系方式配置与展示 | 文字/二维码独立可选、上传校验、首页/登录/用户仪表盘、条件锚点及醒目展示 |
+| PK-034 | 账号级糖果测试与自动转组 | OpenAI 全部账号类型、固定账号直测、手动/独立定时、答案21、失败不转组、不合格移除全部原组 |
 
 ## PK-001
 
@@ -130,6 +133,8 @@
 - 客户端未请求 `include_usage` 不应丢弃已经收到的上游 usage；原始 Chat 强制向上游请求 stream usage，Anthropic→Chat 发现真实 usage 后保留下游发送路径。
 - 入口：`backend/internal/service/openai_cache_conversion_output.go`、`openai_gateway_{response_handling,passthrough,cc_pipeline}.go` 及 PK-006 接入点。
 - 验证：已有 `TestPKCacheConversionJSONKeepsPayloadAndOriginalUsage`、`TestPKCacheConversionSSEPreservesTextAndFraming`；增加协议或上游字段时逐个检查原始数据与改写结果。
+
+2026-10-30 合入 v0.2.19 时扩展：上游用量解析新增 `prompt_cache_hit_tokens`，下游转换的根级读取别名同步追加在已有别名之后，保留 canonical/nested 显式0优先。开启转换时各已有别名同步，关闭时返回原字节；既有 `openai_gateway_usage_integrity_test.go` 增加对应断言但本轮未执行。
 
 ## PK-006
 
@@ -221,6 +226,8 @@
 - 入口：`backend/internal/handler/dto/{types,mappers}.go`、`backend/internal/service/channel_monitor_v2.go`；`frontend/src/components/admin/usage/UsageTable.vue`、`frontend/src/views/admin/UsageView.vue`、类型和中英 dashboard 文案。
 - 2026-10-01 PK-023 在币安菜单嵌入同一管理员使用记录页；嵌入模式沿用管理员 DTO、筛选和首字/上游首字展示权限，独立 `/admin/usage` 入口的原有默认行为保留。
 - 验证：`TestPKUsageFirstResponsePrivacy`、`TestPKChannelMonitorPublicLatencyDoesNotExposeUpstreamTTFT`、`UsageTable.spec.ts`。前端该文件的 CI 纳入情况见文末。
+
+2026-10-30 合入 v0.2.19 时扩展：上游新增的受限管理密钥 `usage.read` 响应保留管理面 `first_token_ms`，同时显式加入 `first_response_ms`，避免遗漏双计时。只扩展已授权用量响应字段，不扩大密钥路由或关联资源读取范围；嵌套用户、Key、账号、订阅继续剥离。既有 `scoped_admin_usage_response_test.go` 增加不同双计时值断言但本轮未执行。
 
 ## PK-011
 
@@ -380,6 +387,8 @@
 - 验证：六项 `TestBackgroundStartGate_*`，以及 `TestBatchImageCleanupLifecycle_StopWithoutStart`、`ImmediateStop`。
 
 - 2026-10-15 新 Gemini 缓存恢复任务纳入启动门；停止取消数据库/上游调用并等待 worker 完成，未启动/重复/并发停止安全。普通客户端缓存修改仍保留上游脱离客户端取消的语义。回归 `TestPKBackgroundGeminiRecoveryStop` 及上游取消传播回归，加入源码 race 选择器。
+
+2026-10-30 新增第22项受控后台 `AccountCandyTestService`：经过 `startBackgroundAfterActivation`，与 `wire.go` / `wire_gen.go` 的 Cleanup 同步接入；退出取消在途探测并等待结果收尾。账号测试不复用或改变分组智商测试生命周期。
 
 ## PK-020
 
@@ -634,6 +643,23 @@
 - 入口：后端`setting_contact.go`与setting keys/parse/update/public/DTO/admin handler/audit链；前端`components/common/SiteContact.vue`、`composables/useSiteContact.ts`、`SettingsView.vue`、`HomeView.vue`、`auth/LoginView.vue`、`user/DashboardView.vue`、settings API/types/app store及中英文文案。`ImageUpload.vue`仅增加可选图片类型限制，其余上传默认行为不变。
 - 验证与边界：静态核对完整保存/公开/注入链、局部保存和隐藏条件、锚点及响应式布局；扩展仓库原有设置校验、部分更新、公开注入与API契约回归文件，未新建测试文件，未运行任何测试或构建。二维码合法图片校验不保证其内容一定为可扫描二维码；未执行浏览器视觉验收，不冒称通过。本轮未发布制品或操作生产。
 
+## PK-034
+
+**账号级糖果测试、定时检查与不合格转组。** 状态：有效。引入：2026-10-30 `v0.2.19-pk.1`。用户要求按截图在账号列表直接测试账号，并增加独立定时配置；后续明确这不是分组测试、首版覆盖 OpenAI 全部账号类型，非21时移除全部原组仅加入指定组，请求失败不转组。
+
+- 仅完整权限管理员管理。账号列表的 OpenAI 行提供“糖果测试 / 详情”和当次模型、结果、时间；账号页独立“糖果测试设置”入口，保留原连通性测试及 PK-032 的分组测试。测试固定使用所选账号，不由分组调度选择其他账号；其他平台及合成 UI 测试账号不执行本测试。OAuth、API Key 和影子账号沿用各自真实凭据、模型映射、代理及协议路径。
+- 配置独立存于 `settings.pk_account_candy_test_config`：`enabled=false`、`interval_minutes=60`、`model=gpt-6-astra`、`effort=medium`、`target_group_id=null`。间隔允许1～1440分钟，模型/强度独立配置；题目固定为既有糖果题原文加最终答案格式，合格答案固定21，不能从请求注入其他题目、地址或凭据。自动开关不限制手动入口；未配置目标时手动只记录结果，启用自动测试需选择有效的 OpenAI 目标分组。
+- 定时任务按账号独立到期，不依赖已选测试分组或专用分组 Key；只处理未删除、启用且可调度的 OpenAI 账号，跳过已在目标组及按设置自动暂停的过期账号。每实例最多8个并行任务，每次最多5分钟，数据库6分钟租约防止同一账号多实例/手动/自动重叠。目标组内可手动复测，但合格后不会自动恢复原组。
+- 仅收到完整协议成功终态和非空最终助手回复后判定答案；合格21保持当前分组。完整回答不合格（包括无法识别出合格答案）且有目标时，删除该账号全部原分组绑定并只加入目标组。HTTP/网络/超时、取消、协议失败或不完整响应记为失败/取消，不转组。只保存最终回复，不保存推理流或原始上游错误、请求头与凭据。
+- 转组、终态结果和调度缓存 outbox 在同一数据库事务完成。转组前重新检查配置代次、原任务租约、账号、目标组状态与准入限制；比较启动时原分组快照，管理员已经改组则保留当前组并记录原因。目标组被删除/停用或不满足准入条件时保留原组，明确区分“测试不合格”与“转组未完成”，不假报已转组。旧任务不能覆盖新任务、配置或管理员变更。
+- 请求使用事务前取得并在领取锁内核对的账号/母号快照，转组时再次比对身份摘要；凭据、模型映射、代理连接字段及已选协议/Kilo/TLS配置变化时保守跳过。摘要和凭据仅存内存，不进入结果/日志。配置 PUT 必须提交五个字段，仅目标组可为 null。结果模型/强度是配置请求快照，后续账号映射和 Kilo 强度转换仍沿用原规则。Responses 的 incomplete_details、未完成项或工具输出与 Chat 的非 stop/缺少 DONE 都不能冒充完整答案。
+- 过期未完成任务的清理独立于自动开关：异常退出后的手动任务也会在租约到期后恢复可重试状态，只清理仍匹配原 active_result_id 的记录。正常停止等待本轮请求/结果收尾，重复或并发停止不清除后来启动的新生命周期。调度缓存继续通过既有 outbox 异步更新，事务提交不等于所有实例缓存瞬时同步。
+- 新增迁移 `251_account_candy_tests.sql`，独立 `pk_account_candy_results` / `pk_account_candy_state`；每账号保留最近30条记录，保存触发来源、当次模型/强度/题目、最终回复、识别答案、原分组和实际目标、错误/转组原因、开始/结束和真实耗时。最终回复最多256KiB。配置保存切换代次、取消旧任务并重新计算到期；历史结果保留，不清空分组测试或改写历史账务。
+- 接口：`GET/PUT /api/v1/admin/account-candy-test/config`、批量最新结果 `GET /api/v1/admin/account-candy-test/results?account_ids=...`（最多200个）、`POST /api/v1/admin/accounts/:id/candy-test`、`GET /api/v1/admin/accounts/:id/candy-test/results/:result_id`。沿用管理员认证、合规门控、管理面限流及写操作审计；受限管理密钥不获得新路由权限，handler 另作拒绝。只读接口不启动模型，返回 `no-store`，详情绑定账号和结果ID。
+- 前端仅刷新当前页账号（每5秒，页面隐藏暂停），切页、关闭和卸载取消过时读取；新测试不能被旧响应覆盖，实际转组后刷新账号列表。详情内容按文本转义，失败不会显示为不合格移组。新功能执行语义沿用管理员账号直测，不创建用户模型账单，不改变正常网关用量、缓存转换、Kilo计费、额度或 PK-032 分组测试账务。
+- 入口：`backend/internal/service/account_candy_*.go`、账号测试的私有糖果模式适配、`handler/account_candy_test_handler.go`、管理路由及 service/handler/server Wire；前端 `api/admin/accountCandy.ts`、`composables/useAccountCandyTests.ts`、`components/admin/account/AccountCandyTest*.vue`、`views/admin/AccountsView.vue` 与中英文文案。
+- 验证：本轮仅静态核对请求固定账号、完整回复判定、事务/租约、权限/缓存、前后端契约与生命周期；既有最小依赖 Cleanup 回归同步新增服务参数。没有运行本地构建、测试、服务器回归或真实账号调用；没有新建临时测试文件。不将代码存在或历史报告写为本轮动态通过；Jenkins 制品验收仍由用户触发。
+
 ## 验证入口与现有边界
 
 ### 已有回归入口
@@ -669,7 +695,7 @@
 
 ## 新增条目模板
 
-新增独立能力使用下一个未用 ID，当前下一个为 `PK-034`；多项变更并行新增时在合并前消除 ID 冲突，已有 ID 不重用。同步更新索引、有效条目范围和此处的下一个 ID。
+新增独立能力使用下一个未用 ID，当前下一个为 `PK-035`；多项变更并行新增时在合并前消除 ID 冲突，已有 ID 不重用。同步更新索引、有效条目范围和此处的下一个 ID。
 
 ```markdown
 ## PK-NNN

@@ -179,6 +179,44 @@ func TestPKCacheConversionJSONKeepsPayloadAndOriginalUsage(t *testing.T) {
 	require.Equal(t, original, string(raw))
 }
 
+func TestPKCacheConversionDeepSeekReadAlias(t *testing.T) {
+	account := &Account{Platform: PlatformOpenAI, Extra: map[string]any{
+		AccountExtraCacheConversionEnabled:    true,
+		AccountExtraCacheConversionMultiplier: 0.5,
+	}}
+	for _, tt := range []struct {
+		name     string
+		extra    string
+		wantRead int
+	}{
+		{name: "DeepSeek alias", wantRead: 7},
+		{name: "canonical nested zero wins", extra: `,"prompt_tokens_details":{"cached_tokens":0}`, wantRead: 0},
+		{name: "existing root alias wins", extra: `,"cache_read_input_tokens":3`, wantRead: 3},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			body := []byte(`{"usage":{"prompt_tokens":23,"completion_tokens":13,"total_tokens":36,"cache_creation_input_tokens":5,"prompt_cache_hit_tokens":7` + tt.extra + `},"text":"keep 原文"}`)
+			originalUsage := gjson.GetBytes(body, "usage")
+			require.Equal(t, tt.wantRead, openAICacheReadTokensFromUsage(originalUsage))
+			converted, err := RewriteOpenAICacheConversionJSON(account, body)
+			require.NoError(t, err)
+			require.EqualValues(t, tt.wantRead+2, gjson.GetBytes(converted, "usage.prompt_cache_hit_tokens").Int())
+			require.EqualValues(t, tt.wantRead+2, gjson.GetBytes(converted, "usage.prompt_tokens_details.cached_tokens").Int())
+			require.EqualValues(t, 0, gjson.GetBytes(converted, "usage.cache_creation_input_tokens").Int())
+			require.EqualValues(t, 20, gjson.GetBytes(converted, "usage.prompt_tokens").Int())
+			require.EqualValues(t, 33, gjson.GetBytes(converted, "usage.total_tokens").Int())
+			require.Equal(t, "keep 原文", gjson.GetBytes(converted, "text").String())
+			require.EqualValues(t, 7, gjson.GetBytes(body, "usage.prompt_cache_hit_tokens").Int(), "original billing evidence must remain unchanged")
+			disabled, err := RewriteOpenAICacheConversionJSON(nil, body)
+			require.NoError(t, err)
+			require.Equal(t, body, disabled)
+			frame := ": keepalive\nevent: response.completed\ndata: " + string(body) + "\n\ndata: [DONE]\n\n"
+			sse, err := rewriteCacheConvertedSSE(account, frame, cacheconversion.OpenAI)
+			require.NoError(t, err)
+			require.Equal(t, ": keepalive\nevent: response.completed\ndata: "+string(converted)+"\n\ndata: [DONE]\n\n", sse)
+		})
+	}
+}
+
 func TestPKCacheConversionSSEPreservesTextAndFraming(t *testing.T) {
 	account := &Account{Platform: PlatformOpenAI, Extra: map[string]any{
 		AccountExtraCacheConversionEnabled:    true,
