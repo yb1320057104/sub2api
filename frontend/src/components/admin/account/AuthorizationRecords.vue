@@ -95,7 +95,7 @@ let disposed = false
 let secretVersion = 0
 let request: AbortController | null = null
 const filterNames = computed(() => props.kind === 'accounts' ? ['all', 'authorized', 'expired', 'banned', 'missing_credentials', 'credentials_completed', 'queued', 'authorizing', 'error', 'unknown', 'unsupported'] : props.kind === 'history' ? ['all', 'saved', 'banned'] : props.kind === 'proxies' ? ['all', 'unknown', 'passed', 'failed'] : ['all', 'queued', 'running', 'completed', 'banned', 'failed', 'needs_input', 'cancelled'])
-const state = (value: string) => te('authorization.states.' + value) ? t('authorization.states.' + value) : value
+const state = (value: string) => props.kind === 'proxies' && value === 'unknown' ? t('authorization.proxyUnchecked') : te('authorization.states.' + value) ? t('authorization.states.' + value) : value
 const filters = computed(() => filterNames.value.map(value => ({ value, label: state(value) })))
 const date = (value?: string) => value ? formatDateTime(value) : '—'
 function tone(value: string) { return ['authorized', 'passed', 'completed', 'saved'].includes(value) ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300' : ['expired', 'banned', 'failed', 'missing_credentials'].includes(value) ? 'bg-red-50 text-red-700 dark:bg-red-950/30 dark:text-red-300' : 'bg-primary-50 text-primary-700 dark:bg-primary-950/40 dark:text-primary-300' }

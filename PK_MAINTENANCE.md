@@ -1,5 +1,7 @@
 # PK出版：源码、发布与上游更新
 
+2026-10-31 v0.2.19-pk.16：补齐授权预检的实际浏览器版本/UA/Client Hints及最多3次前置新连接重试，明确失败原因和未预检状态。服务器专项实测4条原失败代理全部通过，负向隧道夹具正确失败；本机不构建/测试，没有升级线上应用或触发Jenkins。正式交接ACTION=release、SOURCE_REF=v0.2.19-pk.16，COMMIT_SHA/PACKAGE_ID留空，用户自行打包更新；现场旧预检结果不会由诊断改写，升级后重新点击GET预检即可。详情见docs/PK_AUTH_PROXY_PREFLIGHT_REVIEW.md。
+
 2026-10-31 当前目标为 `v0.2.19-pk.15`，基于私库正式 `v0.2.19-pk.14`（`9b0a0e8b6b19de9d35d8f452f206bacdf6f8a864`）。保留外置浏览器部署、版本检测/回退安全边界、PK-036/PK-032 和 Turnstile hostname/action/fail-closed 行为；本轮去除 Turnstile 默认值重复注册并补充 `TURNSTILE_REQUIRED`/`TURNSTILE_EXPECTED_HOSTNAME` 纯环境加载回归覆盖，无新增二开 ID。
 
 交接仍由用户点击 Jenkins：`ACTION=release`、`SOURCE_REF=v0.2.19-pk.15`，`COMMIT_SHA`/`PACKAGE_ID` 留空；未生成新制品前不宣称已部署。

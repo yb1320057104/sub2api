@@ -344,7 +344,106 @@ func authorizationPause(ctx context.Context, d time.Duration) error {
 	}
 }
 
+// Keep browser identity aligned with the installed Chromium TLS implementation.
+// Do not advertise the reference client's Chrome 146 while running Chromium 136.
+func authorizationBrowserIdentity(ctx context.Context, cdp *authorizationCDP) error {
+	var version struct {
+		Product   string `json:"product"`
+		UserAgent string `json:"userAgent"`
+	}
+	if err := cdp.call(ctx, "Browser.getVersion", map[string]any{}, &version); err != nil {
+		return err
+	}
+	full := strings.TrimPrefix(strings.TrimPrefix(version.Product, "Chrome/"), "HeadlessChrome/")
+	major, _, _ := strings.Cut(full, ".")
+	if _, err := strconv.Atoi(major); err != nil || version.UserAgent == "" {
+		return authorizationBrowserFailure("browser_identity", "无法读取授权浏览器版本，未发送预检请求")
+	}
+	platform, navigatorPlatform := "Linux", "Linux x86_64"
+	if strings.Contains(version.UserAgent, "Windows") {
+		platform, navigatorPlatform = "Windows", "Win32"
+	} else if strings.Contains(version.UserAgent, "Macintosh") {
+		platform, navigatorPlatform = "macOS", "MacIntel"
+	}
+	params := map[string]any{
+		"userAgent":      strings.ReplaceAll(version.UserAgent, "HeadlessChrome/", "Chrome/"),
+		"acceptLanguage": "en-US,en;q=0.9",
+		"platform":       navigatorPlatform,
+		"userAgentMetadata": map[string]any{
+			"brands":          []map[string]string{{"brand": "Not.A/Brand", "version": "99"}, {"brand": "Chromium", "version": major}},
+			"fullVersionList": []map[string]string{{"brand": "Not.A/Brand", "version": "99.0.0.0"}, {"brand": "Chromium", "version": full}},
+			"fullVersion":     full, "platform": platform, "platformVersion": "",
+			"architecture": "x86", "model": "", "mobile": false, "bitness": "64",
+		},
+	}
+	if err := cdp.call(ctx, "Network.setUserAgentOverride", params, nil); err != nil {
+		return authorizationBrowserFailure("browser_identity", "授权浏览器身份配置失败，未发送预检请求")
+	}
+	return nil
+}
+
+// Chromium errors are reduced to known categories; never expose proxy URLs or
+// arbitrary upstream error text in administrator-visible results.
+func authorizationPrecheckNetworkFailure(reason string) error {
+	message := "代理连接或页面响应失败"
+	switch {
+	case strings.Contains(reason, "PROXY_AUTH"), strings.Contains(reason, "INVALID_AUTH_CREDENTIALS"):
+		message = "代理认证失败，请检查代理用户名和密码"
+	case strings.Contains(reason, "TUNNEL_CONNECTION_FAILED"), strings.Contains(reason, "PROXY_CONNECTION_FAILED"):
+		message = "代理隧道建立失败，请检查协议、端口、认证及来源 IP 白名单"
+	case strings.Contains(reason, "NAME_NOT_RESOLVED"):
+		message = "代理或目标域名解析失败"
+	case strings.Contains(reason, "CERT_"), strings.Contains(reason, "SSL_"):
+		message = "代理链路的 HTTPS/TLS 连接失败"
+	case strings.Contains(reason, "TIMED_OUT"):
+		message = "代理连接或首页响应超时"
+	case strings.Contains(reason, "CONNECTION_RESET"), strings.Contains(reason, "CONNECTION_CLOSED"):
+		message = "代理或目标站点提前断开连接"
+	}
+	return authorizationBrowserFailure("proxy_network_failed", message+"，未提交账号密码")
+}
+
+func authorizationPrecheckHTTPState(code int64) string {
+	if code >= 100 && code <= 599 {
+		return "HTTP " + strconv.FormatInt(code, 10)
+	}
+	return "尚未收到 HTTP 响应"
+}
+
 func runAuthorizationBrowser(ctx context.Context, proxyURL, authURL string, secret *AuthorizationSecret, progress func(string, string) error) (string, error) {
+	const attempts = 3
+	for attempt := 1; attempt <= attempts; attempt++ {
+		value, err := runAuthorizationBrowserAttempt(ctx, proxyURL, authURL, secret, progress)
+		if err == nil || ctx.Err() != nil {
+			return value, err
+		}
+		var failure *authorizationBrowserError
+		if !errors.As(err, &failure) {
+			return value, err
+		}
+		// These stages occur before login. Never replay password submission,
+		// account challenges or callbacks, and never switch to a direct exit.
+		switch failure.stage {
+		case "proxy_navigation_timeout", "proxy_network_failed", "proxy_http_failed", "proxy_challenge", "proxy_precheck_timeout":
+		default:
+			return value, err
+		}
+		if attempt == attempts {
+			final := *failure
+			final.message += "（已尝试3次独立连接）"
+			return value, &final
+		}
+		if err = progress("proxy_retry", "代理预检未通过，正在使用同一代理重试（"+strconv.Itoa(attempt+1)+"/3）"); err != nil {
+			return "", err
+		}
+		if err = authorizationPause(ctx, time.Second); err != nil {
+			return "", err
+		}
+	}
+	return "", authorizationBrowserFailure("proxy_precheck_failed", "代理预检未通过，未提交账号密码")
+}
+
+func runAuthorizationBrowserAttempt(ctx context.Context, proxyURL, authURL string, secret *AuthorizationSecret, progress func(string, string) error) (string, error) {
 	path := authorizationBrowserPath()
 	if path == "" {
 		return "", authorizationBrowserFailure("browser_missing", "未找到外置授权浏览器，请在应用运行环境安装 Chromium，或设置 PK_AUTH_BROWSER_PATH；Docker 部署可执行 deploy/install-browser.sh")
@@ -425,6 +524,8 @@ func runAuthorizationBrowser(ctx context.Context, proxyURL, authURL string, secr
 	callback := make(chan string, 1)
 	accountBanned := make(chan struct{}, 1)
 	var precheckStatus atomic.Int64
+	var precheckChallenge atomic.Bool
+	var precheckNetworkError atomic.Value
 	var frameTree struct {
 		FrameTree struct {
 			Frame struct {
@@ -450,6 +551,7 @@ func runAuthorizationBrowser(ctx context.Context, proxyURL, authURL string, secr
 		expectedState = u.Query().Get("state")
 	}
 	go func() {
+		var documentRequest string
 		for {
 			select {
 			case <-browserCtx.Done():
@@ -457,19 +559,44 @@ func runAuthorizationBrowser(ctx context.Context, proxyURL, authURL string, secr
 			case <-cdp.done:
 				return
 			case event := <-cdp.events:
+				if event.Method == "Network.requestWillBeSent" {
+					var v struct {
+						RequestID string `json:"requestId"`
+						FrameID   string `json:"frameId"`
+						Type      string `json:"type"`
+					}
+					if json.Unmarshal(event.Params, &v) == nil && v.Type == "Document" && v.FrameID == rootFrame {
+						documentRequest = v.RequestID
+					}
+				}
+				if event.Method == "Network.loadingFailed" {
+					var v struct {
+						RequestID string `json:"requestId"`
+						ErrorText string `json:"errorText"`
+					}
+					if json.Unmarshal(event.Params, &v) == nil && documentRequest != "" && v.RequestID == documentRequest && v.ErrorText != "" {
+						precheckNetworkError.Store(v.ErrorText)
+					}
+				}
 				if event.Method == "Network.responseReceived" {
 					var v struct {
 						FrameID  string `json:"frameId"`
 						Type     string `json:"type"`
 						Response struct {
-							URL    string `json:"url"`
-							Status int    `json:"status"`
+							URL     string            `json:"url"`
+							Status  int               `json:"status"`
+							Headers map[string]string `json:"headers"`
 						} `json:"response"`
 					}
 					if json.Unmarshal(event.Params, &v) == nil && v.Type == "Document" && v.FrameID == rootFrame {
 						u, e := url.Parse(v.Response.URL)
 						if e == nil && (u.Host == "chatgpt.com" || u.Host == "www.chatgpt.com") {
 							precheckStatus.Store(int64(v.Response.Status))
+							for key, value := range v.Response.Headers {
+								if strings.EqualFold(key, "cf-mitigated") && strings.EqualFold(strings.TrimSpace(value), "challenge") {
+									precheckChallenge.Store(true)
+								}
+							}
 						}
 					}
 				}
@@ -563,14 +690,26 @@ func runAuthorizationBrowser(ctx context.Context, proxyURL, authURL string, secr
 			return "", err
 		}
 	}
+	if err = authorizationBrowserIdentity(ctx, cdp); err != nil {
+		return "", err
+	}
 	if err = cdp.call(ctx, "Fetch.enable", map[string]any{"patterns": []map[string]any{{"urlPattern": "*", "requestStage": "Request"}, {"urlPattern": "https://auth.openai.com/api/accounts/*", "requestStage": "Response"}}}, nil); err != nil {
 		return "", err
 	}
 	if err = progress("proxy_check", "正在通过授权代理 GET 检查 chatgpt.com"); err != nil {
 		return "", err
 	}
-	if err = cdp.call(ctx, "Page.navigate", map[string]any{"url": "https://chatgpt.com/"}, nil); err != nil {
+	var navigation struct {
+		ErrorText string `json:"errorText"`
+	}
+	if err = cdp.call(ctx, "Page.navigate", map[string]any{"url": "https://chatgpt.com/"}, &navigation); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return "", authorizationBrowserFailure("proxy_navigation_timeout", "代理首页导航等待超时，未提交账号密码")
+		}
 		return "", authorizationBrowserFailure("proxy_failed", "授权代理无法访问 chatgpt.com")
+	}
+	if navigation.ErrorText != "" {
+		return "", authorizationPrecheckNetworkFailure(navigation.ErrorText)
 	}
 	passed := false
 	for i := 0; i < 45; i++ {
@@ -584,6 +723,15 @@ func runAuthorizationBrowser(ctx context.Context, proxyURL, authURL string, secr
 		}
 		_ = cdp.call(ctx, "Runtime.evaluate", map[string]any{"expression": `(()=>{if(!document.body||document.readyState==='loading')return 'loading';const t=(document.title+' '+document.body.innerText).toLowerCase();if(/just a moment|verify.{0,20}human|security verification|enable javascript and cookies|验证您是真人|人机验证/.test(t))return 'challenge';return document.contentType==='text/html'&&document.documentElement?'html':'invalid'})()`, "returnByValue": true}, &result)
 		code := precheckStatus.Load()
+		if precheckChallenge.Load() || result.Result.Value == "challenge" {
+			return "", authorizationBrowserFailure("proxy_challenge", "chatgpt.com 返回验证页（"+authorizationPrecheckHTTPState(code)+"）；代理可连接但当前出口未通过验证，未提交账号密码")
+		}
+		if code >= 400 {
+			return "", authorizationBrowserFailure("proxy_http_failed", "chatgpt.com 首页返回 HTTP "+strconv.FormatInt(code, 10)+"，未提交账号密码")
+		}
+		if reason, ok := precheckNetworkError.Load().(string); ok && reason != "" {
+			return "", authorizationPrecheckNetworkFailure(reason)
+		}
 		if result.Result.Value == "html" && code >= 200 && code < 300 {
 			passed = true
 			break
@@ -593,7 +741,7 @@ func runAuthorizationBrowser(ctx context.Context, proxyURL, authURL string, secr
 		}
 	}
 	if !passed {
-		return "", authorizationBrowserFailure("proxy_precheck_failed", "授权出口未通过 chatgpt.com GET 预检（网络、HTTP错误或人工验证），未提交账号密码")
+		return "", authorizationBrowserFailure("proxy_precheck_timeout", "chatgpt.com 首页预检超时，未收到可用的正常页面（"+authorizationPrecheckHTTPState(precheckStatus.Load())+"），未提交账号密码")
 	}
 	if authURL == "" {
 		return "", nil
