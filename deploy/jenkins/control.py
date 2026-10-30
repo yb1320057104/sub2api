@@ -24,6 +24,7 @@ import urllib.request
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import frontend_dependencies as dependencies
 import deployment_bundle as deployment
+import browser_payload as browser
 
 REPOSITORY = "pengkang0322/sub2api"
 IMAGE = "ghcr.io/pengkang0322/sub2api"
@@ -177,6 +178,9 @@ def prepare() -> None:
         "deployment_archive": f"sub2api-deployment-{version}-amd64.tgz",
         "validation": "Pending legacy local source and artifact-runtime validation; this package is not published",
     }
+    if Path("source/backend/internal/pkg/browserruntime/runtime.go").is_file():
+        manifest["browser_profile"] = browser.PROFILE
+    browser.declaration(manifest)
     if os.environ.get("ACTION", "release") == "release":
         manifest.update(validation_profile=VALIDATION_PROFILE,
                         validation="Pending Jenkins exact-artifact runtime validation; source validation is not required")
@@ -197,6 +201,7 @@ def manifest(directory: Path) -> dict:
     require(data.get("schema_version") in (1, 2) and data.get("repository") == REPOSITORY, "Unexpected package provenance")
     dependencies.declaration(directory, data)
     deployment.declaration(data)
+    browser.declaration(data)
     require(bool(re.fullmatch(PACKAGE_PATTERN, data.get("package_id", ""))), "Invalid manifest package ID")
     require(bool(re.fullmatch(r"[0-9a-f]{40}", data.get("commit", ""))), "Invalid manifest commit")
     require(bool(re.fullmatch(r"[0-9a-f]{40}", data.get("tree", ""))), "Invalid manifest tree")
@@ -219,6 +224,7 @@ def manifest(directory: Path) -> dict:
 def verify_artifacts(directory: Path, data: dict) -> None:
     dependencies.verify(directory, data)
     deployment.verify(directory, data)
+    browser.verify(directory, data)
     for key in ("binary_archive", "image_archive"):
         require(sha256(directory / data[key]) == data.get(key + "_sha256"), f"Artifact checksum mismatch: {key}")
     require(bool(re.fullmatch(r"[0-9a-f]{64}", data.get("binary_sha256", ""))), "Invalid binary digest")
@@ -253,6 +259,7 @@ def inventory() -> None:
         data[key + "_sha256"] = sha256(output / data[key])
     data["binary_sha256"] = (output / "binary-sha256.txt").read_text().strip()
     data["image_id"] = (output / "image-id.txt").read_text().strip()
+    browser.record(output, data)
     deployment.create(output, data, Path(__file__).resolve().parents[2])
     (output / "checksums.txt").write_text(deployment.checksums(data))
     write_json(output / "manifest.json", data)
@@ -348,6 +355,10 @@ def package_evidence(directory: Path, data: dict) -> None:
         deployment.verify(directory, data)
         bindings += deployment.BINDINGS
         required_checks = RUNTIME_CHECKS | {"browser-runtime"}
+    if browser.declaration(data):
+        browser.verify(directory, data)
+        bindings += browser.BINDINGS
+        required_checks = required_checks | {"browser-web-update"}
     if data.get("schema_version") == 2:
         dependencies.verify(directory, data)
         bindings += dependencies.BINDINGS
@@ -373,6 +384,9 @@ def package_evidence(directory: Path, data: dict) -> None:
     if not deployment.declaration(data):
         require(not any(key in proof or key in (proof.get("artifact") or {}) for key in deployment.BINDINGS),
                 "Deployment evidence cannot be stripped from a sealed package")
+    if not browser.declaration(data):
+        require(not any(key in proof or key in (proof.get("artifact") or {}) for key in browser.BINDINGS),
+                "Embedded browser evidence cannot be stripped from a sealed package")
     if data.get("schema_version", 1) == 1:
         require(not any(key in proof or key in (proof.get("artifact") or {}) for key in dependencies.BINDINGS),
                 "Runtime dependency evidence cannot be downgraded to schema 1")
@@ -408,6 +422,15 @@ def evidence(data: dict) -> dict:
         require(suite.get("status") == "passed" and suite.get("exit_code") == 0, "Local suite failed or was skipped: " + str(suite.get("name")))
     for key in ("package_id", "binary_sha256", "image_archive_sha256"):
         require(proof.get("artifact", {}).get(key) == data[key], f"Runtime evidence does not match package {key}")
+    if browser.declaration(data):
+        browser.verify(Path("output"), data)
+        for key in browser.BINDINGS:
+            require(proof.get("artifact", {}).get(key) == data[key], "Manual browser binding mismatch: " + key)
+        require(proof.get("artifact", {}).get("browser_web_update_ready") is True,
+                "Embedded browser was not verified in a browser-free image")
+    else:
+        require(not any(key in proof.get("artifact", {}) for key in browser.BINDINGS),
+                "Manual embedded browser evidence cannot be stripped")
     if deployment.declaration(data):
         deployment.verify(Path("output"), data)
         for key in deployment.BINDINGS:
@@ -536,8 +559,14 @@ def publish() -> None:
             notes += ("\n\nFull deployment bundle: " + data["deployment_archive"] +
                       ". Includes the exact validated image with Chromium and browser libraries, "
                       "an installer and Compose configuration. No separate browser installation is needed. "
-                      "The original binary-only archive remains for web updates; older image environments "
-                      "must update their application container once to acquire the bundled browser.")
+                      "The original single-executable archive layout remains compatible with older web updaters.")
+        if browser.declaration(data):
+            notes += ("\n\nThe executable also carries the browser, loader, fonts and libraries. "
+                      "After a web update and the normal restart, it installs its verified runtime in the "
+                      "existing data directory. Existing official Linux amd64 containers need no image "
+                      "replacement, browser download, root installation or path configuration.")
+        elif deployment.declaration(data):
+            notes += " Older image environments must update their application container once to acquire the browser."
         release = request("/repos/" + REPOSITORY + "/releases", method="POST", token=credential,
                           data={"tag_name": tag, "target_commitish": data["commit"],
                                 "name": data["version"] + " PK出版", "body": notes,

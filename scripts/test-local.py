@@ -432,8 +432,10 @@ print(json.dumps(value, separators=(",", ":")) if sys.argv[3] == "json" else val
         sys.path.insert(0, str(ROOT / "deploy/jenkins"))
         import frontend_dependencies as dependencies
         import deployment_bundle as deployment
+        import browser_payload as browser
         dependencies.verify(directory, manifest)
         deployment.verify(directory, manifest)
+        browser.verify(directory, manifest)
         for key, expected in (("repository", REPOSITORY),
                               ("commit", commit), ("tree", tree), ("platform", "linux/amd64")):
             if manifest.get(key) != expected:
@@ -507,6 +509,36 @@ print(json.dumps(value, separators=(",", ":")) if sys.argv[3] == "json" else val
                     raise RuntimeError("Bundled Chromium failed isolated local-page rendering")
                 self.artifact.update({key: manifest[key] for key in deployment.BINDINGS})
                 self.artifact["browser_runtime_ready"] = True
+            if browser.declaration(manifest):
+                # This optional legacy entrypoint must supply the same new proof.
+                # Pulling an inert base occurs before the isolated no-network run.
+                self.run(["docker", "pull", "--platform=linux/amd64", "alpine:3.21"])
+                with tempfile.TemporaryDirectory(prefix="pk-local-browser-") as temporary:
+                    binary = Path(temporary) / "sub2api"
+                    with tarfile.open(directory / manifest["binary_archive"], "r:gz") as archive:
+                        with archive.extractfile("sub2api") as source, binary.open("wb") as target:
+                            shutil.copyfileobj(source, target)
+                    binary.chmod(0o555)
+                    for _ in range(2):
+                        name = "pk-local-browser-" + uuid.uuid4().hex
+                        try:
+                            self.run(["docker", "create", "--name", name, "--network=none", "--read-only",
+                                      "--cap-drop=ALL", "--security-opt=no-new-privileges", "--user=1000:1000",
+                                      "--memory=1g", "--pids-limit=256", "--no-healthcheck",
+                                      "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=128m",
+                                      "--mount", "type=volume,src=" + volume + ",dst=/app/data",
+                                      "--env", "DATA_DIR=/app/data/web-browser-check",
+                                      "--entrypoint", "/bin/sh", "alpine:3.21", "-ec",
+                                      "test ! -e /usr/bin/chromium; test ! -e /usr/lib/chromium; /app/data/browser-check-sub2api --browser-runtime-check"])
+                            self.run(["docker", "cp", str(binary), name + ":/app/data/browser-check-sub2api"])
+                            rendered = self.run(["docker", "start", "--attach", name])
+                            state = json.loads(self.run(["docker", "inspect", "--format", "{{json .State}}", name]))
+                            if state.get("ExitCode") != 0 or state.get("OOMKilled") or "Bundled browser ready" not in rendered:
+                                raise RuntimeError("Embedded browser could not run in a bare old image")
+                        finally:
+                            self.run(["docker", "rm", "--force", name], allowed=(0, 1))
+                self.artifact.update({key: manifest[key] for key in browser.BINDINGS})
+                self.artifact["browser_web_update_ready"] = True
         finally:
             # Names are random and belong only to this invocation.
             self.run(["docker", "image", "rm", "-f", fixture], allowed=(0, 1))

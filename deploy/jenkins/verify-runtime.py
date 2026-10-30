@@ -28,6 +28,7 @@ import uuid
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import frontend_dependencies as dependencies
 import deployment_bundle as deployment
+import browser_payload as browser
 
 REPOSITORY = "pengkang0322/sub2api"
 PROFILE = "pk-artifact-v2"
@@ -165,6 +166,7 @@ class Validator:
                 "Unexpected package provenance")
         dependencies.verify(self.directory, data)
         deployment.verify(self.directory, data)
+        browser.verify(self.directory, data)
         require(data.get("platform") == "linux/amd64", "Unsupported artifact platform")
         for key in ("commit", "tree"):
             require(re.fullmatch(r"[0-9a-f]{40}", data.get(key, "")) is not None, "Invalid " + key)
@@ -189,6 +191,8 @@ class Validator:
         bindings = BINDINGS + (dependencies.BINDINGS if data["schema_version"] == 2 else ())
         if deployment.declaration(data):
             bindings += deployment.BINDINGS
+        if browser.declaration(data):
+            bindings += browser.BINDINGS
         self.report.update({key: data[key] for key in bindings})
         self.report["artifact"] = {key: data[key] for key in bindings}
         if "validation_profile" in data:
@@ -408,6 +412,32 @@ class Validator:
         self.containers.remove(name)
         return fixture_id
 
+    def browser_web_update(self):
+        # The only input copied into a bare old base is the update executable.
+        # No Chromium, browser libraries, compiler, network or root process exists.
+        self.docker("image", "inspect", "alpine:3.21")
+        with tempfile.TemporaryDirectory(prefix="pk-web-browser-") as directory:
+            binary = Path(directory) / "sub2api"
+            with tarfile.open(self.directory / self.data["binary_archive"], "r:gz") as archive:
+                with archive.extractfile("sub2api") as source, binary.open("wb") as target:
+                    shutil.copyfileobj(source, target)
+            binary.chmod(0o555)
+            for _ in range(2):
+                script = ('test "$(id -u)" = 1000; test ! -e /usr/bin/chromium; '
+                          'test ! -e /usr/lib/chromium; '
+                          'export DATA_DIR=/app/data/web-browser-check; '
+                          '/app/data/browser-check-sub2api --browser-runtime-check; '
+                          'test "$(cat "$DATA_DIR/browser/' + self.data["browser_payload_sha256"] +
+                          '/.ready")" = "' + self.data["browser_payload_sha256"] + '"')
+                name = self.create("-ec", script, image="alpine:3.21", entrypoint="/bin/sh", browser=True)
+                self.docker("cp", str(binary), name + ":/app/data/browser-check-sub2api")
+                output = self.docker("start", "--attach", name, timeout=180)
+                state = json.loads(self.docker("inspect", "--format", "{{json .State}}", name))
+                require(not state.get("Running") and state.get("ExitCode") == 0 and not state.get("OOMKilled")
+                        and "Bundled browser ready" in output, "Legacy-image browser update failed: " + output[-4000:])
+                self.docker("rm", "--force", name)
+                self.containers.remove(name)
+
     def cleanup(self):
         if not self.docker_started:
             return
@@ -485,6 +515,9 @@ class Validator:
                                                 volume=False, entrypoint="/bin/sh", browser=True)
                         require("<title>pk-browser-ready</title>" in output,
                                 "Bundled Chromium could not render the isolated local page")
+                if browser.declaration(self.data):
+                    with self.check("browser-web-update"):
+                        self.browser_web_update()
             finally:
                 with self.check("cleanup"):
                     self.cleanup()
@@ -511,6 +544,8 @@ def main():
         expected_checks = list(REQUIRED_CHECKS)
         if report.get("deployment_profile") == deployment.PROFILE:
             expected_checks.insert(-1, "browser-runtime")
+        if report.get("browser_profile") == browser.PROFILE:
+            expected_checks.insert(-1, "browser-web-update")
         require([item["name"] for item in report["checks"]] == expected_checks, "Incomplete runtime checks")
         require(all(item["status"] == "passed" and item["exit_code"] == 0 for item in report["checks"]),
                 "Runtime checks failed")

@@ -1,5 +1,7 @@
 # PK出版：源码、发布与上游更新
 
+2026-10-31 当前目标v0.2.19-pk.11：补齐旧环境网页更新自动准备浏览器。用户在Jenkins选择ACTION=release、SOURCE_REF=v0.2.19-pk.11（正式标签，不带origin/），COMMIT_SHA/PACKAGE_ID留空。新制品通过十三项验收后，已有官方Linux amd64环境直接网页更新并按原流程正常重启；主程序自带Chromium、加载器、字体、证书和运行库，自动校验解压到原数据目录browser/摘要，无需换镜像、root安装、额外下载或填写浏览器路径。保持原TOTP/JWT密钥和数据，建议升级前为更新文件及资源解压预留至少2GiB空闲空间；旧资源目录保留以支持回退。全新安装仍可使用完整部署包。本轮仅静态核对，未构建、测试、触发Jenkins或操作线上。详见docs/PK_BROWSER_WEB_UPDATE_PLAN.md。以下pk.10及以前的首次换镜像要求仅描述旧版本。
+
 2026-10-31 当前目标v0.2.19-pk.10：完整部署包随私库Release发布，文件名sub2api-deployment-0.2.19-pk.10-amd64.tgz，包含已验收应用镜像（含Chromium/运行库）、Compose和初始化脚本。新部署在具备Docker/Compose v2的Linux amd64上解压执行sh install.sh /空部署目录；不另装浏览器或填写路径，自动生成固定加密密钥并保存0600的.env。PostgreSQL/Redis标准镜像仍由Docker在首次启动时拉取。已有部署使用sh install.sh --load-only导入，再保留原配置/数据/密钥按原流程更新应用镜像。原网页更新包仍只替换二进制。Jenkins保留原十一项并新增隔离浏览器检查，必须通过后才发布；本轮未执行构建/测试。交接ACTION=release、SOURCE_REF=v0.2.19-pk.10，COMMIT_SHA/PACKAGE_ID留空，用户手动点击。详见docs/PK_BROWSER_DEPLOYMENT_PLAN.md。
 
 2026-10-31 当前目标 v0.2.19-pk.9：新增 PK-036 账号授权与巡检，追加PK-032空号池结束本轮并等待下次的修复，继承 pk.8 雷达布局及现有保护功能。代码仅格式化与静态核对，不运行本地/服务器构建或测试；按用户追加要求只读核查空号池线上状态，未修改数据或部署。交接 main 与同一提交的正式标签后，由用户点击 Jenkins，参数为 ACTION=release、SOURCE_REF=v0.2.19-pk.9，COMMIT_SHA/PACKAGE_ID 留空。以下 pk.8 及更早任务为历史记录。

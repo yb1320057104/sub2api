@@ -1,3 +1,7 @@
+# v0.2.19-pk.11 网页更新自带浏览器
+
+正式交接选择ACTION=release、SOURCE_REF=v0.2.19-pk.11，COMMIT_SHA/PACKAGE_ID留空。浏览器资源封入同次编译的sub2api主程序，再进入镜像、原单文件网页归档及完整部署包；旧更新器可直接升级，正常重启后非root自动解压到原数据目录，无需先换镜像。Jenkins导出stage预留浏览器加载器路径，启动时修正为该实例的持久目录；不覆盖系统库。新增browser_profile与browser_payload_sha256封存绑定，禁止新版本去掉profile或验收证据降级。browser-web-update仅复制归档里的主程序到裸Alpine3.21、禁网、无浏览器库、非root验证本地页面渲染及缓存复用；与已有十二项合计十三项，全部通过才发布。主程序和网页归档均保持500MiB上限。源码没有携带大型二进制，资源只在用户点击Jenkins构建时生成；本轮未运行构建或验收。
+
 # Jenkins 私有打包与发布
 
 2026-10-31起，新完整部署包使用pk-browser-deployment-v1，随Release上传sub2api-deployment-版本-amd64.tgz。内含同次原样应用镜像、Compose、初始化脚本和逐项SHA256；Chromium/运行库已经在镜像里，新部署自动生成固定加密密钥。原网页更新归档及格式保留，新包名故意不含linux_amd64，防止旧更新器误选。inventory生成后由原十一项加browser-runtime共十二项验收绑定整包摘要；浏览器在无网络/非root/只读隔离容器中只渲染本地data页面，不发真实授权/模型请求。旧封存包仍按原profile和原十一项核验。Jenkins仍由用户手动选择正式标签release，不自动部署。
