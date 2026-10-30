@@ -427,7 +427,12 @@ print(json.dumps(value, separators=(",", ":")) if sys.argv[3] == "json" else val
 
     def runtime(self, directory, commit, tree):
         manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
-        for key, expected in (("schema_version", 1), ("repository", REPOSITORY),
+        # Re-resolved frontend inputs have their own sealed evidence; commit/tree
+        # still identify unchanged reviewed source, never the generated lock.
+        sys.path.insert(0, str(ROOT / "deploy/jenkins"))
+        import frontend_dependencies as dependencies
+        dependencies.verify(directory, manifest)
+        for key, expected in (("repository", REPOSITORY),
                               ("commit", commit), ("tree", tree), ("platform", "linux/amd64")):
             if manifest.get(key) != expected:
                 raise RuntimeError("Artifact manifest mismatch: " + key)
@@ -488,6 +493,8 @@ print(json.dumps(value, separators=(",", ":")) if sys.argv[3] == "json" else val
             self.artifact = {key: manifest[key] for key in
                              ("package_id", "binary_sha256", "binary_archive_sha256",
                               "image_archive_sha256", "image_id", "version")}
+            if manifest["schema_version"] == 2:
+                self.artifact.update({key: manifest[key] for key in dependencies.BINDINGS})
         finally:
             # Names are random and belong only to this invocation.
             self.run(["docker", "image", "rm", "-f", fixture], allowed=(0, 1))

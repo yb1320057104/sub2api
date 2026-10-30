@@ -247,7 +247,7 @@ func readAccountCandyReply(response *http.Response, chat bool) (string, error) {
 					return "", false, candyProbeFailure("模型结束后的回复内容无效；未转组。")
 				}
 				assistant = true
-				text.WriteString(choice.Delta.Content)
+				_, _ = text.WriteString(choice.Delta.Content)
 				if text.Len() > intelligenceTestArtifactLimit {
 					return "", false, candyProbeFailure("最终回复超过 256 KiB；未转组。")
 				}
@@ -273,9 +273,9 @@ func readAccountCandyReply(response *http.Response, chat bool) (string, error) {
 			}
 		} else if strings.HasPrefix(line, "data:") {
 			if event.Len() > 0 {
-				event.WriteByte('\n')
+				_ = event.WriteByte('\n')
 			}
-			event.WriteString(strings.TrimPrefix(strings.TrimPrefix(line, "data:"), " "))
+			_, _ = event.WriteString(strings.TrimPrefix(strings.TrimPrefix(line, "data:"), " "))
 			if event.Len() > 1024*1024 {
 				return bad()
 			}

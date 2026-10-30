@@ -267,6 +267,12 @@ class JenkinsValidationTest(unittest.TestCase):
             control.parameters()
 
     def test_release_without_source_reports_keeps_artifact_checks_through_publication(self):
+        self.exercise_release(reinstall=False)
+
+    def test_reinstalled_dependencies_remain_bound_through_seal_restore_and_publication(self):
+        self.exercise_release(reinstall=True)
+
+    def exercise_release(self, reinstall):
         package_root = self.directory / 'packages'
         package_root.mkdir()
         env = {'ACTION': 'release', 'PK_REPOSITORY': control.REPOSITORY, 'PK_IMAGE': control.IMAGE,
@@ -274,6 +280,12 @@ class JenkinsValidationTest(unittest.TestCase):
                'PK_PACKAGE_ROOT': str(package_root), 'PK_API_TOKEN': 'fixture-api-token',
                'PK_REGISTRY_TOKEN': 'fixture-registry-token', 'PK_REGISTRY_USER': 'fixture-user',
                'DOCKER_HOST': 'tcp://fixture:2376'}
+        if reinstall:
+            env['REINSTALL_NODE_MODULES'] = '是'
+            frontend = self.directory / 'source/frontend'
+            frontend.mkdir(parents=True)
+            (frontend / 'pnpm-lock.yaml').write_bytes(b'original source lock\n')
+            (frontend / 'package.json').write_bytes(b'{"name":"fixture"}\n')
 
         def fake_git(*args):
             values = {
@@ -320,6 +332,12 @@ class JenkinsValidationTest(unittest.TestCase):
             self.assertEqual(data['validation_profile'], control.VALIDATION_PROFILE)
             self.assertFalse((output / 'source-validation.json').exists())
             self.assertTrue(all(field not in data for field in control.SOURCE_EVIDENCE_FIELDS))
+            if reinstall:
+                JenkinsDependencyTest.write_evidence(output, data)
+                control.write_json(output / 'manifest.json', data)
+            else:
+                self.assertEqual(data['schema_version'], 1)
+                self.assertNotIn('frontend_dependencies', data)
 
             # Build outputs and the runtime check outcomes are unit-test fixtures;
             # the real inventory, integrity, seal and publication bindings run below.
@@ -338,20 +356,26 @@ class JenkinsValidationTest(unittest.TestCase):
             runtime.Validator(output, report).artifacts()
             self.assertEqual(report['validation_profile'], control.VALIDATION_PROFILE)
             self.assertNotIn('source_validation_sha256', report)
+            if reinstall:
+                for key in control.dependencies.BINDINGS:
+                    self.assertEqual(report[key], data[key])
+                    self.assertEqual(report['artifact'][key], data[key])
             control.write_json(output / 'artifact-validation.json', report)
             control.seal()
             self.assertIn('source validation is not required', control.manifest(output)['validation'])
 
             shutil.rmtree(output)
-            with patch.dict(os.environ, ACTION='publish', PACKAGE_ID=data['package_id']):
+            with patch.dict(os.environ, ACTION='publish', PACKAGE_ID=data['package_id'], REINSTALL_NODE_MODULES='否'):
                 control.restore()
             control.ready()
             with patch.object(control, 'command', return_value=self.data['image_id']) as commands, \
                     patch.object(control, 'upload_asset') as upload:
                 control.publish()
             names = [call.args[1].name for call in upload.call_args_list]
-            self.assertEqual(names, [data['binary_archive'], 'checksums.txt', 'manifest.json',
-                                     'artifact-validation.json'])
+            expected = [data['binary_archive'], 'checksums.txt', 'manifest.json', 'artifact-validation.json']
+            if reinstall:
+                expected += [control.dependencies.REPORT, *control.dependencies.FILES.values()]
+            self.assertEqual(names, expected)
             self.assertTrue(all(call.args[0] == 'docker' for call in commands.call_args_list))
             self.assertTrue(all(call.args[1] not in ('build', 'run', 'start') for call in commands.call_args_list))
             source_gate.assert_not_called()
@@ -506,6 +530,280 @@ class JenkinsValidationTest(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 control.release_ready(dict(self.data, build_type='candidate'))
             api.assert_not_called()
+
+
+class JenkinsDependencyTest(unittest.TestCase):
+    """Exercise lock removal/restoration and immutable effective-input evidence."""
+
+    @staticmethod
+    def audit_report():
+        return {'advisories': {}, 'metadata': {'vulnerabilities': {
+            name: 0 for name in ('info', 'low', 'moderate', 'high', 'critical')}}}
+
+    @staticmethod
+    def write_evidence(directory, data):
+        deps = control.dependencies
+        contents = {'source_lock_sha256': b'original source lock\n',
+                    'package_json_sha256': b'{"name":"fixture"}\n',
+                    'effective_lock_sha256': b'effective re-resolved lock\n',
+                    'audit_sha256': json.dumps(JenkinsDependencyTest.audit_report()).encode(),
+                    'audit_policy_sha256': b'version: 1\nexceptions: []\n',
+                    'audit_checker_sha256': b'# trusted checker fixture; not executed\n'}
+        proof = {key: data[key] for key in ('repository', 'commit', 'tree', 'package_id')}
+        proof.update(schema_version=1, profile=deps.PROFILE, mode='reinstall', status='passed',
+                     node_image='node:24-bookworm-slim', node_version='v24.0.0', pnpm_version='9.15.9',
+                     install_flags=['--no-frozen-lockfile', '--prefer-offline=false', '--offline=false'], audit_scope='production',
+                     audit_exit_code=0, policy_exit_code=0)
+        for key, content in contents.items():
+            path = directory / deps.FILES[key]
+            path.write_bytes(content)
+            proof[key] = deps.digest(path)
+        deps.write_json(directory / deps.REPORT, proof)
+        data.update(frontend_dependencies_sha256=deps.digest(directory / deps.REPORT),
+                    frontend_effective_lock_sha256=proof['effective_lock_sha256'],
+                    frontend_audit_sha256=proof['audit_sha256'])
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix='pk-dependency-fixture-')
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.source = self.root / 'source'
+        self.frontend = self.source / 'frontend'
+        self.frontend.mkdir(parents=True)
+        self.output = self.root / 'output'
+        self.output.mkdir()
+        self.deps = control.dependencies
+        self.original = b'original source lock\n'
+        self.lock = self.frontend / 'pnpm-lock.yaml'
+        self.lock.write_bytes(self.original)
+        (self.frontend / 'package.json').write_bytes(b'{"name":"fixture"}\n')
+        (self.source / '.gitignore').write_text('frontend/node_modules/\n')
+        self.unrelated = self.source / 'source.txt'
+        self.unrelated.write_text('original source\n')
+        self.env = {key: value for key, value in os.environ.items() if not key.startswith('GIT_')}
+        self.env.update(GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull, GIT_TERMINAL_PROMPT='0')
+        self.git('init', '--quiet', '--template=')
+        self.git('add', '--', '.')
+        self.git('commit', '--quiet', '-m', 'Dependency fixture')
+        self.data = {'schema_version': 2, 'repository': control.REPOSITORY,
+                     'commit': self.git('rev-parse', 'HEAD'), 'tree': self.git('rev-parse', 'HEAD^{tree}'),
+                     'package_id': '5-' + self.git('rev-parse', 'HEAD')[:12],
+                     'validation_profile': control.VALIDATION_PROFILE,
+                     'frontend_dependencies': {'schema_version': 1, 'mode': 'reinstall',
+                        'source_lock_sha256': self.deps.digest(self.lock),
+                        'package_json_sha256': self.deps.digest(self.frontend / 'package.json')}}
+        self.deps.write_json(self.output / 'manifest.json', self.data)
+
+    def git(self, *args):
+        return subprocess.run(['git', '-c', 'user.name=PK dependency fixture',
+            '-c', 'user.email=fixture@example.invalid', '-c', 'commit.gpgsign=false',
+            '-c', 'core.autocrlf=false', *args], cwd=self.source, env=self.env,
+            check=True, capture_output=True, text=True).stdout.strip()
+
+    def installed(self, audit_report=None):
+        self.deps.start()
+        raw = self.root / '.frontend-dependency-raw'
+        self.lock.write_bytes(b'effective re-resolved lock\n')
+        (raw / 'effective-lock.yaml').write_bytes(self.lock.read_bytes())
+        self.deps.write_json(raw / 'audit.json', self.audit_report() if audit_report is None else audit_report)
+        for name, content in (('node-version.txt', 'v24.0.0'), ('pnpm-version.txt', '9.15.9'),
+                              ('audit-exit-code.txt', '0')):
+            (raw / name).write_text(content)
+        self.deps.audit()
+        self.data = json.loads((self.output / 'manifest.json').read_bytes())
+
+    def test_parameter_defaults_and_publish_rejects_reinstall(self):
+        env = {'ACTION': 'package', 'SOURCE_REF': 'refs/heads/main',
+               'PK_REPOSITORY': control.REPOSITORY, 'PK_IMAGE': control.IMAGE}
+        with patch.dict(os.environ, env, clear=True):
+            control.parameters()
+            for value in ('否', '是'):
+                with patch.dict(os.environ, REINSTALL_NODE_MODULES=value):
+                    control.parameters()
+            for value in ('true', 'yes', '', '否; exit 0'):
+                with patch.dict(os.environ, REINSTALL_NODE_MODULES=value), self.assertRaises(RuntimeError):
+                    control.parameters()
+            with patch.dict(os.environ, ACTION='publish', PACKAGE_ID='5-' + 'a' * 12):
+                control.parameters()
+                with patch.dict(os.environ, REINSTALL_NODE_MODULES='是'), self.assertRaises(RuntimeError):
+                    control.parameters()
+        for path in ('Jenkinsfile', 'deploy/jenkins/bootstrap.groovy'):
+            text = (ROOT / path).read_text(encoding='utf-8')
+            self.assertIn("'REINSTALL_NODE_MODULES'", text)
+            self.assertIn("['否', '是']", text)
+
+    def test_start_removes_actual_and_implicit_locks_and_restore_is_exact(self):
+        implicit = self.frontend / 'node_modules/.pnpm/lock.yaml'
+        implicit.parent.mkdir(parents=True)
+        implicit.write_text('old implicit lock')
+        with contextlib.chdir(self.root), patch.dict(os.environ, self.env, clear=True):
+            self.deps.start()
+            self.assertFalse(self.lock.exists())
+            self.assertFalse((self.frontend / 'node_modules').exists())
+            self.lock.write_bytes(b'partial install lock\n')
+            self.deps.restore()
+            self.deps.restore()
+        self.assertEqual(self.lock.read_bytes(), self.original)
+        self.assertEqual(self.git('status', '--porcelain'), '')
+
+    def test_finish_keeps_effective_evidence_and_restores_original_source(self):
+        with contextlib.chdir(self.root), patch.dict(os.environ, self.env, clear=True):
+            self.installed()
+            self.deps.finish()
+            self.deps.verify(self.output, self.data)
+            control.verify_source_checkout(self.data)
+        self.assertEqual(self.lock.read_bytes(), self.original)
+        self.assertNotEqual(self.deps.digest(self.lock), self.data['frontend_effective_lock_sha256'])
+        self.assertEqual((self.output / 'frontend-effective-lock.yaml').read_bytes(), b'effective re-resolved lock\n')
+
+    def test_finish_rejects_changed_effective_lock_and_does_not_hide_other_changes(self):
+        with contextlib.chdir(self.root), patch.dict(os.environ, self.env, clear=True):
+            self.installed()
+            self.lock.write_bytes(b'unexpected build mutation\n')
+            self.unrelated.write_text('unrelated change must remain\n')
+            with self.assertRaisesRegex(RuntimeError, 'audited effective lock'):
+                self.deps.finish()
+            self.deps.restore()
+            with self.assertRaisesRegex(RuntimeError, 'modified the source checkout'):
+                control.verify_source_checkout(self.data)
+        self.assertEqual(self.lock.read_bytes(), self.original)
+        self.assertEqual(self.unrelated.read_text(), 'unrelated change must remain\n')
+
+    def test_tampered_backup_cannot_be_restored(self):
+        with contextlib.chdir(self.root), patch.dict(os.environ, self.env, clear=True):
+            self.deps.start()
+            backup = self.root / '.frontend-dependency-state/pnpm-lock.yaml'
+            backup.chmod(0o600)
+            backup.write_bytes(b'tampered backup\n')
+            with self.assertRaisesRegex(RuntimeError, 'backup changed'):
+                self.deps.restore()
+            self.assertFalse(self.lock.exists())
+
+    def test_frontend_symlink_cannot_escape_build_checkout(self):
+        target = self.root / 'outside'
+        self.frontend.rename(target)
+        self.frontend.symlink_to(target, target_is_directory=True)
+        with contextlib.chdir(self.root), self.assertRaisesRegex(RuntimeError, 'inside this build'):
+            self.deps.start()
+        self.assertEqual((target / 'pnpm-lock.yaml').read_bytes(), self.original)
+
+    def test_audit_errors_and_incomplete_results_fail_closed(self):
+        for report in ({}, {'error': {'code': 'ECONNRESET'}},
+                       {'advisories': {}, 'metadata': {'vulnerabilities': {'high': 0}}},
+                       {'advisories': {}, 'metadata': {'vulnerabilities': {
+                           'info': 0, 'low': 0, 'moderate': 0, 'high': 1, 'critical': 0}}}):
+            with self.subTest(report=report), self.assertRaises(RuntimeError):
+                self.deps.validate_audit(report)
+
+    def test_unapproved_high_vulnerability_blocks_build_and_lock_is_restorable(self):
+        report = self.audit_report()
+        report['metadata']['vulnerabilities']['high'] = 1
+        report['advisories']['fixture'] = {'module_name': 'pk-unapproved-fixture', 'severity': 'high',
+            'github_advisory_id': 'GHSA-fixture-unapproved', 'title': 'Fixture vulnerability'}
+        with contextlib.chdir(self.root), patch.dict(os.environ, self.env, clear=True):
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.installed(report)
+            self.deps.restore()
+        self.assertEqual(self.lock.read_bytes(), self.original)
+        self.assertFalse((self.output / self.deps.REPORT).exists())
+
+    def test_install_package_json_mutation_remains_visible(self):
+        with contextlib.chdir(self.root), patch.dict(os.environ, self.env, clear=True):
+            self.deps.start()
+            package = self.frontend / 'package.json'
+            package.write_text('{"name":"changed"}\n')
+            with self.assertRaisesRegex(RuntimeError, 'modified package.json'):
+                self.deps.audit()
+            self.deps.restore()
+            with self.assertRaisesRegex(RuntimeError, 'modified the source checkout'):
+                control.verify_source_checkout(self.data)
+        self.assertEqual(self.lock.read_bytes(), self.original)
+
+    def test_evidence_tampering_missing_inputs_and_schema_downgrade_are_rejected(self):
+        self.write_evidence(self.output, self.data)
+        self.deps.verify(self.output, self.data)
+        for filename in (*self.deps.FILES.values(), self.deps.REPORT):
+            path, original = self.output / filename, (self.output / filename).read_bytes()
+            path.write_bytes(original + b'tampered')
+            with self.subTest(filename=filename), self.assertRaises(RuntimeError):
+                self.deps.verify(self.output, self.data)
+            path.write_bytes(original)
+        for key in self.deps.BINDINGS:
+            changed = dict(self.data)
+            changed.pop(key)
+            with self.subTest(key=key), self.assertRaises(RuntimeError):
+                self.deps.verify(self.output, changed)
+        downgraded = {key: value for key, value in self.data.items()
+                      if key != 'frontend_dependencies' and key not in self.deps.BINDINGS}
+        downgraded['schema_version'] = 1
+        with self.assertRaisesRegex(RuntimeError, 'schema 2'):
+            self.deps.declaration(self.output, downgraded)
+        with tempfile.TemporaryDirectory() as clean:
+            self.deps.verify(Path(clean), {'schema_version': 1})
+            with self.assertRaises(RuntimeError):
+                self.deps.declaration(Path(clean), dict(self.data, schema_version=1))
+
+    def test_runtime_must_bind_effective_lock_and_audit(self):
+        self.write_evidence(self.output, self.data)
+        self.data.update({key: 'bound-' + key for key in control.RUNTIME_BINDINGS if key not in self.data})
+        proof = {key: self.data[key] for key in (*control.RUNTIME_BINDINGS, *self.deps.BINDINGS)}
+        proof.update(schema_version=2, tests_profile='pk-artifact-v2', status='passed',
+                     validation_profile=control.VALIDATION_PROFILE,
+                     checks=[{'name': name, 'status': 'passed', 'exit_code': 0}
+                             for name in sorted(control.RUNTIME_CHECKS)])
+        path = self.output / 'artifact-validation.json'
+        for key in self.deps.BINDINGS:
+            mutated = dict(proof)
+            mutated[key] = 'f' * 64
+            self.deps.write_json(path, mutated)
+            self.data['artifact_validation_sha256'] = self.deps.digest(path)
+            with self.subTest(key=key), self.assertRaisesRegex(RuntimeError, 'runtime evidence'):
+                control.package_evidence(self.output, self.data)
+        self.deps.write_json(path, proof)
+        self.data['artifact_validation_sha256'] = self.deps.digest(path)
+        control.package_evidence(self.output, self.data)
+        downgraded = {key: value for key, value in self.data.items()
+                      if key != 'frontend_dependencies' and key not in self.deps.BINDINGS}
+        downgraded['schema_version'] = 1
+        for filename in (*self.deps.FILES.values(), self.deps.REPORT):
+            (self.output / filename).unlink()
+        with self.assertRaisesRegex(RuntimeError, 'cannot be downgraded'):
+            control.package_evidence(self.output, downgraded)
+
+    def test_manual_package_requires_the_same_dependency_evidence_bindings(self):
+        self.write_evidence(self.output, self.data)
+        self.data.update(binary_sha256='a' * 64, image_archive_sha256='b' * 64)
+        proof = {key: self.data[key] for key in ('repository', 'commit', 'tree')}
+        proof.update(schema_version=1, tests_profile='pk-local-v1', status='passed',
+                     suites=[{'name': name, 'status': 'passed', 'exit_code': 0}
+                             for name in sorted(control.REQUIRED_SUITES)],
+                     artifact={key: self.data[key] for key in
+                         ('package_id', 'binary_sha256', 'image_archive_sha256', *self.deps.BINDINGS)})
+        path = self.root / (self.data['package_id'] + '.json')
+        with contextlib.chdir(self.root), patch.dict(os.environ, PK_EVIDENCE_ROOT=str(self.root)):
+            for key in self.deps.BINDINGS:
+                changed = copy.deepcopy(proof)
+                changed['artifact'].pop(key)
+                self.deps.write_json(path, changed)
+                with self.subTest(key=key), self.assertRaisesRegex(RuntimeError, 'dependency binding'):
+                    control.evidence(self.data)
+            self.deps.write_json(path, proof)
+            self.assertEqual(control.evidence(self.data), proof)
+
+    def test_actual_shell_install_failure_restores_lock_without_building(self):
+        script = (ROOT / 'deploy/jenkins/package.sh').read_text()
+        start = script.index('if [[ "$reinstall_dependencies" == yes ]]')
+        end = script.index('docker run "' + '$' + '{common[@]}" --workdir /src/backend', start)
+        header = ('set -euo pipefail\nroot=$1\nsource_dir=$root/source\n'
+                  'dependency_helper=$2\nreinstall_dependencies=yes\ncommon=()\n'
+                  'pnpm_cache=fixture\nnpm_cache=fixture\npnpm_version=9.15.9\nnode_image=fixture\n'
+                  'docker() { return 17; }\n')
+        result = subprocess.run(['bash', '-c', header + script[start:end], 'pk-install-failure',
+                                 str(self.root), str(ROOT / 'deploy/jenkins/frontend_dependencies.py')],
+                                cwd=self.root, env=self.env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 17, result.stderr)
+        self.assertEqual(self.lock.read_bytes(), self.original)
+        self.assertEqual(self.git('status', '--porcelain'), '')
 
 
 class JenkinsPackageCleanupTest(unittest.TestCase):

@@ -21,6 +21,9 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import frontend_dependencies as dependencies
+
 REPOSITORY = "pengkang0322/sub2api"
 IMAGE = "ghcr.io/pengkang0322/sub2api"
 API = "https://api.github.com"
@@ -111,6 +114,9 @@ def token() -> str:
 def parameters() -> None:
     action = os.environ.get("ACTION", "release")
     require(action in {"release", "package", "publish"}, "Unknown Jenkins action")
+    reinstall = os.environ.get("REINSTALL_NODE_MODULES", "否")
+    require(reinstall in {"否", "是"}, "REINSTALL_NODE_MODULES must be 否 or 是")
+    require(action != "publish" or reinstall == "否", "publish cannot reinstall or rebuild sealed dependencies")
     require(os.environ.get("PK_REPOSITORY") == REPOSITORY, "Only the protected private repository is supported")
     require(os.environ.get("PK_IMAGE") == IMAGE, "Only the protected private image is supported")
     if action in {"release", "package"}:
@@ -171,6 +177,12 @@ def prepare() -> None:
     if os.environ.get("ACTION", "release") == "release":
         manifest.update(validation_profile=VALIDATION_PROFILE,
                         validation="Pending Jenkins exact-artifact runtime validation; source validation is not required")
+    if os.environ.get("REINSTALL_NODE_MODULES", "否") == "是":
+        manifest.update(schema_version=2, frontend_dependencies={
+            "schema_version": 1, "mode": "reinstall",
+            "source_lock_sha256": sha256(Path("source/frontend/pnpm-lock.yaml")),
+            "package_json_sha256": sha256(Path("source/frontend/package.json")),
+        })
     write_json(output / "manifest.json", manifest)
     print(f"Packaging {commit} as {version}; no GitHub Actions build or production deployment")
 
@@ -179,7 +191,8 @@ def manifest(directory: Path) -> dict:
     path = directory / "manifest.json"
     require(path.is_file() and not path.is_symlink(), "Missing regular manifest")
     data = json.loads(path.read_text(encoding="utf-8"))
-    require(data.get("schema_version") == 1 and data.get("repository") == REPOSITORY, "Unexpected package provenance")
+    require(data.get("schema_version") in (1, 2) and data.get("repository") == REPOSITORY, "Unexpected package provenance")
+    dependencies.declaration(directory, data)
     require(bool(re.fullmatch(PACKAGE_PATTERN, data.get("package_id", ""))), "Invalid manifest package ID")
     require(bool(re.fullmatch(r"[0-9a-f]{40}", data.get("commit", ""))), "Invalid manifest commit")
     require(bool(re.fullmatch(r"[0-9a-f]{40}", data.get("tree", ""))), "Invalid manifest tree")
@@ -200,6 +213,7 @@ def manifest(directory: Path) -> dict:
 
 
 def verify_artifacts(directory: Path, data: dict) -> None:
+    dependencies.verify(directory, data)
     for key in ("binary_archive", "image_archive"):
         require(sha256(directory / data[key]) == data.get(key + "_sha256"), f"Artifact checksum mismatch: {key}")
     require(bool(re.fullmatch(r"[0-9a-f]{64}", data.get("binary_sha256", ""))), "Invalid binary digest")
@@ -323,6 +337,9 @@ def package_evidence(directory: Path, data: dict) -> None:
     profile = data.get("validation_profile")
     require(profile in JENKINS_VALIDATION_PROFILES, "Unsupported Jenkins validation profile")
     bindings = RUNTIME_BINDINGS
+    if data.get("schema_version") == 2:
+        dependencies.verify(directory, data)
+        bindings += dependencies.BINDINGS
     if profile == LEGACY_VALIDATION_PROFILE:
         require(data.get("source_notes_ref") == NOTES_REF, "Unexpected source evidence notes ref")
         for field in ("source_notes_commit", "source_note_blob"):
@@ -342,6 +359,9 @@ def package_evidence(directory: Path, data: dict) -> None:
     require(isinstance(proof, dict) and proof.get("schema_version") == 2
             and proof.get("tests_profile") == "pk-artifact-v2" and proof.get("status") == "passed",
             "Jenkins artifact validation did not pass")
+    if data.get("schema_version", 1) == 1:
+        require(not any(key in proof or key in (proof.get("artifact") or {}) for key in dependencies.BINDINGS),
+                "Runtime dependency evidence cannot be downgraded to schema 1")
     if profile == VALIDATION_PROFILE:
         require(proof.get("validation_profile") == profile, "Runtime validation profile does not match package")
         require("source_validation_sha256" not in proof, "Runtime source evidence requires the legacy validation profile")
@@ -374,6 +394,13 @@ def evidence(data: dict) -> dict:
         require(suite.get("status") == "passed" and suite.get("exit_code") == 0, "Local suite failed or was skipped: " + str(suite.get("name")))
     for key in ("package_id", "binary_sha256", "image_archive_sha256"):
         require(proof.get("artifact", {}).get(key) == data[key], f"Runtime evidence does not match package {key}")
+    if data.get("schema_version") == 2:
+        dependencies.verify(Path("output"), data)
+        for key in dependencies.BINDINGS:
+            require(proof.get("artifact", {}).get(key) == data[key], "Manual runtime dependency binding mismatch: " + key)
+    else:
+        require(not any(key in proof.get("artifact", {}) for key in dependencies.BINDINGS),
+                "Manual dependency evidence cannot be downgraded to schema 1")
     return proof
 
 
@@ -475,6 +502,10 @@ def publish() -> None:
         else:
             validation = "Local source and exact-artifact runtime validation passed. "
             reports = ["local-test-evidence.json"]
+        if data.get("schema_version") == 2:
+            reports += [dependencies.REPORT, *dependencies.FILES.values()]
+            validation += ("Frontend dependencies were re-resolved and audited; the effective lock and audit are sealed. "
+                           + "Effective lock SHA256: " + data["frontend_effective_lock_sha256"] + ". ")
         notes = (f"PK出版。\n\nSource: `{data['commit']}`\nImage: `{data['image_tag']}`\n"
                  f"Binary SHA256: `{data['binary_sha256']}`\nJenkins package: `{data['package_id']}`\n\n"
                  "Built by Jenkins; " + validation +

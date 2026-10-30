@@ -25,6 +25,9 @@ import tarfile
 import tempfile
 import uuid
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import frontend_dependencies as dependencies
+
 REPOSITORY = "pengkang0322/sub2api"
 PROFILE = "pk-artifact-v2"
 REQUIRED_CHECKS = (
@@ -157,8 +160,9 @@ class Validator:
         data = json.loads(manifest.read_text(encoding="utf-8"))
         require(isinstance(data, dict), "Invalid artifact manifest")
         self.data = data
-        require(data.get("schema_version") == 1 and data.get("repository") == REPOSITORY,
+        require(data.get("schema_version") in (1, 2) and data.get("repository") == REPOSITORY,
                 "Unexpected package provenance")
+        dependencies.verify(self.directory, data)
         require(data.get("platform") == "linux/amd64", "Unsupported artifact platform")
         for key in ("commit", "tree"):
             require(re.fullmatch(r"[0-9a-f]{40}", data.get(key, "")) is not None, "Invalid " + key)
@@ -180,8 +184,9 @@ class Validator:
                 require(digest(stream) == data["binary_sha256"], "Update binary digest mismatch")
         expected = data["binary_archive_sha256"] + "  " + data["binary_archive"] + "\n"
         require(regular(self.directory / "checksums.txt").read_text() == expected, "Unexpected release checksums")
-        self.report.update({key: data[key] for key in BINDINGS})
-        self.report["artifact"] = {key: data[key] for key in BINDINGS}
+        bindings = BINDINGS + (dependencies.BINDINGS if data["schema_version"] == 2 else ())
+        self.report.update({key: data[key] for key in bindings})
+        self.report["artifact"] = {key: data[key] for key in bindings}
         if "validation_profile" in data:
             self.report["validation_profile"] = data["validation_profile"]
         if "source_validation_sha256" in data:

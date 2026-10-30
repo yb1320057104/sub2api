@@ -6,6 +6,8 @@ import hudson.slaves.DumbSlave
 import hudson.slaves.JNLPLauncher
 import hudson.slaves.RetentionStrategy
 import hudson.model.Node
+import hudson.model.ChoiceParameterDefinition
+import hudson.model.ParametersDefinitionProperty
 import com.cloudbees.plugins.credentials.SystemCredentialsProvider
 import com.cloudbees.plugins.credentials.CredentialsScope
 import com.cloudbees.jenkins.plugins.sshcredentials.impl.BasicSSHUserPrivateKey
@@ -49,7 +51,10 @@ def scm = new GitSCM([new UserRemoteConfig('git@github.com:pengkang0322/sub2api.
   [new BranchSpec('*/main')], false, [], null, null, [])
 def job = j.createProject(WorkflowJob, 'sub2api-package')
 job.setDefinition(new CpsScmFlowDefinition(scm, 'Jenkinsfile'))
-job.setDescription('Isolated source tests precede commits. release verifies their Git notes, builds once, validates the exact artifacts and publishes to private GitHub Release/GHCR. No production deployment.')
+job.addProperty(new ParametersDefinitionProperty(new ChoiceParameterDefinition(
+  'REINSTALL_NODE_MODULES', ['否', '是'] as String[],
+  '是否重新安装 node_modules：默认否；是会删除本次构建的 node_modules 与 pnpm-lock.yaml，重新解析、审计并封存实际依赖。publish 必须选否。')))
+job.setDescription('release builds a formal private tag once, validates the exact artifacts and publishes to private GitHub Release/GHCR. Source-test notes are optional. Dependency reinstallation is opt-in and audited. No production deployment.')
 job.save()
 j.save()
 marker.text = 'Provisioned with anonymous access disabled and zero controller executors.\n'

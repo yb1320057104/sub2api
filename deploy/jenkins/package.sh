@@ -15,6 +15,13 @@ commit=$(read_manifest commit)
 build_type=$(read_manifest build_type)
 built_at=$(read_manifest built_at)
 image_tag=$(read_manifest image_tag)
+manifest_schema=$(read_manifest schema_version)
+dependency_helper="$root/pipeline/deploy/jenkins/frontend_dependencies.py"
+case "${REINSTALL_NODE_MODULES:-否}:$manifest_schema" in
+    否:1) reinstall_dependencies=no ;;
+    是:2) reinstall_dependencies=yes ;;
+    *) echo 'Dependency option and package manifest disagree.' >&2; exit 1 ;;
+esac
 go_version=$(awk '$1 == "go" { print $2; exit }' "$source_dir/backend/go.mod")
 [[ "$go_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
 build_uid=$(id -u)
@@ -81,6 +88,46 @@ common=(--rm --platform linux/amd64 "${resources[@]}" --security-opt no-new-priv
 # store, evidence store, host Docker socket, or production data. Only dependency
 # caches persist in the dedicated daemon; project node_modules stays in this workspace.
 # package.json's build also runs Vitest; invoke its compiler/bundler directly.
+if [[ "$reinstall_dependencies" == yes ]]; then
+    # The original lock backup is never mounted into an untrusted source process.
+    # A failed install/audit/build still restores only that exact original lock.
+    restore_dependency_lock() {
+        local status=$?
+        trap - EXIT
+        python3 -B "$dependency_helper" restore || status=1
+        exit "$status"
+    }
+    trap restore_dependency_lock EXIT
+    python3 -B "$dependency_helper" start
+    docker run "${common[@]}" --workdir /src/frontend \
+        --mount "type=volume,src=$pnpm_cache,dst=/cache/pnpm,volume-nocopy" \
+        --mount "type=volume,src=$npm_cache,dst=/cache/npm,volume-nocopy" \
+        --mount "type=bind,src=$root/.frontend-dependency-raw,dst=/evidence" \
+        --env npm_config_cache=/cache/npm --env npm_config_prefer_offline=false --env npm_config_prefer_online=true \
+        --env "PK_PNPM_VERSION=$pnpm_version" "$node_image" sh -ec '
+        test ! -e node_modules && test ! -L node_modules && test ! -e pnpm-lock.yaml
+        npx --yes --package="pnpm@$PK_PNPM_VERSION" pnpm install --no-frozen-lockfile \
+            --prefer-offline=false --offline=false --store-dir=/cache/pnpm --verify-store-integrity \
+            --package-import-method=copy --side-effects-cache=false
+        cp -- pnpm-lock.yaml /evidence/effective-lock.yaml
+        node --version > /evidence/node-version.txt
+        npx --yes --package="pnpm@$PK_PNPM_VERSION" pnpm --version > /evidence/pnpm-version.txt
+        audit_status=0
+        npx --yes --package="pnpm@$PK_PNPM_VERSION" pnpm audit --prod --audit-level=high --json \
+            > /evidence/audit.json || audit_status=$?
+        printf "%s\n" "$audit_status" > /evidence/audit-exit-code.txt
+    '
+    python3 -B "$dependency_helper" audit
+    docker run "${common[@]}" --workdir /src/frontend \
+        --mount "type=volume,src=$pnpm_cache,dst=/cache/pnpm,volume-nocopy" \
+        --mount "type=volume,src=$npm_cache,dst=/cache/npm,volume-nocopy" \
+        --env npm_config_cache=/cache/npm --env npm_config_prefer_offline=false --env npm_config_prefer_online=true \
+        --env "PK_PNPM_VERSION=$pnpm_version" "$node_image" sh -ec '
+        npx --yes --package="pnpm@$PK_PNPM_VERSION" pnpm exec vue-tsc -b
+        npx --yes --package="pnpm@$PK_PNPM_VERSION" pnpm exec vite build
+    '
+    python3 -B "$dependency_helper" finish
+else
 docker run "${common[@]}" --workdir /src/frontend \
     --mount "type=volume,src=$pnpm_cache,dst=/cache/pnpm,volume-nocopy" \
     --mount "type=volume,src=$npm_cache,dst=/cache/npm,volume-nocopy" \
@@ -92,6 +139,7 @@ docker run "${common[@]}" --workdir /src/frontend \
     npx --yes --package="pnpm@$PK_PNPM_VERSION" pnpm exec vue-tsc -b
     npx --yes --package="pnpm@$PK_PNPM_VERSION" pnpm exec vite build
 '
+fi
 docker run "${common[@]}" --workdir /src/backend \
     --mount "type=volume,src=$go_modules_cache,dst=/cache/go-mod,volume-nocopy" \
     --mount "type=volume,src=$go_build_cache,dst=/cache/go-build,volume-nocopy" \

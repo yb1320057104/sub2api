@@ -24,11 +24,17 @@ Jenkins 的 Pipeline from SCM 已在 2026-10-08 合入后切换到私库已审�
 
 缓存名称以 `pk-sub2api-build-cache-v1-` 开头，区分 `release`（正式标签与同制品验收流程）、`manual-release`（兼容手动正式标签包）和 `candidate`（分支/SHA 候选）。三个域不共享缓存；名称还包含平台、UID/GID、Node/pnpm 或准确 Go 工具链版本。只接受带匹配用途/域/名称标签、无挂载选项的本地卷，不允许源码指定任意路径或外部卷。
 
-首次缓存为空时仍需下载；以后未变化的包和 Go 编译结果可以复用，新增依赖仍会下载，代码或构建参数变化仍会触发必要编译。每次 checkout 和项目 `node_modules` 保持独立，不缓存发行包或测试结论。pnpm 保留 frozen lockfile 和存储完整性检查，使用复制方式导入并禁用 native/postinstall 结果缓存；Go 下载后执行 `go mod verify`，发行编译使用 `-mod=readonly`。缓存不能代替依赖完整性、制品验收或 SHA256 校验，也不是源码测试通过的证据。
+首次缓存为空时仍需下载；以后未变化的包和 Go 编译结果可以复用，新增依赖仍会下载，代码或构建参数变化仍会触发必要编译。每次 checkout 和项目 `node_modules` 保持独立，不缓存发行包或测试结论。默认 pnpm 保留 frozen lockfile 和存储完整性检查，使用复制方式导入并禁用 native/postinstall 结果缓存；Go 下载后执行 `go mod verify`，发行编译使用 `-mod=readonly`。缓存不能代替依赖完整性、制品验收或 SHA256 校验，也不是源码测试通过的证据。
+
+`REINSTALL_NODE_MODULES`（是否重新安装 node_modules）默认选 **否**，保持上述冻结安装。2026-10-30 用户授权的 **是** 仅作用于本次隔离 `source/frontend`：真正删除 `node_modules`（含内部隐式锁）和 `pnpm-lock.yaml`，使用固定 pnpm 9.15.9 的 `--no-frozen-lockfile --prefer-offline=false --offline=false` 重新解析安装；保持缓存用途/域隔离、完整性校验、复制导入和禁用脚本结果缓存。依赖版本可能因此与源码锁不同。`publish` 必须选否，只使用既有封存包。
+
+重装使用 manifest schema 2，源码 `commit/tree` 仍对应私库已审阅提交，`frontend_dependencies` 记录原锁和 package.json SHA256。安装后先对实际新锁执行 `pnpm audit --prod --audit-level=high --json`，由可信流水线的现有例外检查器与例外清单判定；网络/格式错误、未获准的高危漏洞或过期例外使本次构建失败。审计通过才编译。封存 `frontend-effective-lock.yaml`、原锁、package.json、audit 原始 JSON、策略/检查器快照及 `frontend-dependencies.json`，记录工具版本和各文件 SHA256；有效锁、审计与完整依赖报告三项 hash 同时绑定运行时报告，inventory/seal/restore/ready/publish 均核验并随正式 Release 上传。
+
+原锁仅在容器看不到的本次工作区受控备份。前端构建完成后再次核对实际新锁未变，再恢复经 SHA256 校验的原锁；失败退出也执行同样定向恢复，恢复失败仍为构建失败。恢复只影响原锁，不清除或掩盖其他源码差异，`seal` 继续要求整个源码 checkout 干净。默认否和旧封存包继续使用原 schema 1 与原 validation profile；schema 1 拒绝混入重装声明/证据，也不能通过删字段把 schema 2 降级。旧手动 `package` 验收入口支持 schema 2 并绑定相同依赖证据，旧源码 notes 要求不变。
 
 初始化仅用无网络、只读根文件系统且仅有 CHOWN 能力的辅助容器修改四个卷根目录的属主，不递归遍历缓存；该容器不挂源码、凭据或 Docker socket。编译进程继续以非 root 用户运行。命名缓存卷不随工作区清理或 `--rm` 删除；工具链升级会使用不同卷，旧卷按实际需要在无构建运行时逐个检查、清理，不能用全局 `docker system prune --volumes` 代替定向维护。容器、证书、产物及生产卷不属于依赖缓存。
 
-打包结束只恢复 HEAD 确实跟踪的 `backend/internal/web/dist/.keep`。没有该占位文件的源码可以正常打包；真正的 Git 恢复失败仍会终止。`seal` 继续检查完整源码工作区，不能借缓存或清理步骤掩盖其他源码修改。
+打包结束恢复 HEAD 确实跟踪的 `backend/internal/web/dist/.keep`；显式重装时另按上述规则恢复原锁。没有该占位文件的源码可以正常打包；真正的恢复失败仍会终止。`seal` 继续检查完整源码工作区，不能借缓存或清理步骤掩盖其他源码修改。
 
 ## 当前服务器部署
 
