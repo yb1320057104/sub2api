@@ -34,8 +34,8 @@
           <article v-for="item in items" :key="item.account.id" class="radar-account-card card relative flex min-w-0 flex-col overflow-hidden" :class="{ 'radar-account-card-failed': item.verdict === 'fail' }">
             <div class="flex-1 space-y-3 p-3">
               <div class="flex items-start justify-between gap-3">
-                <div class="min-w-0"><h2 class="break-words text-sm font-semibold text-gray-900 dark:text-white">{{ item.account.name }}</h2><div class="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px] text-gray-600 dark:text-dark-300"><span v-if="email(item.account)" class="max-w-full truncate" :title="email(item.account)">{{ email(item.account) }}</span><span v-for="group in accountGroups(item.account)" :key="group.id" class="rounded bg-emerald-50 px-1 py-0.5 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">{{ group.name }}</span></div></div>
-                <span class="shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold" :class="item.verdict === 'fail' ? 'bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-300' : item.verdict === 'pass' ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300' : 'bg-gray-100 text-gray-500 dark:bg-dark-700 dark:text-dark-300'">{{ verdictText(item) }}</span>
+                <div class="min-w-0 flex-1"><h2 class="truncate text-sm font-semibold text-gray-900 dark:text-white" :title="item.account.name">{{ item.account.name }}</h2><div class="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px] text-gray-600 dark:text-dark-300"><span v-if="email(item.account)" class="max-w-full truncate" :title="email(item.account)">{{ email(item.account) }}</span><span v-for="group in accountGroups(item.account)" :key="group.id" class="rounded bg-emerald-50 px-1 py-0.5 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">{{ group.name }}</span></div></div>
+                <span class="shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold" :class="item.verdict === 'fail' ? 'bg-red-50/60 text-red-700 dark:bg-red-950/20 dark:text-red-300' : item.verdict === 'pass' ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300' : 'bg-gray-100 text-gray-500 dark:bg-dark-700 dark:text-dark-300'">{{ verdictText(item) }}</span>
               </div>
               <div class="grid grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)] items-start gap-2"><PlatformTypeBadge class="radar-account-platform min-w-0" :platform="item.account.platform" :type="item.account.type" :auth-mode="stringValue(item.account.credentials?.auth_mode)" :plan-type="stringValue(item.account.credentials?.plan_type) || item.account.parent_plan_type" :privacy-mode="stringValue(item.account.extra?.privacy_mode) || item.account.parent_privacy_mode" :subscription-expires-at="stringValue(item.account.credentials?.subscription_expires_at) || item.account.parent_subscription_expires_at" />
               <div class="radar-account-usage min-w-0"><h3 class="mb-1 text-xs font-medium text-gray-500 dark:text-dark-400">{{ t('radar.usage') }}</h3><AccountUsageCell :account="item.account" :show-actions="false" :batched-usage="usage[item.account.id]" :batched-usage-error="usageError[item.account.id]" :batched-usage-loading="usageLoading[item.account.id]" :request-batched-usage="queueUsage" /></div></div>
@@ -53,7 +53,7 @@
               </div>
               <div v-if="item.run?.model_results?.length" class="space-y-2">
                 <h3 class="text-xs font-medium text-gray-500 dark:text-dark-400">{{ t('radar.modelResults') }}</h3>
-                <div v-for="model in item.run.model_results" :key="model.id" class="flex flex-wrap items-start justify-between gap-x-2 gap-y-1 rounded-md px-2 py-1.5 text-xs" :class="model.passed === false ? 'bg-red-50 text-red-700 dark:bg-red-950/30 dark:text-red-300' : 'bg-gray-50 text-gray-600 dark:bg-dark-800 dark:text-dark-300'"><span class="min-w-0 break-all font-mono">{{ model.model }}</span><span class="shrink-0 font-medium">{{ model.status === 'completed' ? model.passed ? '21 ✓' : (model.answer ?? t('accountCandy.noAnswer')) + ' ✕' : t('accountCandy.' + model.status) }}</span><p v-if="model.error_message" class="basis-full whitespace-pre-wrap break-words text-amber-700 dark:text-amber-300">{{ model.error_message }}</p></div>
+                <div v-for="model in item.run.model_results" :key="model.id" class="flex flex-wrap items-start justify-between gap-x-2 gap-y-1 rounded-md px-2 py-1.5 text-xs" :class="model.passed === false ? 'bg-red-50/50 text-red-700 dark:bg-red-950/20 dark:text-red-300' : 'bg-gray-50 text-gray-600 dark:bg-dark-800 dark:text-dark-300'"><span class="min-w-0 break-all font-mono">{{ model.model }}</span><span class="shrink-0 font-medium">{{ model.status === 'completed' ? model.passed ? '21 ✓' : (model.answer ?? t('accountCandy.noAnswer')) + ' ✕' : t('accountCandy.' + model.status) }}</span><p v-if="model.error_message" class="basis-full whitespace-pre-wrap break-words text-amber-700 dark:text-amber-300">{{ model.error_message }}</p></div>
               </div>
               <p v-if="item.run?.moved_to_group_id" class="text-xs text-amber-700 dark:text-amber-300">{{ t('accountCandy.moved', { group: groupName(item.run.moved_to_group_id) }) }}</p>
               <p v-if="item.run?.move_error || item.run?.error_message" class="break-words text-xs text-amber-700 dark:text-amber-300">{{ item.run.move_error || item.run.error_message }}</p>
@@ -64,7 +64,30 @@
             </footer>
           </article>
         </div>
-        <Pagination v-if="total > 0" :page="page" :page-size="pageSize" :total="total" :show-page-size-selector="false" @update:page="page = $event" />
+        <div v-if="total > 0" class="flex flex-wrap items-center justify-between gap-3 px-1 pt-1">
+          <p class="text-xs tabular-nums text-gray-500 dark:text-dark-400">
+            {{ t('pagination.showing') }}
+            <span class="font-medium text-gray-700 dark:text-dark-200">{{ firstItem }}–{{ lastItem }}</span>
+            {{ t('pagination.of') }}
+            <span class="font-medium text-gray-700 dark:text-dark-200">{{ total }}</span>
+            {{ t('pagination.results') }}
+          </p>
+          <nav class="flex items-center gap-1.5" :aria-label="t('pagination.pageOf', { page, total: totalPages })">
+            <button type="button" class="radar-page-button" :disabled="page <= 1" :aria-label="t('pagination.previous')" :title="t('pagination.previous')" @click="goToPage(page - 1)">
+              <Icon name="chevronLeft" size="sm" aria-hidden="true" />
+            </button>
+            <span class="min-w-16 text-center text-xs tabular-nums text-gray-600 dark:text-dark-300 sm:hidden">{{ page }} / {{ totalPages }}</span>
+            <div class="hidden items-center gap-1.5 sm:flex">
+              <template v-for="pageNumber in visiblePages" :key="pageNumber">
+                <button v-if="typeof pageNumber === 'number'" type="button" class="radar-page-button" :class="{ 'radar-page-button-active': pageNumber === page }" :aria-label="t('pagination.goToPage', { page: pageNumber })" :aria-current="pageNumber === page ? 'page' : undefined" @click="goToPage(pageNumber)">{{ pageNumber }}</button>
+                <span v-else class="w-5 text-center text-xs text-gray-400 dark:text-dark-500" aria-hidden="true">…</span>
+              </template>
+            </div>
+            <button type="button" class="radar-page-button" :disabled="page >= totalPages" :aria-label="t('pagination.next')" :title="t('pagination.next')" @click="goToPage(page + 1)">
+              <Icon name="chevronRight" size="sm" aria-hidden="true" />
+            </button>
+          </nav>
+        </div>
         <p class="text-xs leading-5 text-gray-400">{{ t('radar.egressHint') }}</p>
       </section>
       <AccountCandyTestSettings :show="showSettings" @close="showSettings = false" @saved="settingsSaved" />
@@ -80,7 +103,7 @@ import { useIntervalFn } from '@vueuse/core'
 import { useRoute, useRouter } from 'vue-router'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import Select from '@/components/common/Select.vue'
-import Pagination from '@/components/common/Pagination.vue'
+import Icon from '@/components/icons/Icon.vue'
 import PlatformTypeBadge from '@/components/common/PlatformTypeBadge.vue'
 import AccountUsageCell from '@/components/account/AccountUsageCell.vue'
 import IntelligenceTestSettings from '@/components/intelligenceTest/IntelligenceTestSettings.vue'
@@ -113,6 +136,16 @@ const search = ref('')
 const page = ref(1)
 const pageSize = 12
 const total = ref(0)
+const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize)))
+const firstItem = computed(() => total.value ? (page.value - 1) * pageSize + 1 : 0)
+const lastItem = computed(() => Math.min(page.value * pageSize, total.value))
+const visiblePages = computed<(number | 'gap-start' | 'gap-end')[]>(() => {
+  const count = totalPages.value
+  if (count <= 7) return Array.from({ length: count }, (_, index) => index + 1)
+  if (page.value <= 4) return [1, 2, 3, 4, 5, 'gap-end', count]
+  if (page.value >= count - 3) return [1, 'gap-start', count - 4, count - 3, count - 2, count - 1, count]
+  return [1, 'gap-start', page.value - 1, page.value, page.value + 1, 'gap-end', count]
+})
 const loading = ref(false)
 const error = ref('')
 const showSettings = ref(false)
@@ -126,6 +159,10 @@ const email = (account: Account) => stringValue(account.extra?.email_address) ||
 const accountGroups = (account: Account) => groups.value.filter(group => account.group_ids?.includes(group.id))
 const groupName = (id: number) => groups.value.find(group => group.id === id)?.name || t('accountCandy.groupId', { id })
 const verdictText = (item: RadarObservation) => t(item.verdict === 'fail' ? 'accountCandy.notPassed' : item.run?.status === 'running' ? 'accountCandy.running' : item.verdict === 'pass' ? 'accountCandy.passed' : item.run?.status === 'failed' ? 'accountCandy.failed' : 'radar.unknown')
+
+function goToPage(nextPage: number) {
+  if (nextPage >= 1 && nextPage <= totalPages.value && nextPage !== page.value) page.value = nextPage
+}
 
 async function switchTab() { tab.value = tab.value === 'groups' ? 'accounts' : 'groups'; await nextTick(); document.getElementById('radar-tab-' + tab.value)?.focus() }
 async function loadGroups() {
@@ -193,15 +230,26 @@ onUnmounted(() => { disposed = true; controller?.abort(); if (usageTimer) clearT
 
 <style scoped>
 .radar-account-card-failed {
-  @apply border-red-200 bg-red-50 dark:border-red-900/60 dark:bg-red-950/30;
+  @apply border-red-100/60 bg-[#fffafa] dark:border-red-900/30 dark:bg-red-950/10;
 }
 
 .radar-account-card-failed .radar-account-inset {
-  @apply bg-red-100/50 dark:bg-red-900/20;
+  @apply bg-red-50/40 dark:bg-red-900/10;
 }
 
 .radar-account-card-failed > footer {
-  @apply border-red-200/70 bg-transparent dark:border-red-900/60;
+  @apply border-red-100/60 bg-transparent dark:border-red-900/30;
+}
+
+.radar-page-button {
+  @apply inline-flex h-9 min-w-9 items-center justify-center rounded-xl border border-gray-200/70 bg-white/70 px-2 text-sm font-medium tabular-nums text-gray-600 transition-colors;
+  @apply enabled:hover:border-primary-200 enabled:hover:bg-primary-50 enabled:hover:text-primary-700 disabled:cursor-not-allowed disabled:opacity-40;
+  @apply focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-500;
+  @apply dark:border-dark-700 dark:bg-dark-800/70 dark:text-dark-300 dark:enabled:hover:border-primary-800 dark:enabled:hover:bg-dark-700 dark:enabled:hover:text-primary-300;
+}
+
+.radar-page-button-active {
+  @apply border-primary-200 bg-primary-100 font-semibold text-primary-700 dark:border-primary-800 dark:bg-primary-950/60 dark:text-primary-300;
 }
 
 /* Keep table components readable inside the narrower four-column cards. */
