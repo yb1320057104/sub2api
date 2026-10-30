@@ -23,6 +23,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/gorilla/websocket"
 	"github.com/pquerna/otp/totp"
 	xproxy "golang.org/x/net/proxy"
@@ -558,11 +559,29 @@ func authorizationPrecheckHTTPState(code int64) string {
 	return "尚未收到 HTTP 响应"
 }
 
-// Optional diagnostic trace (PK_AUTH_BROWSER_TRACE=true). It is never enabled by
-// default: the trace writes upstream status and body into the process log with
-// the account email, password and 2FA secret redacted and the line truncated.
+// The authorization trace is ON by default so every failed login leaves the
+// upstream status and body in the application log. Setting
+// PK_AUTH_BROWSER_TRACE=false (or 0/off/no) silences it. Every line is
+// redacted, flattened to one line and truncated.
+func authorizationTraceEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("PK_AUTH_BROWSER_TRACE"))) {
+	case "false", "0", "off", "no":
+		return false
+	}
+	return true
+}
+
+// Proxy URLs carry credentials; only host:port may reach the log.
+func authorizationProxyEndpoint(proxyURL string) string {
+	parsed, err := url.Parse(proxyURL)
+	if err != nil || parsed.Host == "" {
+		return "invalid"
+	}
+	return parsed.Scheme + "://" + parsed.Host
+}
+
 func authorizationTrace(secret *AuthorizationSecret, format string, args ...any) {
-	if !strings.EqualFold(strings.TrimSpace(os.Getenv("PK_AUTH_BROWSER_TRACE")), "true") {
+	if !authorizationTraceEnabled() {
 		return
 	}
 	line := fmt.Sprintf(format, args...)
@@ -573,16 +592,16 @@ func authorizationTrace(secret *AuthorizationSecret, format string, args ...any)
 			}
 		}
 	}
-	if len(line) > 600 {
-		line = line[:600] + "..."
-	}
 	line = strings.Map(func(r rune) rune {
 		if r < 0x20 || r == 0x7f {
 			return ' '
 		}
 		return r
 	}, line)
-	fmt.Fprintf(os.Stderr, "authorization-trace: %s\n", line)
+	if len(line) > 600 {
+		line = line[:600] + "..."
+	}
+	logger.LegacyPrintf("service.authorization", "trace: %s", line)
 }
 
 // Cloudflare renders a managed challenge in a cross-origin iframe. The probe
@@ -838,6 +857,7 @@ func runAuthorizationBrowserAttempt(ctx context.Context, mode, proxyURL, authURL
 	if proxyURL == "" {
 		return "", authorizationBrowserFailure("proxy_missing", "尚未配置授权代理")
 	}
+	authorizationTrace(secret, "attempt start mode=%s browser=%s proxy=%s", mode, path, authorizationProxyEndpoint(proxyURL))
 	displayEnv, stopDisplay, displayErr := authorizationBrowserDisplayEnv(mode)
 	if displayErr != nil {
 		return "", authorizationBrowserFailure("browser_display_missing", "后台 Chrome 会话需要图形环境（Xvfb 或 DISPLAY），未提交账号密码")
@@ -926,9 +946,14 @@ func runAuthorizationBrowserAttempt(ctx context.Context, mode, proxyURL, authURL
 			return
 		}
 		var failure *authorizationBrowserError
-		if errors.As(err, &failure) && secretSubmitted.Load() {
-			failure.noReplay = true
+		if errors.As(err, &failure) {
+			if secretSubmitted.Load() {
+				failure.noReplay = true
+			}
+			authorizationTrace(secret, "attempt failed mode=%s stage=%s noReplay=%v message=%s", mode, failure.stage, failure.noReplay, failure.message)
+			return
 		}
+		authorizationTrace(secret, "attempt failed mode=%s error=%v", mode, err)
 	}()
 	var frameTree struct {
 		FrameTree struct {

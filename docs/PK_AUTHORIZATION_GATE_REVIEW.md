@@ -76,7 +76,11 @@
 | 故意改错密码 | `POST /api/accounts/password/verify` → **401**，`code=invalid_username_or_password`，`message="Login failed. Please try again or seek help at https://help.openai.com/"` | `invalid_credentials` | 13.9s |
 | 正确密码 + 故意改错 2FA 密钥 | `POST /api/accounts/mfa/verify` → **403**，`code=incorrect_code`，`message="Incorrect code"` | 修正前 `login_http_failed`，修正后 `invalid_twofa` | 16.6s |
 
-由此产生三处修正：任务消息改为“HTTP 状态；接口；上游错误标识；上游说明”四段（上游说明截断 120 字并去换行）；阶段判定优先看接口（`password/`、`mfa/`），因为 `incorrect_code` 这类通用码无法单凭文本归到 2FA；`PK_AUTH_BROWSER_TRACE=true` 作为默认关闭的排障开关，把上游状态与响应正文写进进程日志（邮箱、密码、2FA 已脱敏，单行≤600 字）。`needs_input` 同时拆成“邮箱/短信验证码”与“页面停滞”两条独立提示。
+由此产生三处修正：任务消息改为“HTTP 状态；接口；上游错误标识；上游说明”四段（上游说明截断 120 字并去换行）；阶段判定优先看接口（`password/`、`mfa/`），因为 `incorrect_code` 这类通用码无法单凭文本归到 2FA；`needs_input` 拆成“邮箱/短信验证码”与“页面停滞”两条独立提示。
+
+### v0.2.19-pk.22：追踪默认开启
+
+`authorizationTraceEnabled` 改为默认 true，仅 `PK_AUTH_BROWSER_TRACE=false/0/off/no` 关闭，不再依赖容器配置。追踪走应用日志（`service.authorization`），输出 attempt start（模式、浏览器、代理仅 host:port）、登录阶段、上游状态与正文、以及 attempt failed 的完整消息；邮箱、密码、2FA 统一 `<redacted>`，单行≤600 字。本机实测（故意改错密码）：默认 `trace enabled = true`，日志完整输出 401 `invalid_username_or_password` 与四段式消息，密码未出现在日志中。
 
 ### 未验证
 
