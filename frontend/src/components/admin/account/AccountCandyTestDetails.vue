@@ -17,9 +17,10 @@
         <div><dt class="text-xs text-gray-500">{{ t('accountCandy.effort') }}</dt><dd class="mt-1 text-gray-900 dark:text-white">{{ details.effort || t('accountCandy.defaultEffort') }}</dd></div>
         <div><dt class="text-xs text-gray-500">{{ t('accountCandy.testedAt') }}</dt><dd class="mt-1 text-gray-900 dark:text-white">{{ formatDateTime(details.started_at) }}</dd></div>
         <div><dt class="text-xs text-gray-500">{{ t('accountCandy.duration') }}</dt><dd class="mt-1 text-gray-900 dark:text-white">{{ details.duration_ms == null ? '—' : t('accountCandy.durationSeconds', { seconds: (details.duration_ms / 1000).toFixed(1) }) }}</dd></div>
-        <div v-if="details.status === 'completed'"><dt class="text-xs text-gray-500">{{ t('accountCandy.answer') }}</dt><dd class="mt-1 text-gray-900 dark:text-white">{{ details.answer ?? t('accountCandy.noAnswer') }}</dd></div>
-        <div><dt class="text-xs text-gray-500">{{ t('accountCandy.source') }}</dt><dd class="mt-1 text-gray-900 dark:text-white">{{ t(details.source === 'scheduled' ? 'accountCandy.scheduled' : 'accountCandy.manual') }}</dd></div>
+        <div v-if="details.status === 'completed' && (details.model_results?.length || 0) <= 1"><dt class="text-xs text-gray-500">{{ t('accountCandy.answer') }}</dt><dd class="mt-1 text-gray-900 dark:text-white">{{ details.answer ?? t('accountCandy.noAnswer') }}</dd></div>
+        <div><dt class="text-xs text-gray-500">{{ t('accountCandy.source') }}</dt><dd class="mt-1 text-gray-900 dark:text-white">{{ t(details.origin === 'authorization' ? 'radar.authorizationTest' : details.source === 'scheduled' ? 'accountCandy.scheduled' : 'accountCandy.manual') }}</dd></div>
       </dl>
+      <p v-if="details.started_at_estimated" class="text-xs text-gray-500">{{ t('radar.authorizationTimeFallback') }}</p>
       <p v-if="details.moved_to_group_id != null" class="rounded-lg bg-amber-50 p-3 text-sm text-amber-800 dark:bg-amber-950/30 dark:text-amber-300">{{ t('accountCandy.moved', { group: groupName(details.moved_to_group_id) }) }}</p>
       <p v-if="details.move_error" class="rounded-lg bg-red-50 p-3 text-sm text-red-700 dark:bg-red-950/30 dark:text-red-300">{{ t('accountCandy.moveFailed') }}: {{ details.move_error }}</p>
       <p v-if="error" class="text-sm text-red-600 dark:text-red-400" role="alert">{{ error }}</p>
@@ -38,7 +39,7 @@
             <p class="break-all text-xs text-gray-500">{{ t('radar.egressIP') }}: <span class="font-mono">{{ model.egress_ip || t('radar.unknown') }}</span><span v-if="model.egress_checked_at"> · {{ formatDateTime(model.egress_checked_at) }}</span></p>
             <p v-if="model.egress_error" class="text-xs text-amber-600 dark:text-amber-400">{{ model.egress_error }}</p>
             <p v-if="model.error_message" class="text-amber-700 dark:text-amber-300">{{ model.error_message }}</p>
-            <p class="max-h-80 overflow-y-auto whitespace-pre-wrap break-words leading-6 text-gray-700 dark:text-dark-200">{{ model.response_text || t(model.status === 'running' ? 'accountCandy.waiting' : 'accountCandy.noResponse') }}</p>
+            <p class="max-h-80 overflow-y-auto whitespace-pre-wrap break-words leading-6 text-gray-700 dark:text-dark-200">{{ model.response_text || t(model.status === 'running' ? 'accountCandy.waiting' : details.origin === 'authorization' && model.status === 'completed' ? 'radar.authorizationResponseMissing' : 'accountCandy.noResponse') }}</p>
           </div>
         </article>
         <p class="text-xs leading-5 text-gray-500">{{ t('radar.egressHint') }}</p>
@@ -83,7 +84,7 @@ const history = ref<AccountCandyResult[]>([])
 const selectedKey = ref('')
 const keyOf = (result: AccountCandyResult) => (result.origin || 'radar') + ':' + result.id
 const selectedResult = computed(() => history.value.find(result => keyOf(result) === selectedKey.value) ?? props.result)
-const historyOptions = computed(() => history.value.map(result => ({ value: keyOf(result), label: formatDateTime(result.started_at) + ' · ' + (result.origin === 'legacy' ? t('radar.legacy') + ' · ' : '') + result.model })))
+const historyOptions = computed(() => history.value.map(result => ({ value: keyOf(result), label: formatDateTime(result.started_at) + ' · ' + (result.origin === 'authorization' ? t('radar.authorizationTest') + ' · ' : result.origin === 'legacy' ? t('radar.legacy') + ' · ' : '') + result.model })))
 const statusText = computed(() => {
   if (!details.value) return ''
   if (details.value.verdict === 'fail' || details.value.passed === false) return t('accountCandy.notPassed')

@@ -176,6 +176,45 @@ func (h *AccountAuthorizationHandler) Reveal(c *gin.Context) {
 		response.Success(c, secret)
 	}
 }
+
+func (h *AccountAuthorizationHandler) UpdateCredential(c *gin.Context) {
+	if !authorizationAdmin(c) {
+		return
+	}
+	id, ok := authorizationID(c)
+	if !ok {
+		return
+	}
+	var input service.AuthorizationCredentialUpdate
+	if !authorizationInput(c, &input) {
+		return
+	}
+	middleware.SetAuditAction(c, "authorization.history.update")
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
+	defer cancel()
+	err := h.service.UpdateAuthorizationCredential(ctx, id, &input)
+	input.Password, input.TwoFA = "", ""
+	if !authorizationError(c, err) {
+		response.Success(c, map[string]any{"updated": true})
+	}
+}
+
+func (h *AccountAuthorizationHandler) DeleteCredential(c *gin.Context) {
+	if !authorizationAdmin(c) {
+		return
+	}
+	id, ok := authorizationID(c)
+	if !ok {
+		return
+	}
+	middleware.SetAuditAction(c, "authorization.history.delete")
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
+	defer cancel()
+	if !authorizationError(c, h.service.DeleteAuthorizationCredential(ctx, id, c.Query("revision"))) {
+		response.Success(c, map[string]any{"deleted": true})
+	}
+}
+
 func (h *AccountAuthorizationHandler) AddProxies(c *gin.Context) {
 	if !authorizationAdmin(c) {
 		return

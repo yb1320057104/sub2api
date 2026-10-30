@@ -22,20 +22,20 @@ func (s *AccountAuthorizationService) ListAuthorization(ctx context.Context, kin
 	var projection, order string
 	switch kind {
 	case "history":
-		projection = `SELECT h.id,h.email,h.has_twofa,h.source,h.created_at,CASE WHEN verdict.status='banned' THEN 'banned' ELSE 'saved' END AS status,CASE WHEN verdict.status='banned' THEN verdict.message ELSE '' END AS message FROM pk_authorization_history h LEFT JOIN LATERAL(SELECT status,message FROM pk_authorization_jobs j WHERE j.email=h.email AND (j.status IN ('banned','completed') OR j.settings->>'authorization_completed'='true') ORDER BY id DESC LIMIT 1)verdict ON true`
-		order = "id DESC"
+		projection = `SELECT h.id,h.email,h.has_twofa,h.source,h.created_at,md5(h.secret_encrypted||h.source||(extract(epoch FROM h.created_at))::text) AS revision,CASE WHEN verdict.status='banned' THEN 'banned' ELSE 'saved' END AS status,CASE WHEN verdict.status='banned' THEN verdict.message ELSE '' END AS message FROM (` + authorizationCurrentHistorySQL + `) h LEFT JOIN LATERAL(SELECT status,message FROM pk_authorization_jobs j WHERE j.email=h.email AND (j.status IN ('banned','completed') OR j.settings->>'authorization_completed'='true') ORDER BY id DESC LIMIT 1)verdict ON true`
+		order = "created_at DESC,id DESC"
 	case "proxies":
 		projection = `SELECT id,endpoint AS email,endpoint,enabled,last_checked_at,last_status AS status,last_message AS message,created_at FROM pk_authorization_proxies WHERE enabled=true`
 		order = "id DESC"
 	case "jobs":
-		projection = `SELECT id,batch_id,email,account_id,source,status,stage,message,created_at,started_at,finished_at,COALESCE(settings->'final_group_names','[]'::jsonb) AS groups,settings->'intelligence_passed' AS intelligence_passed,settings->'intelligence_answer' AS intelligence_answer,COALESCE(settings->'intelligence_results','[]'::jsonb) AS intelligence_results,COALESCE((settings->>'authorization_completed')::boolean,false) AS authorization_completed FROM pk_authorization_jobs`
+		projection = `SELECT id,batch_id,email,account_id,source,status,stage,message,created_at,started_at,finished_at,COALESCE(settings->'final_group_names','[]'::jsonb) AS groups,settings->'intelligence_passed' AS intelligence_passed,settings->'intelligence_answer' AS intelligence_answer,` + authorizationIntelligenceResultsSQL("settings", false) + ` AS intelligence_results,COALESCE((settings->>'authorization_completed')::boolean,false) AS authorization_completed FROM pk_authorization_jobs`
 		order = "id DESC"
 	case "accounts":
 		projection = `SELECT a.id,a.name,` + authorizationEmailSQL + ` AS email,a.type,a.status AS account_status,
    CASE WHEN NOT ` + authorizationSupportedSQL + ` THEN 'unsupported'
     WHEN j.status='running' THEN 'authorizing' WHEN j.status='queued' THEN 'queued'
     WHEN st.status='banned' AND st.credential_version=md5(a.credentials::text) THEN 'banned'
-    WHEN ` + authorizationExpiredSQL + ` THEN CASE WHEN COALESCE(h.has_twofa,false)=false THEN 'missing_credentials' WHEN h.source='supplement' AND h.created_at>COALESCE(st.authorized_at,'epoch'::timestamptz) AND (j.history_id IS NULL OR j.history_id<>h.id) THEN 'credentials_completed' ELSE 'expired' END
+    WHEN ` + authorizationExpiredSQL + ` THEN CASE WHEN COALESCE(h.has_twofa,false)=false THEN 'missing_credentials' WHEN h.source IN ('supplement','updated') AND h.created_at>COALESCE(st.authorized_at,'epoch'::timestamptz) AND (j.created_at IS NULL OR j.created_at<h.created_at) THEN 'credentials_completed' ELSE 'expired' END
     WHEN st.credential_version=md5(a.credentials::text) AND st.status='cache_pending' THEN 'cache_pending'
     WHEN a.status='active' THEN 'authorized' WHEN a.status='error' THEN 'error' ELSE 'unknown' END AS status,
    CASE WHEN st.credential_version=md5(a.credentials::text) THEN st.message ELSE '' END AS message,
@@ -44,8 +44,8 @@ func (s *AccountAuthorizationService) ListAuthorization(ctx context.Context, kin
    j.id AS job_id,CASE WHEN j.status IN ('queued','running') OR (j.status IN ('failed','needs_input','banned') AND (` + authorizationExpiredSQL + ` OR st.status='banned')) THEN j.message ELSE '' END AS job_message,
    COALESCE((SELECT jsonb_agg(g.name ORDER BY g.id) FROM account_groups ag JOIN groups g ON g.id=ag.group_id AND g.deleted_at IS NULL WHERE ag.account_id=a.id),'[]') AS groups
    FROM accounts a LEFT JOIN pk_authorization_state st ON st.account_id=a.id
-   LEFT JOIN LATERAL (SELECT id,has_twofa,source,created_at FROM pk_authorization_history WHERE email=` + authorizationEmailSQL + ` ORDER BY id DESC LIMIT 1) h ON true
-   LEFT JOIN LATERAL (SELECT id,history_id,status,message FROM pk_authorization_jobs WHERE email=` + authorizationEmailSQL + ` AND (account_id=a.id OR account_id IS NULL) ORDER BY id DESC LIMIT 1) j ON true
+   LEFT JOIN (` + authorizationCurrentHistorySQL + `) h ON h.email=` + authorizationEmailSQL + `
+   LEFT JOIN LATERAL (SELECT id,history_id,status,message,created_at FROM pk_authorization_jobs WHERE email=` + authorizationEmailSQL + ` AND (account_id=a.id OR account_id IS NULL) ORDER BY id DESC LIMIT 1) j ON true
    WHERE a.deleted_at IS NULL AND a.platform='openai'`
 		order = "id DESC"
 	default:

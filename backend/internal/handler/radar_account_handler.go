@@ -162,7 +162,16 @@ func (h *AccountCandyTestHandler) RadarResult(c *gin.Context) {
 	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 	defer cancel()
-	r, err := h.service.GetRadarRun(ctx, id, rid)
+	var r *service.RadarRun
+	switch c.Query("origin") {
+	case "authorization":
+		r, err = h.service.GetAuthorizationRadarRun(ctx, id, rid)
+	case "", "radar":
+		r, err = h.service.GetRadarRun(ctx, id, rid)
+	default:
+		response.BadRequest(c, "测试记录来源无效")
+		return
+	}
 	if !response.ErrorFrom(c, err) {
 		response.Success(c, r)
 	}

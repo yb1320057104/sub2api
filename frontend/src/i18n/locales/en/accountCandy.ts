@@ -1,5 +1,6 @@
 export default {
   radar: {
+    authorizationTest: 'Import admission test', notRecorded: 'Not recorded', authorizationResponseMissing: 'This authorization record did not retain the full response.', authorizationTimeFallback: 'This historical record has no separate test start time; the authorization job start time is shown.',
     authorization: 'Authorization inspection',
     title: 'Radar Observatory', description: 'Manage group and account intelligence checks, model answers, and account egress.',
     groups: 'Group observation', accounts: 'Account observation', viewResults: 'View intelligence results', refreshHint: 'Current page refreshes every 5 seconds',

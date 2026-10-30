@@ -10,13 +10,21 @@ import (
 )
 
 type AuthorizationIntelligenceResult struct {
-	Model        string `json:"model"`
-	Effort       string `json:"effort"`
-	Status       string `json:"status"`
-	Passed       *bool  `json:"passed"`
-	Answer       *int   `json:"answer"`
-	ErrorMessage string `json:"error_message,omitempty"`
-	DurationMS   int64  `json:"duration_ms"`
+	MappedModel     string     `json:"mapped_model,omitempty"`
+	ResponseText    string     `json:"response_text,omitempty"`
+	EgressIP        string     `json:"egress_ip,omitempty"`
+	EgressMode      string     `json:"egress_mode,omitempty"`
+	EgressCheckedAt *time.Time `json:"egress_checked_at,omitempty"`
+	EgressError     string     `json:"egress_error,omitempty"`
+	StartedAt       *time.Time `json:"started_at,omitempty"`
+	FinishedAt      *time.Time `json:"finished_at,omitempty"`
+	Model           string     `json:"model"`
+	Effort          string     `json:"effort"`
+	Status          string     `json:"status"`
+	Passed          *bool      `json:"passed"`
+	Answer          *int       `json:"answer"`
+	ErrorMessage    string     `json:"error_message,omitempty"`
+	DurationMS      int64      `json:"duration_ms"`
 }
 
 func authorizationIntelligenceModels(settings AuthorizationSubmit) ([]RadarModel, error) {
@@ -66,7 +74,22 @@ func authorizationIntelligenceVerdict(results []AuthorizationIntelligenceResult)
 
 func (s *AccountAuthorizationService) saveAuthorizationIntelligence(ctx context.Context, job *authorizationJob, results []AuthorizationIntelligenceResult, retainCancelled bool) error {
 	passed, answer := authorizationIntelligenceVerdict(results)
-	raw, err := json.Marshal(map[string]any{"intelligence_results": results, "intelligence_passed": passed, "intelligence_answer": answer})
+	var startedAt, finishedAt *time.Time
+	complete := len(results) > 0
+	for _, result := range results {
+		if result.StartedAt != nil && (startedAt == nil || result.StartedAt.Before(*startedAt)) {
+			startedAt = result.StartedAt
+		}
+		if result.FinishedAt == nil {
+			complete = false
+		} else if finishedAt == nil || result.FinishedAt.After(*finishedAt) {
+			finishedAt = result.FinishedAt
+		}
+	}
+	if !complete {
+		finishedAt = nil
+	}
+	raw, err := json.Marshal(map[string]any{"intelligence_results": results, "intelligence_passed": passed, "intelligence_answer": answer, "intelligence_started_at": startedAt, "intelligence_finished_at": finishedAt})
 	if err != nil {
 		return err
 	}
@@ -89,8 +112,11 @@ func (s *AccountAuthorizationService) saveAuthorizationIntelligence(ctx context.
 func (s *AccountAuthorizationService) executeAuthorizationIntelligence(ctx context.Context, accountID int64, identity [32]byte, status string, model RadarModel) (result AuthorizationIntelligenceResult) {
 	result = AuthorizationIntelligenceResult{Model: model.Model, Effort: model.Effort, Status: "failed"}
 	started := time.Now()
+	result.StartedAt = &started
 	defer func() {
-		result.DurationMS = time.Since(started).Milliseconds()
+		finished := time.Now()
+		result.FinishedAt = &finished
+		result.DurationMS = finished.Sub(started).Milliseconds()
 		if recover() != nil {
 			result.Status, result.ErrorMessage = "failed", "模型测智异常中断，此错误不作为不及格依据"
 			result.Passed, result.Answer = nil, nil
@@ -108,6 +134,12 @@ func (s *AccountAuthorizationService) executeAuthorizationIntelligence(ctx conte
 		result.ErrorMessage = "账号凭据、分组或状态已变化，此模型未继续测试"
 		return result
 	}
+	result.EgressMode = "direct"
+	if account.ProxyID != nil {
+		result.EgressMode = "proxy"
+	}
+	result.EgressIP, result.EgressCheckedAt, result.EgressError = probeRadarEgress(ctx, account)
+	result.MappedModel = account.GetMappedModel(model.Model)
 	text, err := s.tests.runAccountCandyProbe(ctx, account, account, &AccountCandyTestConfig{Model: model.Model, Effort: model.Effort})
 	if err != nil {
 		result.ErrorMessage = redactCandyAccountError(accountCandySafeError(err), account)
@@ -121,7 +153,7 @@ func (s *AccountAuthorizationService) executeAuthorizationIntelligence(ctx conte
 		result.ErrorMessage = "未取得完整的最终回复，此错误不作为不及格依据"
 		return result
 	}
-	result.Status, result.Answer = "completed", intelligenceExtractAnswer(text)
+	result.Status, result.Answer, result.ResponseText = "completed", intelligenceExtractAnswer(text), text
 	passed := result.Answer != nil && *result.Answer == 21
 	result.Passed = &passed
 	return result
@@ -131,8 +163,9 @@ func (s *AccountAuthorizationService) runAuthorizationIntelligenceModels(ctx con
 	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	results := make([]AuthorizationIntelligenceResult, len(models))
+	startedAt := time.Now()
 	for i, model := range models {
-		results[i] = AuthorizationIntelligenceResult{Model: model.Model, Effort: model.Effort, Status: "running"}
+		results[i] = AuthorizationIntelligenceResult{Model: model.Model, Effort: model.Effort, Status: "running", StartedAt: &startedAt}
 	}
 	if err := s.saveAuthorizationIntelligence(ctx, job, results, false); err != nil {
 		return results, err

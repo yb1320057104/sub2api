@@ -1,5 +1,6 @@
 export default {
   authorization: {
+    updateCredentials: '更新凭据', deleteCredentials: '删除凭据', credentialsUpdated: '凭据已更新，供下次重授权使用', credentialsDeleted: '凭据已删除', editCredentialsHint: '邮箱保持不变，可修改密码和2FA密钥。清空2FA表示移除密钥，自动重授权将等待补齐；保存不立即执行授权。', deleteCredentialsHint: '删除 {email} 的密码和2FA历史，同时取消该邮箱未完成的授权任务。账号管理中的账号和已有测智记录保留；后续重授权需重新补全凭据。',
     gateTitle: '授权后的测智关卡', gateHint: '授权成功后先不分组、不参与调度；并发测试糖果设置中所有启用模型，等待本轮结束后分组。全部完整回答21才及格；任一模型答错即不及格，其余模型仍继续完成。请求失败不算答错，无法形成结论或取消时保持未分组。',
     passGroups: '及格分组（可多选）', failGroups: '不合格账号移入分组', gateGroupsRequired: '请选择至少一个及格分组。', failureGroupHint: '沿用糖果测试设置。实际转组时重新读取此设置；未配置或目标失效时保持未分组。', failureGroupMissing: '尚未配置，请在糖果测试设置中选择。',
     gateModels: '本轮并发测试 {count} 个启用模型（提交时固定本批配置）', credentialsAuthorized: '授权凭据已保存', gatePassed: '测智及格', gateFailed: '测智不及格', gateAnswer: '答案：{answer}', finalGroups: '最终分组', ungrouped: '暂未分组', currentStage: '当前阶段：{stage}',
@@ -16,19 +17,19 @@ export default {
     next: '下次计划', off: '未启用', latestAccountsHint: '每轮重新读取最新账号管理，只同步真实 OpenAI OAuth 账号的状态，不额外发送hi。手动新增账号下一轮纳入，已删除账号不参与；默认只选择错误状态且错误码401的账号重授权。',
     browserMissing: '未找到外置授权浏览器。支持自动补装的新镜像会在启动时安装缺失的 Chromium/Xvfb（PK_AUTH_BROWSER_BOOTSTRAP=true）；安装失败请检查 Alpine 软件源或执行 deploy/install-browser.sh。普通重启和网页更新保留已安装依赖；旧镜像需更新一次才能获得新的启动脚本。',
     openWorkbench: '打开授权工作台', openInspection: '查看授权巡检', accountInput: '账号密码与2FA', accountPlaceholder: '邮箱----密码----2FA密钥\n每行一个账号，也支持制表符分隔',
-    accountInputHint: '每批最多1000条。2FA填写验证器密钥，不是六位验证码；自动重授权要求完整密码与2FA。提交后加密保存到历史，授权任务按配置并发执行。',
+    accountInputHint: '每批最多1000条。2FA填写验证器密钥，不是六位验证码；自动重授权要求完整密码与2FA。提交时加密保存在任务中，任务结束后按邮箱归档；同邮箱更新原凭据，排队和执行中不新增历史。',
     noGroups: '暂无可选 OpenAI 分组，可先在分组管理添加。', importHint: '新账号负载因子与账号并发一致。工作台任务先授权、后测智分组；定时重授权保留原分组、优先级、并发、代理和二开配置。',
-    submit: '保存凭据并提交任务', submitting: '正在提交…', submitted: '凭据已保存，授权任务已提交', jobs: '授权任务', refreshHint: '仅刷新状态，不触发授权',
+    submit: '提交授权任务', submitting: '正在提交…', submitted: '授权任务已提交，任务结束后更新凭据历史', jobs: '授权任务', refreshHint: '仅刷新状态，不触发授权',
     proxyInput: '授权代理（每行一条）', proxyHint: '导入仅保存代理，不会自动批量预检。可点击每条的 GET预检；实际授权前也会使用与浏览器版本一致的身份经该出口检查 chatgpt.com。失败时展示具体原因，绝不直连兜底。测智仍用账号原代理，巡检本身不发送网络请求。', saveProxies: '加密保存代理',
-    historyHint: '保留每次提交与补全的历史版本。自动重授权按邮箱读取最新版本，密码或2FA不全时跳过。列表默认遮蔽密码和2FA；查看内容沿用系统敏感操作验证。',
+    historyHint: '授权任务结束后归档，同邮箱只显示一条最新凭据；封禁结论保留。手动更新或巡检补全立即保存，供下一轮重授权使用，不改变已排队任务的凭据。列表默认遮蔽密码和2FA，查看、编辑和删除沿用敏感操作验证。',
     searchEmail: '搜索邮箱或代理地址', filter: '状态筛选', search: '搜索', refresh: '刷新', proxyEndpoint: '授权出口', account: '账号', status: '状态', credentials: '凭据', details: '说明', time: '时间', actions: '操作',
     password: '账号密码', twofa: '2FA密钥', email: '账号邮箱', incomplete: '未填写', missingHint: '账号凭据不够，已跳过授权。请补齐密码与2FA。', supplemented: '已补齐，等待下次重授权任务', historyReady: '完整凭据已保存', historyMissing: '账号凭据不够', authorizedAt: '最近授权',
     proxyUnchecked: '尚未预检',
     checking: '预检中…', checkProxy: 'GET预检', disable: '停用', cancel: '取消任务', viewCredentials: '查看凭据', supplement: '补全凭证', supplementHint: '已有邮箱保持绑定；缺少邮箱时可补填。保存后记入凭据历史，不立即授权；下一次重授权任务会读取这份凭据。', saveCredentials: '保存补全凭据', hide: '隐藏内容', show: '显示内容',
     total: '共 {count} 条', pagination: '记录分页', saved: '已保存', loadFailed: '读取失败，请刷新重试', saveFailed: '保存失败，请检查输入后重试', operationFailed: '操作未完成，请重试',
-    source: { submission: '工作台提交', supplement: '巡检补全', manual: '手动授权', reauthorization: '定时重授权' },
+    source: { updated: '手动更新', submission: '工作台提交', supplement: '巡检补全', manual: '手动授权', reauthorization: '定时重授权' },
     bannedHint: '官方已确认账号停用、删除或封禁，自动重授权已跳过。',
     states: { banned: '账号已封禁', all: '全部状态', unknown: '待巡检', authorized: '授权正常', expired: '授权已掉，等待重授权', missing_credentials: '账号凭据不够', credentials_completed: '已补齐，等待下次重授权任务', queued: '等待授权', authorizing: '正在授权', running: '正在执行', error: '账号错误（未命中重授权码）', unsupported: '无需密码授权巡检', passed: '预检通过', failed: '失败', needs_input: '需要人工处理', cancelled: '已取消', completed: '任务完成', saved: '已保存', cache_pending: '凭据已保存，等待缓存刷新' },
-    empty: { jobs: '暂无任务。提交账号后可查看授权进度。', proxies: '尚未配置授权代理，请在上方添加。', history: '暂无历史。工作台提交和巡检补全的凭据会保存在这里。', accounts: '当前账号管理中没有匹配的 OpenAI 账号。' }
+    empty: { jobs: '暂无任务。提交账号后可查看授权进度。', proxies: '尚未配置授权代理，请在上方添加。', history: '暂无凭据。任务结束后或手动补全后会显示在这里。', accounts: '当前账号管理中没有匹配的 OpenAI 账号。' }
   }
 }

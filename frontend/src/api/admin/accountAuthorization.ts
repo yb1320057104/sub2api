@@ -28,7 +28,7 @@ export type AuthorizationList = 'jobs' | 'history' | 'proxies' | 'accounts'
 export interface AuthorizationRecord {
   intelligence_results?: AuthorizationIntelligenceResult[]
   intelligence_passed?: boolean | null; intelligence_answer?: number | null; authorization_completed?: boolean
-  id: number; email: string; name?: string; status: string; message?: string
+  id: number; email: string; name?: string; status: string; message?: string; revision?: string
   account_id?: number; account_status?: string; source?: string; stage?: string
   groups?: string[]; has_history?: boolean; has_twofa?: boolean
   endpoint?: string; job_message?: string; job_id?: number
@@ -49,5 +49,7 @@ export const accountAuthorizationAPI = {
   async checkProxy(id: number) { await apiClient.post(root + '/proxies/' + id + '/check', {}, { timeout: 90000 }) },
   async cancel(id: number) { await apiClient.post(root + '/jobs/' + id + '/cancel') },
   async reveal(id: number) { return (await apiClient.post<AuthorizationSecret>(root + '/history/' + id + '/reveal')).data },
+  async updateCredential(id: number, value: { password: string; twofa: string; revision: string }) { await apiClient.put(root + '/history/' + id, value) },
+  async deleteCredential(id: number, revision: string) { await apiClient.delete(root + '/history/' + id, { params: { revision } }) },
   async supplement(id: number, value: AuthorizationSecret) { await apiClient.post(root + '/accounts/' + id + '/credentials', value) }
 }

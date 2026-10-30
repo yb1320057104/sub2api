@@ -57,6 +57,7 @@ type AuthorizationSecret struct {
 }
 
 type AuthorizationSubmit struct {
+	IntelligenceGeneration   string       `json:"intelligence_generation,omitempty"`
 	IntelligenceModels       []RadarModel `json:"intelligence_models,omitempty"`
 	PassGroupIDs             []int64      `json:"pass_group_ids"`
 	FailGroupIDs             []int64      `json:"fail_group_ids"`
@@ -100,11 +101,11 @@ func NewAccountAuthorizationService(db *sql.DB, client *dbent.Client, accounts A
 func authorizationCandyConfigTx(ctx context.Context, tx *sql.Tx) (*RadarConfig, error) {
 	cfg := &RadarConfig{Models: make([]RadarModel, 0)}
 	var modelsJSON []byte
-	err := tx.QueryRowContext(ctx, `SELECT c.enabled,c.interval_minutes,c.target_group_id,
+	err := tx.QueryRowContext(ctx, `SELECT c.enabled,c.interval_minutes,c.target_group_id,c.generation,
 		COALESCE((SELECT jsonb_agg(jsonb_build_object('model',model,'effort',effort,'enabled',enabled) ORDER BY sort_order)
 			FROM pk_radar_account_models WHERE config_id=c.id AND enabled=true),'[]'::jsonb)
 		FROM pk_radar_account_config c
-		WHERE c.id=1`).Scan(&cfg.Enabled, &cfg.IntervalMinutes, &cfg.TargetGroupID, &modelsJSON)
+		WHERE c.id=1`).Scan(&cfg.Enabled, &cfg.IntervalMinutes, &cfg.TargetGroupID, &cfg.Generation, &modelsJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		// Before radar initialization, expose an unconfigured destination. Never
 		// revive a stale legacy target after the current target has been cleared.
@@ -330,6 +331,7 @@ func (s *AccountAuthorizationService) Submit(ctx context.Context, input *Authori
 		return "", infraerrors.BadRequest("AUTHORIZATION_CANDY_MODEL", "请先在糖果测试设置中启用至少一个测试模型")
 	}
 	settings.IntelligenceModels = candy.Models
+	settings.IntelligenceGeneration = candy.Generation
 	settings.IntelligenceModel, settings.IntelligenceEffort = candy.Models[0].Model, candy.Models[0].Effort
 	if candy.TargetGroupID == nil || *candy.TargetGroupID < 1 {
 		return "", infraerrors.BadRequest("AUTHORIZATION_CANDY_TARGET", "请先在糖果测试设置中配置不合格账号移入分组")
@@ -347,8 +349,24 @@ func (s *AccountAuthorizationService) Submit(ctx context.Context, input *Authori
 	if err != nil {
 		return "", err
 	}
+	if err = lockAuthorizationHistory(ctx, tx); err != nil {
+		return "", err
+	}
 	batch := uuid.NewString()
 	for _, secret := range secrets {
+		// Resolve a completing prior job before reading its history revision.
+		// Holding an active row means the batch must wait, never replace it.
+		var activeID int64
+		err = tx.QueryRowContext(ctx, `SELECT id FROM pk_authorization_jobs WHERE email=$1 AND status IN ('queued','running') FOR UPDATE`, secret.Email).Scan(&activeID)
+		if err == nil {
+			return "", infraerrors.Conflict("AUTHORIZATION_RUNNING", "本批包含正在授权的邮箱，请等待原任务结束")
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return "", err
+		}
+		if err = settleAuthorizationHistoryTx(ctx, tx, secret.Email); err != nil {
+			return "", err
+		}
 		data, err := json.Marshal(secret)
 		if err != nil {
 			return "", err
@@ -357,11 +375,15 @@ func (s *AccountAuthorizationService) Submit(ctx context.Context, input *Authori
 		if err != nil {
 			return "", errors.New("账号凭据加密失败")
 		}
-		var historyID int64
-		if err = tx.QueryRowContext(ctx, `INSERT INTO pk_authorization_history(email,secret_encrypted,has_twofa) VALUES($1,$2,$3) RETURNING id`, secret.Email, encrypted, secret.TwoFA != "").Scan(&historyID); err != nil {
+		historyID, revision, err := authorizationHistorySlot(ctx, tx, secret.Email)
+		if err != nil {
 			return "", err
 		}
-		result, err := tx.ExecContext(ctx, `INSERT INTO pk_authorization_jobs(batch_id,history_id,email,source,settings) VALUES($1,$2,$3,'manual',$4) ON CONFLICT (email) WHERE status IN ('queued','running') DO NOTHING`, batch, historyID, secret.Email, string(raw))
+		snapshot, err := json.Marshal(authorizationCredentialSnapshot{Encrypted: encrypted, Revision: revision, HasTwoFA: secret.TwoFA != ""})
+		if err != nil {
+			return "", err
+		}
+		result, err := tx.ExecContext(ctx, `INSERT INTO pk_authorization_jobs(batch_id,history_id,email,source,settings) VALUES($1,$2,$3,'manual',$4::jsonb||$5::jsonb) ON CONFLICT (email) WHERE status IN ('queued','running') DO NOTHING`, batch, historyID, secret.Email, string(raw), string(snapshot))
 		if err != nil {
 			return "", err
 		}
@@ -385,18 +407,10 @@ func (s *AccountAuthorizationService) Submit(ctx context.Context, input *Authori
 
 func (s *AccountAuthorizationService) Reveal(ctx context.Context, id int64) (*AuthorizationSecret, error) {
 	var encrypted, email string
-	if err := s.db.QueryRowContext(ctx, `SELECT email,secret_encrypted FROM pk_authorization_history WHERE id=$1`, id).Scan(&email, &encrypted); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT email,secret_encrypted FROM (`+authorizationCurrentHistorySQL+`) h WHERE id=$1`, id).Scan(&email, &encrypted); err != nil {
 		return nil, err
 	}
-	raw, err := s.encryptor.Decrypt(encrypted)
-	if err != nil {
-		return nil, errors.New("凭据无法解密，请检查持久化加密密钥")
-	}
-	var secret AuthorizationSecret
-	if json.Unmarshal([]byte(raw), &secret) != nil || secret.Email != email {
-		return nil, errors.New("凭据记录校验失败")
-	}
-	return &secret, nil
+	return s.decodeAuthorizationSecret(email, encrypted)
 }
 
 func (s *AccountAuthorizationService) AddProxies(ctx context.Context, raw string) error {
@@ -458,30 +472,32 @@ func (s *AccountAuthorizationService) DisableProxy(ctx context.Context, id int64
 
 func (s *AccountAuthorizationService) CancelJob(ctx context.Context, id int64) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE pk_authorization_jobs SET status='cancelled',stage='cancelled',message='管理员已取消',finished_at=NOW() WHERE id=$1 AND status IN ('queued','running')`, id)
-	return err
+	if err != nil {
+		return err
+	}
+	return s.archiveAuthorizationCredentials(ctx, id)
 }
 
-// Supplement only appends an encrypted history revision. It never starts or queues
-// authorization; the next scheduled reauthorization resolves the latest revision.
+// Supplement updates the current encrypted credential record. It never queues
+// authorization; existing jobs keep their snapshots and the next round reads the edit.
 func (s *AccountAuthorizationService) Supplement(ctx context.Context, id int64, secret *AuthorizationSecret) error {
 	if err := s.requireAuthorizationEncryption(); err != nil {
 		return err
 	}
-	secret.Email = strings.ToLower(strings.TrimSpace(secret.Email))
-	secret.TwoFA = strings.TrimRight(strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(secret.TwoFA), " ", "")), "=")
-	addr, err := mail.ParseAddress(secret.Email)
-	if err != nil || addr.Address != secret.Email || len(secret.Email) > 254 || len(secret.Password) == 0 || len(secret.Password) > 1024 {
-		return infraerrors.BadRequest("AUTHORIZATION_CREDENTIALS", "请填写有效邮箱和密码")
-	}
-	decoded, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(secret.TwoFA)
-	if err != nil || len(decoded) < 10 || len(secret.TwoFA) > 256 {
-		return infraerrors.BadRequest("AUTHORIZATION_CREDENTIALS", "请填写完整的2FA密钥，不是六位动态验证码")
+	if err := validateAuthorizationSecret(secret, true); err != nil {
+		return err
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err = lockAuthorizationHistory(ctx, tx); err != nil {
+		return err
+	}
+	if err = pinLegacyAuthorizationCredentials(ctx, tx, secret.Email); err != nil {
+		return err
+	}
 	var email, version string
 	if err = tx.QueryRowContext(ctx, `SELECT `+authorizationEmailSQL+`,md5(a.credentials::text) FROM accounts a WHERE a.id=$1 AND a.deleted_at IS NULL AND a.platform='openai' AND `+authorizationSupportedSQL+` FOR UPDATE`, id).Scan(&email, &version); err != nil {
 		return err
@@ -508,7 +524,11 @@ func (s *AccountAuthorizationService) Supplement(ctx context.Context, id int64, 
 	if err != nil {
 		return errors.New("凭据加密失败")
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO pk_authorization_history(email,secret_encrypted,has_twofa,source) VALUES($1,$2,true,'supplement')`, secret.Email, encrypted); err != nil {
+	historyID, _, err := authorizationHistorySlot(ctx, tx, secret.Email)
+	if err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE pk_authorization_history SET secret_encrypted=$2,has_twofa=true,source='supplement',created_at=NOW() WHERE id=$1`, historyID, encrypted); err != nil {
 		return err
 	}
 	if err = tx.Commit(); err != nil {
@@ -523,6 +543,20 @@ func (s *AccountAuthorizationService) Supplement(ctx context.Context, id int64, 
 func (s *AccountAuthorizationService) requireAuthorizationEncryption() error {
 	if s.cfg == nil || !s.cfg.Totp.EncryptionKeyConfigured {
 		return infraerrors.BadRequest("AUTHORIZATION_ENCRYPTION_KEY_REQUIRED", "请先固定 TOTP_ENCRYPTION_KEY 后再保存凭据与代理，避免重启后历史无法解密")
+	}
+	return nil
+}
+
+func validateAuthorizationSecret(secret *AuthorizationSecret, requireTwoFA bool) error {
+	secret.Email = strings.ToLower(strings.TrimSpace(secret.Email))
+	secret.TwoFA = strings.TrimRight(strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(secret.TwoFA), " ", "")), "=")
+	addr, err := mail.ParseAddress(secret.Email)
+	if err != nil || addr.Address != secret.Email || len(secret.Email) > 254 || len(secret.Password) == 0 || len(secret.Password) > 1024 {
+		return infraerrors.BadRequest("AUTHORIZATION_CREDENTIALS", "请填写有效邮箱和密码")
+	}
+	decoded, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(secret.TwoFA)
+	if (secret.TwoFA != "" && (err != nil || len(decoded) < 10 || len(secret.TwoFA) > 256)) || (requireTwoFA && secret.TwoFA == "") {
+		return infraerrors.BadRequest("AUTHORIZATION_CREDENTIALS", "请填写完整的2FA密钥，不是六位动态验证码")
 	}
 	return nil
 }

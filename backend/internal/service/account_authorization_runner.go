@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/url"
 	"reflect"
 	"strings"
@@ -186,6 +187,13 @@ func (s *AccountAuthorizationService) loadAuthorizationProxies(ctx context.Conte
 func (s *AccountAuthorizationService) runAuthorizationJob(parent context.Context, cfg *AuthorizationConfig, job *authorizationJob, lease *sql.Conn) {
 	ctx, cancel := context.WithTimeout(parent, 10*time.Minute)
 	defer cancel()
+	defer func() {
+		cleanup, done := context.WithTimeout(context.Background(), 10*time.Second)
+		defer done()
+		if err := s.archiveAuthorizationCredentials(cleanup, job.id); err != nil {
+			slog.Warn("authorization_history_pending", "message", "任务归档未完成，下次cron重试")
+		}
+	}()
 	var resultErr error
 	var before *Account
 	defer func() {
@@ -226,12 +234,12 @@ func (s *AccountAuthorizationService) runAuthorizationJob(parent context.Context
 		}
 		return s.jobProgress(ctx, job, cfg, stage, message)
 	}
-	if resultErr = progress("starting", "正在读取最近提交的凭据"); resultErr != nil {
+	if resultErr = progress("starting", "正在读取本任务的凭据快照"); resultErr != nil {
 		return
 	}
 	// The cron round pins the latest history. A later supplement waits for the
 	// next round and cannot silently alter a job already queued by an older round.
-	secret, err := s.Reveal(ctx, job.historyID)
+	secret, err := s.authorizationJobSecret(ctx, job)
 	if err != nil {
 		resultErr = authorizationBrowserFailure("history_unavailable", "历史凭据无法读取或解密，请重新提交账号密码和2FA")
 		return

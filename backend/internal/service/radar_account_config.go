@@ -45,16 +45,17 @@ type RadarModelResult struct {
 
 type RadarRun struct {
 	AccountCandyTestResult
-	Origin          string             `json:"origin"`
-	Generation      string             `json:"generation"`
-	Verdict         string             `json:"verdict"`
-	ModelResults    []RadarModelResult `json:"model_results"`
-	FailedModels    []RadarModelResult `json:"failed_models"`
-	EgressIP        string             `json:"egress_ip"`
-	EgressMode      string             `json:"egress_mode"`
-	EgressCheckedAt *time.Time         `json:"egress_checked_at"`
-	EgressError     string             `json:"egress_error"`
-	leaseToken      string
+	StartedAtEstimated bool               `json:"started_at_estimated,omitempty"`
+	Origin             string             `json:"origin"`
+	Generation         string             `json:"generation"`
+	Verdict            string             `json:"verdict"`
+	ModelResults       []RadarModelResult `json:"model_results"`
+	FailedModels       []RadarModelResult `json:"failed_models"`
+	EgressIP           string             `json:"egress_ip"`
+	EgressMode         string             `json:"egress_mode"`
+	EgressCheckedAt    *time.Time         `json:"egress_checked_at"`
+	EgressError        string             `json:"egress_error"`
+	leaseToken         string
 }
 
 // Initialize new storage atomically; legacy data is only read. Deployment must

@@ -1,5 +1,6 @@
 export default {
   radar: {
+    authorizationTest: '导入授权测智', notRecorded: '未记录', authorizationResponseMissing: '此授权记录没有保存完整响应正文。', authorizationTimeFallback: '此历史记录未保存独立的测智开始时间，显示当次授权任务的开始时间。',
     authorization: '授权巡检',
     title: '雷达观测站', description: '集中管理分组与账号测智，追踪每个模型的糖果回答和账号出口。',
     groups: '分组观测', accounts: '账号观测', viewResults: '查看智商测试结果', refreshHint: '当前页每 5 秒刷新',

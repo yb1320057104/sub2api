@@ -34,7 +34,8 @@ export interface AccountCandyResult {
   move_error: string
   source: 'manual' | 'scheduled'
   original_group_ids: number[]
-  origin?: 'radar' | 'legacy'
+  origin?: 'radar' | 'legacy' | 'authorization'
+  started_at_estimated?: boolean
   generation?: string
   verdict?: 'unknown' | 'pass' | 'fail'
   model_results?: RadarModelResult[]
@@ -79,9 +80,9 @@ export const accountCandyAPI = {
   async start(accountID: number) {
     return (await apiClient.post<AccountCandyResult>(`/admin/radar/accounts/${accountID}/candy-runs`)).data
   },
-  async details(accountID: number, resultID: number, signal?: AbortSignal, origin: 'radar' | 'legacy' = 'radar') {
+  async details(accountID: number, resultID: number, signal?: AbortSignal, origin: 'radar' | 'legacy' | 'authorization' = 'radar') {
     return (await apiClient.get<AccountCandyDetails>(
-      origin === 'legacy' ? `/admin/accounts/${accountID}/candy-test/results/${resultID}` : `/admin/radar/accounts/${accountID}/candy-runs/${resultID}`, { signal },
+      origin === 'legacy' ? `/admin/accounts/${accountID}/candy-test/results/${resultID}` : `/admin/radar/accounts/${accountID}/candy-runs/${resultID}`, { signal, params: origin === 'authorization' ? { origin } : undefined },
     )).data
   },
   async accounts(params: { page: number; page_size: number; filter: string; search: string }, signal?: AbortSignal) {

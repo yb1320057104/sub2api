@@ -169,6 +169,9 @@ func (s *AccountAuthorizationService) drainAuthorizationJobs() error {
 	if _, err = s.db.ExecContext(ctx, `UPDATE pk_authorization_jobs SET status=CASE WHEN settings->>'authorization_completed'='true' THEN 'needs_input' ELSE 'failed' END,stage='interrupted',message=CASE WHEN settings->>'authorization_completed'='true' THEN '进程中断；授权凭据已保存，测智或分组未完成，账号保持未分组，请检查后重新提交' ELSE '进程中断，凭据历史已保留；请重新提交或等待下轮重授权' END,finished_at=NOW() WHERE status='running'`); err != nil {
 		return err
 	}
+	if err = s.recoverAuthorizationHistory(ctx); err != nil {
+		return err
+	}
 	for ctx.Err() == nil {
 		if err = conn.PingContext(ctx); err != nil {
 			return err
@@ -392,17 +395,32 @@ func (s *AccountAuthorizationService) queueReauthorization(ctx context.Context, 
 	if err != nil {
 		return err
 	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err = lockAuthorizationHistory(ctx, tx); err != nil {
+		return err
+	}
+	if err = settleAuthorizationHistoryTx(ctx, tx, ""); err != nil {
+		return err
+	}
 	// The source is the current account table, never the historical roster. Deleted
 	// accounts and stale credential versions cannot be resurrected by this query.
-	_, err = s.db.ExecContext(ctx, `INSERT INTO pk_authorization_jobs(batch_id,history_id,email,account_id,source,settings)
- SELECT $1,h.id,`+authorizationEmailSQL+`,a.id,'reauthorization',$2 FROM accounts a
- JOIN LATERAL(SELECT id,has_twofa FROM pk_authorization_history WHERE email=`+authorizationEmailSQL+` ORDER BY id DESC LIMIT 1) h ON h.has_twofa=true
+	_, err = tx.ExecContext(ctx, `INSERT INTO pk_authorization_jobs(batch_id,history_id,email,account_id,source,settings)
+ SELECT $1,h.id,`+authorizationEmailSQL+`,a.id,'reauthorization',$2::jsonb||jsonb_build_object('credential_snapshot_encrypted',h.secret_encrypted,'credential_has_twofa',h.has_twofa,'credential_history_revision',md5(h.secret_encrypted||h.source||(extract(epoch FROM h.created_at))::text)) FROM accounts a
+ JOIN (`+authorizationCurrentHistorySQL+`) h ON h.email=`+authorizationEmailSQL+` AND h.has_twofa=true
  LEFT JOIN pk_authorization_state st ON st.account_id=a.id
  WHERE a.deleted_at IS NULL AND a.platform='openai' AND `+authorizationSupportedSQL+`
  AND NOT (COALESCE(st.status='banned' AND st.credential_version=md5(a.credentials::text),false))
  AND COALESCE((SELECT status FROM pk_authorization_jobs WHERE email=`+authorizationEmailSQL+` AND (status IN ('banned','completed') OR settings->>'authorization_completed'='true') ORDER BY id DESC LIMIT 1),'')<>'banned'
  AND `+authorizationErrorSQL+`
+ AND NOT EXISTS(SELECT 1 FROM pk_authorization_jobs pending WHERE pending.email=`+authorizationEmailSQL+` AND pending.source='manual' AND pending.settings ? 'credential_snapshot_encrypted')
  AND EXISTS(SELECT 1 FROM pk_authorization_config c WHERE c.id=1 AND c.reauth_enabled AND c.revision=$3)
  ORDER BY a.id ON CONFLICT (email) WHERE status IN ('queued','running') DO NOTHING`, uuid.NewString(), string(settings), cfg.Revision)
-	return err
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }

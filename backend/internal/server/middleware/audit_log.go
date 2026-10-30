@@ -150,6 +150,7 @@ var auditActionOverrides = map[string]string{
 var auditBodyOmittedRoutes = map[string]struct{}{
 	"POST /api/v1/admin/account-authorization/accounts/:id/credentials": {},
 	"POST /api/v1/admin/account-authorization/jobs":                     {},
+	"PUT /api/v1/admin/account-authorization/history/:id":               {},
 	"POST /api/v1/admin/account-authorization/proxies":                  {},
 	"POST /api/v1/auth/passkey/login/finish":                            {},
 	"POST /api/v1/user/passkeys/register/finish":                        {},

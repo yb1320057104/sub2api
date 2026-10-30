@@ -159,10 +159,28 @@ func (s *AccountCandyTestService) ListRadarLatest(ctx context.Context, ids []int
 	if err != nil {
 		return nil, err
 	}
+	authorizationIDs, err := latestAuthorizationRadarIDs(ctx, s.db, ids)
+	if err != nil {
+		return nil, err
+	}
+	authorizationRuns, err := loadAuthorizationRadarRuns(ctx, s.db, authorizationIDs, false)
+	if err != nil {
+		return nil, err
+	}
+	byAccount := make(map[int64]*RadarRun, len(runs))
+	for _, r := range runs {
+		byAccount[r.AccountID] = r
+	}
+	for _, r := range authorizationRuns {
+		if authorizationRadarCanReplace(byAccount[r.AccountID], r) {
+			normalizeAuthorizationRadarGeneration(r, cfg.Generation)
+			byAccount[r.AccountID] = r
+		}
+	}
 	found := map[int64]bool{}
-	for _, id := range runIDs {
-		if r := runs[id]; r != nil {
-			if r.Generation != cfg.Generation {
+	for _, id := range ids {
+		if r := byAccount[id]; r != nil && !found[id] {
+			if r.Origin != "authorization" && r.Generation != cfg.Generation {
 				r.Verdict = "unknown"
 				r.Passed = nil
 			}
@@ -220,33 +238,38 @@ func (s *AccountCandyTestService) ListRadarAccounts(ctx context.Context, page, s
 	if err != nil {
 		return nil, 0, nil, err
 	}
-	where := ` FROM accounts a LEFT JOIN pk_radar_account_state st ON st.account_id=a.id WHERE a.deleted_at IS NULL AND($1='all' OR(st.generation=$2 AND st.verdict=$1)) AND($3='' OR a.name ILIKE '%'||$3||'%')`
+	where := ` FROM accounts a LEFT JOIN pk_radar_account_state st ON st.account_id=a.id
+		LEFT JOIN pk_radar_account_runs rr ON rr.id=COALESCE(st.active_run_id,st.latest_run_id)` + authorizationRadarAccountJoin + `
+		WHERE a.deleted_at IS NULL AND($1='all' OR (` + radarObservedVerdictSQL + `)=$1) AND($3='' OR a.name ILIKE '%'||$3||'%')`
 	var total int
 	if err = tx.QueryRowContext(ctx, `SELECT count(*)`+where, filter, cfg.Generation, search).Scan(&total); err != nil {
 		return nil, 0, nil, err
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT a.id,COALESCE(st.active_run_id,st.latest_run_id),CASE WHEN st.generation=$2 THEN st.verdict ELSE 'unknown' END,st.next_run_at,st.active_run_id IS NOT NULL`+where+` ORDER BY a.id DESC LIMIT $4 OFFSET $5`, filter, cfg.Generation, search, size, (page-1)*size)
+	rows, err := tx.QueryContext(ctx, `SELECT a.id,COALESCE(st.active_run_id,st.latest_run_id),CASE WHEN `+radarUseAuthorizationSQL+` THEN ar.id END,`+radarObservedVerdictSQL+`,st.next_run_at,st.active_run_id IS NOT NULL`+where+` ORDER BY a.id DESC LIMIT $4 OFFSET $5`, filter, cfg.Generation, search, size, (page-1)*size)
 	if err != nil {
 		return nil, 0, nil, err
 	}
 	type meta struct {
-		id      int64
-		runID   sql.NullInt64
-		verdict string
-		due     *time.Time
-		running bool
+		id              int64
+		runID           sql.NullInt64
+		authorizationID sql.NullInt64
+		verdict         string
+		due             *time.Time
+		running         bool
 	}
 	entries := make([]meta, 0)
-	ids, runIDs := make([]int64, 0), make([]int64, 0)
+	ids, runIDs, authorizationIDs := make([]int64, 0), make([]int64, 0), make([]int64, 0)
 	for rows.Next() {
 		var m meta
-		if err = rows.Scan(&m.id, &m.runID, &m.verdict, &m.due, &m.running); err != nil {
+		if err = rows.Scan(&m.id, &m.runID, &m.authorizationID, &m.verdict, &m.due, &m.running); err != nil {
 			_ = rows.Close()
 			return nil, 0, nil, err
 		}
 		entries = append(entries, m)
 		ids = append(ids, m.id)
-		if m.runID.Valid {
+		if m.authorizationID.Valid {
+			authorizationIDs = append(authorizationIDs, m.authorizationID.Int64)
+		} else if m.runID.Valid {
 			runIDs = append(runIDs, m.runID.Int64)
 		}
 	}
@@ -256,6 +279,10 @@ func (s *AccountCandyTestService) ListRadarAccounts(ctx context.Context, page, s
 		return nil, 0, nil, err
 	}
 	runs, err := loadRadarRuns(ctx, tx, runIDs, false)
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	authorizationRuns, err := loadAuthorizationRadarRuns(ctx, tx, authorizationIDs, false)
 	if err != nil {
 		return nil, 0, nil, err
 	}
@@ -284,7 +311,7 @@ func (s *AccountCandyTestService) ListRadarAccounts(ctx context.Context, page, s
 		parentMap[parent.ID] = parent
 	}
 	for _, entry := range entries {
-		if !entry.runID.Valid {
+		if !entry.runID.Valid && !entry.authorizationID.Valid {
 			missingRunIDs = append(missingRunIDs, entry.id)
 		}
 	}
@@ -309,6 +336,12 @@ func (s *AccountCandyTestService) ListRadarAccounts(ctx context.Context, page, s
 			continue
 		}
 		r := RadarObservation{Account: a, Run: runs[m.runID.Int64], Verdict: m.verdict, NextRunAt: m.due}
+		if m.authorizationID.Valid {
+			r.Run = authorizationRuns[m.authorizationID.Int64]
+			if r.Run != nil {
+				normalizeAuthorizationRadarGeneration(r.Run, cfg.Generation)
+			}
+		}
 		if a.ParentAccountID != nil {
 			r.Parent = parentMap[*a.ParentAccountID]
 		}
@@ -396,6 +429,20 @@ func (s *AccountCandyTestService) RadarHistory(ctx context.Context, id int64) ([
 	}
 	if err = rows.Err(); err != nil {
 		return nil, err
+	}
+	_ = rows.Close()
+	authorizationIDs, err := authorizationRadarHistoryIDs(ctx, s.db, id)
+	if err != nil {
+		return nil, err
+	}
+	authorizationRuns, err := loadAuthorizationRadarRuns(ctx, s.db, authorizationIDs, false)
+	if err != nil {
+		return nil, err
+	}
+	for _, jobID := range authorizationIDs {
+		if r := authorizationRuns[jobID]; r != nil {
+			out = append(out, *r)
+		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].StartedAt.After(out[j].StartedAt) })
 	return out, nil

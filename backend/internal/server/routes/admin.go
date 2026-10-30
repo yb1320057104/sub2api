@@ -43,6 +43,8 @@ func RegisterAdminRoutes(
 			authorization.POST("/jobs/:id/cancel", h.AccountAuthorization.Cancel)
 			authorization.GET("/history", h.AccountAuthorization.List("history"))
 			authorization.POST("/history/:id/reveal", gin.HandlerFunc(stepUpAuth), h.AccountAuthorization.Reveal)
+			authorization.PUT("/history/:id", gin.HandlerFunc(stepUpAuth), h.AccountAuthorization.UpdateCredential)
+			authorization.DELETE("/history/:id", gin.HandlerFunc(stepUpAuth), h.AccountAuthorization.DeleteCredential)
 			authorization.GET("/proxies", h.AccountAuthorization.List("proxies"))
 			authorization.POST("/proxies", h.AccountAuthorization.AddProxies)
 			authorization.DELETE("/proxies/:id", h.AccountAuthorization.DisableProxy)
