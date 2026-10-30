@@ -157,13 +157,13 @@ func (s *AccountAuthorizationService) runAuthorizationIntelligenceGate(ctx conte
 	if !passed {
 		// Resolve the current shared failure destination at the grouping step,
 		// keeping its setting locked until account groups have been committed.
-		rows, queryErr := tx.Client().QueryContext(txctx, `SELECT value FROM settings WHERE key=$1 FOR SHARE`, accountCandySettingKey)
+		rows, queryErr := tx.Client().QueryContext(txctx, `SELECT target_group_id FROM pk_radar_account_config WHERE id=1 FOR SHARE`)
 		if queryErr != nil {
 			return queryErr
 		}
-		var raw string
+		var targetGroupID sql.NullInt64
 		if rows.Next() {
-			queryErr = rows.Scan(&raw)
+			queryErr = rows.Scan(&targetGroupID)
 		}
 		if queryErr == nil {
 			queryErr = rows.Err()
@@ -172,11 +172,10 @@ func (s *AccountAuthorizationService) runAuthorizationIntelligenceGate(ctx conte
 		if queryErr != nil {
 			return queryErr
 		}
-		candy, decodeErr := decodeAccountCandyConfig(raw)
-		if decodeErr != nil || candy == nil || candy.TargetGroupID == nil || *candy.TargetGroupID < 1 {
+		if !targetGroupID.Valid || targetGroupID.Int64 < 1 {
 			return &authorizationBrowserError{stage: "intelligence_groups_missing", message: "测智不及格，但糖果测试设置未配置有效的不合格账号移入分组；账号保持未分组", needsInput: true}
 		}
-		target = []int64{*candy.TargetGroupID}
+		target = []int64{targetGroupID.Int64}
 	}
 	if _, err = tx.Client().ExecContext(txctx, `SELECT id FROM accounts WHERE id=$1 AND deleted_at IS NULL FOR UPDATE`, account.ID); err != nil {
 		return err

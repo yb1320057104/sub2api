@@ -92,6 +92,33 @@ func NewAccountAuthorizationService(db *sql.DB, client *dbent.Client, accounts A
 	return &AccountAuthorizationService{db: db, client: client, accounts: accounts, admin: admin, oauth: oauth, tests: tests, encryptor: encryptor, invalidator: invalidator, cfg: cfg, ctx: ctx, cancel: cancel}
 }
 
+// Authorization uses the same persisted settings as the candy settings dialog.
+// Its single admission probe snapshots the first enabled radar model. A single
+// query keeps the model and target consistent while settings are being saved.
+func authorizationCandyConfigTx(ctx context.Context, tx *sql.Tx) (*AccountCandyTestConfig, error) {
+	cfg := defaultAccountCandyConfig()
+	var model, effort sql.NullString
+	err := tx.QueryRowContext(ctx, `SELECT c.enabled,c.interval_minutes,c.target_group_id,m.model,m.effort
+		FROM pk_radar_account_config c
+		LEFT JOIN LATERAL (
+			SELECT model,effort FROM pk_radar_account_models
+			WHERE config_id=c.id AND enabled=true ORDER BY sort_order LIMIT 1
+		) m ON true WHERE c.id=1`).Scan(&cfg.Enabled, &cfg.IntervalMinutes, &cfg.TargetGroupID, &model, &effort)
+	if errors.Is(err, sql.ErrNoRows) {
+		// Before radar initialization, expose an unconfigured destination. Never
+		// revive a stale legacy target after the current target has been cleared.
+		return cfg, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !model.Valid {
+		return nil, infraerrors.BadRequest("AUTHORIZATION_CANDY_MODEL", "请先在糖果测试设置中启用至少一个测试模型")
+	}
+	cfg.Model, cfg.Effort = model.String, effort.String
+	return cfg, nil
+}
+
 func (s *AccountAuthorizationService) GetConfig(ctx context.Context) (*AuthorizationConfig, error) {
 	c := &AuthorizationConfig{InspectionCron: authorizationInspectionCron, ReauthCron: authorizationReauthCron, BrowserAvailable: authorizationBrowserPath() != "", EncryptionKeyConfigured: s.cfg != nil && s.cfg.Totp.EncryptionKeyConfigured}
 	var raw, codes []byte
@@ -122,7 +149,7 @@ func (s *AccountAuthorizationService) GetConfig(ctx context.Context) (*Authoriza
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	candy, err := accountCandyConfigTx(ctx, tx)
+	candy, err := authorizationCandyConfigTx(ctx, tx)
 	if err != nil {
 		return nil, err
 	}
@@ -288,7 +315,7 @@ func (s *AccountAuthorizationService) Submit(ctx context.Context, input *Authori
 		return "", err
 	}
 	defer func() { _ = tx.Rollback() }()
-	candy, err := accountCandyConfigTx(ctx, tx)
+	candy, err := authorizationCandyConfigTx(ctx, tx)
 	if err != nil {
 		return "", err
 	}
