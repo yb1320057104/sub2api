@@ -61,6 +61,48 @@ func newTestContext() (*gin.Context, *httptest.ResponseRecorder) {
 	return c, rec
 }
 
+func TestPKAccountCandyUpstreamAccountUsesConfiguredKey(t *testing.T) {
+	response := newJSONResponse(http.StatusOK, `{"status":"completed","output":[{"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"<final_answer>21</final_answer>"}]}]}`)
+	response.Header.Set("Content-Type", "application/json")
+	upstream := &queuedHTTPUpstream{responses: []*http.Response{response}}
+	svc := &AccountTestService{httpUpstream: upstream, cfg: &config.Config{}}
+	account := &Account{
+		ID:          1819,
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeUpstream,
+		Concurrency: 2,
+		Credentials: map[string]any{
+			"api_key":  "upstream-candy-test-key",
+			"base_url": "https://upstream.example.com",
+			"model_mapping": map[string]any{
+				"gpt-6-astra": "gpt-6.1-sol",
+			},
+		},
+	}
+	cfg := defaultAccountCandyConfig()
+	text, err := svc.runAccountCandyProbe(context.Background(), account, account, cfg)
+	require.NoError(t, err)
+	require.Equal(t, "<final_answer>21</final_answer>", text)
+	require.Len(t, upstream.requests, 1)
+	request := upstream.requests[0]
+	require.Equal(t, "Bearer upstream-candy-test-key", request.Header.Get("Authorization"))
+	require.Equal(t, "https://upstream.example.com/v1/responses", request.URL.String())
+	body, err := io.ReadAll(request.Body)
+	require.NoError(t, err)
+	require.Equal(t, "gpt-6.1-sol", gjson.GetBytes(body, "model").String())
+	require.Equal(t, "medium", gjson.GetBytes(body, "reasoning.effort").String())
+	prompt := gjson.GetBytes(body, "input.0.content.0.text").String()
+	require.True(t, strings.HasPrefix(prompt, intelligenceTestCandyPrompt))
+	require.Contains(t, prompt, "<final_answer>")
+
+	// The additional account type belongs only to the candy probe; the
+	// existing connectivity-test routing and credentials contract stay intact.
+	c, _ := newTestContext()
+	err = svc.testOpenAIAccountConnection(c, account, cfg.Model, "", AccountTestModeDefault)
+	require.ErrorContains(t, err, "Unsupported account type")
+	require.Len(t, upstream.requests, 1)
+}
+
 type openAIAccountTestRepo struct {
 	mockAccountRepoForGemini
 	updatedExtra       map[string]any

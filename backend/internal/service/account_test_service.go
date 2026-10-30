@@ -860,6 +860,11 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 	} else if credentialAccount.Type == "apikey" || (candy != nil && credentialAccount.Type == AccountTypeUpstream) {
 		// API Key - use Platform API
 		authToken = credentialAccount.GetOpenAIProtocolAPIKey()
+		if candy != nil && credentialAccount.Type == AccountTypeUpstream {
+			// The ordinary OpenAI getter intentionally accepts only apikey.
+			// Account candy probes also support an upstream account's own key.
+			authToken = credentialAccount.GetCredential("api_key")
+		}
 		if authToken == "" {
 			return s.sendErrorAndEnd(c, "No API key available")
 		}

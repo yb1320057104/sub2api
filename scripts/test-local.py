@@ -32,7 +32,7 @@ SOURCE_SUITES = (
 SUITES = (*SOURCE_SUITES, "artifact-runtime")
 NOTES_REF = "refs/notes/pk-source-validation"
 RACE_PATTERN = (
-    "Test(PKCyber|PKEarly|PKFirstResponse|PKUsage|PKSystemOne|PKCacheConversion|PKKilo|PKDisabledExtensions|PKBackground|"
+    "Test(PKCyber|PKEarly|PKFirstResponse|PKUsage|PKSystemOne|PKCacheConversion|PKKilo|PKDisabledExtensions|PKBackground|PKAccountCandy|"
     "PKChannelMonitor|StreamEarlyHeartbeat|UpdateSettingsEarlyHeartbeat|"
     "ServerTiming|Inflight|EstimateInflight|ReserveInflight|WrapUsageRecord|"
     "SyncBalanceCacheAfterDeduction|RequestMaxOutputTokens|WebSearch_RejectsWhenInflight)"
@@ -353,7 +353,7 @@ class Runner:
                           "TestPKEarlyHeartbeat_WireUsageAndBillingParity",
                           "TestPKEarlyHeartbeatHandlerBillingAndFailover",
                           "TestPKDisabledExtensionsKeepUpstreamReasoningBilling",
-                          "TestPKKiloRecordUsageBillsRequestedEffort"))
+                          "TestPKKiloRecordUsageBillsRequestedEffort", "TestPKAccountCandy"))
         self.go(["-race", "-tags", "unit", "./internal/service", "-run",
                  "Test(BackgroundStartGate|BatchImageCleanupLifecycle)"])
         self.go(["-race", "-tags", "unit", "./internal/config", "./internal/payment",
