@@ -95,6 +95,7 @@ func TestProvideCleanup_WithMinimalDependencies_NoPanic(t *testing.T) {
 		nil, // channelMonitorRunner
 		service.NewIntelligenceTestService(nil, nil, nil, nil, nil, cfg),
 		service.NewAccountCandyTestService(nil, nil, nil, nil, nil),
+		nil, // accountAuthorization
 		nil, // channelMonitorV2Aggregator
 		nil, // quotaFlusher
 		nil, // upstreamBillingProbe

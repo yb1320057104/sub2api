@@ -970,6 +970,14 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	if probe := authorizationProbe(c); probe != nil {
+		probe.httpStatus = resp.StatusCode
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("authorization probe HTTP %d", resp.StatusCode)
+		}
+		return s.processOpenAIStream(c, io.LimitReader(resp.Body, 1<<20))
+	}
+
 	if isOAuth && s.accountRepo != nil {
 		if updates, err := extractOpenAICodexProbeUpdates(resp); err == nil && len(updates) > 0 {
 			_ = s.accountRepo.UpdateExtra(ctx, account.ID, updates)
@@ -3325,6 +3333,9 @@ func (s *AccountTestService) sendEvent(c *gin.Context, event TestEvent) {
 
 // sendErrorAndEnd sends an error event and ends the stream
 func (s *AccountTestService) sendErrorAndEnd(c *gin.Context, errorMsg string) error {
+	if authorizationProbe(c) != nil {
+		return fmt.Errorf("authorization probe did not complete")
+	}
 	logAccountTestError(c, errorMsg)
 	s.sendEvent(c, TestEvent{Type: "error", Error: errorMsg})
 	return fmt.Errorf("%s", errorMsg)

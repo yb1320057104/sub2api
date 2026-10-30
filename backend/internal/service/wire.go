@@ -993,6 +993,7 @@ var ProviderSet = wire.NewSet(
 	ProvideChannelMonitorRunner,
 	ProvideIntelligenceTestService,
 	ProvideAccountCandyTestService,
+	ProvideAccountAuthorizationService,
 	NewChannelMonitorQuotaFetcher,
 	ProvideChannelMonitorV2Service,
 	ProvideChannelMonitorV2Aggregator,
@@ -1124,4 +1125,10 @@ func ProvideClaudeResetCreditService(accounts AccountRepository, tokens *ClaudeT
 	s := NewClaudeResetCreditService(accounts, tokens, proxies, settings)
 	s.ConfigureRedemption(idem, locks)
 	return s
+}
+
+func ProvideAccountAuthorizationService(db *sql.DB, client *dbent.Client, accounts AccountRepository, admin AdminService, oauth *OpenAIOAuthService, tests *AccountTestService, encryptor SecretEncryptor, invalidator TokenCacheInvalidator, cfg *config.Config) *AccountAuthorizationService {
+	svc := NewAccountAuthorizationService(db, client, accounts, admin, oauth, tests, encryptor, invalidator, cfg)
+	startBackgroundAfterActivation("AccountAuthorizationService", svc.Start)
+	return svc
 }

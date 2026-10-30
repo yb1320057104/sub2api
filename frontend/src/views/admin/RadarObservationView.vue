@@ -9,7 +9,7 @@
         <button v-if="tab === 'accounts'" type="button" class="btn btn-primary" @click="showSettings = true">{{ t('accountCandy.settings') }}</button>
       </header>
       <div class="flex flex-wrap items-center justify-between gap-3 border-b border-gray-200 pb-4 dark:border-dark-700">
-        <div class="inline-flex rounded-2xl bg-primary-100/60 p-1 dark:bg-dark-800" role="tablist" :aria-label="t('radar.title')">
+        <div class="inline-flex max-w-full flex-wrap rounded-2xl bg-primary-100/60 p-1 dark:bg-dark-800" role="tablist" :aria-label="t('radar.title')">
           <button v-for="item in tabs" :id="'radar-tab-' + item" :key="item" type="button" role="tab" :aria-selected="tab === item" :aria-controls="'radar-panel-' + item" :tabindex="tab === item ? 0 : -1" class="rounded-xl px-6 py-2.5 text-sm font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary-500" :class="tab === item ? 'bg-white text-primary-700 shadow-sm dark:bg-dark-700 dark:text-primary-300' : 'text-gray-500 dark:text-dark-400'" @click="tab = item" @keydown.left.prevent="switchTab" @keydown.right.prevent="switchTab">{{ t('radar.' + item) }}</button>
         </div>
         <RouterLink v-if="tab === 'groups'" to="/intelligence-test" class="text-sm font-medium text-primary-600 hover:underline dark:text-primary-400">{{ t('radar.viewResults') }} →</RouterLink>
@@ -19,6 +19,7 @@
         <p v-if="groupError" class="text-sm text-red-600" role="alert">{{ groupError }} <button class="underline" @click="loadGroups">{{ t('accountCandy.retry') }}</button></p>
         <IntelligenceTestSettings :groups="testGroups" :groups-loaded="groupsLoaded" @saved="loadGroups" @keys-synced="loadGroups" />
       </section>
+      <section v-else-if="tab === 'authorization'" id="radar-panel-authorization" role="tabpanel" aria-labelledby="radar-tab-authorization" class="space-y-5"><AuthorizationSchedule /><AuthorizationRecords kind="accounts" /></section>
       <section v-else id="radar-panel-accounts" role="tabpanel" aria-labelledby="radar-tab-accounts" class="space-y-5">
         <div class="flex flex-wrap items-center justify-between gap-3">
           <div class="flex flex-wrap items-center gap-3">
@@ -109,6 +110,8 @@ import AccountUsageCell from '@/components/account/AccountUsageCell.vue'
 import IntelligenceTestSettings from '@/components/intelligenceTest/IntelligenceTestSettings.vue'
 import AccountCandyTestSettings from '@/components/admin/account/AccountCandyTestSettings.vue'
 import AccountCandyTestDetails from '@/components/admin/account/AccountCandyTestDetails.vue'
+import AuthorizationSchedule from '@/components/admin/account/AuthorizationSchedule.vue'
+import AuthorizationRecords from '@/components/admin/account/AuthorizationRecords.vue'
 import { accountCandyAPI, type RadarObservation } from '@/api/admin/accountCandy'
 import { intelligenceTestAPI, type IntelligenceTestGroup } from '@/api/intelligenceTest'
 import { apiClient } from '@/api/client'
@@ -123,8 +126,8 @@ const { t } = useI18n()
 const app = useAppStore()
 const route = useRoute()
 const router = useRouter()
-const tabs = ['groups', 'accounts'] as const
-const tab = ref<typeof tabs[number]>(route.query.tab === 'accounts' ? 'accounts' : 'groups')
+const tabs = ['groups', 'accounts', 'authorization'] as const
+const tab = ref<typeof tabs[number]>(route.query.tab === 'authorization' ? 'authorization' : route.query.tab === 'accounts' ? 'accounts' : 'groups')
 const items = ref<RadarObservation[]>([])
 const groups = ref<AdminGroup[]>([])
 const testGroups = ref<IntelligenceTestGroup[]>([])
@@ -164,7 +167,7 @@ function goToPage(nextPage: number) {
   if (nextPage >= 1 && nextPage <= totalPages.value && nextPage !== page.value) page.value = nextPage
 }
 
-async function switchTab() { tab.value = tab.value === 'groups' ? 'accounts' : 'groups'; await nextTick(); document.getElementById('radar-tab-' + tab.value)?.focus() }
+async function switchTab(event: KeyboardEvent) { const direction = event.key === 'ArrowLeft' ? -1 : 1; tab.value = tabs[(tabs.indexOf(tab.value) + direction + tabs.length) % tabs.length]!; await nextTick(); document.getElementById('radar-tab-' + tab.value)?.focus() }
 async function loadGroups() {
   try { const data = await intelligenceTestAPI.groups(); if (!disposed) { testGroups.value = data; groupsLoaded.value = true; groupError.value = '' } }
   catch (cause) { if (!disposed) groupError.value = extractApiErrorMessage(cause, t('accountCandy.loadFailed')) }
@@ -217,7 +220,7 @@ async function flushUsage() {
 
 watch(filter, () => { items.value = []; if (page.value !== 1) page.value = 1; else void loadAccounts() })
 watch(page, () => { items.value = []; void loadAccounts() })
-watch(() => route.query.tab, value => { tab.value = value === 'accounts' ? 'accounts' : 'groups' })
+watch(() => route.query.tab, value => { tab.value = value === 'authorization' ? 'authorization' : value === 'accounts' ? 'accounts' : 'groups' })
 watch(tab, () => { if (route.query.tab !== tab.value) void router.replace({ query: { ...route.query, tab: tab.value } }); if (tab.value === 'accounts') void loadAccounts(); else { controller?.abort(); loading.value = false; void loadGroups() } })
 useIntervalFn(() => { if (!document.hidden && !showSettings.value) void loadAccounts(true) }, 5000)
 onMounted(async () => {

@@ -125,6 +125,7 @@ func provideCleanup(
 	channelMonitorRunner *service.ChannelMonitorRunner,
 	intelligenceTest *service.IntelligenceTestService,
 	accountCandyTest *service.AccountCandyTestService,
+	accountAuthorization *service.AccountAuthorizationService,
 	channelMonitorV2Aggregator *service.ChannelMonitorV2Aggregator,
 	quotaFlusher *service.UserPlatformQuotaUsageFlusher,
 	upstreamBillingProbe *service.UpstreamBillingProbeService,
@@ -382,6 +383,12 @@ func provideCleanup(
 			{"IntelligenceTestService", func() error {
 				if intelligenceTest != nil {
 					intelligenceTest.Stop()
+				}
+				return nil
+			}},
+			{"AccountAuthorizationService", func() error {
+				if accountAuthorization != nil {
+					accountAuthorization.Stop()
 				}
 				return nil
 			}},

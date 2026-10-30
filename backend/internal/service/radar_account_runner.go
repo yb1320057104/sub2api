@@ -27,6 +27,8 @@ func (s *AccountCandyTestService) dispatchRadar(ctx context.Context) {
 	if !cfg.Enabled {
 		return
 	}
+	// Read live account management on every scheduled dispatch. Never cache the
+	// roster: manually added accounts join the next eligible round immediately.
 	rows, err := s.db.QueryContext(ctx, `SELECT a.id FROM accounts a LEFT JOIN pk_radar_account_state st ON st.account_id=a.id WHERE a.deleted_at IS NULL AND a.platform='openai' AND a.status='active' AND a.schedulable=true AND COALESCE(a.extra->'synthetic_ui_test','false'::jsonb)<>'true'::jsonb AND(a.expires_at IS NULL OR a.expires_at>NOW() OR a.auto_pause_on_expired=false)AND(st.next_run_at IS NULL OR st.next_run_at<=NOW())AND(st.lease_until IS NULL OR st.lease_until<=NOW())AND NOT EXISTS(SELECT 1 FROM account_groups ag WHERE ag.account_id=a.id AND ag.group_id=$1)ORDER BY COALESCE(st.next_run_at,a.created_at),a.id LIMIT 1000`, cfg.TargetGroupID)
 	if err != nil {
 		return

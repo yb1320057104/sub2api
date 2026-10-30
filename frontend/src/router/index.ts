@@ -458,6 +458,12 @@ const routes: RouteRecordRaw[] = [
     meta: { requiresAuth: true, requiresAdmin: true, title: 'Radar Observatory', titleKey: 'radar.title' }
   },
   {
+    path: '/admin/account-authorization',
+    name: 'AdminAccountAuthorization',
+    component: () => import('@/views/admin/AccountAuthorizationView.vue'),
+    meta: { requiresAuth: true, requiresAdmin: true, title: 'Account Authorization', titleKey: 'authorization.title' }
+  },
+  {
     path: '/admin/ops',
     name: 'AdminOps',
     component: () => import('@/views/admin/ops/OpsDashboard.vue'),

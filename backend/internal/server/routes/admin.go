@@ -33,6 +33,22 @@ func RegisterAdminRoutes(
 	// 受限密钥的账户操作走独立资源校验，普通管理员保持原处理器。
 	admin.Use(h.Admin.Account.ScopedAdminKeyAccounts)
 	{
+		if h.AccountAuthorization != nil {
+			authorization := admin.Group("/account-authorization")
+			authorization.GET("/config", h.AccountAuthorization.Config)
+			authorization.POST("/accounts/:id/credentials", h.AccountAuthorization.Supplement)
+			authorization.PUT("/config", h.AccountAuthorization.SaveConfig)
+			authorization.GET("/jobs", h.AccountAuthorization.List("jobs"))
+			authorization.POST("/jobs", panelRateLimiter.Heavy(), h.AccountAuthorization.Submit)
+			authorization.POST("/jobs/:id/cancel", h.AccountAuthorization.Cancel)
+			authorization.GET("/history", h.AccountAuthorization.List("history"))
+			authorization.POST("/history/:id/reveal", gin.HandlerFunc(stepUpAuth), h.AccountAuthorization.Reveal)
+			authorization.GET("/proxies", h.AccountAuthorization.List("proxies"))
+			authorization.POST("/proxies", h.AccountAuthorization.AddProxies)
+			authorization.DELETE("/proxies/:id", h.AccountAuthorization.DisableProxy)
+			authorization.POST("/proxies/:id/check", panelRateLimiter.Heavy(), h.AccountAuthorization.CheckProxy)
+			admin.GET("/radar/authorization", h.AccountAuthorization.List("accounts"))
+		}
 		if h.IntelligenceTest != nil {
 			admin.GET("/intelligence-test/config", h.IntelligenceTest.GetConfig)
 			admin.PUT("/intelligence-test/config", h.IntelligenceTest.UpdateConfig)

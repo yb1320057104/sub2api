@@ -90,10 +90,13 @@ LABEL org.opencontainers.image.source="https://github.com/pengkang0322/sub2api"
 
 # Keep web-installed releases in the existing application data volume.
 ENV SUB2API_DOCKER_SELF_UPDATE=true
+# Browser runs as the unprivileged application user inside this container.
+ENV PK_AUTH_BROWSER_PATH=/usr/bin/chromium PK_AUTH_BROWSER_NO_SANDBOX=true
 
 # Install runtime dependencies
 RUN apk add --no-cache \
     ca-certificates \
+    chromium \
     tzdata \
     curl \
     su-exec \

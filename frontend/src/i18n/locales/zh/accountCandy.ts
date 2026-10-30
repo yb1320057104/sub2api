@@ -1,5 +1,6 @@
 export default {
   radar: {
+    authorization: '授权巡检',
     title: '雷达观测站', description: '集中管理分组与账号测智，追踪每个模型的糖果回答和账号出口。',
     groups: '分组观测', accounts: '账号观测', viewResults: '查看智商测试结果', refreshHint: '当前页每 5 秒刷新',
     models: '测试模型', addModel: '添加模型', removeModel: '移除模型', modelEnabled: '启用此模型',

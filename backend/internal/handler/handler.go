@@ -47,30 +47,31 @@ type AdminHandlers struct {
 
 // Handlers contains all HTTP handlers
 type Handlers struct {
-	Auth             *AuthHandler
-	User             *UserHandler
-	APIKey           *APIKeyHandler
-	Usage            *UsageHandler
-	Redeem           *RedeemHandler
-	Subscription     *SubscriptionHandler
-	Announcement     *AnnouncementHandler
-	ChannelMonitor   *ChannelMonitorUserHandler
-	ChannelMonitorV2 *ChannelMonitorV2Handler
-	IntelligenceTest *IntelligenceTestHandler
-	AccountCandyTest *AccountCandyTestHandler
-	Admin            *AdminHandlers
-	Gateway          *GatewayHandler
-	OpenAIGateway    *OpenAIGatewayHandler
-	Setting          *SettingHandler
-	Totp             *TotpHandler
-	Passkey          *PasskeyHandler
-	Payment          *PaymentHandler
-	PaymentWebhook   *PaymentWebhookHandler
-	BinanceRecharge  *BinanceRechargeHandler
-	AvailableChannel *AvailableChannelHandler
-	ModelPlaza       *ModelPlazaHandler
-	AsyncImage       *AsyncImageHandler
-	BatchImage       *BatchImageHandler
+	Auth                 *AuthHandler
+	User                 *UserHandler
+	APIKey               *APIKeyHandler
+	Usage                *UsageHandler
+	Redeem               *RedeemHandler
+	Subscription         *SubscriptionHandler
+	Announcement         *AnnouncementHandler
+	ChannelMonitor       *ChannelMonitorUserHandler
+	ChannelMonitorV2     *ChannelMonitorV2Handler
+	IntelligenceTest     *IntelligenceTestHandler
+	AccountCandyTest     *AccountCandyTestHandler
+	AccountAuthorization *AccountAuthorizationHandler
+	Admin                *AdminHandlers
+	Gateway              *GatewayHandler
+	OpenAIGateway        *OpenAIGatewayHandler
+	Setting              *SettingHandler
+	Totp                 *TotpHandler
+	Passkey              *PasskeyHandler
+	Payment              *PaymentHandler
+	PaymentWebhook       *PaymentWebhookHandler
+	BinanceRecharge      *BinanceRechargeHandler
+	AvailableChannel     *AvailableChannelHandler
+	ModelPlaza           *ModelPlazaHandler
+	AsyncImage           *AsyncImageHandler
+	BatchImage           *BatchImageHandler
 }
 
 // BuildInfo contains build-time information

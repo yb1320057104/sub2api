@@ -1,5 +1,6 @@
 export default {
   radar: {
+    authorization: 'Authorization inspection',
     title: 'Radar Observatory', description: 'Manage group and account intelligence checks, model answers, and account egress.',
     groups: 'Group observation', accounts: 'Account observation', viewResults: 'View intelligence results', refreshHint: 'Current page refreshes every 5 seconds',
     models: 'Test models', addModel: 'Add model', removeModel: 'Remove model', modelEnabled: 'Enable this model',
