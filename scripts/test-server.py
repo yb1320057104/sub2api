@@ -77,8 +77,12 @@ def main():
     require(ignored.returncode == 0 and not local.git("ls-files", "--", relative),
             "Credential file must be ignored and must never be tracked")
     login = json.loads(credentials.read_text(encoding="utf-8-sig"))
-    require(login.get("host") == "216.18.202.202" and login.get("username") == "root",
-            "This entrypoint is restricted to the user-authorized test server")
+    require(isinstance(login, dict), "Credential file must contain a JSON object")
+    require(all(isinstance(login.get(field), str) and login[field].strip()
+                for field in ("host", "username", "password")),
+            "Credential file must provide host, username and password")
+    # The operator selects the authorized test server in this ignored local
+    # file. No deployment address or SSH username is embedded in the source.
     snapshot = local.workspace_snapshot()
     run_id = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:12]
     output = (args.output_dir or Path(tempfile.gettempdir()) / "sub2api-server-validation" / run_id).resolve()
