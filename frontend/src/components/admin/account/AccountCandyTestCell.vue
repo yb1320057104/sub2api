@@ -1,6 +1,7 @@
 <template>
   <div class="mt-0.5 space-y-1 text-[11px] leading-4">
     <div v-if="result" class="max-w-[220px] break-words font-mono text-gray-500 dark:text-dark-400">{{ result.model }}</div>
+    <div v-for="model in result?.failed_models ?? []" :key="model.id" class="max-w-[220px] break-words text-red-600 dark:text-red-400">{{ model.model }}: {{ model.answer ?? t('accountCandy.noAnswer') }}</div>
     <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
       <button
         type="button"
@@ -40,12 +41,12 @@ const emit = defineEmits<{ test: []; details: [] }>()
 const { t } = useI18n()
 const statusText = computed(() => {
   if (!props.result) return t(props.error ? 'accountCandy.loadFailed' : props.loaded ? 'accountCandy.untested' : 'accountCandy.loading')
-  if (props.result.status === 'completed') return props.result.passed ? t('accountCandy.passed')
+  if (props.result.passed != null) return props.result.passed ? t('accountCandy.passed')
     : `${t('accountCandy.notPassed')} · ${props.result.answer ?? t('accountCandy.noAnswer')}`
-  return t(`accountCandy.${props.result.status}`)
+  return props.result.status === 'completed' ? t('radar.unknown') : t(`accountCandy.${props.result.status}`)
 })
 const statusClass = computed(() => {
-  if (props.result?.status === 'completed') return props.result.passed
+  if (props.result?.passed != null) return props.result.passed
     ? 'text-emerald-600 dark:text-emerald-400'
     : 'text-red-600 dark:text-red-400'
   if (props.result?.status === 'running') return 'text-primary-600 dark:text-primary-400'

@@ -3,10 +3,7 @@
     <div class="flex flex-wrap items-center justify-between gap-3">
       <p class="text-sm text-gray-500">{{ t('binanceRecharge.totalsHint') }}</p>
       <div class="flex gap-2">
-        <select v-model="accountId" :aria-label="t('binanceRecharge.account')" class="input" @change="page = 1; load()">
-          <option value="">{{ t('binanceRecharge.allAccounts') }}</option>
-          <option v-for="account in availableAccounts" :key="account.id" :value="String(account.id)">{{ account.name }} · {{ account.recipient_uid }}</option>
-        </select>
+        <Select v-model="accountId" class="min-w-48" :aria-label="t('binanceRecharge.account')" :options="[{ value: '', label: t('binanceRecharge.allAccounts') }, ...availableAccounts.map(account => ({ value: String(account.id), label: account.name + ' · ' + account.recipient_uid }))]" @change="page = 1; load()" />
         <button class="btn btn-secondary" :disabled="loading" @click="load()">{{ t('common.refresh') }}</button>
       </div>
     </div>
@@ -26,6 +23,7 @@
 </template>
 
 <script setup lang="ts">
+import Select from '@/components/common/Select.vue'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { adminBinanceRechargeAPI, binanceRechargeAPI } from '@/api/binanceRecharge'

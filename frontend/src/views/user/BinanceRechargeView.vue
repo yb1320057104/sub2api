@@ -15,9 +15,7 @@
             <p class="text-sm text-gray-500">{{ t('binanceRecharge.description') }}</p>
             <div>
               <label for="binance-account" class="input-label">{{ t('binanceRecharge.account') }}</label>
-              <select id="binance-account" v-model="accountId" class="input mt-1 w-full" required>
-                <option v-for="account in config.accounts" :key="account.id" :value="account.id">{{ account.name }} · UID {{ account.recipient_uid }}</option>
-              </select>
+              <Select id="binance-account" v-model="accountId" class="mt-1 w-full" :disabled="creating" :options="config.accounts.map(account => ({ value: account.id, label: account.name + ' · UID ' + account.recipient_uid }))" searchable />
               <p v-if="selectedAccount" data-testid="binance-account-rate" class="mt-2 text-sm font-medium text-primary-700 dark:text-primary-300">{{ t('binanceRecharge.exchangeRate', { multiplier: formatBinanceMultiplier(selectedAccount.credit_multiplier) }) }}</p>
             </div>
             <div>
@@ -39,14 +37,8 @@
           <div class="flex flex-wrap items-center justify-between gap-3">
             <h2 class="text-lg font-semibold">{{ t('binanceRecharge.history') }}</h2>
             <div class="flex flex-wrap gap-2">
-              <select v-model="accountFilter" :aria-label="t('binanceRecharge.account')" class="input" @change="page = 1; loadOrders()">
-                <option value="">{{ t('binanceRecharge.allAccounts') }}</option>
-                <option v-for="account in filterAccounts" :key="account.id" :value="String(account.id)">{{ account.name }} · {{ account.recipient_uid }}</option>
-              </select>
-              <select v-model="status" :aria-label="t('binanceRecharge.statusLabel')" class="input" @change="page = 1; loadOrders()">
-                <option value="">{{ t('binanceRecharge.allStatuses') }}</option>
-                <option v-for="value in statuses" :key="value" :value="value">{{ t(`binanceRecharge.status.${value}`) }}</option>
-              </select>
+              <Select v-model="accountFilter" class="min-w-48" :aria-label="t('binanceRecharge.account')" :options="[{ value: '', label: t('binanceRecharge.allAccounts') }, ...filterAccounts.map(account => ({ value: String(account.id), label: account.name + ' · ' + account.recipient_uid }))]" @change="page = 1; loadOrders()" />
+              <Select v-model="status" class="min-w-36" :aria-label="t('binanceRecharge.statusLabel')" :options="[{ value: '', label: t('binanceRecharge.allStatuses') }, ...statuses.map(value => ({ value, label: t('binanceRecharge.status.' + value) }))]" @change="page = 1; loadOrders()" />
               <button class="btn btn-secondary" :disabled="ordersLoading" @click="loadOrders()">{{ t('common.refresh') }}</button>
             </div>
           </div>
@@ -59,6 +51,7 @@
 </template>
 
 <script setup lang="ts">
+import Select from '@/components/common/Select.vue'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAppStore } from '@/stores/app'

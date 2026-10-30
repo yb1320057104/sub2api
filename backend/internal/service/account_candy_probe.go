@@ -45,6 +45,9 @@ func (s *AccountTestService) runAccountCandyProbe(ctx context.Context, account, 
 	if account.Platform != PlatformOpenAI || account.IsSyntheticUITest() {
 		return "", candyProbeFailure("糖果测试仅支持真实 OpenAI 账号。")
 	}
+	if _, err := accountCandyProxyURL(account); err != nil {
+		return "", err
+	}
 	if isOpenAIImageModel(account.GetMappedModel(cfg.Model)) {
 		return "", candyProbeFailure("该账号将测试模型映射到了图片模型，请选择文本模型。")
 	}

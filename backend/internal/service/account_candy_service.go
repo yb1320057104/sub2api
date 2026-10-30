@@ -245,7 +245,7 @@ func (s *AccountCandyTestService) loop(ctx context.Context, done chan struct{}) 
 		if ctx.Err() != nil {
 			return
 		}
-		s.dispatch(ctx)
+		s.dispatchRadar(ctx)
 		timer.Reset(5 * time.Second)
 	}
 }

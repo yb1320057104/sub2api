@@ -35,10 +35,7 @@
             </label>
             <label class="block">
               <span class="input-label">{{ t('intelligenceTest.effort') }}</span>
-              <select v-model="config[mode].effort" class="input">
-                <option value="">{{ t('intelligenceTest.effortDefault') }}</option>
-                <option v-for="effort in efforts" :key="effort" :value="effort">{{ effort }}</option>
-              </select>
+              <Select v-model="config[mode].effort" :disabled="saving" :options="[{ value: '', label: t('intelligenceTest.effortDefault') }, ...efforts.map(value => ({ value, label: value }))]" />
             </label>
             <label class="block">
               <span class="input-label">{{ t('intelligenceTest.interval') }}</span>
@@ -60,10 +57,7 @@
                 </div>
                 <div class="grid gap-2 sm:grid-cols-2">
                   <input :value="getOverride(mode, group.id)?.model ?? ''" :aria-label="`${group.name} ${t('intelligenceTest.model')}`" :placeholder="config[mode].model" class="input text-sm" type="text" maxlength="200" @input="setOverride(mode, group.id, 'model', ($event.target as HTMLInputElement).value)" />
-                  <select :value="getOverride(mode, group.id)?.effort ?? ''" :aria-label="`${group.name} ${t('intelligenceTest.effort')}`" class="input text-sm" @change="setOverride(mode, group.id, 'effort', ($event.target as HTMLSelectElement).value)">
-                    <option value="">{{ t('intelligenceTest.inherit') }}</option>
-                    <option v-for="effort in efforts" :key="effort" :value="effort">{{ effort }}</option>
-                  </select>
+                  <Select :model-value="getOverride(mode, group.id)?.effort ?? ''" :aria-label="group.name + ' ' + t('intelligenceTest.effort')" :disabled="saving" :options="[{ value: '', label: t('intelligenceTest.inherit') }, ...efforts.map(value => ({ value, label: value }))]" @update:model-value="setOverride(mode, group.id, 'effort', String($event ?? ''))" />
                 </div>
               </div>
             </div>
@@ -112,6 +106,7 @@
 </template>
 
 <script setup lang="ts">
+import Select from '@/components/common/Select.vue'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Toggle from '@/components/common/Toggle.vue'

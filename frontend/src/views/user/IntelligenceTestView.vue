@@ -6,10 +6,8 @@
           <h1 class="text-2xl font-semibold tracking-tight text-gray-900 dark:text-white">{{ t('intelligenceTest.title') }}</h1>
           <p class="mt-2 text-sm leading-6 text-gray-500 dark:text-dark-400">{{ t('intelligenceTest.description') }}</p>
         </div>
-        <button v-if="auth.isAdmin" type="button" class="btn btn-secondary" :aria-expanded="showSettings" aria-controls="intelligence-settings" @click="showSettings = !showSettings">{{ t(showSettings ? 'intelligenceTest.hideSettings' : 'intelligenceTest.settings') }}</button>
       </header>
 
-      <IntelligenceTestSettings v-if="auth.isAdmin" v-show="showSettings" id="intelligence-settings" :groups="groups" :groups-loaded="groupsLoaded" @saved="handleConfigSaved" @keys-synced="loadGroups" />
 
       <p v-if="auth.isAdmin && status.loaded && !status.enabled" class="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300">{{ t('intelligenceTest.disabledHint') }}</p>
 
@@ -88,7 +86,6 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import AppLayout from '@/components/layout/AppLayout.vue'
-import IntelligenceTestSettings from '@/components/intelligenceTest/IntelligenceTestSettings.vue'
 import ResultArtifact from '@/components/intelligenceTest/ResultArtifact.vue'
 import ResultDetails from '@/components/intelligenceTest/ResultDetails.vue'
 import { intelligenceTestAPI, type IntelligenceTestGroup, type IntelligenceTestMode, type IntelligenceTestResult } from '@/api/intelligenceTest'
@@ -104,11 +101,9 @@ const mode = ref<IntelligenceTestMode>('svg')
 const selectedGroup = ref<number | null>(null)
 const groups = ref<IntelligenceTestGroup[]>([])
 const resultGroups = computed(() => groups.value.filter(group => group.selected === true))
-const groupsLoaded = ref(false)
 const results = ref<IntelligenceTestResult[]>([])
 const loading = ref(true)
 const readError = ref(false)
-const showSettings = ref(false)
 let resultRequest: AbortController | undefined
 let timer: ReturnType<typeof setTimeout> | undefined
 let disposed = false
@@ -122,7 +117,6 @@ async function loadGroups() {
     const response = await intelligenceTestAPI.groups()
     if (disposed || requestID !== groupsRequestID) return
     groups.value = response
-    groupsLoaded.value = true
     groupsLoadedAt = Date.now()
     if (!resultGroups.value.some(group => group.id === selectedGroup.value)) {
       resultRequest?.abort()
@@ -170,20 +164,6 @@ async function loadResults(clear = false) {
   } finally {
     if (isCurrentRequest()) loading.value = false
   }
-}
-
-async function handleConfigSaved() {
-  // Discard every pre-save read before reloading the new test generation.
-  resultsGeneration++
-  groupsRequestID++
-  resultRequest?.abort()
-  resultRequest = undefined
-  results.value = []
-  readError.value = false
-  loading.value = true
-  // Unmount cached previews/details so their in-flight reads are aborted.
-  await nextTick()
-  await reload()
 }
 
 async function reload() {
@@ -280,7 +260,6 @@ watch(() => status.enabled, (enabled) => {
 
 onMounted(async () => {
   await reload()
-  if (auth.isAdmin && !status.enabled) showSettings.value = true
   if (!disposed) timer = setTimeout(poll, 15000)
 })
 

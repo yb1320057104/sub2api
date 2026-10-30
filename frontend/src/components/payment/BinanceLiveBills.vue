@@ -4,10 +4,7 @@
     <form class="card flex flex-wrap items-end gap-4 p-4" @submit.prevent="queryBills()">
       <div class="min-w-52 flex-1">
         <label for="binance-bills-account" class="input-label">{{ t('binanceRecharge.account') }}</label>
-        <select id="binance-bills-account" v-model="accountId" class="input mt-1 w-full" required>
-          <option value="" disabled>{{ t('binanceRecharge.liveBills.selectAccount') }}</option>
-          <option v-for="account in accounts" :key="account.id" :value="String(account.id)">{{ account.name }} · UID {{ account.recipient_uid }}</option>
-        </select>
+        <Select id="binance-bills-account" v-model="accountId" class="mt-1 w-full" :disabled="loading" :options="[{ value: '', label: t('binanceRecharge.liveBills.selectAccount'), disabled: true }, ...accounts.map(account => ({ value: String(account.id), label: account.name + ' · UID ' + account.recipient_uid }))]" searchable />
       </div>
       <div><label for="binance-bills-start" class="input-label">{{ t('binanceRecharge.liveBills.startTime') }}</label><input id="binance-bills-start" v-model="startTime" class="input mt-1 w-full" type="datetime-local" step="1" required /></div>
       <div><label for="binance-bills-end" class="input-label">{{ t('binanceRecharge.liveBills.endTime') }}</label><input id="binance-bills-end" v-model="endTime" class="input mt-1 w-full" type="datetime-local" step="1" required /></div>
@@ -24,8 +21,8 @@
         <p class="text-xs text-gray-500">{{ t('binanceRecharge.liveBills.filterHint') }}</p>
         <div class="flex flex-wrap gap-3">
           <input v-model="search" class="input min-w-48 flex-1" :aria-label="t('binanceRecharge.liveBills.search')" :placeholder="t('binanceRecharge.liveBills.search')" />
-          <select v-model="currency" class="input" :aria-label="t('binanceRecharge.liveBills.currency')"><option value="">{{ t('binanceRecharge.liveBills.allCurrencies') }}</option><option v-for="value in currencies" :key="value" :value="value">{{ value }}</option></select>
-          <select v-model="direction" class="input" :aria-label="t('binanceRecharge.liveBills.direction')"><option value="">{{ t('binanceRecharge.liveBills.allDirections') }}</option><option v-for="value in directions" :key="value" :value="value">{{ t(`binanceRecharge.liveBills.directionLabels.${value}`) }}</option></select>
+          <Select v-model="currency" class="min-w-36" :aria-label="t('binanceRecharge.liveBills.currency')" :options="[{ value: '', label: t('binanceRecharge.liveBills.allCurrencies') }, ...currencies.map(value => ({ value, label: value }))]" />
+          <Select v-model="direction" class="min-w-36" :aria-label="t('binanceRecharge.liveBills.direction')" :options="[{ value: '', label: t('binanceRecharge.liveBills.allDirections') }, ...directions.map(value => ({ value, label: t('binanceRecharge.liveBills.directionLabels.' + value) }))]" />
         </div>
       </div>
     </template>
@@ -55,6 +52,7 @@
 </template>
 
 <script setup lang="ts">
+import Select from '@/components/common/Select.vue'
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { adminBinanceRechargeAPI } from '@/api/binanceRecharge'

@@ -34,12 +34,8 @@
       <template v-else-if="activeTab === 'orders'">
         <form class="card flex flex-wrap gap-3 p-4" @submit.prevent="page = 1; loadOrders()">
           <input v-model="keyword" class="input min-w-48 flex-1" :placeholder="t('binanceRecharge.search')" :aria-label="t('binanceRecharge.search')" />
-          <select v-model="accountFilter" class="input" :aria-label="t('binanceRecharge.account')" @change="page = 1; loadOrders()">
-            <option value="">{{ t('binanceRecharge.allAccounts') }}</option><option v-for="account in accounts" :key="account.id" :value="String(account.id)">{{ account.name }} · {{ account.recipient_uid }}</option>
-          </select>
-          <select v-model="status" class="input" :aria-label="t('binanceRecharge.statusLabel')" @change="page = 1; loadOrders()">
-            <option value="">{{ t('binanceRecharge.allStatuses') }}</option><option v-for="value in statuses" :key="value" :value="value">{{ t(`binanceRecharge.status.${value}`) }}</option>
-          </select>
+          <Select v-model="accountFilter" class="min-w-48" :aria-label="t('binanceRecharge.account')" :options="[{ value: '', label: t('binanceRecharge.allAccounts') }, ...accounts.map(account => ({ value: String(account.id), label: account.name + ' · ' + account.recipient_uid }))]" @change="page = 1; loadOrders()" />
+          <Select v-model="status" class="min-w-36" :aria-label="t('binanceRecharge.statusLabel')" :options="[{ value: '', label: t('binanceRecharge.allStatuses') }, ...statuses.map(value => ({ value, label: t('binanceRecharge.status.' + value) }))]" @change="page = 1; loadOrders()" />
           <button class="btn btn-secondary" type="submit" :disabled="ordersLoading">{{ t('common.refresh') }}</button>
         </form>
         <BinanceOrderTable :orders="orders" :loading="ordersLoading" admin @select="selectedOrder = $event" />
@@ -57,7 +53,7 @@
         <p class="text-xs text-gray-500">{{ t('binanceRecharge.credentialsHint') }}</p>
         <div><label for="binance-api-key" class="input-label">{{ t('binanceRecharge.apiKey') }}</label><input id="binance-api-key" v-model="form.api_key" type="password" autocomplete="new-password" class="input mt-1 w-full" :required="!editingAccount" /></div>
         <div><label for="binance-api-secret" class="input-label">{{ t('binanceRecharge.apiSecret') }}</label><input id="binance-api-secret" v-model="form.api_secret" type="password" autocomplete="new-password" class="input mt-1 w-full" :required="!editingAccount" /><p class="mt-2 text-xs text-gray-500">{{ t('binanceRecharge.secretHint') }}</p></div>
-        <div><label for="binance-ttl" class="input-label">{{ t('binanceRecharge.ttl') }}</label><select id="binance-ttl" v-model="form.order_ttl_minutes" class="input mt-1 w-full"><option :value="15">{{ t('binanceRecharge.minutes', { minutes: 15 }) }}</option><option :value="30">{{ t('binanceRecharge.minutes', { minutes: 30 }) }}</option></select></div>
+        <div><label for="binance-ttl" class="input-label">{{ t('binanceRecharge.ttl') }}</label><Select id="binance-ttl" v-model="form.order_ttl_minutes" class="mt-1 w-full" :disabled="saving" :options="[15, 30].map(value => ({ value, label: t('binanceRecharge.minutes', { minutes: value }) }))" /></div>
         <label class="flex items-center gap-2 text-sm"><input v-model="form.enabled" type="checkbox" class="h-4 w-4 rounded" />{{ t('binanceRecharge.enabled') }}</label>
       </form>
       <template #footer><div class="flex justify-end gap-2"><button class="btn btn-secondary" :disabled="saving" @click="closeAccountDialog">{{ t('common.cancel') }}</button><button form="binance-account-form" class="btn btn-primary" type="submit" :disabled="saving">{{ saving ? t('common.processing') : t('common.save') }}</button></div></template>
@@ -69,6 +65,7 @@
 </template>
 
 <script setup lang="ts">
+import Select from '@/components/common/Select.vue'
 import { onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { adminBinanceRechargeAPI } from '@/api/binanceRecharge'

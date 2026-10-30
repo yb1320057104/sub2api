@@ -40,10 +40,17 @@ func RegisterAdminRoutes(
 		}
 		if h.AccountCandyTest != nil {
 			admin.GET("/account-candy-test/config", h.AccountCandyTest.GetConfig)
-			admin.PUT("/account-candy-test/config", h.AccountCandyTest.UpdateConfig)
+			admin.PUT("/account-candy-test/config", h.AccountCandyTest.LegacyRadarWrite)
 			admin.GET("/account-candy-test/results", h.AccountCandyTest.ListLatest)
-			admin.POST("/accounts/:id/candy-test", panelRateLimiter.Heavy(), h.AccountCandyTest.Trigger)
+			admin.POST("/accounts/:id/candy-test", panelRateLimiter.Heavy(), h.AccountCandyTest.LegacyRadarWrite)
 			admin.GET("/accounts/:id/candy-test/results/:result_id", h.AccountCandyTest.GetResult)
+			admin.GET("/radar/accounts", h.AccountCandyTest.RadarAccounts)
+			admin.GET("/radar/account-candy/config", h.AccountCandyTest.RadarConfig)
+			admin.PUT("/radar/account-candy/config", h.AccountCandyTest.SaveRadarConfig)
+			admin.GET("/radar/account-candy/results", h.AccountCandyTest.RadarLatest)
+			admin.POST("/radar/accounts/:id/candy-runs", panelRateLimiter.Heavy(), h.AccountCandyTest.StartRadar)
+			admin.GET("/radar/accounts/:id/candy-runs", h.AccountCandyTest.RadarHistory)
+			admin.GET("/radar/accounts/:id/candy-runs/:run_id", h.AccountCandyTest.RadarResult)
 		}
 		// 部署与运营合规确认
 		registerAdminComplianceRoutes(admin, h)
