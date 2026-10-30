@@ -95,6 +95,12 @@ type CaptchaProof struct {
 	TencentRandstr string
 }
 
+const (
+	CaptchaActionLogin          = "login"
+	CaptchaActionRegister       = "register"
+	CaptchaActionForgotPassword = "forgot_password"
+)
+
 type DefaultSubscriptionAssigner interface {
 	AssignOrExtendSubscription(ctx context.Context, input *AssignSubscriptionInput) (*UserSubscription, bool, error)
 }
@@ -401,10 +407,16 @@ func (s *AuthService) VerifyCaptchaForRegister(ctx context.Context, proof Captch
 		logger.LegacyPrintf("service.auth", "%s", "[Auth] Email verify flow detected, skip duplicate captcha check on register")
 		return nil
 	}
-	return s.VerifyCaptcha(ctx, proof, remoteIP)
+	return s.VerifyCaptchaWithAction(ctx, proof, remoteIP, CaptchaActionRegister)
 }
 
 func (s *AuthService) VerifyCaptcha(ctx context.Context, proof CaptchaProof, remoteIP string) error {
+	return s.VerifyCaptchaWithAction(ctx, proof, remoteIP, "")
+}
+
+// VerifyCaptchaWithAction verifies the configured provider and binds
+// Cloudflare Turnstile tokens to the protected route action.
+func (s *AuthService) VerifyCaptchaWithAction(ctx context.Context, proof CaptchaProof, remoteIP, action string) error {
 	required := s.cfg != nil && s.cfg.Server.Mode == "release" && s.cfg.Turnstile.Required
 	if s.settingService == nil {
 		if required {
@@ -440,7 +452,7 @@ func (s *AuthService) VerifyCaptcha(ctx context.Context, proof CaptchaProof, rem
 		if s.turnstileService == nil || strings.TrimSpace(providerConfig.TurnstileSecretKey) == "" {
 			return ErrTurnstileNotConfigured
 		}
-		return s.turnstileService.VerifyTokenWithSecret(ctx, providerConfig.TurnstileSecretKey, proof.TurnstileToken, remoteIP)
+		return s.turnstileService.VerifyTokenWithSecretAndAction(ctx, providerConfig.TurnstileSecretKey, proof.TurnstileToken, remoteIP, action)
 	}
 	if required {
 		return ErrTurnstileNotConfigured

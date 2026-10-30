@@ -3,6 +3,7 @@
     v-if="turnstileEnabled && turnstileSiteKey"
     ref="turnstileRef"
     :site-key="turnstileSiteKey"
+    :action="action"
     @verify="(token) => emit('verify', token, '')"
     @expire="emit('expire')"
     @error="emit('error')"
@@ -40,6 +41,7 @@ export interface ActionCaptchaResult {
 
 const props = defineProps<{
   siteKey?: string
+  action?: string
   turnstileEnabled: boolean
   turnstileSiteKey: string
   tencentEnabled: boolean

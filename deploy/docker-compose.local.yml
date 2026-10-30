@@ -28,7 +28,7 @@ services:
   # Sub2API Application
   # ===========================================================================
   sub2api:
-    image: ghcr.io/pengkang0322/sub2api:${SUB2API_PK_VERSION:-latest}
+    image: ghcr.io/pengkang0322/sub2api:${SUB2API_PK_VERSION:?Set an approved PK image version}
     container_name: sub2api
     restart: unless-stopped
     security_opt:
@@ -57,6 +57,9 @@ services:
       - SERVER_HOST=0.0.0.0
       - SERVER_PORT=8080
       - SERVER_MODE=${SERVER_MODE:-release}
+      - UPDATE_PROXY_URL=${UPDATE_PROXY_URL:-}
+      - TURNSTILE_REQUIRED=${TURNSTILE_REQUIRED:-false}
+      - TURNSTILE_EXPECTED_HOSTNAME=${TURNSTILE_EXPECTED_HOSTNAME:-}
       - ENABLE_SERVER_TIMING=${ENABLE_SERVER_TIMING:-false}
       - RUN_MODE=${RUN_MODE:-standard}
       - SIMPLE_MODE_AUTO_CREATE_DEFAULT_GROUPS=${SIMPLE_MODE_AUTO_CREATE_DEFAULT_GROUPS:-}

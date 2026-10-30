@@ -85,6 +85,7 @@
         <div v-if="captchaEnabled">
           <TurnstileWidget
             ref="turnstileRef"
+            action="login"
             :turnstile-enabled="turnstileEnabled"
             :turnstile-site-key="turnstileSiteKey"
             :tencent-enabled="tencentCaptchaEnabled"

@@ -217,7 +217,7 @@ func (h *AuthHandler) SendVerifyCode(c *gin.Context) {
 	}
 
 	proof := captchaProof(req.TurnstileToken, req.TencentCaptchaTicket, req.TencentCaptchaRandstr)
-	if err := h.authService.VerifyCaptcha(c.Request.Context(), proof, ip.GetClientIP(c)); err != nil {
+	if err := h.authService.VerifyCaptchaWithAction(c.Request.Context(), proof, ip.GetClientIP(c), service.CaptchaActionRegister); err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
@@ -244,7 +244,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	}
 
 	proof := captchaProof(req.TurnstileToken, req.TencentCaptchaTicket, req.TencentCaptchaRandstr)
-	if err := h.authService.VerifyCaptcha(c.Request.Context(), proof, ip.GetClientIP(c)); err != nil {
+	if err := h.authService.VerifyCaptchaWithAction(c.Request.Context(), proof, ip.GetClientIP(c), service.CaptchaActionLogin); err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
@@ -609,7 +609,7 @@ func (h *AuthHandler) ForgotPassword(c *gin.Context) {
 	}
 
 	proof := captchaProof(req.TurnstileToken, req.TencentCaptchaTicket, req.TencentCaptchaRandstr)
-	if err := h.authService.VerifyCaptcha(c.Request.Context(), proof, ip.GetClientIP(c)); err != nil {
+	if err := h.authService.VerifyCaptchaWithAction(c.Request.Context(), proof, ip.GetClientIP(c), service.CaptchaActionForgotPassword); err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}

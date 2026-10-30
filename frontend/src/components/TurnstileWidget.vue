@@ -17,6 +17,7 @@ import { useI18n } from 'vue-i18n'
 
 interface TurnstileRenderOptions {
   sitekey: string
+  action?: string
   callback: (token: string) => void
   'expired-callback'?: () => void
   'error-callback'?: () => void
@@ -37,9 +38,70 @@ declare global {
   }
 }
 
+// All widgets on an auth page share one SDK load. Keeping the promise at
+// module scope prevents concurrent components from overwriting the global
+// onTurnstileLoad callback and leaving one widget permanently in loading state.
+let sharedScriptPromise: Promise<void> | null = null
+let sharedScriptLoaded = false
+
+function loadTurnstileScript(): Promise<void> {
+  if (window.turnstile) return Promise.resolve()
+  if (sharedScriptPromise && sharedScriptLoaded) {
+    // Test harnesses and hot reloads may remove the global SDK after the
+    // original script completed. Allow a fresh load in that case.
+    sharedScriptPromise = null
+    sharedScriptLoaded = false
+  }
+  if (sharedScriptPromise) return sharedScriptPromise
+
+  sharedScriptPromise = new Promise<void>((resolve, reject) => {
+    let settled = false
+    const finish = () => {
+      if (settled) return
+      settled = true
+      if (!window.turnstile) {
+        reject(new Error('Turnstile SDK initialized without a global API'))
+        return
+      }
+      sharedScriptLoaded = true
+      resolve()
+    }
+    const fail = () => {
+      if (settled) return
+      settled = true
+      reject(new Error('Failed to load Turnstile script'))
+    }
+
+    const existingScript = document.querySelector<HTMLScriptElement>('script[src*="turnstile"]')
+    if (existingScript) {
+      existingScript.addEventListener('load', finish, { once: true })
+      existingScript.addEventListener('error', fail, { once: true })
+      return
+    }
+
+    const script = document.createElement('script')
+    script.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?onload=onTurnstileLoad'
+    script.async = true
+    script.defer = true
+    // Cloudflare invokes this callback after installing window.turnstile.
+    window.onTurnstileLoad = finish
+    script.addEventListener('load', finish, { once: true })
+    script.addEventListener('error', fail, { once: true })
+    document.head.appendChild(script)
+  })
+
+  sharedScriptPromise = sharedScriptPromise.catch((error) => {
+    sharedScriptPromise = null
+    sharedScriptLoaded = false
+    throw error
+  })
+  return sharedScriptPromise
+}
+
 const props = withDefaults(
   defineProps<{
     siteKey: string
+    action?: string
     theme?: 'light' | 'dark' | 'auto'
     size?: 'normal' | 'compact' | 'flexible'
   }>(),
@@ -60,41 +122,38 @@ const loading = ref(true)
 const containerRef = ref<HTMLElement | null>(null)
 const widgetId = ref<string | null>(null)
 const scriptLoaded = ref(false)
+let disposed = false
 
-const loadScript = (): Promise<void> => {
-  return new Promise((resolve, reject) => {
-    if (window.turnstile) {
-      scriptLoaded.value = true
-      resolve()
-      return
+const destroyWidget = () => {
+  if (window.turnstile && widgetId.value) {
+    try {
+      window.turnstile.remove(widgetId.value)
+    } catch {
+      // Ignore errors when removing
     }
+  }
+  widgetId.value = null
+  if (containerRef.value) containerRef.value.innerHTML = ''
+}
 
-    // Check if script is already loading
-    const existingScript = document.querySelector('script[src*="turnstile"]')
-    if (existingScript) {
-      window.onTurnstileLoad = () => {
-        scriptLoaded.value = true
-        resolve()
-      }
-      return
-    }
+const initialize = async () => {
+  if (!props.siteKey || disposed) {
+    loading.value = false
+    return
+  }
 
-    const script = document.createElement('script')
-    script.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?onload=onTurnstileLoad'
-    script.async = true
-    script.defer = true
-
-    window.onTurnstileLoad = () => {
-      scriptLoaded.value = true
-      resolve()
-    }
-
-    script.onerror = () => {
-      reject(new Error('Failed to load Turnstile script'))
-    }
-
-    document.head.appendChild(script)
-  })
+  loading.value = true
+  try {
+    await loadTurnstileScript()
+    if (disposed || !props.siteKey) return
+    scriptLoaded.value = true
+    renderWidget()
+  } catch (error) {
+    console.error('Failed to initialize Turnstile:', error)
+    if (!disposed) emit('error')
+  } finally {
+    loading.value = false
+  }
 }
 
 const renderWidget = () => {
@@ -102,21 +161,11 @@ const renderWidget = () => {
     return
   }
 
-  // Remove existing widget if any
-  if (widgetId.value) {
-    try {
-      window.turnstile.remove(widgetId.value)
-    } catch {
-      // Ignore errors when removing
-    }
-    widgetId.value = null
-  }
-
-  // Clear container
-  containerRef.value.innerHTML = ''
+  destroyWidget()
 
   widgetId.value = window.turnstile.render(containerRef.value, {
     sitekey: props.siteKey,
+    ...(props.action ? { action: props.action } : {}),
     callback: (token: string) => {
       emit('verify', token)
     },
@@ -140,38 +189,36 @@ const reset = () => {
 // Expose reset method to parent
 defineExpose({ reset })
 
-onMounted(async () => {
-  if (!props.siteKey) {
-    return
-  }
-
-  try {
-    await loadScript()
-    renderWidget()
-  } catch (error) {
-    console.error('Failed to initialize Turnstile:', error)
-    emit('error')
-  } finally {
-    loading.value = false
-  }
-})
+onMounted(initialize)
 
 onUnmounted(() => {
-  if (window.turnstile && widgetId.value) {
-    try {
-      window.turnstile.remove(widgetId.value)
-    } catch {
-      // Ignore errors when removing
-    }
-  }
+  disposed = true
+  destroyWidget()
 })
 
-// Re-render when siteKey changes
+// Load lazily when settings populate the site key after the component mounts.
 watch(
   () => props.siteKey,
   (newKey) => {
-    if (newKey && scriptLoaded.value) {
+    if (newKey && !scriptLoaded.value) {
+      void initialize()
+    } else if (!newKey && scriptLoaded.value) {
+      destroyWidget()
+      scriptLoaded.value = false
+    }
+  }
+)
+
+// Re-render when any widget-defining prop changes. This is required when an
+// auth flow switches between register/login actions without remounting.
+watch(
+  () => [props.action, props.theme, props.size],
+  () => {
+    if (!scriptLoaded.value) return
+    if (props.siteKey) {
       renderWidget()
+    } else {
+      destroyWidget()
     }
   }
 )

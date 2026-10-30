@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
@@ -25,6 +26,7 @@ import (
 var (
 	ErrNoUpdateAvailable         = infraerrors.Conflict("ALREADY_UP_TO_DATE", "no update available; current version is latest")
 	ErrRollbackVersionNotAllowed = infraerrors.BadRequest("ROLLBACK_VERSION_NOT_ALLOWED", "version is not in the allowed rollback list")
+	ErrUpdateNotAllowed          = infraerrors.Forbidden("UPDATE_NOT_ALLOWED", "online update and rollback require a release build")
 )
 
 const (
@@ -44,8 +46,12 @@ const (
 	// Rollback: expose at most the 3 most recent versions older than current
 	maxRollbackVersions = 3
 	// Fetch a few extra releases so filtering (current/newer/prerelease) still leaves enough candidates
-	rollbackFetchPageSize = 15
+	rollbackFetchPageSize = 30
+
+	privateReleaseTagPattern = `^v[0-9]+\.[0-9]+\.[0-9]+-pk\.[0-9]+$`
 )
+
+var privateReleaseTagRE = regexp.MustCompile(privateReleaseTagPattern)
 
 // UpdateCache defines cache operations for update service
 type UpdateCache interface {
@@ -178,6 +184,9 @@ func (a GitHubAsset) downloadURL() string {
 
 // CheckUpdate checks for available updates
 func (s *UpdateService) CheckUpdate(ctx context.Context, force bool) (*UpdateInfo, error) {
+	if s == nil {
+		return nil, fmt.Errorf("update service is unavailable")
+	}
 	// Try cache first
 	if !force {
 		if cached, err := s.getFromCache(ctx); err == nil && cached != nil {
@@ -188,18 +197,17 @@ func (s *UpdateService) CheckUpdate(ctx context.Context, force bool) (*UpdateInf
 	// Fetch from GitHub
 	info, err := s.fetchLatestRelease(ctx)
 	if err != nil {
-		// Return cached on error
-		if cached, cacheErr := s.getFromCache(ctx); cacheErr == nil && cached != nil {
-			cached.Warning = "Using cached data: " + err.Error()
-			return cached, nil
-		}
+		// A failed refresh must not be presented as "up to date" and must
+		// never provide stale assets to PerformUpdate. Keep the current version
+		// for the lightweight version endpoint, while returning the error to
+		// callers that need a reliable latest-release decision.
 		return &UpdateInfo{
 			CurrentVersion: s.currentVersion,
-			LatestVersion:  s.currentVersion,
+			LatestVersion:  "",
 			HasUpdate:      false,
 			Warning:        err.Error(),
 			BuildType:      s.buildType,
-		}, nil
+		}, err
 	}
 
 	// Cache result
@@ -210,6 +218,9 @@ func (s *UpdateService) CheckUpdate(ctx context.Context, force bool) (*UpdateInf
 // PerformUpdate downloads and applies the update
 // Uses atomic file replacement pattern for safe in-place updates
 func (s *UpdateService) PerformUpdate(ctx context.Context) error {
+	if err := s.requireReleaseBuild(); err != nil {
+		return err
+	}
 	info, err := s.CheckUpdate(ctx, true)
 	if err != nil {
 		return err
@@ -304,8 +315,15 @@ func (s *UpdateService) applyReleaseAssets(ctx context.Context, releaseAssets []
 	// If step 2 fails, restore backup
 	backupPath := exePath + ".backup"
 
-	// Remove old backup if exists
-	_ = os.Remove(backupPath)
+	if err := validateExecutableFile(exePath); err != nil {
+		return fmt.Errorf("invalid installed executable: %w", err)
+	}
+
+	// Remove old backup only when it is a regular, non-symlink file. Never
+	// unlink an attacker-controlled directory or follow a symlink at restart.
+	if err := removePreviousBackup(backupPath); err != nil {
+		return err
+	}
 
 	// Step 1: Move current binary to backup
 	if err := os.Rename(exePath, backupPath); err != nil {
@@ -328,14 +346,23 @@ func (s *UpdateService) applyReleaseAssets(ctx context.Context, releaseAssets []
 
 // Rollback restores the previous version
 func (s *UpdateService) Rollback() error {
+	if err := s.requireReleaseBuild(); err != nil {
+		return err
+	}
 	exePath, err := s.executablePath()
 	if err != nil {
 		return err
 	}
 
 	backupFile := exePath + ".backup"
-	if _, err := os.Stat(backupFile); os.IsNotExist(err) {
-		return fmt.Errorf("no backup found")
+	if err := validateExecutableFile(backupFile); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("no backup found")
+		}
+		return fmt.Errorf("invalid backup: %w", err)
+	}
+	if err := validateExecutableFile(exePath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("invalid installed executable: %w", err)
 	}
 
 	// Replace current with backup
@@ -350,6 +377,9 @@ func (s *UpdateService) Rollback() error {
 // strictly older than the current version (the current version itself is excluded),
 // newest first. Draft and prerelease entries are skipped.
 func (s *UpdateService) ListRollbackVersions(ctx context.Context) ([]RollbackVersion, error) {
+	if err := s.requireReleaseBuild(); err != nil {
+		return nil, err
+	}
 	releases, err := s.fetchRollbackCandidates(ctx)
 	if err != nil {
 		return nil, err
@@ -370,8 +400,14 @@ func (s *UpdateService) ListRollbackVersions(ctx context.Context) ([]RollbackVer
 // The target must be one of the versions returned by ListRollbackVersions;
 // anything else (including the current version) is rejected.
 func (s *UpdateService) RollbackToVersion(ctx context.Context, version string) error {
-	target := strings.TrimPrefix(strings.TrimSpace(version), "v")
-	if target == "" {
+	if err := s.requireReleaseBuild(); err != nil {
+		return err
+	}
+	target := version
+	if strings.HasPrefix(target, "v") {
+		target = strings.TrimPrefix(target, "v")
+	}
+	if !isPrivateReleaseVersion(target) {
 		return ErrRollbackVersionNotAllowed
 	}
 
@@ -406,6 +442,9 @@ func (s *UpdateService) RollbackToVersion(ctx context.Context, version string) e
 // fetchRollbackCandidates fetches recent releases and keeps the newest
 // maxRollbackVersions entries strictly older than the current version.
 func (s *UpdateService) fetchRollbackCandidates(ctx context.Context) ([]*GitHubRelease, error) {
+	if s == nil || s.githubClient == nil {
+		return nil, fmt.Errorf("update service is unavailable")
+	}
 	releases, err := s.githubClient.FetchRecentReleases(ctx, githubRepo, rollbackFetchPageSize)
 	if err != nil {
 		return nil, err
@@ -415,6 +454,9 @@ func (s *UpdateService) fetchRollbackCandidates(ctx context.Context) ([]*GitHubR
 	candidates := make([]*GitHubRelease, 0, maxRollbackVersions)
 	for _, r := range releases {
 		if r == nil || r.Draft || r.Prerelease {
+			continue
+		}
+		if !isPrivateReleaseTag(r.TagName) {
 			continue
 		}
 		v := strings.TrimPrefix(r.TagName, "v")
@@ -443,9 +485,15 @@ func (s *UpdateService) fetchRollbackCandidates(ctx context.Context) ([]*GitHubR
 }
 
 func (s *UpdateService) fetchLatestRelease(ctx context.Context) (*UpdateInfo, error) {
+	if s == nil || s.githubClient == nil {
+		return nil, fmt.Errorf("update service is unavailable")
+	}
 	release, err := s.githubClient.FetchLatestRelease(ctx, githubRepo)
 	if err != nil {
 		return nil, err
+	}
+	if release == nil || release.Draft || release.Prerelease || !isPrivateReleaseTag(release.TagName) {
+		return nil, fmt.Errorf("latest release is not an approved private release tag")
 	}
 
 	latestVersion := strings.TrimPrefix(release.TagName, "v")
@@ -654,6 +702,9 @@ func (s *UpdateService) extractBinary(archivePath, destPath string) error {
 }
 
 func (s *UpdateService) getFromCache(ctx context.Context) (*UpdateInfo, error) {
+	if s == nil || s.cache == nil {
+		return nil, fmt.Errorf("update cache is unavailable")
+	}
 	data, err := s.cache.GetUpdateInfo(ctx)
 	if err != nil {
 		return nil, err
@@ -671,6 +722,9 @@ func (s *UpdateService) getFromCache(ctx context.Context) (*UpdateInfo, error) {
 	if cached.Repository != githubRepo {
 		return nil, fmt.Errorf("cached release belongs to a different repository")
 	}
+	if !isPrivateReleaseVersion(cached.Latest) {
+		return nil, fmt.Errorf("cached release is not an approved private release tag")
+	}
 
 	if time.Now().Unix()-cached.Timestamp > updateCacheTTL {
 		return nil, fmt.Errorf("cache expired")
@@ -687,6 +741,9 @@ func (s *UpdateService) getFromCache(ctx context.Context) (*UpdateInfo, error) {
 }
 
 func (s *UpdateService) saveToCache(ctx context.Context, info *UpdateInfo) {
+	if s == nil || s.cache == nil || info == nil || !isPrivateReleaseVersion(info.LatestVersion) {
+		return
+	}
 	cacheData := struct {
 		Repository  string       `json:"repository"`
 		Latest      string       `json:"latest"`
@@ -725,6 +782,82 @@ func compareVersions(current, latest string) int {
 		return 1
 	}
 	return 0
+}
+
+func (s *UpdateService) requireReleaseBuild() error {
+	if s != nil && strings.EqualFold(strings.TrimSpace(s.buildType), "release") {
+		return nil
+	}
+	return ErrUpdateNotAllowed
+}
+
+func isPrivateReleaseTag(tag string) bool {
+	if tag == "" || strings.TrimSpace(tag) != tag || !privateReleaseTagRE.MatchString(tag) {
+		return false
+	}
+	version, revision, ok := strings.Cut(strings.TrimPrefix(tag, "v"), "-pk.")
+	if !ok {
+		return false
+	}
+	for _, component := range strings.Split(version, ".") {
+		// parseVersion uses int components; reject overflow here rather than
+		// allowing an invalid tag to sort as zero.
+		if _, err := strconv.Atoi(component); err != nil {
+			return false
+		}
+	}
+	_, err := strconv.ParseUint(revision, 10, 64)
+	return err == nil
+}
+
+func isPrivateReleaseVersion(version string) bool {
+	if version == "" || strings.TrimSpace(version) != version {
+		return false
+	}
+	if strings.HasPrefix(version, "v") {
+		version = strings.TrimPrefix(version, "v")
+	}
+	if strings.HasPrefix(version, "v") {
+		return false
+	}
+	return isPrivateReleaseTag("v" + version)
+}
+
+func validateExecutableFile(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("symlink is not allowed")
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("path is not a regular file")
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0111 == 0 {
+		return fmt.Errorf("file is not executable")
+	}
+	return nil
+}
+
+func removePreviousBackup(path string) error {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect previous backup: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return fmt.Errorf("previous backup is not a regular file")
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0111 == 0 {
+		return fmt.Errorf("previous backup is not executable")
+	}
+	if err := os.Remove(path); err != nil {
+		return fmt.Errorf("remove previous backup: %w", err)
+	}
+	return nil
 }
 
 // Private revisions share their upstream version, e.g. 0.2.10-pk.1. Preserve

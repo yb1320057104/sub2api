@@ -76,11 +76,11 @@ func TestUpdateServicePerformUpdateNoUpdateReturnsSentinel(t *testing.T) {
 		&updateServiceCacheStub{},
 		&updateServiceGitHubClientStub{
 			release: &GitHubRelease{
-				TagName: "v0.1.132",
-				Name:    "v0.1.132",
+				TagName: "v0.1.132-pk.1",
+				Name:    "v0.1.132-pk.1",
 			},
 		},
-		"0.1.132",
+		"0.1.132-pk.1",
 		"release",
 	)
 
@@ -100,52 +100,106 @@ func newRollbackTestService(current string, releases []*GitHubRelease) *UpdateSe
 	)
 }
 
+func TestUpdateServiceRejectsSourceBuildMutations(t *testing.T) {
+	installPath := filepath.Join(t.TempDir(), "sub2api")
+	releases := []*GitHubRelease{{TagName: "v0.2.19-pk.7"}}
+	svc := newUpdateServiceWithExecutable(
+		&updateServiceCacheStub{},
+		&updateServiceGitHubClientStub{recentReleases: releases},
+		"0.2.19-pk.8",
+		"source",
+		func() (string, error) { return installPath, nil },
+	)
+	require.ErrorIs(t, svc.PerformUpdate(context.Background()), ErrUpdateNotAllowed)
+	_, err := svc.ListRollbackVersions(context.Background())
+	require.ErrorIs(t, err, ErrUpdateNotAllowed)
+	require.ErrorIs(t, svc.RollbackToVersion(context.Background(), "0.2.19-pk.7"), ErrUpdateNotAllowed)
+	require.ErrorIs(t, svc.Rollback(), ErrUpdateNotAllowed)
+}
+
+func TestUpdateServiceRollbackFiltersNonPrivateTags(t *testing.T) {
+	svc := newRollbackTestService("0.2.19-pk.8", []*GitHubRelease{
+		{TagName: "v0.2.19"},
+		{TagName: "0.2.19-pk.7"},
+		{TagName: "v0.2.19-pk.7-rc1"},
+		{TagName: "v0.2.19-pk.7"},
+		{TagName: "v0.2.18-pk.2"},
+	})
+	versions, err := svc.ListRollbackVersions(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, []RollbackVersion{{Version: "0.2.19-pk.7"}, {Version: "0.2.18-pk.2"}}, versions)
+}
+
+func TestUpdateServiceRejectsMalformedLatestTags(t *testing.T) {
+	for _, tag := range []string{
+		"",
+		"v0.2.19-pk.8 ",
+		" v0.2.19-pk.8",
+		"vv0.2.19-pk.8",
+		"v999999999999999999999999.2.19-pk.1",
+		"v0.2.19-pk.18446744073709551616",
+	} {
+		t.Run(fmt.Sprintf("%q", tag), func(t *testing.T) {
+			svc := NewUpdateService(
+				&updateServiceCacheStub{},
+				&updateServiceGitHubClientStub{release: &GitHubRelease{TagName: tag}},
+				"0.2.19-pk.7",
+				"release",
+			)
+			info, err := svc.CheckUpdate(context.Background(), true)
+			require.Error(t, err)
+			require.NotNil(t, info)
+			require.False(t, info.HasUpdate)
+		})
+	}
+}
+
 func TestUpdateServiceListRollbackVersionsFiltersAndCaps(t *testing.T) {
 	releases := []*GitHubRelease{
-		{TagName: "v0.1.148", PublishedAt: "2026-07-09T00:00:00Z"},                       // newer than current: excluded
-		{TagName: "v0.1.147", PublishedAt: "2026-07-08T00:00:00Z"},                       // current: excluded
+		{TagName: "v0.1.148-pk.1", PublishedAt: "2026-07-09T00:00:00Z"},                  // newer than current: excluded
+		{TagName: "v0.1.147-pk.1", PublishedAt: "2026-07-08T00:00:00Z"},                  // current: excluded
 		{TagName: "v0.1.146-rc1", PublishedAt: "2026-07-07T12:00:00Z", Prerelease: true}, // prerelease: excluded
-		{TagName: "v0.1.146", PublishedAt: "2026-07-07T00:00:00Z"},
-		{TagName: "v0.1.145", PublishedAt: "2026-07-06T00:00:00Z", Draft: true}, // draft: excluded
-		{TagName: "v0.1.144", PublishedAt: "2026-07-05T00:00:00Z"},
-		{TagName: "v0.1.144", PublishedAt: "2026-07-05T00:00:00Z"}, // duplicate: excluded
-		{TagName: "v0.1.143", PublishedAt: "2026-07-04T00:00:00Z"},
-		{TagName: "v0.1.142", PublishedAt: "2026-07-03T00:00:00Z"}, // beyond cap of 3: excluded
+		{TagName: "v0.1.146-pk.1", PublishedAt: "2026-07-07T00:00:00Z"},
+		{TagName: "v0.1.145-pk.1", PublishedAt: "2026-07-06T00:00:00Z", Draft: true}, // draft: excluded
+		{TagName: "v0.1.144-pk.1", PublishedAt: "2026-07-05T00:00:00Z"},
+		{TagName: "v0.1.144-pk.1", PublishedAt: "2026-07-05T00:00:00Z"}, // duplicate: excluded
+		{TagName: "v0.1.143-pk.1", PublishedAt: "2026-07-04T00:00:00Z"},
+		{TagName: "v0.1.142-pk.1", PublishedAt: "2026-07-03T00:00:00Z"}, // beyond cap of 3: excluded
 	}
-	svc := newRollbackTestService("0.1.147", releases)
+	svc := newRollbackTestService("0.1.147-pk.1", releases)
 
 	versions, err := svc.ListRollbackVersions(context.Background())
 
 	require.NoError(t, err)
 	require.Len(t, versions, 3)
-	require.Equal(t, "0.1.146", versions[0].Version)
-	require.Equal(t, "0.1.144", versions[1].Version)
-	require.Equal(t, "0.1.143", versions[2].Version)
+	require.Equal(t, "0.1.146-pk.1", versions[0].Version)
+	require.Equal(t, "0.1.144-pk.1", versions[1].Version)
+	require.Equal(t, "0.1.143-pk.1", versions[2].Version)
 }
 
 func TestUpdateServiceListRollbackVersionsSortsUnorderedInput(t *testing.T) {
 	releases := []*GitHubRelease{
-		{TagName: "v0.1.144"},
-		{TagName: "v0.1.146"},
-		{TagName: "v0.1.145"},
+		{TagName: "v0.1.144-pk.1"},
+		{TagName: "v0.1.146-pk.1"},
+		{TagName: "v0.1.145-pk.1"},
 	}
-	svc := newRollbackTestService("0.1.147", releases)
+	svc := newRollbackTestService("0.1.147-pk.1", releases)
 
 	versions, err := svc.ListRollbackVersions(context.Background())
 
 	require.NoError(t, err)
 	require.Len(t, versions, 3)
-	require.Equal(t, "0.1.146", versions[0].Version)
-	require.Equal(t, "0.1.145", versions[1].Version)
-	require.Equal(t, "0.1.144", versions[2].Version)
+	require.Equal(t, "0.1.146-pk.1", versions[0].Version)
+	require.Equal(t, "0.1.145-pk.1", versions[1].Version)
+	require.Equal(t, "0.1.144-pk.1", versions[2].Version)
 }
 
 func TestUpdateServiceListRollbackVersionsEmptyWhenNoneOlder(t *testing.T) {
 	releases := []*GitHubRelease{
-		{TagName: "v0.1.147"},
-		{TagName: "v0.1.148"},
+		{TagName: "v0.1.147-pk.1"},
+		{TagName: "v0.1.148-pk.1"},
 	}
-	svc := newRollbackTestService("0.1.147", releases)
+	svc := newRollbackTestService("0.1.147-pk.1", releases)
 
 	versions, err := svc.ListRollbackVersions(context.Background())
 
@@ -157,7 +211,7 @@ func TestUpdateServiceListRollbackVersionsPropagatesFetchError(t *testing.T) {
 	svc := NewUpdateService(
 		&updateServiceCacheStub{},
 		&updateServiceGitHubClientStub{recentErr: errors.New("github unavailable")},
-		"0.1.147",
+		"0.1.147-pk.1",
 		"release",
 	)
 
@@ -169,23 +223,25 @@ func TestUpdateServiceListRollbackVersionsPropagatesFetchError(t *testing.T) {
 
 func TestUpdateServiceRollbackToVersionRejectsDisallowedTargets(t *testing.T) {
 	releases := []*GitHubRelease{
-		{TagName: "v0.1.148"},
-		{TagName: "v0.1.147"},
-		{TagName: "v0.1.146"},
-		{TagName: "v0.1.145"},
-		{TagName: "v0.1.144"},
-		{TagName: "v0.1.143"},
-		{TagName: "v0.1.142"},
+		{TagName: "v0.1.148-pk.1"},
+		{TagName: "v0.1.147-pk.1"},
+		{TagName: "v0.1.146-pk.1"},
+		{TagName: "v0.1.145-pk.1"},
+		{TagName: "v0.1.144-pk.1"},
+		{TagName: "v0.1.143-pk.1"},
+		{TagName: "v0.1.142-pk.1"},
 	}
-	svc := newRollbackTestService("0.1.147", releases)
+	svc := newRollbackTestService("0.1.147-pk.1", releases)
 
 	for _, target := range []string{
-		"",         // empty
-		"0.1.147",  // current version
-		"v0.1.147", // current version with prefix
-		"0.1.148",  // newer than current
-		"0.1.142",  // older than the 3 most recent
-		"9.9.9",    // nonexistent
+		"",               // empty
+		"0.1.147-pk.1",   // current version
+		"v0.1.147-pk.1",  // current version with prefix
+		"0.1.148-pk.1",   // newer than current
+		"0.1.142-pk.1",   // older than the 3 most recent
+		"9.9.9",          // nonexistent
+		"0.1.146-pk.1 ",  // whitespace is not a formal version
+		"vv0.1.146-pk.1", // duplicate v prefix is not a formal version
 	} {
 		err := svc.RollbackToVersion(context.Background(), target)
 		require.ErrorIs(t, err, ErrRollbackVersionNotAllowed, "target %q should be rejected", target)
@@ -196,12 +252,12 @@ func TestUpdateServiceRollbackToVersionAcceptsVPrefix(t *testing.T) {
 	// No platform asset in the release: the target passes the allowlist check
 	// and fails later at asset lookup, proving the version itself was accepted.
 	releases := []*GitHubRelease{
-		{TagName: "v0.1.147"},
-		{TagName: "v0.1.146"},
+		{TagName: "v0.1.147-pk.1"},
+		{TagName: "v0.1.146-pk.1"},
 	}
-	svc := newRollbackTestService("0.1.147", releases)
+	svc := newRollbackTestService("0.1.147-pk.1", releases)
 
-	err := svc.RollbackToVersion(context.Background(), "v0.1.146")
+	err := svc.RollbackToVersion(context.Background(), "v0.1.146-pk.1")
 
 	require.Error(t, err)
 	require.NotErrorIs(t, err, ErrRollbackVersionNotAllowed)
@@ -218,11 +274,10 @@ func TestUpdateServicePrivateRevisionUpdates(t *testing.T) {
 		{"0.2.10-pk.2", "0.2.10-pk.10", true},
 		{"0.2.10-pk.10", "0.2.10-pk.2", false},
 		{"0.2.10-pk.2", "0.2.10-pk.2", false},
-		{"0.2.10-pk.2", "0.2.10", false},
-		{"0.2.10-pk.99", "0.2.11", true},
-		{"0.2.11", "0.2.10-pk.99", false},
-		{"0.2.10-rc1", "0.2.10", false},
-		{"0.2.10", "0.2.10-rc1", false},
+		{"0.2.10-pk.2", "0.2.10-pk.1", false},
+		{"0.2.10-pk.99", "0.2.11-pk.1", true},
+		{"0.2.11-pk.1", "0.2.10-pk.99", false},
+		{"0.2.10-pk.1", "0.2.10-pk.1", false},
 	} {
 		t.Run(tt.current+"_to_"+tt.latest, func(t *testing.T) {
 			client := &updateServiceGitHubClientStub{release: &GitHubRelease{TagName: "v" + tt.latest}}
@@ -335,12 +390,15 @@ func TestUpdateServicePrivateRepositoryCacheIsolation(t *testing.T) {
 				client := &updateServiceGitHubClientStub{latestErr: errors.New("GitHub unavailable")}
 				svc := NewUpdateService(&updateServiceCacheStub{data: string(data)}, client, "0.2.10-pk.1", "release")
 				info, err := svc.CheckUpdate(context.Background(), force)
-				require.NoError(t, err)
-				if repository == "pengkang0322/sub2api" {
+				if repository == "pengkang0322/sub2api" && !force {
+					require.NoError(t, err)
+					require.NotNil(t, info)
 					require.True(t, info.HasUpdate)
 					require.True(t, info.Cached)
 					require.Equal(t, "0.2.10-pk.2", info.LatestVersion)
 				} else {
+					require.Error(t, err)
+					require.NotNil(t, info)
 					require.False(t, info.HasUpdate)
 					require.False(t, info.Cached)
 					require.Nil(t, info.ReleaseInfo)
@@ -363,6 +421,18 @@ func TestUpdateServicePrivateCacheRoundTrip(t *testing.T) {
 	require.True(t, info.Cached)
 	require.True(t, info.HasUpdate)
 	require.Equal(t, "0.2.10-pk.2", info.LatestVersion)
+	_, err = svc.CheckUpdate(context.Background(), true)
+	require.Error(t, err)
+}
+
+func TestUpdateServiceNilDependenciesDoNotPanic(t *testing.T) {
+	svc := NewUpdateService(nil, nil, "0.2.19-pk.8", "release")
+	info, err := svc.CheckUpdate(context.Background(), true)
+	require.Error(t, err)
+	require.NotNil(t, info)
+	require.Contains(t, info.Warning, "unavailable")
+	_, err = svc.ListRollbackVersions(context.Background())
+	require.Error(t, err)
 }
 
 func TestUpdateServiceRepeatedUpdatesAndRollbacksKeepInstallPath(t *testing.T) {
@@ -440,6 +510,82 @@ func TestUpdateServiceRepeatedUpdatesAndRollbacksKeepInstallPath(t *testing.T) {
 	assertFiles("older pk.2", "updated pk.4")
 	require.NoError(t, svc.Rollback())
 	assertFiles("updated pk.4", "")
+}
+
+func TestUpdateServiceRollbackRestoresBackupWhenCurrentIsMissing(t *testing.T) {
+	installPath := filepath.Join(t.TempDir(), "sub2api")
+	backupPath := installPath + ".backup"
+	require.NoError(t, os.WriteFile(installPath, []byte("current"), 0755))
+	require.NoError(t, os.WriteFile(backupPath, []byte("previous"), 0755))
+	svc := newUpdateServiceWithExecutable(
+		&updateServiceCacheStub{},
+		&updateServiceGitHubClientStub{},
+		"0.2.19-pk.8",
+		"release",
+		func() (string, error) { return installPath, nil },
+	)
+	require.NoError(t, os.Remove(installPath))
+
+	require.NoError(t, svc.Rollback())
+	data, err := os.ReadFile(installPath)
+	require.NoError(t, err)
+	require.Equal(t, "previous", string(data))
+	require.NoFileExists(t, backupPath)
+}
+
+func TestUpdateServiceRollbackRejectsUnsafeBackupsWithoutChangingInstall(t *testing.T) {
+	for _, kind := range []string{"directory", "non-executable"} {
+		t.Run(kind, func(t *testing.T) {
+			if kind == "non-executable" && runtime.GOOS == "windows" {
+				t.Skip("Windows executable bits are not represented by file mode")
+			}
+			installPath := filepath.Join(t.TempDir(), "sub2api")
+			require.NoError(t, os.WriteFile(installPath, []byte("current"), 0755))
+			backupPath := installPath + ".backup"
+			if kind == "directory" {
+				require.NoError(t, os.Mkdir(backupPath, 0755))
+			} else {
+				require.NoError(t, os.WriteFile(backupPath, []byte("unsafe"), 0600))
+			}
+			svc := newUpdateServiceWithExecutable(
+				&updateServiceCacheStub{},
+				&updateServiceGitHubClientStub{},
+				"0.2.19-pk.8",
+				"release",
+				func() (string, error) { return installPath, nil },
+			)
+
+			err := svc.Rollback()
+			require.Error(t, err)
+			data, readErr := os.ReadFile(installPath)
+			require.NoError(t, readErr)
+			require.Equal(t, "current", string(data))
+			if kind == "directory" {
+				info, statErr := os.Stat(backupPath)
+				require.NoError(t, statErr)
+				require.True(t, info.IsDir())
+			} else {
+				data, readErr = os.ReadFile(backupPath)
+				require.NoError(t, readErr)
+				require.Equal(t, "unsafe", string(data))
+			}
+		})
+	}
+}
+
+func TestUpdateServiceRemovePreviousBackupRejectsNonExecutableAndPreservesIt(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows executable bits are not represented by file mode")
+	}
+	backupPath := filepath.Join(t.TempDir(), "sub2api.backup")
+	require.NoError(t, os.WriteFile(backupPath, []byte("backup"), 0600))
+
+	err := removePreviousBackup(backupPath)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "not executable")
+	data, readErr := os.ReadFile(backupPath)
+	require.NoError(t, readErr)
+	require.Equal(t, "backup", string(data))
 }
 
 func TestUpdateServiceExecutableResolutionFailurePreventsReplacement(t *testing.T) {

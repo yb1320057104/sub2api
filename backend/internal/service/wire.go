@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
@@ -48,6 +50,26 @@ func ProvidePricingService(cfg *config.Config, remoteClient PricingRemoteClient)
 // ProvideUpdateService creates UpdateService with BuildInfo
 func ProvideUpdateService(cache UpdateCache, githubClient GitHubReleaseClient, buildInfo BuildInfo) *UpdateService {
 	return NewUpdateService(cache, githubClient, buildInfo.Version, buildInfo.BuildType)
+}
+
+// ProvideTurnstileService keeps deployment-level hostname policy in server
+// configuration while site/secret keys remain in the settings store.
+func ProvideTurnstileService(settingService *SettingService, verifier TurnstileVerifier, cfg *config.Config) *TurnstileService {
+	if cfg == nil {
+		return NewTurnstileService(settingService, verifier)
+	}
+	turnstileCfg := cfg.Turnstile
+	// Keep the deployment-level hostname policy explicit when possible. For
+	// existing deployments that only set server.frontend_url, derive the
+	// hostname from that validated absolute URL. Never use the request Host
+	// header: it is attacker-controlled at this boundary.
+	if strings.TrimSpace(turnstileCfg.ExpectedHostname) == "" {
+		if frontendURL, err := url.Parse(strings.TrimSpace(cfg.Server.FrontendURL)); err == nil &&
+			(frontendURL.Scheme == "http" || frontendURL.Scheme == "https") && frontendURL.Hostname() != "" {
+			turnstileCfg.ExpectedHostname = frontendURL.Hostname()
+		}
+	}
+	return NewTurnstileServiceWithConfig(settingService, verifier, turnstileCfg)
 }
 
 // ProvideEmailQueueService creates EmailQueueService with default worker count
@@ -939,7 +961,7 @@ var ProviderSet = wire.NewSet(
 	NewEmailService,
 	NewNotificationEmailService,
 	ProvideEmailQueueService,
-	NewTurnstileService,
+	ProvideTurnstileService,
 	NewTencentCaptchaService,
 	NewAliyunCaptchaService,
 	NewSubscriptionService,

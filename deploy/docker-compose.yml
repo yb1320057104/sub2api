@@ -20,7 +20,7 @@ services:
   # Sub2API Application
   # ===========================================================================
   sub2api:
-    image: ghcr.io/pengkang0322/sub2api:${SUB2API_PK_VERSION:-latest}
+    image: ghcr.io/pengkang0322/sub2api:${SUB2API_PK_VERSION:?Set an approved PK image version}
     container_name: sub2api
     restart: unless-stopped
     security_opt:
@@ -58,7 +58,10 @@ services:
       - SIMPLE_MODE_AUTO_CREATE_DEFAULT_GROUPS=${SIMPLE_MODE_AUTO_CREATE_DEFAULT_GROUPS:-}
       - SIMPLE_MODE_KEY_RATE_LIMIT_ENABLED=${SIMPLE_MODE_KEY_RATE_LIMIT_ENABLED:-false}
       - UPDATE_GITHUB_TOKEN=${UPDATE_GITHUB_TOKEN:?Set a token with read access to pengkang0322/sub2api}
+      - UPDATE_PROXY_URL=${UPDATE_PROXY_URL:-}
       - SUB2API_DOCKER_SELF_UPDATE=true
+      - TURNSTILE_REQUIRED=${TURNSTILE_REQUIRED:-false}
+      - TURNSTILE_EXPECTED_HOSTNAME=${TURNSTILE_EXPECTED_HOSTNAME:-}
       - ALIPAY_MOBILE_PRECREATE_DEEP_LINK=${ALIPAY_MOBILE_PRECREATE_DEEP_LINK:-}
 
       # =======================================================================

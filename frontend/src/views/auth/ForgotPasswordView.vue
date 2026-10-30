@@ -70,6 +70,7 @@
         <div v-if="captchaEnabled">
           <TurnstileWidget
             ref="turnstileRef"
+            action="forgot_password"
             :turnstile-enabled="turnstileEnabled"
             :turnstile-site-key="turnstileSiteKey"
             :tencent-enabled="tencentCaptchaEnabled"

@@ -1,9 +1,11 @@
 package repository
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -14,6 +16,8 @@ import (
 )
 
 const turnstileVerifyURL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+
+const maxTurnstileResponseBytes = 1 << 20
 
 type turnstileVerifier struct {
 	httpClient *http.Client
@@ -53,10 +57,32 @@ func (v *turnstileVerifier) VerifyToken(ctx context.Context, secretKey, token, r
 		return nil, fmt.Errorf("send request: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("turnstile verification returned HTTP %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxTurnstileResponseBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read response: %w", err)
+	}
+	if len(body) > maxTurnstileResponseBytes {
+		return nil, fmt.Errorf("turnstile verification response exceeds %d bytes", maxTurnstileResponseBytes)
+	}
 
 	var result service.TurnstileVerifyResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	if err := decoder.Decode(&result); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	// Decode once more to reject a valid JSON object followed by arbitrary
+	// trailing data. A bounded reader alone would otherwise accept a valid
+	// prefix and silently ignore an oversized/malformed suffix.
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return nil, fmt.Errorf("decode response: trailing JSON data")
+		}
+		return nil, fmt.Errorf("decode response: trailing data: %w", err)
 	}
 
 	return &result, nil

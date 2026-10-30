@@ -120,6 +120,35 @@ func (s *TurnstileServiceSuite) TestVerifyToken_InvalidJSON() {
 	require.Error(s.T(), err, "expected error for invalid JSON response")
 }
 
+func (s *TurnstileServiceSuite) TestVerifyToken_HTTPErrorStatus() {
+	s.setupTransport(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "temporarily unavailable", http.StatusBadGateway)
+	}))
+
+	_, err := s.verifier.VerifyToken(s.ctx, "sk", "token", "1.1.1.1")
+	require.Error(s.T(), err, "expected error for non-success HTTP status")
+}
+
+func (s *TurnstileServiceSuite) TestVerifyToken_RejectsValidPrefixWithOversizedTail() {
+	s.setupTransport(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"success":true}`+strings.Repeat(" ", maxTurnstileResponseBytes))
+	}))
+
+	_, err := s.verifier.VerifyToken(s.ctx, "sk", "token", "1.1.1.1")
+	require.Error(s.T(), err, "valid JSON prefix with oversized trailing data must fail closed")
+}
+
+func (s *TurnstileServiceSuite) TestVerifyToken_RejectsTrailingJSONData() {
+	s.setupTransport(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"success":true}{"success":true}`)
+	}))
+
+	_, err := s.verifier.VerifyToken(s.ctx, "sk", "token", "1.1.1.1")
+	require.Error(s.T(), err, "trailing JSON data must fail closed")
+}
+
 func (s *TurnstileServiceSuite) TestVerifyToken_SuccessFalse() {
 	s.setupTransport(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

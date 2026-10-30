@@ -198,7 +198,7 @@ docker compose down -v
 | `ADMIN_PASSWORD` | No | *(auto-generated)* | Admin password (8-72 bytes) |
 | `TZ` | No | `Asia/Shanghai` | Timezone |
 | `UPDATE_GITHUB_TOKEN` | Yes | *(empty)* | Token with Contents: read on `pengkang0322/sub2api`, used for private release checks and asset downloads. |
-| `SUB2API_PK_VERSION` | No | `latest` | Private GHCR tag; select the backup-compatible approved version for recovery. |
+| `SUB2API_PK_VERSION` | **Yes** | *(empty)* | Private GHCR tag; select the backup-compatible approved version explicitly. `latest` is not accepted by the PK compose files. |
 | `GEMINI_OAUTH_CLIENT_ID` | No | *(builtin)* | Google OAuth client ID (Gemini OAuth). Leave empty to use the built-in Gemini CLI client. |
 | `GEMINI_OAUTH_CLIENT_SECRET` | No | *(builtin)* | Google OAuth client secret (Gemini OAuth). Leave empty to use the built-in Gemini CLI client. |
 | `GEMINI_OAUTH_SCOPES` | No | *(default)* | OAuth scopes (Gemini OAuth) |

@@ -15,6 +15,7 @@ type turnstileVerifierSpy struct {
 	lastToken string
 	result    *TurnstileVerifyResponse
 	err       error
+	returnNil bool
 }
 
 func (s *turnstileVerifierSpy) VerifyToken(_ context.Context, _ string, token, _ string) (*TurnstileVerifyResponse, error) {
@@ -23,10 +24,13 @@ func (s *turnstileVerifierSpy) VerifyToken(_ context.Context, _ string, token, _
 	if s.err != nil {
 		return nil, s.err
 	}
+	if s.returnNil {
+		return nil, nil
+	}
 	if s.result != nil {
 		return s.result, nil
 	}
-	return &TurnstileVerifyResponse{Success: true}, nil
+	return &TurnstileVerifyResponse{Success: true, Hostname: "example.com", Action: CaptchaActionRegister}, nil
 }
 
 func newAuthServiceForRegisterTurnstileTest(settings map[string]string, verifier TurnstileVerifier) *AuthService {
@@ -35,12 +39,13 @@ func newAuthServiceForRegisterTurnstileTest(settings map[string]string, verifier
 			Mode: "release",
 		},
 		Turnstile: config.TurnstileConfig{
-			Required: true,
+			Required:         true,
+			ExpectedHostname: "example.com",
 		},
 	}
 
 	settingService := NewSettingService(&settingRepoStub{values: settings}, cfg)
-	turnstileService := NewTurnstileService(settingService, verifier)
+	turnstileService := NewTurnstileServiceWithConfig(settingService, verifier, cfg.Turnstile)
 
 	return NewAuthService(
 		nil, // entClient
@@ -97,4 +102,55 @@ func TestAuthService_VerifyTurnstileForRegister_NoSkipWhenEmailVerifyDisabled(t 
 	require.NoError(t, err)
 	require.Equal(t, 1, verifier.called)
 	require.Equal(t, "turnstile-token", verifier.lastToken)
+}
+
+func TestTurnstileServiceVerifiesHostnameAndAction(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		hostname string
+		action   string
+		wantErr  bool
+	}{
+		{name: "matching", hostname: "example.com", action: CaptchaActionLogin},
+		{name: "normalized hostname", hostname: "EXAMPLE.COM.", action: CaptchaActionLogin},
+		{name: "missing hostname", action: CaptchaActionLogin, wantErr: true},
+		{name: "wrong hostname", hostname: "other.example.com", action: CaptchaActionLogin, wantErr: true},
+		{name: "wrong action", hostname: "example.com", action: CaptchaActionRegister, wantErr: true},
+		{name: "missing action", hostname: "example.com", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			verifier := &turnstileVerifierSpy{result: &TurnstileVerifyResponse{Success: true, Hostname: tc.hostname, Action: tc.action}}
+			svc := NewTurnstileServiceWithConfig(nil, verifier, config.TurnstileConfig{ExpectedHostname: "example.com"})
+			err := svc.VerifyTokenWithSecretAndAction(context.Background(), "secret", "token", "127.0.0.1", CaptchaActionLogin)
+			if tc.wantErr {
+				require.ErrorIs(t, err, ErrTurnstileVerificationFailed)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestTurnstileServiceActionRequiresHostnameConfiguration(t *testing.T) {
+	svc := NewTurnstileService(nil, &turnstileVerifierSpy{})
+	require.ErrorIs(t, svc.VerifyTokenWithSecretAndAction(context.Background(), "secret", "token", "127.0.0.1", CaptchaActionLogin), ErrTurnstileNotConfigured)
+}
+
+func TestTurnstileServiceRejectsNilProviderResult(t *testing.T) {
+	svc := NewTurnstileServiceWithConfig(nil, &turnstileVerifierSpy{returnNil: true}, config.TurnstileConfig{ExpectedHostname: "example.com"})
+	require.ErrorIs(t, svc.VerifyTokenWithSecretAndAction(context.Background(), "secret", "token", "127.0.0.1", CaptchaActionLogin), ErrTurnstileVerificationFailed)
+}
+
+func TestProvideTurnstileServiceFallsBackToFrontendURLHostname(t *testing.T) {
+	verifier := &turnstileVerifierSpy{result: &TurnstileVerifyResponse{
+		Success:  true,
+		Hostname: "EXAMPLE.COM.",
+		Action:   CaptchaActionLogin,
+	}}
+	cfg := &config.Config{Server: config.ServerConfig{FrontendURL: "https://example.com/auth"}}
+	svc := ProvideTurnstileService(nil, verifier, cfg)
+
+	require.NoError(t, svc.VerifyTokenWithSecretAndAction(
+		context.Background(), "secret", "token", "127.0.0.1", CaptchaActionLogin,
+	))
 }

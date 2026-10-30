@@ -70,6 +70,7 @@
         <div v-if="actionCaptchaEnabled || (turnstileEnabled && showResendTurnstile)">
           <TurnstileWidget
             ref="turnstileRef"
+            action="register"
             :site-key="turnstileSiteKey"
             :turnstile-enabled="turnstileEnabled"
             :turnstile-site-key="turnstileSiteKey"
@@ -89,6 +90,7 @@
         <div v-if="pendingOAuthCreateCaptchaEnabled" class="space-y-2">
           <TurnstileWidget
             ref="createAccountTurnstileRef"
+            action="register"
             :site-key="turnstileSiteKey"
             :turnstile-enabled="turnstileEnabled"
             :turnstile-site-key="turnstileSiteKey"

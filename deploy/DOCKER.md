@@ -54,7 +54,7 @@ Docker restores existing containers after a host restart.
 
 | Variable | Description | Required | Default |
 |----------|-------------|----------|---------|
-| `SUB2API_PK_VERSION` | Private image tag; pin an approved version for recovery | Yes for PK overlay | `latest` in full templates |
+| `SUB2API_PK_VERSION` | Private image tag; pin an approved version for recovery | Yes | *(empty; must be selected explicitly)* |
 | `UPDATE_GITHUB_TOKEN` | Private repository token with Contents: read | Yes | - |
 | `SUB2API_DOCKER_SELF_UPDATE` | Persist web updates under `/app/data/bin` | Yes | `true` in PK images/templates |
 | `DATABASE_*`, `REDIS_*` | Existing database and Redis settings | Yes | See `.env.example` |
@@ -68,7 +68,6 @@ Current PK releases do not publish `linux/arm64`. Apple container startup is dis
 
 ## Tags
 
-- `latest` - Latest successfully published PK release
 - `x.y.z-pk.N` - Specific private release, for example `0.2.10-pk.1`
 
 ## Links

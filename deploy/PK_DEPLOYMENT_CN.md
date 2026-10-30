@@ -61,7 +61,7 @@ nano .env
 
 | 配置 | 设置 |
 |---|---|
-| `SUB2API_PK_VERSION` | `0.2.10-pk.7`（镜像标签不带开头的 `v`） |
+| `SUB2API_PK_VERSION` | 已验收的私库正式标签，例如 `0.2.19-pk.9`（镜像标签不带开头的 `v`；禁止使用 `latest`） |
 | `UPDATE_GITHUB_TOKEN` | 上述私库只读 token |
 | `POSTGRES_PASSWORD` | 新的独立随机密码，替换示例值 |
 | `REDIS_PASSWORD` | 新的独立随机密码 |

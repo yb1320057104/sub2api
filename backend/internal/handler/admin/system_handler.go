@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -62,7 +63,14 @@ func NewSystemHandler(updateSvc systemUpdateService, lockSvc *service.SystemOper
 // GetVersion returns the current version
 // GET /api/v1/admin/system/version
 func (h *SystemHandler) GetVersion(c *gin.Context) {
-	info, _ := h.updateSvc.CheckUpdate(c.Request.Context(), false)
+	info, err := h.updateSvc.CheckUpdate(c.Request.Context(), false)
+	if info == nil {
+		if err == nil {
+			err = errors.New("version information is unavailable")
+		}
+		response.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
 	response.Success(c, gin.H{
 		"version": info.CurrentVersion,
 	})
@@ -150,10 +158,14 @@ func (h *SystemHandler) Rollback(c *gin.Context) {
 	var req struct {
 		Version string `json:"version"`
 	}
-	if c.Request.Body != nil && c.Request.ContentLength > 0 {
+	if c.Request.Body != nil && c.Request.ContentLength != 0 {
 		if err := c.ShouldBindJSON(&req); err != nil {
-			response.Error(c, http.StatusBadRequest, "invalid request body")
-			return
+			// An empty chunked request has an unknown ContentLength but is still
+			// equivalent to the local-backup rollback form.
+			if !errors.Is(err, io.EOF) {
+				response.Error(c, http.StatusBadRequest, "invalid request body")
+				return
+			}
 		}
 	}
 	targetVersion := strings.TrimSpace(req.Version)

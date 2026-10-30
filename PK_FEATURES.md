@@ -2,7 +2,11 @@
 
 - 2026-10-31 v0.2.19-pk.9：新增 PK-036 账号授权与巡检；扩展 PK-019/031/035/021。原生并发授权链接、独立代理预检、加密历史、3/10分钟 cron、可配重授权错误码、实时账号名单、补全后等下轮。新增五张隔离表和 Chromium 镜像依赖。仅静态核对，未运行构建/测试或真实接口，未操作服务器。
 
+- 2026-10-31 v0.2.19-pk.12：基于 pk.11 继续沿用浏览器网页更新资源、PK-036 账号授权/巡检与 PK-032 空号池行为；扩展 PK-013～017 的私库正式版本检测/回退边界和 Cloudflare Turnstile hostname/action 校验、上游 fail-closed、部署环境配置。无新增 ID，未运行本地/服务器构建或测试。
+
 - 2026-10-30 v0.2.19-pk.8：沿用 PK-031/035/021；雷达标题单行省略、无整条白底的圆角分页、不合格底色进一步弱化为 #fffafa。仅雷达展示层与维护文档调整；未运行构建/测试，用户自行打包更新。
+
+- 2026-10-31 v0.2.19-pk.10：沿用 PK-013～017、PK-021 及既有认证验证码行为；在线更新/回退仅允许 release 构建和私库正式 `vX.Y.Z-pk.N` 标签，缓存同样拒绝其他来源，backup 回退校验普通可执行文件并修复 chunked 空请求判定。Turnstile 增加服务端 expected hostname、登录/注册/验证码/找回密码 action 绑定、上游非 2xx/nil 响应 fail-closed 和前端 action 传递；site/secret 继续保存在设置库，不复制 SN-team 密钥。未新增 ID。
 
 - 2026-10-30 v0.2.19-pk.7：沿用 PK-031/035/021；雷达卡片标题14px、正文12px、辅助信息至少11px，桌面每行4张；去掉顶部状态条，不合格整卡浅红背景，含深色适配。仅页面样式及维护文档调整；未运行构建/测试，用户自行打包更新。
 
@@ -287,7 +291,7 @@
 
 - 页面保留“版本号 + PK出版”。机器版本采用 `上游版本-pk.N`，Git 标签可带 `v`，镜像标签不带 `v`；中文不进入机器版本号。
 - 更新判断和回退排序按修订数字比较，`pk.10` 大于 `pk.2`；不能仅比较上游版本或按字典序排序。
-- 保留当前回退过滤/授权范围：读取最近15个 Release，过滤草稿、预发布、重复项及不旧于当前的版本，降序最多3个；远程回退目标必须在允许列表中，支持可选 `v` 前缀。这不是完整 SemVer 实现。
+- 回退只接受私库正式 `vX.Y.Z-pk.N` 标签，读取最近30个 Release 后过滤草稿、预发布、重复项及不旧于当前的版本，降序最多3个；远程回退目标必须在允许列表中，支持可选 `v` 前缀。在线更新、远程回退和本地 backup 回退均要求 release 构建；source 构建即使直接调用 API 也会拒绝。这不是完整 SemVer 实现。
 - 入口：`frontend/src/components/common/VersionBadge.vue`、中英版本文案、`backend/internal/service/update_service.go`。
 - 验证：`TestUpdateServicePrivateRevisionUpdates`、`TestUpdateServicePrivateRevisionRollbackOrder`。其他模块同名版本比较测试不能代替这两个更新器场景。
 
@@ -299,7 +303,7 @@
 
 - 源码、Release、更新、网页回退和恢复固定使用 `pengkang0322/sub2api`；镜像为私有 `ghcr.io/pengkang0322/sub2api`，不可访问时不回退到官方来源。
 - 运行时 `UPDATE_GITHUB_TOKEN` 读取私库 Release 和资产；宿主机 GHCR 登录使用独立的包读取授权。开发者宽权限 token 不复制到生产，不进入 Git/日志。
-- 更新缓存带仓库标识；旧官方缓存不得变成 PK 更新来源。
+- 更新缓存带仓库标识并校验正式 PK 版本；旧官方缓存、裸版本和其他后缀不得变成 PK 更新来源。
 - 通用 GitHub 元数据客户端还服务于 Codex/Claude 版本同步，不能将所有元数据查询误锁为本私库；私库限制针对本应用升级/回退资产。
 - 入口：`backend/internal/service/update_service.go`、`backend/internal/repository/github_release_service.go`、`VersionBadge.vue`、各正式 Compose、`.env` 示例、安装/恢复文档。
 - 验证：`TestUpdateServicePrivateRepositoryCacheIsolation`、`PrivateCacheRoundTrip` 和 GitHub 客户端授权用例；操作前分别核对仓库与镜像私有状态。
@@ -472,6 +476,8 @@
 2026-10-30 `v0.2.19-pk.2`：记录用户要求不再把实际部署身份写入源码、文档或 skill；约束入口和仓库/已安装维护 skill 同步。使用 Git 忽略的本机受限配置及通用运维参数，保留固定私库来源与不可覆盖正式标签规则。无新增 ID，未运行构建或测试。
 
 2026-10-30 `v0.2.19-pk.3`：同步用户新增的 Jenkins `REINSTALL_NODE_MODULES` 可选重装规则。默认 `否`，显式 `是` 才在本次构建目录删除前端依赖及锁文件后重新解析安装；原源码与实际构建依赖分别留存验证。仅此显式授权覆盖默认 frozen-lockfile 安装要求，不改变正式标签交接、旧封存包验证或用户手动触发 Jenkins 的边界；具体行为登记于 PK-017，无新增 ID。
+
+2026-10-31 `v0.2.19-pk.12`：扩展既有认证与 PK-013～015 行为，无新增 ID。Turnstile 的 site/secret 仍由管理员设置并保存在数据库，部署配置新增仅服务端使用的 `turnstile.expected_hostname`；Cloudflare 返回的 hostname 必须精确匹配，登录、注册、发送验证码、找回密码及 pending OAuth 复用对应 action，非 2xx/nil 响应 fail-closed。前端只发送公开 site key 和 action，SN-team 的 `team.sayt.cloud` key/secret 不复用到其他域名。
 
 ## PK-022
 

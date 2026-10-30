@@ -8,6 +8,7 @@ vi.mock('vue-i18n', () => ({
 
 const scriptSelector = 'script[src*="challenges.cloudflare.com/turnstile"]'
 let wrapper: VueWrapper | undefined
+const extraWrappers: VueWrapper[] = []
 
 function installSDK() {
   const render = vi.fn<NonNullable<typeof window.turnstile>['render']>(() => 'widget-1')
@@ -18,6 +19,7 @@ function installSDK() {
 afterEach(() => {
   wrapper?.unmount()
   wrapper = undefined
+  extraWrappers.splice(0).forEach((item) => item.unmount())
   delete window.turnstile
   delete window.onTurnstileLoad
   document.querySelectorAll(scriptSelector).forEach((script) => script.remove())
@@ -52,6 +54,39 @@ describe('TurnstileWidget', () => {
 
     render.mock.calls[0]![1].callback('verified-token')
     expect(wrapper.emitted('verify')).toEqual([['verified-token']])
+  })
+
+  it('forwards action and re-renders when widget props change', async () => {
+    const render = installSDK()
+    wrapper = mount(TurnstileWidget, { props: { siteKey: 'site-key', action: 'register' } })
+    await flushPromises()
+
+    expect(render).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ sitekey: 'site-key', action: 'register' })
+    )
+    await wrapper.setProps({ action: 'login' })
+    expect(render).toHaveBeenCalledTimes(2)
+    expect(render.mock.calls[1]![1]).toEqual(expect.objectContaining({ action: 'login' }))
+  })
+
+  it('loads the SDK when a site key arrives after mount', async () => {
+    wrapper = mount(TurnstileWidget, { props: { siteKey: '' } })
+    const render = installSDK()
+    await wrapper.setProps({ siteKey: 'site-key' })
+    await flushPromises()
+
+    expect(render).toHaveBeenCalledOnce()
+  })
+
+  it('shares one SDK load across concurrent widgets', async () => {
+    wrapper = mount(TurnstileWidget, { props: { siteKey: 'first-key', action: 'register' } })
+    extraWrappers.push(mount(TurnstileWidget, { props: { siteKey: 'second-key', action: 'register' } }))
+    const render = installSDK()
+    window.onTurnstileLoad?.()
+    await flushPromises()
+
+    expect(render).toHaveBeenCalledTimes(2)
   })
 
   it('ends loading and reports a script load failure', async () => {

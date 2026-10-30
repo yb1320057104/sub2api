@@ -19,6 +19,7 @@
     <div v-if="captchaEnabled" class="space-y-2">
       <TurnstileWidget
         ref="turnstileRef"
+        action="register"
         :site-key="turnstileSiteKey"
         :turnstile-enabled="turnstileEnabled"
         :turnstile-site-key="turnstileSiteKey"

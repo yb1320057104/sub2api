@@ -1707,7 +1707,8 @@ type TotpConfig struct {
 }
 
 type TurnstileConfig struct {
-	Required bool `mapstructure:"required"`
+	Required         bool   `mapstructure:"required"`
+	ExpectedHostname string `mapstructure:"expected_hostname"`
 }
 
 type DefaultConfig struct {
@@ -2182,6 +2183,7 @@ func setDefaults() {
 
 	// Turnstile
 	viper.SetDefault("turnstile.required", false)
+	viper.SetDefault("turnstile.expected_hostname", "")
 
 	// LinuxDo Connect OAuth 登录
 	viper.SetDefault("linuxdo_connect.enabled", false)

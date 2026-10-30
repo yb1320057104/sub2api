@@ -1193,6 +1193,10 @@ turnstile:
   # Require Turnstile in release mode (when enabled, login/register will fail if not configured)
   # 在 release 模式下要求 Turnstile 验证（启用后，若未配置则登录/注册会失败）
   required: false
+  # Expected hostname returned by Cloudflare, for example team.sayt.cloud.
+  # Keep this server-side value aligned with the hostname allowed by the Turnstile widget.
+  # Cloudflare 返回的 hostname 必须精确匹配此值；仅填写实际前端域名，不要填写 SN-team 的域名或密钥。
+  expected_hostname: ""
 
 # =============================================================================
 # Gemini OAuth (Required for Gemini accounts)

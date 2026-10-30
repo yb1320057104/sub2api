@@ -7,3 +7,6 @@ services:
     environment:
       SUB2API_DOCKER_SELF_UPDATE: "true"
       UPDATE_GITHUB_TOKEN: ${UPDATE_GITHUB_TOKEN:?Set a token with read access to this private repository}
+      UPDATE_PROXY_URL: ${UPDATE_PROXY_URL:-}
+      TURNSTILE_REQUIRED: ${TURNSTILE_REQUIRED:-false}
+      TURNSTILE_EXPECTED_HOSTNAME: ${TURNSTILE_EXPECTED_HOSTNAME:-}

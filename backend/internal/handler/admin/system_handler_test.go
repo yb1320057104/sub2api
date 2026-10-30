@@ -262,6 +262,45 @@ func TestSystemHandlerRollbackWithVersionCallsRollbackToVersion(t *testing.T) {
 	require.Equal(t, "Rollback completed. Please restart the service.", body.Data.Message)
 }
 
+func TestSystemHandlerRollbackChunkedJSONCallsVersionedRollback(t *testing.T) {
+	updateSvc := &systemHandlerUpdateServiceStub{}
+	repo := newMemoryIdempotencyRepoStub()
+	router := newSystemHandlerTestRouter(t, updateSvc, repo)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/system/rollback",
+		strings.NewReader(`{"version":"0.1.146-pk.1"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.ContentLength = -1
+	req.Header.Set("Transfer-Encoding", "chunked")
+	req.Header.Set("Idempotency-Key", "chunked-rollback")
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, 0, updateSvc.rollbackCall)
+	require.Equal(t, 1, updateSvc.rollbackToCall)
+	require.Equal(t, []string{"0.1.146-pk.1"}, updateSvc.rollbackToVersions)
+}
+
+func TestSystemHandlerRollbackChunkedInvalidJSONDoesNotUseLocalBackup(t *testing.T) {
+	updateSvc := &systemHandlerUpdateServiceStub{}
+	repo := newMemoryIdempotencyRepoStub()
+	router := newSystemHandlerTestRouter(t, updateSvc, repo)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/system/rollback",
+		strings.NewReader(`{"version":`))
+	req.Header.Set("Content-Type", "application/json")
+	req.ContentLength = -1
+	req.Header.Set("Transfer-Encoding", "chunked")
+	req.Header.Set("Idempotency-Key", "chunked-invalid-rollback")
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Equal(t, 0, updateSvc.rollbackCall)
+	require.Equal(t, 0, updateSvc.rollbackToCall)
+}
+
 func TestSystemHandlerRollbackWithDisallowedVersionReturnsBadRequest(t *testing.T) {
 	updateSvc := &systemHandlerUpdateServiceStub{
 		rollbackToErr: service.ErrRollbackVersionNotAllowed,
