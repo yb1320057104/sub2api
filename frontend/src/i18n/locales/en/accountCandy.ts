@@ -19,7 +19,7 @@ export default {
     title: 'Account candy test',
     settings: 'Candy test settings',
     description: 'Ask each account the same candy question directly. The expected answer is always 21.',
-    supported: 'Available for OpenAI accounts. Manual tests are always available. Scheduled tests check active accounts and skip accounts already in the destination group.',
+    supported: 'Available for OpenAI accounts, independently of group observation. Enabling and saving starts a first round immediately, then repeats at this interval. Saving enabled settings also reschedules observation immediately. Manual tests remain available; scheduled tests skip inactive accounts and accounts already in the destination group.',
     enabled: 'Enable scheduled account tests',
     interval: 'Test interval (minutes)',
     model: 'Test model',

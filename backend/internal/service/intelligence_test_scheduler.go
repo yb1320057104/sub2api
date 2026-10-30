@@ -24,6 +24,7 @@ func (s *IntelligenceTestService) loop(ctx context.Context, done chan struct{}) 
 	case <-ctx.Done():
 		return
 	case <-timer.C:
+	case <-s.wake:
 	}
 	for {
 		if ctx.Err() != nil {
