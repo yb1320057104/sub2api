@@ -44,7 +44,8 @@ def require(condition, message):
 def declaration(data):
     version = data.get("version", "")
     formal = re.fullmatch(r"([0-9]+)\.([0-9]+)\.([0-9]+)-pk\.([1-9][0-9]*)", version)
-    required = formal is not None and tuple(map(int, formal.groups())) >= (0, 2, 19, 11)
+    # pk.14 removes the embedded runtime; pk.11/12/13 retain their original gates.
+    required = formal is not None and (0, 2, 19, 11) <= tuple(map(int, formal.groups())) < (0, 2, 19, 14)
     if "browser_profile" not in data:
         require(not required and not any(key.startswith("browser_payload_") for key in data),
                 "Bundled browser declaration cannot be removed")

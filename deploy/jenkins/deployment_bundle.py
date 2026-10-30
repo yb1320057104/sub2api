@@ -59,7 +59,8 @@ def declaration(data: dict) -> bool:
     require(isinstance(version, str) and re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-pk\.[1-9][0-9]*)?(?:-pk\.candidate\.[1-9][0-9]*)?", version),
             "Invalid deployment version")
     formal = re.fullmatch(r"([0-9]+)\.([0-9]+)\.([0-9]+)-pk\.([1-9][0-9]*)", version)
-    required = formal is not None and tuple(map(int, formal.groups())) >= (0, 2, 19, 10)
+    # pk.14 uses external installation; never weaken archived pk.10/11/12/13 gates.
+    required = formal is not None and (0, 2, 19, 10) <= tuple(map(int, formal.groups())) < (0, 2, 19, 14)
     if "deployment_profile" not in data:
         require(not required, "This release requires its bundled browser deployment profile")
         require(not any(key.startswith("deployment_") for key in data),

@@ -115,7 +115,6 @@ LABEL org.opencontainers.image.source="https://github.com/pengkang0322/sub2api"
 # Install runtime dependencies
 RUN apk add --no-cache \
     ca-certificates \
-    chromium \
     tzdata \
     su-exec \
     libpq \
@@ -151,8 +150,8 @@ RUN mkdir -p /app/data && chown sub2api:sub2api /app/data
 # A changed image binary (including an older image) replaces the persisted copy;
 # restarting the same image preserves binaries installed from the admin page.
 ENV SUB2API_DOCKER_SELF_UPDATE=true
-# Browser runs as the unprivileged application user inside this container.
-ENV PK_AUTH_BROWSER_PATH=/usr/bin/chromium PK_AUTH_BROWSER_NO_SANDBOX=true
+# Authorization uses an externally installed browser; it is not part of the image.
+ENV PK_AUTH_BROWSER_NO_SANDBOX=true
 
 # Copy entrypoint script (fixes volume permissions then drops to sub2api)
 COPY deploy/docker-entrypoint.sh /app/docker-entrypoint.sh

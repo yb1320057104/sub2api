@@ -1,6 +1,10 @@
 # PK出版：源码、发布与上游更新
 
-2026-10-31 当前目标为 `v0.2.19-pk.13`，基于私库正式 `v0.2.19-pk.12`（`f66c9ce28647a05e01f4a75e512866ebe16a0ff7`）。当前版本保留 pk.10/11 的部署浏览器资源、PK-036 账号授权/巡检与 PK-032 空号池修复，并补齐 Turnstile 环境变量可达性注册，沿用正式版本检测/回退安全边界和 Cloudflare Turnstile 的 expected hostname、认证 action、上游 fail-closed 与部署模板；无新增二开 ID。
+2026-10-31 当前版本 v0.2.19-pk.14：Chromium 改为服务器外置依赖，主程序、网页更新包和应用镜像不再携带浏览器，也不再生成完整浏览器部署 tgz。Docker/Alpine 部署在服务器执行 sh deploy/install-browser.sh APPLICATION_CONTAINER，直接装入应用实际运行容器，不需要重启服务；不修改原数据与加密密钥。普通重启和网页更新保留安装，删除/重建容器后需再次执行安装。原生部署自行安装兼容 Chromium 或设置 PK_AUTH_BROWSER_PATH。本轮用户已明确授权安装及一次 Jenkins 打包，使用 ACTION=release、SOURCE_REF=v0.2.19-pk.14，COMMIT_SHA/PACKAGE_ID 留空；发布不等于应用已升级。新包恢复原十一项同制品验收，旧封存包按原 profile 和证据严格验证。实际安装和构建结果以本轮输出为准，不把旧通过报告作为本轮结果。详见 docs/PK_BROWSER_EXTERNAL_PLAN.md。
+
+2026-10-31 历史目标为 `v0.2.19-pk.13`，基于私库正式 `v0.2.19-pk.12`（`f66c9ce28647a05e01f4a75e512866ebe16a0ff7`）。当前版本保留 pk.10/11 的部署浏览器资源、PK-036 账号授权/巡检与 PK-032 空号池修复，并补齐 Turnstile 环境变量可达性注册，沿用正式版本检测/回退安全边界和 Cloudflare Turnstile 的 expected hostname、认证 action、上游 fail-closed 与部署模板；无新增二开 ID。
+
+2026-10-31 历史目标为 `v0.2.19-pk.12`，基于私库正式 `v0.2.19-pk.11`（`5a7d1b0107a9adfac68de6baaef30412630f79f8`）。当前版本保留 pk.10/11 的部署浏览器资源、PK-036 账号授权/巡检与 PK-032 空号池修复，并扩展正式版本检测/回退安全边界，补全 Cloudflare Turnstile 的 expected hostname、认证 action、上游 fail-closed 和部署模板；无新增二开 ID。
 
 交接仍由用户点击 Jenkins：`ACTION=release`、`SOURCE_REF=v0.2.19-pk.13`，`COMMIT_SHA`/`PACKAGE_ID` 留空；未生成新制品前不宣称已部署。
 

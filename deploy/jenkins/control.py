@@ -174,12 +174,11 @@ def prepare() -> None:
         "image_tag": IMAGE + ":" + version,
         "binary_archive": f"sub2api_{version}_linux_amd64.tar.gz",
         "image_archive": f"sub2api_{version}_linux_amd64.docker.tar.gz",
-        "deployment_profile": deployment.PROFILE,
-        "deployment_archive": f"sub2api-deployment-{version}-amd64.tgz",
         "validation": "Pending legacy local source and artifact-runtime validation; this package is not published",
     }
-    if Path("source/backend/internal/pkg/browserruntime/runtime.go").is_file():
-        manifest["browser_profile"] = browser.PROFILE
+    # New packages use an external browser. Historical sealed profiles remain
+    # mandatory for their original versions and are still verified on restore.
+    deployment.declaration(manifest)
     browser.declaration(manifest)
     if os.environ.get("ACTION", "release") == "release":
         manifest.update(validation_profile=VALIDATION_PROFILE,
@@ -567,6 +566,10 @@ def publish() -> None:
                       "replacement, browser download, root installation or path configuration.")
         elif deployment.declaration(data):
             notes += " Older image environments must update their application container once to acquire the browser."
+        elif tuple(map(int, data["version"].replace("-pk.", ".").split("."))) >= (0, 2, 19, 14):
+            notes += ("\n\nChromium is external to the application image and update archive. "
+                      "Install it in the application runtime using deploy/install-browser.sh; "
+                      "reapply after recreating the container. Web updates do not install a browser.")
         release = request("/repos/" + REPOSITORY + "/releases", method="POST", token=credential,
                           data={"tag_name": tag, "target_commitish": data["commit"],
                                 "name": data["version"] + " PK出版", "body": notes,

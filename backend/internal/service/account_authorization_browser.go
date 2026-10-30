@@ -21,8 +21,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/pkg/browserruntime"
-
 	"github.com/gorilla/websocket"
 	"github.com/pquerna/otp/totp"
 	xproxy "golang.org/x/net/proxy"
@@ -89,15 +87,7 @@ func authorizationBanJSON(raw string) bool {
 }
 
 func authorizationBrowserPath() string {
-	// Preserve explicit custom paths; the historical image default should not
-	// override a newer browser delivered with a web-installed executable.
-	configured := os.Getenv("PK_AUTH_BROWSER_PATH")
-	if configured == "" || configured == "/usr/bin/chromium" {
-		if path := browserruntime.Path(); path != "" {
-			return path
-		}
-	}
-	if path := configured; path != "" {
+	if path := os.Getenv("PK_AUTH_BROWSER_PATH"); path != "" {
 		if info, err := os.Stat(path); err == nil && !info.IsDir() {
 			return path
 		}
@@ -357,7 +347,7 @@ func authorizationPause(ctx context.Context, d time.Duration) error {
 func runAuthorizationBrowser(ctx context.Context, proxyURL, authURL string, secret *AuthorizationSecret, progress func(string, string) error) (string, error) {
 	path := authorizationBrowserPath()
 	if path == "" {
-		return "", authorizationBrowserFailure("browser_missing", "授权浏览器未就绪，请使用包含浏览器的正式更新包并重启；检查启动日志、数据目录权限和磁盘空间")
+		return "", authorizationBrowserFailure("browser_missing", "未找到外置授权浏览器，请在应用运行环境安装 Chromium，或设置 PK_AUTH_BROWSER_PATH；Docker 部署可执行 deploy/install-browser.sh")
 	}
 	if proxyURL == "" {
 		return "", authorizationBrowserFailure("proxy_missing", "尚未配置授权代理")

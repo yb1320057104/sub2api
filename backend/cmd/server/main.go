@@ -18,7 +18,6 @@ import (
 	_ "github.com/Wei-Shaw/sub2api/ent/runtime"
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/browserruntime"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/setup"
@@ -60,23 +59,11 @@ func main() {
 	// Parse command line flags
 	setupMode := flag.Bool("setup", false, "Run setup wizard in CLI mode")
 	showVersion := flag.Bool("version", false, "Show version information")
-	checkBrowser := flag.Bool("browser-runtime-check", false, "Verify the bundled browser using a local page")
 	flag.Parse()
 
 	if *showVersion {
 		log.Printf("DP API %s (commit: %s, built: %s)\n", Version, Commit, Date)
 		return
-	}
-	if *checkBrowser {
-		if err := browserruntime.Check(setup.GetDataDir()); err != nil {
-			log.Fatalf("Browser runtime check failed: %v", err)
-		}
-		log.Println("Bundled browser ready")
-		return
-	}
-	if _, err := browserruntime.Prepare(setup.GetDataDir()); err != nil {
-		// Keep the gateway available; authorization reports the unavailable browser.
-		log.Printf("Bundled authorization browser preparation failed: %v", err)
 	}
 
 	// CLI setup mode

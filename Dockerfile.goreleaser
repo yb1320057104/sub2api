@@ -10,7 +10,7 @@ ARG POSTGRES_IMAGE=postgres:18-alpine
 
 FROM ${POSTGRES_IMAGE} AS pg-client
 
-FROM ${ALPINE_IMAGE} AS runtime-base
+FROM ${ALPINE_IMAGE}
 
 LABEL maintainer="Wei-Shaw <github.com/Wei-Shaw>"
 LABEL description="Sub2API - AI API Gateway Platform"
@@ -18,13 +18,12 @@ LABEL org.opencontainers.image.source="https://github.com/pengkang0322/sub2api"
 
 # PK releases use the existing application data volume for web-based updates.
 ENV SUB2API_DOCKER_SELF_UPDATE=true
-# Browser runs as the unprivileged application user inside this container.
-ENV PK_AUTH_BROWSER_PATH=/usr/bin/chromium PK_AUTH_BROWSER_NO_SANDBOX=true
+# Authorization uses an externally installed browser; it is not part of the image.
+ENV PK_AUTH_BROWSER_NO_SANDBOX=true
 
 # Install runtime dependencies
 RUN apk add --no-cache \
     ca-certificates \
-    chromium \
     tzdata \
     curl \
     su-exec \
@@ -47,21 +46,6 @@ RUN addgroup -g 1000 sub2api && \
     adduser -u 1000 -G sub2api -s /bin/sh -D sub2api
 
 WORKDIR /app
-
-# This export-only stage reserves an interpreter slot for unprivileged runtime
-# relocation. The final application image keeps its ordinary native binaries.
-FROM runtime-base AS browser-export
-RUN set -eu; apk add --no-cache patchelf && \
-    loader=/__PK_BROWSER_LOADER__/ && \
-    for index in $(seq 1 64); do loader="$loader"reserved/; done && \
-    for binary in /usr/lib/chromium/*; do \
-        if [ -f "$binary" ] && patchelf --print-interpreter "$binary" >/dev/null 2>&1; then \
-            patchelf --set-interpreter "$loader" "$binary"; \
-        fi; \
-    done && \
-    test "$(patchelf --print-interpreter /usr/lib/chromium/chrome)" = "$loader"
-
-FROM runtime-base AS runtime
 
 # Copy the pre-built binary and runtime fallback resources from GoReleaser
 COPY --chown=root:root --chmod=0555 sub2api /app/sub2api

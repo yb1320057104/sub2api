@@ -157,34 +157,7 @@ docker run "${common[@]}" --workdir /src/backend \
     '
 test -f "$source_dir/sub2api" && test ! -L "$source_dir/sub2api"
 
-# The old web updater copies only sub2api. Carry the runtime in that executable
-# itself, before hashing it or putting the same file into the image and archive.
-browser_profile=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("browser_profile", ""))' "$output_dir/manifest.json")
-if [[ -n "$browser_profile" ]]; then
-    [[ "$browser_profile" == pk-browser-in-binary-v1 ]]
-    browser_image="pk-browser-build:$(read_manifest package_id)"
-    browser_container="pk-browser-build-$(read_manifest package_id)"
-    cleanup_browser_build() {
-        local status=$?
-        trap - EXIT
-        docker rm --force "$browser_container" >/dev/null 2>&1 || true
-        docker image rm "$browser_image" >/dev/null 2>&1 || true
-        rm -f -- "$root/.browser-rootfs.tar" "$root/.browser-payload.tgz"
-        if [[ "$reinstall_dependencies" == yes ]]; then
-            python3 -B "$dependency_helper" restore || status=1
-        fi
-        exit "$status"
-    }
-    trap cleanup_browser_build EXIT
-    # Also retain this bare base locally for the later no-network legacy-image check.
-    docker pull --platform linux/amd64 alpine:3.21
-    docker build --platform linux/amd64 --target browser-export \
-        --file "$root/pipeline/Dockerfile.goreleaser" --tag "$browser_image" "$source_dir"
-    docker create --name "$browser_container" --network none --entrypoint /bin/true "$browser_image" >/dev/null
-    docker export --output "$root/.browser-rootfs.tar" "$browser_container"
-    python3 -B "$root/pipeline/deploy/jenkins/browser_payload.py" build "$root/.browser-rootfs.tar" "$root/.browser-payload.tgz"
-    python3 -B "$root/pipeline/deploy/jenkins/browser_payload.py" attach "$source_dir/sub2api" "$root/.browser-payload.tgz"
-fi
+# Chromium is installed separately in the deployment runtime, never appended here.
 tar -C "$source_dir" -czf "$output_dir/$(read_manifest binary_archive)" sub2api
 
 # Reuse the protected packaging recipe and the exact compiled binary.

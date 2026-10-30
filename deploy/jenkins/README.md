@@ -1,3 +1,9 @@
+# v0.2.19-pk.14 外置浏览器与精简制品
+
+2026-10-31 当前版本 v0.2.19-pk.14：Chromium 改为服务器外置依赖，主程序、网页更新包和应用镜像不再携带浏览器，也不再生成完整浏览器部署 tgz。Docker/Alpine 部署在服务器执行 sh deploy/install-browser.sh APPLICATION_CONTAINER，直接装入应用实际运行容器，不需要重启服务；不修改原数据与加密密钥。普通重启和网页更新保留安装，删除/重建容器后需再次执行安装。原生部署自行安装兼容 Chromium 或设置 PK_AUTH_BROWSER_PATH。本轮用户已明确授权安装及一次 Jenkins 打包，使用 ACTION=release、SOURCE_REF=v0.2.19-pk.14，COMMIT_SHA/PACKAGE_ID 留空；发布不等于应用已升级。新包恢复原十一项同制品验收，旧封存包按原 profile 和证据严格验证。实际安装和构建结果以本轮输出为准，不把旧通过报告作为本轮结果。详见 docs/PK_BROWSER_EXTERNAL_PLAN.md。
+
+## 历史浏览器封包方案（pk.10～13）
+
 # v0.2.19-pk.11 网页更新自带浏览器
 
 正式交接选择ACTION=release、SOURCE_REF=v0.2.19-pk.11，COMMIT_SHA/PACKAGE_ID留空。浏览器资源封入同次编译的sub2api主程序，再进入镜像、原单文件网页归档及完整部署包；旧更新器可直接升级，正常重启后非root自动解压到原数据目录，无需先换镜像。Jenkins导出stage预留浏览器加载器路径，启动时修正为该实例的持久目录；不覆盖系统库。新增browser_profile与browser_payload_sha256封存绑定，禁止新版本去掉profile或验收证据降级。browser-web-update仅复制归档里的主程序到裸Alpine3.21、禁网、无浏览器库、非root验证本地页面渲染及缓存复用；与已有十二项合计十三项，全部通过才发布。主程序和网页归档均保持500MiB上限。源码没有携带大型二进制，资源只在用户点击Jenkins构建时生成；本轮未运行构建或验收。
