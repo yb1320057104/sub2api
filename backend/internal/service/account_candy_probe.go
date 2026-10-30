@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
@@ -146,48 +147,96 @@ func accountCandyFinalText(response *intelligenceTestResponse) (string, error) {
 }
 
 func readAccountCandyReply(response *http.Response, chat bool) (string, error) {
-	bad := func() (string, error) {
-		return "", candyProbeFailure("响应无效、被截断或缺少完整结束标记；未转组。")
+	fail := func(message string) (string, error) {
+		return "", candyProbeFailure(message)
+	}
+	if response == nil || response.Body == nil {
+		return fail("响应正文为空或类型不受支持；未转组。")
 	}
 	limited := &io.LimitedReader{R: response.Body, N: intelligenceTestResponseLimit + 1}
-	contentType := strings.ToLower(response.Header.Get("Content-Type"))
-	if strings.Contains(contentType, "application/json") {
-		data, err := io.ReadAll(limited)
-		if err != nil || len(data) > intelligenceTestResponseLimit || !utf8.Valid(data) {
-			return bad()
+	reader := bufio.NewReader(limited)
+	// Some upstreams omit or mislabel Content-Type. Detect the wire format
+	// without waiting for EOF, while retaining whitespace for SSE line limits.
+	var prefix strings.Builder
+	var first rune
+	sawBOM := false
+	for {
+		r, size, err := reader.ReadRune()
+		if limited.N <= 0 {
+			return fail("模型响应超过 4 MiB；未转组。")
+		}
+		if err == io.EOF {
+			return fail("响应正文为空或类型不受支持；未转组。")
+		}
+		if err != nil {
+			return fail("读取模型响应失败；未转组。")
+		}
+		if r == utf8.RuneError && size == 1 {
+			return fail("响应包含无效文本编码；未转组。")
+		}
+		if r == '\ufeff' && !sawBOM {
+			sawBOM = true
+			_, _ = prefix.WriteRune(r)
+			continue
+		}
+		if strings.ContainsRune(" \t\r\n", r) {
+			_, _ = prefix.WriteRune(r)
+			continue
+		}
+		first = r
+		if err := reader.UnreadRune(); err != nil {
+			return fail("读取模型响应失败；未转组。")
+		}
+		break
+	}
+	prefixText := prefix.String()
+	if first == '{' || first == '[' {
+		prefixText = strings.Replace(prefixText, "\ufeff", "", 1)
+	}
+	body := io.MultiReader(strings.NewReader(prefixText), reader)
+	if first == '{' || first == '[' {
+		data, err := io.ReadAll(body)
+		if limited.N <= 0 || len(data) > intelligenceTestResponseLimit {
+			return fail("模型响应超过 4 MiB；未转组。")
+		}
+		if err != nil {
+			return fail("读取模型响应失败；未转组。")
+		}
+		if !utf8.Valid(data) {
+			return fail("响应包含无效文本编码；未转组。")
 		}
 		if !chat {
 			var result intelligenceTestResponse
 			if json.Unmarshal(data, &result) != nil {
-				return bad()
+				return fail("JSON 响应格式无效；未转组。")
 			}
 			text, err := accountCandyFinalText(&result)
 			if err != nil {
-				return bad()
+				return fail("JSON 响应未完整结束或缺少有效最终回复；未转组。")
 			}
 			return text, nil
 		}
 		var result accountCandyChatResponse
-		if json.Unmarshal(data, &result) != nil || candyHasJSONValue(result.Error) || len(result.Choices) != 1 {
-			return bad()
+		if json.Unmarshal(data, &result) != nil {
+			return fail("JSON 响应格式无效；未转组。")
+		}
+		if candyHasJSONValue(result.Error) || len(result.Choices) != 1 {
+			return fail("JSON 响应未完整结束或缺少有效最终回复；未转组。")
 		}
 		choice := result.Choices[0]
 		if choice.FinishReason == nil || *choice.FinishReason != "stop" || choice.Message.Role != "assistant" || candyHasJSONValue(choice.Message.ToolCalls) || candyHasJSONValue(choice.Message.FunctionCall) {
-			return bad()
+			return fail("JSON 响应未完整结束或缺少有效最终回复；未转组。")
 		}
 		text := strings.TrimSpace(choice.Message.Content)
 		if text == "" || len(text) > intelligenceTestArtifactLimit {
-			return bad()
+			return fail("JSON 响应未完整结束或缺少有效最终回复；未转组。")
 		}
 		return text, nil
 	}
-	if !strings.Contains(contentType, "text/event-stream") {
-		return bad()
-	}
-	scanner := bufio.NewScanner(limited)
+	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 4096), 1024*1024)
 	var event, text strings.Builder
-	finished, assistant := false, false
+	finished, assistant, sawData := false, false, false
 	consume := func() (string, bool, error) {
 		if event.Len() == 0 {
 			return "", false, nil
@@ -208,15 +257,22 @@ func readAccountCandyReply(response *http.Response, chat bool) (string, error) {
 				Type     string                    `json:"type"`
 				Response *intelligenceTestResponse `json:"response"`
 				Error    json.RawMessage           `json:"error"`
+				Item     struct {
+					Type string `json:"type"`
+				} `json:"item"`
 			}
 			if json.Unmarshal([]byte(data), &message) != nil {
 				return "", false, candyProbeFailure("响应事件格式无效；未转组。")
 			}
-			if candyHasJSONValue(message.Error) {
+			if candyHasJSONValue(message.Error) || (message.Response != nil && candyHasJSONValue(message.Response.Error)) {
 				return "", false, candyProbeFailure("模型返回错误；未转组。")
 			}
+			if strings.Contains(message.Type, "_call") || strings.HasPrefix(message.Type, "response.mcp_list_tools.") ||
+				(message.Item.Type != "" && message.Item.Type != "message" && message.Item.Type != "reasoning") {
+				return "", false, candyProbeFailure("模型返回了工具请求或不支持的输出；未转组。")
+			}
 			switch message.Type {
-			case "response.completed":
+			case "response.completed", "response.done":
 				final, err := accountCandyFinalText(message.Response)
 				if err != nil {
 					return "", false, candyProbeFailure("模型没有完整完成最终回复；未转组。")
@@ -263,26 +319,35 @@ func readAccountCandyReply(response *http.Response, chat bool) (string, error) {
 	}
 	for scanner.Scan() {
 		if limited.N <= 0 {
-			return bad()
+			return fail("模型响应超过 4 MiB；未转组。")
 		}
-		line := strings.TrimPrefix(strings.TrimSuffix(scanner.Text(), "\r"), "\ufeff")
-		if line == "" {
+		// Retain trailing payload whitespace until after the event-size check.
+		line := strings.TrimLeftFunc(scanner.Text(), unicode.IsSpace)
+		line = strings.TrimLeftFunc(strings.TrimPrefix(line, "\ufeff"), unicode.IsSpace)
+		if strings.TrimSpace(line) == "" {
 			result, done, err := consume()
 			if err != nil || done {
 				return result, err
 			}
 		} else if strings.HasPrefix(line, "data:") {
+			sawData = true
 			if event.Len() > 0 {
 				_ = event.WriteByte('\n')
 			}
 			_, _ = event.WriteString(strings.TrimPrefix(strings.TrimPrefix(line, "data:"), " "))
 			if event.Len() > 1024*1024 {
-				return bad()
+				return fail("响应事件超过 1 MiB；未转组。")
 			}
 		}
 	}
-	if scanner.Err() != nil || limited.N <= 0 {
-		return bad()
+	if limited.N <= 0 {
+		return fail("模型响应超过 4 MiB；未转组。")
+	}
+	if scanner.Err() == bufio.ErrTooLong {
+		return fail("响应事件行超过 1 MiB；未转组。")
+	}
+	if scanner.Err() != nil {
+		return fail("读取模型响应失败；未转组。")
 	}
 	result, done, err := consume()
 	if err != nil {
@@ -291,5 +356,8 @@ func readAccountCandyReply(response *http.Response, chat bool) (string, error) {
 	if done {
 		return result, nil
 	}
-	return bad()
+	if !sawData {
+		return fail("响应正文为空或类型不受支持；未转组。")
+	}
+	return fail("响应流缺少完整成功结束标记；未转组。")
 }

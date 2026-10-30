@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
@@ -101,6 +102,97 @@ func TestPKAccountCandyUpstreamAccountUsesConfiguredKey(t *testing.T) {
 	err = svc.testOpenAIAccountConnection(c, account, cfg.Model, "", AccountTestModeDefault)
 	require.ErrorContains(t, err, "Unsupported account type")
 	require.Len(t, upstream.requests, 1)
+}
+
+func TestPKAccountCandyReplyDetectsBodyAndNativeTerminal(t *testing.T) {
+	const answer = "<final_answer>21</final_answer>"
+	const completed = `{"status":"completed","output":[{"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"<final_answer>21</final_answer>"}]}]}`
+	terminal := func(kind string) string {
+		return fmt.Sprintf("data: {\"type\":%q,\"response\":%s}\n\n", kind, completed)
+	}
+	chatStream := "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"<final_answer>21</final_answer>\"}}]}\n\n" +
+		"data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"
+	for _, tt := range []struct {
+		name   string
+		header http.Header
+		body   string
+		chat   bool
+	}{
+		{name: "json without content type", body: completed},
+		{name: "json mislabeled as SSE", header: http.Header{"Content-Type": {"text/event-stream"}}, body: completed},
+		{name: "json with BOM and whitespace", body: "\ufeff \r\n" + completed},
+		{name: "completed SSE", header: http.Header{"Content-Type": {"text/event-stream"}}, body: terminal("response.completed")},
+		{name: "done without content type", body: terminal("response.done")},
+		{name: "done with noncanonical header", header: http.Header{"content-type": {"text/event-stream"}}, body: terminal("response.done")},
+		{name: "done mislabeled as JSON", header: http.Header{"Content-Type": {"application/json"}}, body: terminal("response.done")},
+		{name: "SSE whitespace and BOM", body: " \t\ufeff\t " + strings.ReplaceAll(terminal("response.done"), "\n\n", " \r\n\t \r\n")},
+		{name: "terminal at EOF", body: strings.TrimSpace(terminal("response.done"))},
+		{name: "chat mislabeled as JSON", header: http.Header{"Content-Type": {"application/json"}}, body: chatStream, chat: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			response := newJSONResponse(http.StatusOK, tt.body)
+			response.Header = tt.header
+			text, err := readAccountCandyReply(response, tt.chat)
+			require.NoError(t, err)
+			require.Equal(t, answer, text)
+		})
+	}
+}
+
+func TestPKAccountCandyReplyRejectsIncompleteAndUnsafeBodies(t *testing.T) {
+	const completed = `{"status":"completed","output":[{"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"<final_answer>21</final_answer>"}]}]}`
+	terminal := func(response string) string {
+		return fmt.Sprintf("data: {\"type\":\"response.done\",\"response\":%s}\n\n", response)
+	}
+	for _, tt := range []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "empty", want: "正文为空或类型不受支持"},
+		{name: "plain answer", body: "21", want: "类型不受支持"},
+		{name: "HTML error", body: "<html>upstream-secret</html>", want: "类型不受支持"},
+		{name: "invalid JSON", body: `{"status":`, want: "JSON 响应格式无效"},
+		{name: "JSON error", body: `{"error":{"message":"upstream-secret"}}`, want: "JSON 响应未完整结束"},
+		{name: "invalid UTF8", body: "\xff", want: "无效文本编码"},
+		{name: "delta without terminal", body: "data: {\"type\":\"response.output_text.delta\",\"delta\":\"21\"}\n\n", want: "缺少完整成功结束标记"},
+		{name: "DONE alone", body: "data: [DONE]\n\n", want: "缺少完整最终回复"},
+		{name: "done without completed status", body: terminal(strings.Replace(completed, `"status":"completed",`, "", 1)), want: "没有完整完成最终回复"},
+		{name: "done still in progress", body: terminal(strings.Replace(completed, `"status":"completed"`, `"status":"in_progress"`, 1)), want: "没有完整完成最终回复"},
+		{name: "done truncated", body: terminal(strings.Replace(completed, `{"status"`, `{"incomplete_details":{"reason":"max_output_tokens"},"status"`, 1)), want: "没有完整完成最终回复"},
+		{name: "done empty final text", body: terminal(strings.ReplaceAll(completed, "<final_answer>21</final_answer>", "")), want: "没有完整完成最终回复"},
+		{name: "done wrong role", body: terminal(strings.Replace(completed, `"role":"assistant"`, `"role":"user"`, 1)), want: "没有完整完成最终回复"},
+		{name: "done tool output", body: terminal(strings.Replace(completed, `"type":"message"`, `"type":"function_call"`, 1)), want: "没有完整完成最终回复"},
+		{name: "prior tool output", body: "data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"function_call\"}}\n\n" + terminal(completed), want: "工具请求"},
+		{name: "prior tool arguments", body: "data: {\"type\":\"response.function_call_arguments.delta\",\"delta\":\"upstream-secret\"}\n\n" + terminal(completed), want: "工具请求"},
+		{name: "prior error", body: "data: {\"type\":\"error\",\"error\":{\"message\":\"upstream-secret\"}}\n\n" + terminal(completed), want: "模型返回错误"},
+		{name: "prior failed terminal", body: "data: {\"type\":\"response.failed\"}\n\n" + terminal(completed), want: "模型响应失败或未完成"},
+		{name: "oversized final text", body: terminal(strings.ReplaceAll(completed, "<final_answer>21</final_answer>", strings.Repeat("2", intelligenceTestArtifactLimit+1))), want: "没有完整完成最终回复"},
+		{name: "oversized SSE line", body: "data: " + strings.Repeat("x", 1024*1024) + "\n\n", want: "事件行超过 1 MiB"},
+		{name: "oversized leading whitespace line", body: strings.Repeat(" ", 1024*1024) + terminal(completed), want: "事件行超过 1 MiB"},
+		{name: "oversized event with trailing whitespace", body: "data: {\"type\":\"response.done\"," + strings.Repeat(" ", 600*1024) + "\ndata: \"response\":" + completed + "}" + strings.Repeat(" ", 600*1024) + "\n\n", want: "响应事件超过 1 MiB"},
+		{name: "oversized response", body: strings.Repeat(": ping\n", intelligenceTestResponseLimit/len(": ping\n")+1) + terminal(completed), want: "模型响应超过 4 MiB"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			text, err := readAccountCandyReply(newJSONResponse(http.StatusOK, tt.body), false)
+			require.Empty(t, text)
+			require.ErrorContains(t, err, tt.want)
+			require.IsType(t, &accountCandyProbeError{}, err)
+			require.NotContains(t, err.Error(), "upstream-secret")
+		})
+	}
+}
+
+func TestPKAccountCandyReplyReadFailureUsesSafeClassification(t *testing.T) {
+	response := newJSONResponse(http.StatusOK, "")
+	response.Body = io.NopCloser(io.MultiReader(
+		strings.NewReader("data: {\"type\":\"response.output_text.delta\",\"delta\":\"21\"}\n\n"),
+		iotest.ErrReader(fmt.Errorf("upstream-secret")),
+	))
+	text, err := readAccountCandyReply(response, false)
+	require.Empty(t, text)
+	require.ErrorContains(t, err, "读取模型响应失败")
+	require.NotContains(t, err.Error(), "upstream-secret")
 }
 
 type openAIAccountTestRepo struct {
