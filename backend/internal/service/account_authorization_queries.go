@@ -28,7 +28,7 @@ func (s *AccountAuthorizationService) ListAuthorization(ctx context.Context, kin
 		projection = `SELECT id,endpoint AS email,endpoint,enabled,last_checked_at,last_status AS status,last_message AS message,created_at FROM pk_authorization_proxies WHERE enabled=true`
 		order = "id DESC"
 	case "jobs":
-		projection = `SELECT id,batch_id,email,account_id,source,status,stage,message,created_at,started_at,finished_at,COALESCE(settings->'final_group_names','[]'::jsonb) AS groups,settings->'intelligence_passed' AS intelligence_passed,settings->'intelligence_answer' AS intelligence_answer,COALESCE((settings->>'authorization_completed')::boolean,false) AS authorization_completed FROM pk_authorization_jobs`
+		projection = `SELECT id,batch_id,email,account_id,source,status,stage,message,created_at,started_at,finished_at,COALESCE(settings->'final_group_names','[]'::jsonb) AS groups,settings->'intelligence_passed' AS intelligence_passed,settings->'intelligence_answer' AS intelligence_answer,COALESCE(settings->'intelligence_results','[]'::jsonb) AS intelligence_results,COALESCE((settings->>'authorization_completed')::boolean,false) AS authorization_completed FROM pk_authorization_jobs`
 		order = "id DESC"
 	case "accounts":
 		projection = `SELECT a.id,a.name,` + authorizationEmailSQL + ` AS email,a.type,a.status AS account_status,

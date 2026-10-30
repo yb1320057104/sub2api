@@ -1,6 +1,13 @@
 import { apiClient } from '../client'
 
+export interface AuthorizationIntelligenceModel { model: string; effort: string; enabled: boolean }
+export interface AuthorizationIntelligenceResult {
+  model: string; effort: string; status: 'running' | 'completed' | 'failed' | 'cancelled'
+  passed: boolean | null; answer: number | null; error_message?: string; duration_ms: number
+}
+
 export interface AuthorizationConfig {
+  intelligence_models?: AuthorizationIntelligenceModel[]
   pass_group_ids: number[]; fail_group_ids: number[]
   intelligence_model: string; intelligence_effort: string
   inspection_enabled: boolean; reauth_enabled: boolean
@@ -19,6 +26,7 @@ export interface AuthorizationSubmission {
 export interface AuthorizationSecret { email: string; password: string; twofa: string }
 export type AuthorizationList = 'jobs' | 'history' | 'proxies' | 'accounts'
 export interface AuthorizationRecord {
+  intelligence_results?: AuthorizationIntelligenceResult[]
   intelligence_passed?: boolean | null; intelligence_answer?: number | null; authorization_completed?: boolean
   id: number; email: string; name?: string; status: string; message?: string
   account_id?: number; account_status?: string; source?: string; stage?: string

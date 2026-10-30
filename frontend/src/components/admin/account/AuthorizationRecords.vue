@@ -24,6 +24,16 @@
             <td class="px-4 py-4"><span class="inline-block max-w-56 rounded-lg px-2 py-1 text-xs font-medium" :class="tone(row.status)">{{ state(row.status) }}</span><p v-if="kind === 'jobs' && row.stage" class="mt-2 text-xs text-gray-500 dark:text-dark-400">{{ stageLabel(row.stage) }}</p><p v-if="row.http_status" class="mt-2 font-mono text-xs text-gray-500">HTTP {{ row.http_status }}</p></td>
             <td class="max-w-80 px-4 py-4 text-xs leading-5 text-gray-600 dark:text-dark-300">
               <template v-if="kind === 'jobs' && row.authorization_completed"><p class="mb-1 font-medium text-emerald-700 dark:text-emerald-300">{{ t('authorization.credentialsAuthorized') }}</p><p v-if="typeof row.intelligence_passed === 'boolean'">{{ t(row.intelligence_passed ? 'authorization.gatePassed' : 'authorization.gateFailed') }}<span v-if="row.intelligence_answer != null"> · {{ t('authorization.gateAnswer', { answer: row.intelligence_answer }) }}</span></p><p class="mb-2">{{ t('authorization.finalGroups') }}：{{ row.groups?.length ? row.groups.join('、') : t('authorization.ungrouped') }}</p></template>
+              <div v-if="kind === 'jobs' && row.intelligence_results?.length" class="mb-3 space-y-2">
+                <p class="font-medium text-gray-700 dark:text-dark-200">{{ t('authorization.modelResults') }}</p>
+                <div v-for="result in row.intelligence_results" :key="result.model" class="rounded-lg border border-gray-200 p-2 dark:border-dark-600">
+                  <p class="break-words font-medium">{{ result.model }} / {{ result.effort || t('accountCandy.defaultEffort') }}</p>
+                  <p v-if="typeof result.passed === 'boolean'" :class="result.passed ? 'text-emerald-700 dark:text-emerald-300' : 'text-red-600 dark:text-red-400'">{{ t(result.passed ? 'authorization.gatePassed' : 'authorization.gateFailed') }}<span v-if="result.answer != null"> · {{ t('authorization.gateAnswer', { answer: result.answer }) }}</span></p>
+                  <p v-else>{{ t('authorization.modelStates.' + (result.status === 'running' && row.status !== 'running' ? (row.status === 'cancelled' ? 'cancelled' : 'interrupted') : result.status)) }}</p>
+                  <p v-if="result.error_message" class="break-words text-amber-700 dark:text-amber-300">{{ result.error_message }}</p>
+                  <p v-if="result.status !== 'running'" class="text-gray-400">{{ t('authorization.modelDuration', { seconds: (result.duration_ms / 1000).toFixed(1) }) }}</p>
+                </div>
+              </div>
               <template v-if="kind === 'history'"><p>{{ t('authorization.password') }} · ••••••••</p><p>2FA · {{ row.has_twofa ? '••••••••' : t('authorization.incomplete') }}</p><p v-if="row.status === 'banned'" class="mt-2 text-red-600 dark:text-red-400">{{ row.message || t('authorization.bannedHint') }}</p></template>
               <template v-else-if="kind === 'accounts' && row.status === 'missing_credentials'"><p>{{ t('authorization.missingHint') }}</p></template>
               <template v-else-if="kind === 'accounts' && row.status === 'credentials_completed'"><p>{{ t('authorization.supplemented') }}</p></template>

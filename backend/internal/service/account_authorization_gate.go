@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
@@ -69,13 +68,21 @@ func validateAuthorizationGateGroups(ctx context.Context, query authorizationGro
 	return nil
 }
 
-// Manual submissions are quarantined without groups until a complete candy
-// answer is available. Scheduled reauthorization retains existing group policy.
+// Manual submissions are quarantined without groups until the model round
+// yields a verdict. Scheduled reauthorization retains existing group policy.
 func (s *AccountAuthorizationService) runAuthorizationIntelligenceGate(ctx context.Context, job *authorizationJob, progress func(string, string) error) error {
 	if job.accountID == nil {
 		return authorizationBrowserFailure("intelligence_failed", "授权已完成，但测智账号不存在；未分组")
 	}
-	if err := progress("intelligence_testing", fmt.Sprintf("授权成功，暂不分组；正在使用 %s / %s 进行糖果测智", job.settings.IntelligenceModel, job.settings.IntelligenceEffort)); err != nil {
+	models, err := authorizationIntelligenceModels(job.settings)
+	if err != nil {
+		return err
+	}
+	names := make([]string, 0, len(models))
+	for _, model := range models {
+		names = append(names, model.Model)
+	}
+	if err := progress("intelligence_testing", fmt.Sprintf("授权成功，暂不分组；正在并发测试 %d 个模型：%s", len(models), strings.Join(names, "、"))); err != nil {
 		return err
 	}
 	account, err := s.accounts.GetByID(ctx, *job.accountID)
@@ -89,48 +96,25 @@ func (s *AccountAuthorizationService) runAuthorizationIntelligenceGate(ctx conte
 	if err != nil {
 		return err
 	}
-	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for authorizationPause(probeCtx, time.Second) == nil {
-			if progress("", "") != nil {
-				cancel()
-				return
-			}
-		}
-	}()
-	text, probeErr := s.tests.runAccountCandyProbe(probeCtx, account, account, &AccountCandyTestConfig{Model: job.settings.IntelligenceModel, Effort: job.settings.IntelligenceEffort})
-	cancel()
-	<-done
+	results, err := s.runAuthorizationIntelligenceModels(ctx, job, account, identity, models, progress)
+	if err != nil {
+		return err
+	}
 	if err := progress("", ""); err != nil {
 		return err
 	}
-	if probeErr != nil {
-		message := "授权成功，但测智请求失败，未判定及格或不及格，账号保持未分组：" + redactCandyAccountError(accountCandySafeError(probeErr), account)
-		return &authorizationBrowserError{stage: "intelligence_failed", message: message, needsInput: true}
+	passedResult, answer := authorizationIntelligenceVerdict(results)
+	if passedResult == nil {
+		return &authorizationBrowserError{stage: "intelligence_failed", message: "授权成功，但部分模型未取得完整测智结果，且没有已确认的不及格结果；账号保持未分组，请查看逐模型详情", needsInput: true}
 	}
-	answer := intelligenceExtractAnswer(text)
-	passed := answer != nil && *answer == 21
+	passed := *passedResult
 	target := job.settings.PassGroupIDs
 	verdict := "不及格"
 	if passed {
 		verdict = "及格"
 	}
-	// Retain the completed verdict even if later admission fails or is cancelled.
-	verdictJSON, err := json.Marshal(map[string]any{"intelligence_passed": passed, "intelligence_answer": answer})
-	if err != nil {
-		return err
-	}
-	saved, err := s.db.ExecContext(ctx, `UPDATE pk_authorization_jobs SET settings=settings||$3::jsonb WHERE id=$1 AND owner_token=$2 AND status='running'`, job.id, job.token, string(verdictJSON))
-	if err != nil {
-		return err
-	}
-	if n, err := saved.RowsAffected(); err != nil {
-		return err
-	} else if n != 1 {
-		return context.Canceled
-	}
+	// Every completed model and the aggregate verdict are already persisted,
+	// even if the following admission checks fail or the job is cancelled.
 	if passed && len(target) == 0 {
 		return &authorizationBrowserError{stage: "intelligence_groups_missing", message: "授权及测智已完成，但目标分组未配置；账号保持未分组", needsInput: true}
 	}
@@ -211,13 +195,13 @@ func (s *AccountAuthorizationService) runAuthorizationIntelligenceGate(ctx conte
 	if err != nil {
 		return err
 	}
-	names := make([]string, 0, len(grouped.Groups))
+	groupNames := make([]string, 0, len(grouped.Groups))
 	for _, group := range grouped.Groups {
 		if group != nil {
-			names = append(names, group.Name)
+			groupNames = append(groupNames, group.Name)
 		}
 	}
-	result, err := json.Marshal(map[string]any{"intelligence_passed": passed, "intelligence_answer": answer, "final_group_ids": target, "final_group_names": names})
+	result, err := json.Marshal(map[string]any{"intelligence_passed": passed, "intelligence_answer": answer, "final_group_ids": target, "final_group_names": groupNames})
 	if err != nil {
 		return err
 	}

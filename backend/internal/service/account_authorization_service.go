@@ -28,25 +28,26 @@ const authorizationReauthCron = "*/10 * * * *"
 const authorizationWorkbenchSettingKey = "pk_authorization_workbench"
 
 type AuthorizationConfig struct {
-	PassGroupIDs             []int64    `json:"pass_group_ids"`
-	FailGroupIDs             []int64    `json:"fail_group_ids"`
-	IntelligenceModel        string     `json:"intelligence_model"`
-	IntelligenceEffort       string     `json:"intelligence_effort"`
-	InspectionEnabled        bool       `json:"inspection_enabled"`
-	ReauthEnabled            bool       `json:"reauth_enabled"`
-	InspectionConcurrency    int        `json:"inspection_concurrency"`
-	AuthorizationConcurrency int        `json:"authorization_concurrency"`
-	AccountConcurrency       int        `json:"account_concurrency"`
-	AccountPriority          int        `json:"account_priority"`
-	GroupIDs                 []int64    `json:"group_ids"`
-	ReauthStatusCodes        []int      `json:"reauth_status_codes"`
-	Revision                 int64      `json:"revision"`
-	NextInspectionAt         *time.Time `json:"next_inspection_at"`
-	NextReauthAt             *time.Time `json:"next_reauth_at"`
-	InspectionCron           string     `json:"inspection_cron"`
-	ReauthCron               string     `json:"reauth_cron"`
-	BrowserAvailable         bool       `json:"browser_available"`
-	EncryptionKeyConfigured  bool       `json:"encryption_key_configured"`
+	IntelligenceModels       []RadarModel `json:"intelligence_models"`
+	PassGroupIDs             []int64      `json:"pass_group_ids"`
+	FailGroupIDs             []int64      `json:"fail_group_ids"`
+	IntelligenceModel        string       `json:"intelligence_model"`
+	IntelligenceEffort       string       `json:"intelligence_effort"`
+	InspectionEnabled        bool         `json:"inspection_enabled"`
+	ReauthEnabled            bool         `json:"reauth_enabled"`
+	InspectionConcurrency    int          `json:"inspection_concurrency"`
+	AuthorizationConcurrency int          `json:"authorization_concurrency"`
+	AccountConcurrency       int          `json:"account_concurrency"`
+	AccountPriority          int          `json:"account_priority"`
+	GroupIDs                 []int64      `json:"group_ids"`
+	ReauthStatusCodes        []int        `json:"reauth_status_codes"`
+	Revision                 int64        `json:"revision"`
+	NextInspectionAt         *time.Time   `json:"next_inspection_at"`
+	NextReauthAt             *time.Time   `json:"next_reauth_at"`
+	InspectionCron           string       `json:"inspection_cron"`
+	ReauthCron               string       `json:"reauth_cron"`
+	BrowserAvailable         bool         `json:"browser_available"`
+	EncryptionKeyConfigured  bool         `json:"encryption_key_configured"`
 }
 
 type AuthorizationSecret struct {
@@ -56,16 +57,17 @@ type AuthorizationSecret struct {
 }
 
 type AuthorizationSubmit struct {
-	PassGroupIDs             []int64 `json:"pass_group_ids"`
-	FailGroupIDs             []int64 `json:"fail_group_ids"`
-	IntelligenceGate         bool    `json:"intelligence_gate"`
-	IntelligenceModel        string  `json:"intelligence_model"`
-	IntelligenceEffort       string  `json:"intelligence_effort"`
-	Accounts                 string  `json:"accounts"`
-	AuthorizationConcurrency int     `json:"authorization_concurrency"`
-	AccountConcurrency       int     `json:"account_concurrency"`
-	AccountPriority          int     `json:"account_priority"`
-	GroupIDs                 []int64 `json:"group_ids"`
+	IntelligenceModels       []RadarModel `json:"intelligence_models,omitempty"`
+	PassGroupIDs             []int64      `json:"pass_group_ids"`
+	FailGroupIDs             []int64      `json:"fail_group_ids"`
+	IntelligenceGate         bool         `json:"intelligence_gate"`
+	IntelligenceModel        string       `json:"intelligence_model"`
+	IntelligenceEffort       string       `json:"intelligence_effort"`
+	Accounts                 string       `json:"accounts"`
+	AuthorizationConcurrency int          `json:"authorization_concurrency"`
+	AccountConcurrency       int          `json:"account_concurrency"`
+	AccountPriority          int          `json:"account_priority"`
+	GroupIDs                 []int64      `json:"group_ids"`
 }
 
 type AccountAuthorizationService struct {
@@ -93,17 +95,16 @@ func NewAccountAuthorizationService(db *sql.DB, client *dbent.Client, accounts A
 }
 
 // Authorization uses the same persisted settings as the candy settings dialog.
-// Its single admission probe snapshots the first enabled radar model. A single
-// query keeps the model and target consistent while settings are being saved.
-func authorizationCandyConfigTx(ctx context.Context, tx *sql.Tx) (*AccountCandyTestConfig, error) {
-	cfg := defaultAccountCandyConfig()
-	var model, effort sql.NullString
-	err := tx.QueryRowContext(ctx, `SELECT c.enabled,c.interval_minutes,c.target_group_id,m.model,m.effort
+// One admission round snapshots every enabled model. A single query keeps the
+// models and target consistent while settings are being saved.
+func authorizationCandyConfigTx(ctx context.Context, tx *sql.Tx) (*RadarConfig, error) {
+	cfg := &RadarConfig{Models: make([]RadarModel, 0)}
+	var modelsJSON []byte
+	err := tx.QueryRowContext(ctx, `SELECT c.enabled,c.interval_minutes,c.target_group_id,
+		COALESCE((SELECT jsonb_agg(jsonb_build_object('model',model,'effort',effort,'enabled',enabled) ORDER BY sort_order)
+			FROM pk_radar_account_models WHERE config_id=c.id AND enabled=true),'[]'::jsonb)
 		FROM pk_radar_account_config c
-		LEFT JOIN LATERAL (
-			SELECT model,effort FROM pk_radar_account_models
-			WHERE config_id=c.id AND enabled=true ORDER BY sort_order LIMIT 1
-		) m ON true WHERE c.id=1`).Scan(&cfg.Enabled, &cfg.IntervalMinutes, &cfg.TargetGroupID, &model, &effort)
+		WHERE c.id=1`).Scan(&cfg.Enabled, &cfg.IntervalMinutes, &cfg.TargetGroupID, &modelsJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		// Before radar initialization, expose an unconfigured destination. Never
 		// revive a stale legacy target after the current target has been cleared.
@@ -112,10 +113,12 @@ func authorizationCandyConfigTx(ctx context.Context, tx *sql.Tx) (*AccountCandyT
 	if err != nil {
 		return nil, err
 	}
-	if !model.Valid {
-		return nil, infraerrors.BadRequest("AUTHORIZATION_CANDY_MODEL", "请先在糖果测试设置中启用至少一个测试模型")
+	if err = json.Unmarshal(modelsJSON, &cfg.Models); err != nil {
+		return nil, err
 	}
-	cfg.Model, cfg.Effort = model.String, effort.String
+	if err = validateRadarConfig(cfg); err != nil {
+		return nil, err
+	}
 	return cfg, nil
 }
 
@@ -153,7 +156,11 @@ func (s *AccountAuthorizationService) GetConfig(ctx context.Context) (*Authoriza
 	if err != nil {
 		return nil, err
 	}
-	c.IntelligenceModel, c.IntelligenceEffort = candy.Model, candy.Effort
+	c.IntelligenceModels = candy.Models
+	if len(candy.Models) > 0 {
+		// Keep the old scalar fields for clients predating multi-model admission.
+		c.IntelligenceModel, c.IntelligenceEffort = candy.Models[0].Model, candy.Models[0].Effort
+	}
 	if candy.TargetGroupID != nil {
 		c.FailGroupIDs = []int64{*candy.TargetGroupID}
 	}
@@ -319,7 +326,11 @@ func (s *AccountAuthorizationService) Submit(ctx context.Context, input *Authori
 	if err != nil {
 		return "", err
 	}
-	settings.IntelligenceModel, settings.IntelligenceEffort = candy.Model, candy.Effort
+	if len(candy.Models) == 0 {
+		return "", infraerrors.BadRequest("AUTHORIZATION_CANDY_MODEL", "请先在糖果测试设置中启用至少一个测试模型")
+	}
+	settings.IntelligenceModels = candy.Models
+	settings.IntelligenceModel, settings.IntelligenceEffort = candy.Models[0].Model, candy.Models[0].Effort
 	if candy.TargetGroupID == nil || *candy.TargetGroupID < 1 {
 		return "", infraerrors.BadRequest("AUTHORIZATION_CANDY_TARGET", "请先在糖果测试设置中配置不合格账号移入分组")
 	}
