@@ -27,6 +27,7 @@ import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import frontend_dependencies as dependencies
+import deployment_bundle as deployment
 
 REPOSITORY = "pengkang0322/sub2api"
 PROFILE = "pk-artifact-v2"
@@ -163,6 +164,7 @@ class Validator:
         require(data.get("schema_version") in (1, 2) and data.get("repository") == REPOSITORY,
                 "Unexpected package provenance")
         dependencies.verify(self.directory, data)
+        deployment.verify(self.directory, data)
         require(data.get("platform") == "linux/amd64", "Unsupported artifact platform")
         for key in ("commit", "tree"):
             require(re.fullmatch(r"[0-9a-f]{40}", data.get(key, "")) is not None, "Invalid " + key)
@@ -182,9 +184,11 @@ class Validator:
             require(list(members) == ["sub2api"] and members["sub2api"].isfile(), "Unexpected update archive layout")
             with tar_stream(archive, members, "sub2api") as stream:
                 require(digest(stream) == data["binary_sha256"], "Update binary digest mismatch")
-        expected = data["binary_archive_sha256"] + "  " + data["binary_archive"] + "\n"
+        expected = deployment.checksums(data)
         require(regular(self.directory / "checksums.txt").read_text() == expected, "Unexpected release checksums")
         bindings = BINDINGS + (dependencies.BINDINGS if data["schema_version"] == 2 else ())
+        if deployment.declaration(data):
+            bindings += deployment.BINDINGS
         self.report.update({key: data[key] for key in bindings})
         self.report["artifact"] = {key: data[key] for key in bindings}
         if "validation_profile" in data:
@@ -202,6 +206,10 @@ class Validator:
         require(not config.get("Volumes"), "Image must not create anonymous volumes")
         settings = [item for item in config.get("Env", []) if item.startswith("SUB2API_DOCKER_SELF_UPDATE=")]
         require(settings == ["SUB2API_DOCKER_SELF_UPDATE=true"], "Self-update must be enabled in the image")
+        if deployment.declaration(self.data):
+            environment = dict(item.split("=", 1) for item in config.get("Env", []) if "=" in item)
+            require(environment.get("PK_AUTH_BROWSER_PATH") == "/usr/bin/chromium"
+                    and environment.get("PK_AUTH_BROWSER_NO_SANDBOX") == "true", "Browser defaults must be embedded in the image")
 
     def image_identity(self, archive, members, compatibility, config_digest):
         """Accept classic config IDs and Docker 29's authenticated OCI index IDs."""
@@ -337,13 +345,14 @@ class Validator:
                                     "Image binary must be root-owned and read-only executable")
             require(binary == self.data["binary_sha256"], "Image archive does not contain the exact update binary")
 
-    def create(self, *args, image=None, volume=True, readonly=True, entrypoint=None, default_user=False):
+    def create(self, *args, image=None, volume=True, readonly=True, entrypoint=None, default_user=False, browser=False):
         name = "pk-jenkins-check-" + uuid.uuid4().hex
         self.containers.append(name)  # Also clean up if create returns after a timeout.
         flags = ["create", "--name", name, "--label", self.label, "--network=none",
                  "--cap-drop=ALL", "--security-opt=no-new-privileges",
-                 "--cpus=1", "--memory=512m", "--pids-limit=64", "--no-healthcheck",
-                 "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=16m"]
+                 "--cpus=1", "--memory=1g" if browser else "--memory=512m",
+                 "--pids-limit=256" if browser else "--pids-limit=64", "--no-healthcheck",
+                 "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=128m" if browser else "/tmp:rw,noexec,nosuid,nodev,size=16m"]
         if default_user:
             # Exercise the real default entrypoint's root -> su-exec path once.
             # Only its existing chown/setgroups/setgid/setuid operations need
@@ -360,8 +369,8 @@ class Validator:
         self.docker(*flags, image or self.data["image_id"], *args)
         return name
 
-    def container(self, *args, image=None, volume=True, entrypoint=None, default_user=False):
-        name = self.create(*args, image=image, volume=volume, entrypoint=entrypoint, default_user=default_user)
+    def container(self, *args, image=None, volume=True, entrypoint=None, default_user=False, browser=False):
+        name = self.create(*args, image=image, volume=volume, entrypoint=entrypoint, default_user=default_user, browser=browser)
         output = self.docker("start", "--attach", name, timeout=60)
         status = json.loads(self.docker("inspect", "--format", "{{json .State}}", name))
         require(status.get("Running") is False and status.get("ExitCode") == 0 and not status.get("OOMKilled"),
@@ -470,6 +479,12 @@ class Validator:
                 with self.check("original-image-rollback"):
                     self.version()
                     self.container("cmp", "/app/sub2api", "/app/data/bin/sub2api")
+                if deployment.declaration(self.data):
+                    with self.check("browser-runtime"):
+                        output = self.container("-ec", deployment.BROWSER_CHECK,
+                                                volume=False, entrypoint="/bin/sh", browser=True)
+                        require("<title>pk-browser-ready</title>" in output,
+                                "Bundled Chromium could not render the isolated local page")
             finally:
                 with self.check("cleanup"):
                     self.cleanup()
@@ -493,7 +508,10 @@ def main():
             signal.signal(getattr(signal, name), interrupted)
     try:
         Validator(directory, report).run()
-        require([item["name"] for item in report["checks"]] == list(REQUIRED_CHECKS), "Incomplete runtime checks")
+        expected_checks = list(REQUIRED_CHECKS)
+        if report.get("deployment_profile") == deployment.PROFILE:
+            expected_checks.insert(-1, "browser-runtime")
+        require([item["name"] for item in report["checks"]] == expected_checks, "Incomplete runtime checks")
         require(all(item["status"] == "passed" and item["exit_code"] == 0 for item in report["checks"]),
                 "Runtime checks failed")
         report["status"] = "passed"

@@ -1,5 +1,7 @@
 # Jenkins 私有打包与发布
 
+2026-10-31起，新完整部署包使用pk-browser-deployment-v1，随Release上传sub2api-deployment-版本-amd64.tgz。内含同次原样应用镜像、Compose、初始化脚本和逐项SHA256；Chromium/运行库已经在镜像里，新部署自动生成固定加密密钥。原网页更新归档及格式保留，新包名故意不含linux_amd64，防止旧更新器误选。inventory生成后由原十一项加browser-runtime共十二项验收绑定整包摘要；浏览器在无网络/非root/只读隔离容器中只渲染本地data页面，不发真实授权/模型请求。旧封存包仍按原profile和原十一项核验。Jenkins仍由用户手动选择正式标签release，不自动部署。
+
 本目录把 PK-017 的打包迁到 Jenkins。GitHub 继续保存私有源码、正式 Release 和 GHCR 镜像；GitHub Actions 不再执行打包或测试。正式更新包仍使用原名称、SHA256 校验和正式 Release 属性，后台网页更新路径保持不变。
 
 2026-10-21 用户最新授权取消全套源码测试和源码 notes 对提交、合入、正式标签交接及新 release 的前置，取代 2026-10-08/19 的对应要求。默认完成保护功能和差异核对后，直接提交、推送 main 与唯一正式标签，由用户点击 `ACTION=release`；Jenkins 一次完成正式构建、十一项同制品运行时验收和私库发布。不自动运行全套源码测试，未测不写成通过，发布不自动上线。

@@ -23,6 +23,7 @@ import urllib.request
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import frontend_dependencies as dependencies
+import deployment_bundle as deployment
 
 REPOSITORY = "pengkang0322/sub2api"
 IMAGE = "ghcr.io/pengkang0322/sub2api"
@@ -172,6 +173,8 @@ def prepare() -> None:
         "image_tag": IMAGE + ":" + version,
         "binary_archive": f"sub2api_{version}_linux_amd64.tar.gz",
         "image_archive": f"sub2api_{version}_linux_amd64.docker.tar.gz",
+        "deployment_profile": deployment.PROFILE,
+        "deployment_archive": f"sub2api-deployment-{version}-amd64.tgz",
         "validation": "Pending legacy local source and artifact-runtime validation; this package is not published",
     }
     if os.environ.get("ACTION", "release") == "release":
@@ -193,6 +196,7 @@ def manifest(directory: Path) -> dict:
     data = json.loads(path.read_text(encoding="utf-8"))
     require(data.get("schema_version") in (1, 2) and data.get("repository") == REPOSITORY, "Unexpected package provenance")
     dependencies.declaration(directory, data)
+    deployment.declaration(data)
     require(bool(re.fullmatch(PACKAGE_PATTERN, data.get("package_id", ""))), "Invalid manifest package ID")
     require(bool(re.fullmatch(r"[0-9a-f]{40}", data.get("commit", ""))), "Invalid manifest commit")
     require(bool(re.fullmatch(r"[0-9a-f]{40}", data.get("tree", ""))), "Invalid manifest tree")
@@ -214,6 +218,7 @@ def manifest(directory: Path) -> dict:
 
 def verify_artifacts(directory: Path, data: dict) -> None:
     dependencies.verify(directory, data)
+    deployment.verify(directory, data)
     for key in ("binary_archive", "image_archive"):
         require(sha256(directory / data[key]) == data.get(key + "_sha256"), f"Artifact checksum mismatch: {key}")
     require(bool(re.fullmatch(r"[0-9a-f]{64}", data.get("binary_sha256", ""))), "Invalid binary digest")
@@ -227,7 +232,7 @@ def verify_artifacts(directory: Path, data: dict) -> None:
             require(hashlib.file_digest(stream, "sha256").hexdigest() == data["binary_sha256"],
                     "Update archive does not contain the recorded binary")
     require(bool(re.fullmatch(r"sha256:[0-9a-f]{64}", data.get("image_id", ""))), "Invalid image ID")
-    expected = data["binary_archive_sha256"] + "  " + data["binary_archive"] + "\n"
+    expected = deployment.checksums(data)
     require((directory / "checksums.txt").read_text() == expected, "Unexpected release checksum file")
 
 
@@ -248,7 +253,8 @@ def inventory() -> None:
         data[key + "_sha256"] = sha256(output / data[key])
     data["binary_sha256"] = (output / "binary-sha256.txt").read_text().strip()
     data["image_id"] = (output / "image-id.txt").read_text().strip()
-    (output / "checksums.txt").write_text(data["binary_archive_sha256"] + "  " + data["binary_archive"] + "\n")
+    deployment.create(output, data, Path(__file__).resolve().parents[2])
+    (output / "checksums.txt").write_text(deployment.checksums(data))
     write_json(output / "manifest.json", data)
     verify_artifacts(output, data)
 
@@ -337,6 +343,11 @@ def package_evidence(directory: Path, data: dict) -> None:
     profile = data.get("validation_profile")
     require(profile in JENKINS_VALIDATION_PROFILES, "Unsupported Jenkins validation profile")
     bindings = RUNTIME_BINDINGS
+    required_checks = RUNTIME_CHECKS
+    if deployment.declaration(data):
+        deployment.verify(directory, data)
+        bindings += deployment.BINDINGS
+        required_checks = RUNTIME_CHECKS | {"browser-runtime"}
     if data.get("schema_version") == 2:
         dependencies.verify(directory, data)
         bindings += dependencies.BINDINGS
@@ -359,6 +370,9 @@ def package_evidence(directory: Path, data: dict) -> None:
     require(isinstance(proof, dict) and proof.get("schema_version") == 2
             and proof.get("tests_profile") == "pk-artifact-v2" and proof.get("status") == "passed",
             "Jenkins artifact validation did not pass")
+    if not deployment.declaration(data):
+        require(not any(key in proof or key in (proof.get("artifact") or {}) for key in deployment.BINDINGS),
+                "Deployment evidence cannot be stripped from a sealed package")
     if data.get("schema_version", 1) == 1:
         require(not any(key in proof or key in (proof.get("artifact") or {}) for key in dependencies.BINDINGS),
                 "Runtime dependency evidence cannot be downgraded to schema 1")
@@ -371,9 +385,9 @@ def package_evidence(directory: Path, data: dict) -> None:
         require(isinstance(data.get(key), str) and bool(data[key]), f"Missing package runtime binding: {key}")
         require(proof.get(key) == data[key], f"Jenkins runtime evidence does not match package {key}")
     checks = proof.get("checks")
-    require(isinstance(checks, list) and len(checks) == len(RUNTIME_CHECKS)
+    require(isinstance(checks, list) and len(checks) == len(required_checks)
             and all(isinstance(check, dict) for check in checks), "Missing Jenkins runtime checks")
-    require({check.get("name") for check in checks} == RUNTIME_CHECKS, "Jenkins runtime checks are missing or duplicated")
+    require({check.get("name") for check in checks} == required_checks, "Jenkins runtime checks are missing or duplicated")
     require(all(check.get("status") == "passed" and type(check.get("exit_code")) is int
                 and check["exit_code"] == 0 for check in checks), "Jenkins runtime check failed or was skipped")
 
@@ -394,6 +408,14 @@ def evidence(data: dict) -> dict:
         require(suite.get("status") == "passed" and suite.get("exit_code") == 0, "Local suite failed or was skipped: " + str(suite.get("name")))
     for key in ("package_id", "binary_sha256", "image_archive_sha256"):
         require(proof.get("artifact", {}).get(key) == data[key], f"Runtime evidence does not match package {key}")
+    if deployment.declaration(data):
+        deployment.verify(Path("output"), data)
+        for key in deployment.BINDINGS:
+            require(proof.get("artifact", {}).get(key) == data[key], "Manual deployment binding mismatch: " + key)
+        require(proof.get("artifact", {}).get("browser_runtime_ready") is True, "Bundled browser was not verified")
+    else:
+        require(not any(key in proof.get("artifact", {}) for key in deployment.BINDINGS),
+                "Manual deployment evidence cannot be stripped")
     if data.get("schema_version") == 2:
         dependencies.verify(Path("output"), data)
         for key in dependencies.BINDINGS:
@@ -510,11 +532,18 @@ def publish() -> None:
                  f"Binary SHA256: `{data['binary_sha256']}`\nJenkins package: `{data['package_id']}`\n\n"
                  "Built by Jenkins; " + validation +
                  "The update archive and image contain the same binary. Publishing does not deploy production.")
+        if deployment.declaration(data):
+            notes += ("\n\nFull deployment bundle: " + data["deployment_archive"] +
+                      ". Includes the exact validated image with Chromium and browser libraries, "
+                      "an installer and Compose configuration. No separate browser installation is needed. "
+                      "The original binary-only archive remains for web updates; older image environments "
+                      "must update their application container once to acquire the bundled browser.")
         release = request("/repos/" + REPOSITORY + "/releases", method="POST", token=credential,
                           data={"tag_name": tag, "target_commitish": data["commit"],
                                 "name": data["version"] + " PK出版", "body": notes,
                                 "draft": True, "prerelease": False})
-        for name in [data["binary_archive"], "checksums.txt", "manifest.json", *reports]:
+        deployment_assets = [data["deployment_archive"]] if deployment.declaration(data) else []
+        for name in [data["binary_archive"], *deployment_assets, "checksums.txt", "manifest.json", *reports]:
             upload_asset(release["id"], Path("output") / name, credential)
         released = request("/repos/" + REPOSITORY + "/releases/" + str(release["id"]),
                            method="PATCH", token=credential,

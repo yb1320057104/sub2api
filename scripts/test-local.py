@@ -431,7 +431,9 @@ print(json.dumps(value, separators=(",", ":")) if sys.argv[3] == "json" else val
         # still identify unchanged reviewed source, never the generated lock.
         sys.path.insert(0, str(ROOT / "deploy/jenkins"))
         import frontend_dependencies as dependencies
+        import deployment_bundle as deployment
         dependencies.verify(directory, manifest)
+        deployment.verify(directory, manifest)
         for key, expected in (("repository", REPOSITORY),
                               ("commit", commit), ("tree", tree), ("platform", "linux/amd64")):
             if manifest.get(key) != expected:
@@ -495,6 +497,16 @@ print(json.dumps(value, separators=(",", ":")) if sys.argv[3] == "json" else val
                               "image_archive_sha256", "image_id", "version")}
             if manifest["schema_version"] == 2:
                 self.artifact.update({key: manifest[key] for key in dependencies.BINDINGS})
+            if deployment.declaration(manifest):
+                rendered = self.run(["docker", "run", "--rm", "--network=none", "--read-only",
+                                     "--cap-drop=ALL", "--security-opt=no-new-privileges", "--user=1000:1000",
+                                     "--memory=1g", "--pids-limit=256",
+                                     "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=128m",
+                                     "--entrypoint", "/bin/sh", image, "-ec", deployment.BROWSER_CHECK])
+                if "<title>pk-browser-ready</title>" not in rendered:
+                    raise RuntimeError("Bundled Chromium failed isolated local-page rendering")
+                self.artifact.update({key: manifest[key] for key in deployment.BINDINGS})
+                self.artifact["browser_runtime_ready"] = True
         finally:
             # Names are random and belong only to this invocation.
             self.run(["docker", "image", "rm", "-f", fixture], allowed=(0, 1))
