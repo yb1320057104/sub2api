@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"time"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
@@ -169,7 +170,9 @@ func (s *AccountCandyTestService) executeRadar(parent context.Context, run *Rada
 		model.DurationMS = &elapsed
 		if err != nil {
 			model.Status = "failed"
-			model.ErrorMessage = accountCandySafeError(err)
+			// Another model can still yield a complete wrong answer and move the
+			// account. Describe this error's contribution, not the batch outcome.
+			model.ErrorMessage = strings.ReplaceAll(accountCandySafeError(err), "未转组", "此失败不作为转组依据")
 		} else {
 			model.Status = "completed"
 			model.ResponseText = text
