@@ -25,8 +25,13 @@ const authorizationLockID int64 = 70360001
 const authorizationWorkerLockID int64 = 70360002
 const authorizationInspectionCron = "*/3 * * * *"
 const authorizationReauthCron = "*/10 * * * *"
+const authorizationWorkbenchSettingKey = "pk_authorization_workbench"
 
 type AuthorizationConfig struct {
+	PassGroupIDs             []int64    `json:"pass_group_ids"`
+	FailGroupIDs             []int64    `json:"fail_group_ids"`
+	IntelligenceModel        string     `json:"intelligence_model"`
+	IntelligenceEffort       string     `json:"intelligence_effort"`
 	InspectionEnabled        bool       `json:"inspection_enabled"`
 	ReauthEnabled            bool       `json:"reauth_enabled"`
 	InspectionConcurrency    int        `json:"inspection_concurrency"`
@@ -51,6 +56,11 @@ type AuthorizationSecret struct {
 }
 
 type AuthorizationSubmit struct {
+	PassGroupIDs             []int64 `json:"pass_group_ids"`
+	FailGroupIDs             []int64 `json:"fail_group_ids"`
+	IntelligenceGate         bool    `json:"intelligence_gate"`
+	IntelligenceModel        string  `json:"intelligence_model"`
+	IntelligenceEffort       string  `json:"intelligence_effort"`
 	Accounts                 string  `json:"accounts"`
 	AuthorizationConcurrency int     `json:"authorization_concurrency"`
 	AccountConcurrency       int     `json:"account_concurrency"`
@@ -94,6 +104,31 @@ func (s *AccountAuthorizationService) GetConfig(ctx context.Context) (*Authoriza
 	}
 	if err = json.Unmarshal(codes, &c.ReauthStatusCodes); err != nil {
 		return nil, err
+	}
+	c.PassGroupIDs, c.FailGroupIDs = []int64{}, []int64{}
+	var saved string
+	if err = s.db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key=$1`, authorizationWorkbenchSettingKey).Scan(&saved); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+	if saved != "" {
+		var workbench AuthorizationSubmit
+		if err = json.Unmarshal([]byte(saved), &workbench); err != nil {
+			return nil, err
+		}
+		c.PassGroupIDs = workbench.PassGroupIDs
+	}
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	candy, err := accountCandyConfigTx(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	c.IntelligenceModel, c.IntelligenceEffort = candy.Model, candy.Effort
+	if candy.TargetGroupID != nil {
+		c.FailGroupIDs = []int64{*candy.TargetGroupID}
 	}
 	return c, nil
 }
@@ -222,13 +257,22 @@ func parseAuthorizationAccounts(raw string) ([]AuthorizationSecret, error) {
 }
 
 func (s *AccountAuthorizationService) Submit(ctx context.Context, input *AuthorizationSubmit) (string, error) {
+	if input == nil {
+		return "", infraerrors.BadRequest("AUTHORIZATION_OPTIONS", "授权参数不能为空")
+	}
 	if err := s.requireAuthorizationEncryption(); err != nil {
 		return "", err
 	}
 	if err := validateAuthorizationOptions(input.AuthorizationConcurrency, input.AccountConcurrency, input.AccountPriority, input.GroupIDs); err != nil {
 		return "", err
 	}
-	if err := s.admin.ValidateAccountGroupBindings(ctx, input.GroupIDs); err != nil {
+	if len(input.PassGroupIDs) == 0 {
+		return "", infraerrors.BadRequest("AUTHORIZATION_GATE_GROUPS", "请选择至少一个及格分组")
+	}
+	if err := validateAuthorizationOptions(input.AuthorizationConcurrency, input.AccountConcurrency, input.AccountPriority, input.PassGroupIDs); err != nil {
+		return "", err
+	}
+	if err := s.admin.ValidateAccountGroupBindings(ctx, input.PassGroupIDs); err != nil {
 		return "", err
 	}
 	secrets, err := parseAuthorizationAccounts(input.Accounts)
@@ -237,18 +281,34 @@ func (s *AccountAuthorizationService) Submit(ctx context.Context, input *Authori
 	}
 	settings := *input
 	settings.Accounts = ""
-	if settings.GroupIDs == nil {
-		settings.GroupIDs = []int64{}
-	}
-	raw, err := json.Marshal(settings)
-	if err != nil {
-		return "", err
-	}
+	settings.GroupIDs = []int64{}
+	settings.IntelligenceGate = true
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return "", err
 	}
 	defer func() { _ = tx.Rollback() }()
+	candy, err := accountCandyConfigTx(ctx, tx)
+	if err != nil {
+		return "", err
+	}
+	settings.IntelligenceModel, settings.IntelligenceEffort = candy.Model, candy.Effort
+	if candy.TargetGroupID == nil || *candy.TargetGroupID < 1 {
+		return "", infraerrors.BadRequest("AUTHORIZATION_CANDY_TARGET", "请先在糖果测试设置中配置不合格账号移入分组")
+	}
+	// The client cannot override the shared candy-test failure destination.
+	settings.FailGroupIDs = []int64{*candy.TargetGroupID}
+	if err = s.admin.ValidateAccountGroupBindings(ctx, settings.FailGroupIDs); err != nil {
+		return "", err
+	}
+	targets := append(append([]int64{}, settings.PassGroupIDs...), settings.FailGroupIDs...)
+	if err = validateAuthorizationGateGroups(ctx, tx, targets, nil); err != nil {
+		return "", err
+	}
+	raw, err := json.Marshal(settings)
+	if err != nil {
+		return "", err
+	}
 	batch := uuid.NewString()
 	for _, secret := range secrets {
 		data, err := json.Marshal(secret)
@@ -274,6 +334,9 @@ func (s *AccountAuthorizationService) Submit(ctx context.Context, input *Authori
 		if n != 1 {
 			return "", infraerrors.Conflict("AUTHORIZATION_RUNNING", "本批包含正在授权的邮箱，请等待原任务结束")
 		}
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO settings(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=NOW()`, authorizationWorkbenchSettingKey, string(raw)); err != nil {
+		return "", err
 	}
 	if err = tx.Commit(); err != nil {
 		return "", err

@@ -21,8 +21,9 @@ if [ -L "$wrapper" ] || { [ -e "$wrapper" ] && ! grep -Fq '# PK external Chromiu
     echo 'Refusing to overwrite an existing custom Chromium launcher' >&2
     exit 1
 fi
-apk add --no-cache chromium
+apk add --no-cache chromium xvfb
 test -x /usr/bin/chromium
+test -x /usr/bin/Xvfb
 umask 022
 staged=$(mktemp /usr/local/bin/.pk-chromium.XXXXXX)
 trap 'rm -f -- "$staged"' EXIT HUP INT TERM
@@ -40,5 +41,6 @@ mv -f -- "$staged" "$wrapper"
 INSTALL
 
 docker exec --user sub2api "$container" /usr/local/bin/chromium --version
-echo 'External Chromium installed. Application restarts and web updates preserve it.'
-echo 'After recreating the container, run this installer again. Existing data and encryption keys are unchanged.'
+echo 'External Chromium and Xvfb installed. Application restarts and web binary updates preserve them.'
+echo 'Images with browser bootstrap restore missing dependencies on container recreation (PK_AUTH_BROWSER_BOOTSTRAP=true).'
+echo 'Older images, disabled bootstrap, or failed downloads require this installer. Existing data and encryption keys are unchanged.'

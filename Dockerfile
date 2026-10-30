@@ -152,6 +152,8 @@ RUN mkdir -p /app/data && chown sub2api:sub2api /app/data
 ENV SUB2API_DOCKER_SELF_UPDATE=true
 # Authorization uses an externally installed browser; it is not part of the image.
 ENV PK_AUTH_BROWSER_NO_SANDBOX=true
+# Recreated containers restore missing browser packages at runtime, never at build time.
+ENV PK_AUTH_BROWSER_BOOTSTRAP=true
 
 # Copy entrypoint script (fixes volume permissions then drops to sub2api)
 COPY deploy/docker-entrypoint.sh /app/docker-entrypoint.sh
@@ -161,7 +163,7 @@ RUN chmod +x /app/docker-entrypoint.sh
 EXPOSE 8080
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=300s --retries=3 \
     CMD wget -q -T 5 -O /dev/null http://localhost:${SERVER_PORT:-8080}/health || exit 1
 
 # Run the application (entrypoint fixes /app/data ownership then execs as sub2api)

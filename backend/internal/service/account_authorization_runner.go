@@ -16,10 +16,12 @@ import (
 )
 
 type authorizationJob struct {
-	id, historyID        int64
-	accountID            *int64
-	email, source, token string
-	settings             AuthorizationSubmit
+	authorizationCompleted bool
+	resumeScheduling       bool
+	id, historyID          int64
+	accountID              *int64
+	email, source, token   string
+	settings               AuthorizationSubmit
 }
 type authorizationProxy struct {
 	id  int64
@@ -194,6 +196,9 @@ func (s *AccountAuthorizationService) runAuthorizationJob(parent context.Context
 			return
 		}
 		status, stage, message := "failed", "failed", "授权失败，请检查账号、代理及运行依赖后重试"
+		if job.authorizationCompleted {
+			status, stage, message = "needs_input", "intelligence_failed", "授权凭据已保存，但测智或分组未完成；账号保持未分组，请检查任务后重试"
+		}
 		var failure *authorizationBrowserError
 		if errors.As(resultErr, &failure) {
 			stage = failure.stage
@@ -247,7 +252,7 @@ func (s *AccountAuthorizationService) runAuthorizationJob(parent context.Context
 	}
 	if job.source == "reauthorization" {
 		var eligible bool
-		err = s.db.QueryRowContext(ctx, `SELECT `+authorizationErrorSQL+` OR (st.status='expired' AND st.credential_version=md5(a.credentials::text) AND EXISTS(SELECT 1 FROM pk_authorization_config c,jsonb_array_elements_text(c.reauth_status_codes) code WHERE c.id=1 AND code::int=st.http_status)) FROM accounts a LEFT JOIN pk_authorization_state st ON st.account_id=a.id WHERE a.id=$1 AND a.deleted_at IS NULL`, *job.accountID).Scan(&eligible)
+		err = s.db.QueryRowContext(ctx, `SELECT `+authorizationErrorSQL+` FROM accounts a WHERE a.id=$1 AND a.deleted_at IS NULL`, *job.accountID).Scan(&eligible)
 		if err != nil || !eligible {
 			resultErr = authorizationBrowserFailure("account_changed", "账号已恢复或不再命中重授权状态码，本次任务跳过")
 			return
@@ -324,10 +329,17 @@ func (s *AccountAuthorizationService) runAuthorizationJob(parent context.Context
 		resultErr = authorizationBrowserFailure("identity_mismatch", "授权工作区与原账号不同，未覆盖原账号")
 		return
 	}
-	if resultErr = progress("saving", "正在保存新凭据并保留原账号设置"); resultErr != nil {
+	savingMessage := "正在保存新凭据并保留原账号设置"
+	if job.settings.IntelligenceGate {
+		savingMessage = "正在保存授权凭据，清空分组并暂停调度，随后执行测智"
+	}
+	if resultErr = progress("saving", savingMessage); resultErr != nil {
 		return
 	}
 	resultErr = s.applyAuthorization(ctx, cfg, job, before, token)
+	if resultErr == nil && job.settings.IntelligenceGate {
+		resultErr = s.runAuthorizationIntelligenceGate(ctx, job, progress)
+	}
 }
 
 func (s *AccountAuthorizationService) finishAuthorizationFailure(ctx context.Context, job *authorizationJob, before *Account, status, stage, message string) error {
@@ -407,6 +419,10 @@ func (s *AccountAuthorizationService) applyAuthorization(ctx context.Context, cf
 			return authorizationBrowserFailure("account_changed", "账号凭据或启用状态在授权期间发生变化，未覆盖")
 		}
 		input := &UpdateAccountInput{Credentials: SanitizeStoredCredentials(PlatformOpenAI, MergeCredentials(current.Credentials, credentials))}
+		if job.settings.IntelligenceGate {
+			empty := []int64{}
+			input.GroupIDs = &empty
+		}
 		// Clear system error state atomically; inactive accounts keep their status
 		// and scheduling switch. The error path below explicitly restores scheduling.
 		if current.Status == StatusError {
@@ -453,10 +469,34 @@ func (s *AccountAuthorizationService) applyAuthorization(ctx context.Context, cf
 			return authorizationBrowserFailure("admission_failed", "入库被拒绝，请检查分组有效性及准入要求")
 		}
 	}
+	if job.settings.IntelligenceGate {
+		job.resumeScheduling = before == nil || before.Status == StatusError || (before.Status == StatusActive && before.Schedulable)
+		account, err = s.admin.SetAccountSchedulable(txctx, account.ID, false)
+		if err != nil {
+			return err
+		}
+	}
 	if _, err = tx.Client().ExecContext(txctx, `INSERT INTO pk_authorization_state(account_id,credential_version,status,http_status,message,authorized_at) SELECT id,md5(credentials::text),'authorized',200,'授权成功',NOW() FROM accounts WHERE id=$1 ON CONFLICT(account_id) DO UPDATE SET credential_version=EXCLUDED.credential_version,status='authorized',http_status=200,message='授权成功',authorized_at=NOW(),updated_at=NOW()`, account.ID); err != nil {
 		return err
 	}
-	if _, err = tx.Client().ExecContext(txctx, `UPDATE pk_authorization_jobs SET account_id=$3,history_id=$4,status='completed',stage='completed',message='授权成功，凭据已写入账号',finished_at=NOW() WHERE id=$1 AND owner_token=$2`, job.id, job.token, account.ID, job.historyID); err != nil {
+	status, stage, message := "completed", "completed", "授权成功，凭据已写入账号"
+	metadata := map[string]any{"authorization_completed": true}
+	if job.settings.IntelligenceGate {
+		status, stage, message = "running", "intelligence_pending", "授权成功，暂不分组，正在准备测智"
+	} else {
+		names := make([]string, 0, len(account.Groups))
+		for _, group := range account.Groups {
+			if group != nil {
+				names = append(names, group.Name)
+			}
+		}
+		metadata["final_group_ids"], metadata["final_group_names"] = account.GroupIDs, names
+	}
+	metadataJSON, err := json.Marshal(metadata)
+	if err != nil {
+		return err
+	}
+	if _, err = tx.Client().ExecContext(txctx, `UPDATE pk_authorization_jobs SET account_id=$3,history_id=$4,status=$5,stage=$6,message=$7,finished_at=CASE WHEN $5='completed' THEN NOW() ELSE NULL END,settings=settings||$8::jsonb WHERE id=$1 AND owner_token=$2`, job.id, job.token, account.ID, job.historyID, status, stage, message, string(metadataJSON)); err != nil {
 		return err
 	}
 	if err = ctx.Err(); err != nil {
@@ -465,6 +505,8 @@ func (s *AccountAuthorizationService) applyAuthorization(ctx context.Context, cf
 	if err = tx.Commit(); err != nil {
 		return err
 	}
+	job.accountID = &account.ID
+	job.authorizationCompleted = true
 	s.authorizationAccountCommitted(ctx, account.ID)
 	if s.invalidator != nil {
 		if err = s.invalidator.InvalidateToken(ctx, account); err != nil {

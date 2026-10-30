@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,6 +30,10 @@ import (
 type authorizationBrowserError struct {
 	stage, message string
 	needsInput     bool
+	// noReplay marks a failure that happened after the password or a completed
+	// challenge was submitted. Such a task is never replayed in another browser
+	// identity or against another exit.
+	noReplay bool
 }
 
 func (e *authorizationBrowserError) Error() string { return e.message }
@@ -84,6 +89,64 @@ func authorizationBanJSON(raw string) bool {
 		}
 	}
 	return false
+}
+
+// Authentication errors are semantic: HTTP 403 alone never proves a ban.
+// Only fixed messages and a bounded error identifier may reach task history.
+func authorizationLoginResponse(status int, raw string, challenge bool) error {
+	if len(raw) > 65536 {
+		raw = raw[:65536]
+	}
+	suffix := "（HTTP " + strconv.Itoa(status) + "）"
+	lower := strings.ToLower(raw)
+	if challenge || (strings.Contains(lower, "<html") && (strings.Contains(lower, "cloudflare") || strings.Contains(lower, "challenge-platform") || strings.Contains(lower, "verify you are human") || strings.Contains(lower, "<title>just a moment"))) {
+		return &authorizationBrowserError{stage: "login_security", message: "登录接口返回安全验证页面，尚未完成账号验证；这不表示账号封禁" + suffix, needsInput: true}
+	}
+	if authorizationBanJSON(raw) {
+		return authorizationBannedFailure()
+	}
+	var envelope struct {
+		Code      string
+		ErrorCode string
+		Message   string
+		Error     json.RawMessage
+	}
+	_ = json.Unmarshal([]byte(raw), &envelope)
+	var detail struct {
+		Code    string
+		Type    string
+		Message string
+	}
+	_ = json.Unmarshal(envelope.Error, &detail)
+	var errorText string
+	_ = json.Unmarshal(envelope.Error, &errorText)
+	text := strings.ToLower(strings.Join([]string{envelope.Code, envelope.ErrorCode, envelope.Message, detail.Code, detail.Type, detail.Message, errorText}, " "))
+	if regexp.MustCompile(`\b(?:invalid_credentials|invalid_username_or_password|invalid_email_or_password)\b`).MatchString(text) {
+		return &authorizationBrowserError{stage: "invalid_credentials", message: "邮箱或密码未被接受，请检查并补全凭据后重试；未确认账号封禁" + suffix, needsInput: true}
+	}
+	if regexp.MustCompile(`(?:invalid|incorrect|wrong)[_ -]*(?:password)|password[_ -]*(?:invalid|incorrect|wrong)`).MatchString(text) {
+		return &authorizationBrowserError{stage: "invalid_password", message: "账号密码未被接受，请补全正确密码后重试" + suffix, needsInput: true}
+	}
+	if regexp.MustCompile(`(?:invalid|incorrect|wrong|expired)[_ -]*(?:totp|otp|verification[_ -]*code|mfa[_ -]*code)|(?:totp|otp|mfa[_ -]*code|verification[_ -]*code)[_ -]*(?:invalid|incorrect|wrong|expired)`).MatchString(text) {
+		return &authorizationBrowserError{stage: "invalid_twofa", message: "2FA验证码未被接受，请检查密钥及系统时间后重试" + suffix, needsInput: true}
+	}
+	if status == http.StatusTooManyRequests || strings.Contains(text, "rate_limit_exceeded") || strings.Contains(text, "auth_rate_limited") {
+		return &authorizationBrowserError{stage: "login_rate_limited", message: "官方登录请求被限流，请稍后重试；未确认账号封禁" + suffix, needsInput: true}
+	}
+	if status >= 400 {
+		code := detail.Code
+		if code == "" {
+			code = envelope.Code
+		}
+		if code == "" {
+			code = envelope.ErrorCode
+		}
+		if regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`).MatchString(code) {
+			suffix += "，错误标识：" + code
+		}
+		return &authorizationBrowserError{stage: "login_http_failed", message: "官方登录接口拒绝请求，未确认账号封禁" + suffix, needsInput: true}
+	}
+	return nil
 }
 
 func authorizationBrowserPath() string {
@@ -290,7 +353,7 @@ func newAuthorizationCDP(ctx context.Context, address string) (*authorizationCDP
 					default:
 					}
 				}
-			} else if m.Method == "Network.responseReceived" || m.Method == "Fetch.requestPaused" {
+			} else if m.Method == "Network.responseReceived" || m.Method == "Network.requestWillBeSent" || m.Method == "Network.loadingFinished" || m.Method == "Network.loadingFailed" || m.Method == "Fetch.requestPaused" {
 				select {
 				case c.events <- m:
 				case <-ctx.Done():
@@ -359,27 +422,74 @@ func authorizationBrowserIdentity(ctx context.Context, cdp *authorizationCDP) er
 	if _, err := strconv.Atoi(major); err != nil || version.UserAgent == "" {
 		return authorizationBrowserFailure("browser_identity", "无法读取授权浏览器版本，未发送预检请求")
 	}
-	platform, navigatorPlatform := "Linux", "Linux x86_64"
+	platform, navigatorPlatform, platformVersion := "Linux", "Linux x86_64", "6.5.0"
 	if strings.Contains(version.UserAgent, "Windows") {
-		platform, navigatorPlatform = "Windows", "Win32"
+		platform, navigatorPlatform, platformVersion = "Windows", "Win32", "15.0.0"
 	} else if strings.Contains(version.UserAgent, "Macintosh") {
-		platform, navigatorPlatform = "macOS", "MacIntel"
+		platform, navigatorPlatform, platformVersion = "macOS", "MacIntel", "14.6.1"
+	}
+	// Cloudflare scores the brand list and the empty platformVersion, so both
+	// must describe the binary that is really running: Google Chrome adds its own
+	// brand only when the Chrome channel is used, Chromium never claims it.
+	brands := []map[string]string{{"brand": "Not.A/Brand", "version": "99"}, {"brand": "Chromium", "version": major}}
+	fullBrands := []map[string]string{{"brand": "Not.A/Brand", "version": "99.0.0.0"}, {"brand": "Chromium", "version": full}}
+	if strings.HasPrefix(version.Product, "Chrome/") {
+		brands = append(brands, map[string]string{"brand": "Google Chrome", "version": major})
+		fullBrands = append(fullBrands, map[string]string{"brand": "Google Chrome", "version": full})
 	}
 	params := map[string]any{
 		"userAgent":      strings.ReplaceAll(version.UserAgent, "HeadlessChrome/", "Chrome/"),
 		"acceptLanguage": "en-US,en;q=0.9",
 		"platform":       navigatorPlatform,
 		"userAgentMetadata": map[string]any{
-			"brands":          []map[string]string{{"brand": "Not.A/Brand", "version": "99"}, {"brand": "Chromium", "version": major}},
-			"fullVersionList": []map[string]string{{"brand": "Not.A/Brand", "version": "99.0.0.0"}, {"brand": "Chromium", "version": full}},
-			"fullVersion":     full, "platform": platform, "platformVersion": "",
-			"architecture": "x86", "model": "", "mobile": false, "bitness": "64",
+			"brands":          brands,
+			"fullVersionList": fullBrands,
+			"fullVersion":     full,
+			"platform":        platform,
+			"platformVersion": platformVersion,
+			"architecture":    "x86", "model": "", "mobile": false, "bitness": "64",
 		},
 	}
 	if err := cdp.call(ctx, "Network.setUserAgentOverride", params, nil); err != nil {
 		return authorizationBrowserFailure("browser_identity", "授权浏览器身份配置失败，未发送预检请求")
 	}
 	return nil
+}
+
+// Cloudflare detects automation through navigator.webdriver and a missing
+// window.chrome far more often than through the CDP session itself. This runs
+// before any document exists and never touches the page's own state.
+const authorizationBrowserStealthScript = `(()=>{try{Object.defineProperty(Navigator.prototype,'webdriver',{get:()=>undefined,configurable:true});}catch(e){}try{if(!navigator.languages||navigator.languages.length===0){Object.defineProperty(Navigator.prototype,'languages',{get:()=>['en-US','en'],configurable:true});}}catch(e){}try{if(!window.chrome){window.chrome={runtime:{}};}}catch(e){}})()`
+
+// A private Xvfb-backed display for the background Chrome identity.
+func authorizationBrowserDisplayEnv(mode string) ([]string, func(), error) {
+	if mode != authorizationModeBackground || runtime.GOOS != "linux" || os.Getenv("DISPLAY") != "" {
+		return nil, func() {}, nil
+	}
+	binary, err := exec.LookPath("Xvfb")
+	if err != nil {
+		return nil, func() {}, errors.New("no display")
+	}
+	for number := 90; number < 100; number++ {
+		display := ":" + strconv.Itoa(number)
+		if _, statErr := os.Stat("/tmp/.X" + strconv.Itoa(number) + "-lock"); statErr == nil {
+			continue
+		}
+		cmd := exec.Command(binary, display, "-screen", "0", "1366x900x24", "-nolisten", "tcp")
+		cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
+		if err = cmd.Start(); err != nil {
+			return nil, func() {}, err
+		}
+		if authorizationPause(context.Background(), 700*time.Millisecond) != nil {
+			_ = cmd.Process.Kill()
+			return nil, func() {}, errors.New("display start interrupted")
+		}
+		return []string{"DISPLAY=" + display}, func() {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}, nil
+	}
+	return nil, func() {}, errors.New("no display")
 }
 
 // Chromium errors are reduced to known categories; never expose proxy URLs or
@@ -410,40 +520,252 @@ func authorizationPrecheckHTTPState(code int64) string {
 	return "尚未收到 HTTP 响应"
 }
 
+// Cloudflare renders a managed challenge in a cross-origin iframe. The probe
+// reports the checkbox position of the widget that is really on screen so the
+// click can be dispatched as a mouse event through CDP instead of a synthetic
+// .click() from page script, which the widget rejects.
+const authorizationChallengeScript = `(()=>{const frames=Array.from(document.querySelectorAll('iframe[src*="challenges.cloudflare.com"],iframe[src*="challenge-platform"]'));for(const frame of frames){const box=frame.getBoundingClientRect();if(box.width>80&&box.height>30)return {state:'widget',x:box.left+28,y:box.top+Math.min(30,box.height/2)};}const text=((document.title||'')+' '+(document.body?document.body.innerText:'')).toLowerCase();if(/just a moment|checking your browser|verify (?:you are|that you are) (?:a )?human|needs to review the security|security verification|enable javascript and cookies|验证您是真人|人机验证/.test(text))return {state:'challenge'};return {state:'clear'};})()`
+
+const authorizationPrecheckScript = `(()=>{if(!document.body||document.readyState==='loading')return 'loading';const text=(document.title+' '+document.body.innerText).toLowerCase();if(/just a moment|checking your browser|verify.{0,20}human|security verification|enable javascript and cookies|验证您是真人|人机验证/.test(text))return 'challenge';return document.contentType==='text/html'&&document.documentElement?'html':'invalid'})()`
+
+func authorizationChallengeProbe(ctx context.Context, cdp *authorizationCDP) (string, float64, float64) {
+	var result struct {
+		Result struct {
+			Value struct {
+				State string  `json:"state"`
+				X     float64 `json:"x"`
+				Y     float64 `json:"y"`
+			} `json:"value"`
+		} `json:"result"`
+	}
+	if err := cdp.call(ctx, "Runtime.evaluate", map[string]any{"expression": authorizationChallengeScript, "returnByValue": true}, &result); err != nil {
+		return "clear", 0, 0
+	}
+	if result.Result.Value.State == "" {
+		return "clear", 0, 0
+	}
+	return result.Result.Value.State, result.Result.Value.X, result.Result.Value.Y
+}
+
+func authorizationChallengeClick(ctx context.Context, cdp *authorizationCDP, x, y float64) {
+	x += float64(time.Now().UnixNano()%7) - 3
+	y += float64(time.Now().UnixNano()%5) - 2
+	for _, event := range []struct {
+		kind    string
+		buttons int
+		clicks  int
+	}{{"mouseMoved", 0, 0}, {"mousePressed", 1, 1}, {"mouseReleased", 0, 1}} {
+		_ = cdp.call(ctx, "Input.dispatchMouseEvent", map[string]any{
+			"type": event.kind, "x": x, "y": y, "button": "left",
+			"buttons": event.buttons, "clickCount": event.clicks, "pointerType": "mouse",
+		}, nil)
+		if event.kind == "mousePressed" {
+			_ = authorizationPause(ctx, 70*time.Millisecond)
+		}
+	}
+}
+
+// Never report a challenge as a failure while the browser can still clear it:
+// the widget is clicked (at most once every 8s) until the document is real again.
+func authorizationPassChallenge(ctx context.Context, cdp *authorizationCDP, mode string) bool {
+	deadline := time.Now().Add(authorizationChallengeWindow(mode))
+	clicked := time.Time{}
+	for time.Now().Before(deadline) {
+		state, x, y := authorizationChallengeProbe(ctx, cdp)
+		if state == "clear" {
+			return true
+		}
+		if state == "widget" && (clicked.IsZero() || time.Since(clicked) > 8*time.Second) {
+			authorizationChallengeClick(ctx, cdp, x, y)
+			clicked = time.Now()
+		}
+		if authorizationPause(ctx, 700*time.Millisecond) != nil {
+			return false
+		}
+	}
+	return false
+}
+
+const (
+	authorizationModeHeadless       = "headless"
+	authorizationModeBackground     = "background"
+	authorizationProxyAttempts      = 3
+	authorizationPrecheckHeadless   = 70 * time.Second
+	authorizationPrecheckBackground = 180 * time.Second
+	authorizationChallengeHeadless  = 30 * time.Second
+	authorizationChallengeHeadful   = 180 * time.Second
+	// The browser phase stays inside the job's 10-minute context even when both
+	// identities have to wait for a Cloudflare challenge twice.
+	authorizationBrowserBudget = 8 * time.Minute
+)
+
+// PK_AUTH_BROWSER_MODE pins one identity; the default keeps the reference order
+// (headless first, then a real offscreen Chrome window).
+func authorizationBrowserModes() []string {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("PK_AUTH_BROWSER_MODE"))) {
+	case "headless":
+		return []string{authorizationModeHeadless}
+	case "background", "headful", "visible":
+		return []string{authorizationModeBackground}
+	}
+	return []string{authorizationModeHeadless, authorizationModeBackground}
+}
+
+func authorizationChallengeStage(stage string) bool {
+	switch stage {
+	case "proxy_challenge", "login_security", "security", "challenge":
+		return true
+	}
+	return false
+}
+
+// Chrome 132 dropped the old headless shell: --headless=new is required only on
+// older builds, and newer builds already default to the new implementation.
+func authorizationBrowserHeadlessArg(path string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, path, "--version").Output()
+	if err == nil {
+		// The banner carries extra words ("Chromium 136.0.7103.113 Alpine Linux"),
+		// so take the first numeric token instead of the last one.
+		for _, field := range strings.Fields(string(out)) {
+			major, _, _ := strings.Cut(field, ".")
+			if number, convertErr := strconv.Atoi(major); convertErr == nil && number > 0 {
+				if number >= 132 {
+					return "--headless"
+				}
+				return "--headless=new"
+			}
+		}
+	}
+	return "--headless=new"
+}
+
+func authorizationBrowserLaunchArgs(mode, profile, bridge string) []string {
+	args := []string{
+		"--disable-gpu", "--disable-dev-shm-usage", "--no-first-run", "--no-default-browser-check",
+		"--disable-background-networking", "--disable-sync", "--disable-quic",
+		"--disable-blink-features=AutomationControlled",
+		"--disable-component-update", "--disable-domain-reliability", "--metrics-recording-only",
+		"--mute-audio", "--hide-crash-restore-bubble", "--lang=en-US",
+		"--remote-debugging-address=127.0.0.1", "--remote-debugging-port=0",
+		"--user-data-dir=" + profile, "--proxy-server=" + bridge, "--proxy-bypass-list=<-loopback>",
+	}
+	if mode == authorizationModeHeadless {
+		args = append([]string{authorizationBrowserHeadlessArg(authorizationBrowserPath())}, args...)
+	} else {
+		args = append(args, "--window-position=-32000,-32000", "--window-size=1366,900")
+	}
+	if os.Getenv("PK_AUTH_BROWSER_NO_SANDBOX") == "true" {
+		args = append(args, "--no-sandbox")
+	}
+	return append(args, "about:blank")
+}
+
+func authorizationPrecheckWindow(mode string) time.Duration {
+	if mode == authorizationModeBackground {
+		return authorizationPrecheckBackground
+	}
+	return authorizationPrecheckHeadless
+}
+
+func authorizationChallengeWindow(mode string) time.Duration {
+	if mode == authorizationModeBackground {
+		return authorizationChallengeHeadful
+	}
+	return authorizationChallengeHeadless
+}
+
+// Cloudflare scores the whole browser, not one request. A headless Chromium is
+// challenged and cannot clear an interactive Turnstile, so the flow keeps the
+// reference Kilo login order: try the headless identity first, then retry the
+// same account and the same proxy in a real Chrome window parked offscreen.
+// Profiles, cookie jars and exits are never shared between identities.
 func runAuthorizationBrowser(ctx context.Context, proxyURL, authURL string, secret *AuthorizationSecret, progress func(string, string) error) (string, error) {
-	const attempts = 3
-	for attempt := 1; attempt <= attempts; attempt++ {
-		value, err := runAuthorizationBrowserAttempt(ctx, proxyURL, authURL, secret, progress)
-		if err == nil || ctx.Err() != nil {
+	budgetCtx, stopBudget := context.WithTimeout(ctx, authorizationBrowserBudget)
+	defer stopBudget()
+	modes := authorizationBrowserModes()
+	var last *authorizationBrowserError
+	for index, mode := range modes {
+		if index > 0 {
+			if err := progress("browser_retry", "无头会话未通过 Cloudflare 验证，正在改用独立后台 Chrome 会话（同一代理）"); err != nil {
+				return "", err
+			}
+			if err := authorizationPause(budgetCtx, time.Second); err != nil {
+				return "", err
+			}
+		}
+		value, err, escalate := runAuthorizationBrowserMode(budgetCtx, mode, proxyURL, authURL, secret, progress)
+		if err == nil {
+			return value, nil
+		}
+		if ctx.Err() != nil {
 			return value, err
+		}
+		if budgetCtx.Err() != nil {
+			return "", authorizationBrowserFailure("login_timeout", "授权流程超过总时限（含 Cloudflare 验证等待），已停止；请检查授权代理出口或稍后重试")
 		}
 		var failure *authorizationBrowserError
 		if !errors.As(err, &failure) {
 			return value, err
 		}
-		// These stages occur before login. Never replay password submission,
-		// account challenges or callbacks, and never switch to a direct exit.
-		switch failure.stage {
-		case "proxy_navigation_timeout", "proxy_network_failed", "proxy_http_failed", "proxy_challenge", "proxy_precheck_timeout":
-		default:
+		last = failure
+		if !escalate {
 			return value, err
 		}
-		if attempt == attempts {
-			final := *failure
-			final.message += "（已尝试3次独立连接）"
-			return value, &final
-		}
-		if err = progress("proxy_retry", "代理预检未通过，正在使用同一代理重试（"+strconv.Itoa(attempt+1)+"/3）"); err != nil {
-			return "", err
-		}
-		if err = authorizationPause(ctx, time.Second); err != nil {
-			return "", err
-		}
 	}
-	return "", authorizationBrowserFailure("proxy_precheck_failed", "代理预检未通过，未提交账号密码")
+	if last == nil {
+		return "", authorizationBrowserFailure("browser_failed", "授权浏览器未启动，未提交账号密码")
+	}
+	final := *last
+	if authorizationChallengeStage(final.stage) {
+		final.message += "（无头与后台 Chrome 会话均未通过 Cloudflare 验证；可用 PK_AUTH_BROWSER_MODE=background 固定后台会话）"
+		final.needsInput = true
+	}
+	return "", &final
 }
 
-func runAuthorizationBrowserAttempt(ctx context.Context, proxyURL, authURL string, secret *AuthorizationSecret, progress func(string, string) error) (string, error) {
+// One browser identity: proxy-level failures are retried within the identity,
+// while a Cloudflare block escalates to the next identity instead of resubmitting.
+func runAuthorizationBrowserMode(ctx context.Context, mode, proxyURL, authURL string, secret *AuthorizationSecret, progress func(string, string) error) (string, error, bool) {
+	for attempt := 1; attempt <= authorizationProxyAttempts; attempt++ {
+		value, err := runAuthorizationBrowserAttempt(ctx, mode, proxyURL, authURL, secret, progress)
+		if err == nil || ctx.Err() != nil {
+			return value, err, false
+		}
+		var failure *authorizationBrowserError
+		if !errors.As(err, &failure) {
+			return value, err, false
+		}
+		// Never replay a submitted password or a cleared challenge, and never
+		// switch the exit while a credential is in flight.
+		if failure.noReplay {
+			return value, err, false
+		}
+		if authorizationChallengeStage(failure.stage) {
+			return value, err, true
+		}
+		switch failure.stage {
+		case "proxy_navigation_timeout", "proxy_network_failed", "proxy_http_failed", "proxy_precheck_timeout":
+		default:
+			return value, err, false
+		}
+		if attempt == authorizationProxyAttempts {
+			final := *failure
+			final.message += "（已尝试3次独立连接）"
+			return value, &final, false
+		}
+		if err = progress("proxy_retry", "代理预检未通过，正在使用同一代理重试（"+strconv.Itoa(attempt+1)+"/3）"); err != nil {
+			return "", err, false
+		}
+		if err = authorizationPause(ctx, time.Second); err != nil {
+			return "", err, false
+		}
+	}
+	return "", authorizationBrowserFailure("proxy_precheck_failed", "代理预检未通过，未提交账号密码"), false
+}
+
+func runAuthorizationBrowserAttempt(ctx context.Context, mode, proxyURL, authURL string, secret *AuthorizationSecret, progress func(string, string) error) (value string, err error) {
 	path := authorizationBrowserPath()
 	if path == "" {
 		return "", authorizationBrowserFailure("browser_missing", "未找到外置授权浏览器，请在应用运行环境安装 Chromium，或设置 PK_AUTH_BROWSER_PATH；Docker 部署可执行 deploy/install-browser.sh")
@@ -451,6 +773,11 @@ func runAuthorizationBrowserAttempt(ctx context.Context, proxyURL, authURL strin
 	if proxyURL == "" {
 		return "", authorizationBrowserFailure("proxy_missing", "尚未配置授权代理")
 	}
+	displayEnv, stopDisplay, displayErr := authorizationBrowserDisplayEnv(mode)
+	if displayErr != nil {
+		return "", authorizationBrowserFailure("browser_display_missing", "后台 Chrome 会话需要图形环境（Xvfb 或 DISPLAY），未提交账号密码")
+	}
+	defer stopDisplay()
 	bridge, closeBridge, err := authorizationBrowserProxy(ctx, proxyURL)
 	if err != nil {
 		return "", authorizationBrowserFailure("proxy_failed", "无法创建授权代理连接")
@@ -463,11 +790,9 @@ func runAuthorizationBrowserAttempt(ctx context.Context, proxyURL, authURL strin
 	defer func() { _ = os.RemoveAll(profile) }()
 	browserCtx, stop := context.WithCancel(ctx)
 	defer stop()
-	args := []string{"--headless=new", "--disable-gpu", "--disable-dev-shm-usage", "--no-first-run", "--no-default-browser-check", "--disable-background-networking", "--disable-sync", "--disable-quic", "--remote-debugging-address=127.0.0.1", "--remote-debugging-port=0", "--user-data-dir=" + profile, "--proxy-server=" + bridge, "--proxy-bypass-list=<-loopback>", "about:blank"}
-	if os.Getenv("PK_AUTH_BROWSER_NO_SANDBOX") == "true" {
-		args = append(args, "--no-sandbox")
-	}
+	args := authorizationBrowserLaunchArgs(mode, profile, bridge)
 	cmd := exec.CommandContext(browserCtx, path, args...)
+	cmd.Env = append(os.Environ(), displayEnv...)
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 	if err = cmd.Start(); err != nil {
@@ -475,7 +800,7 @@ func runAuthorizationBrowserAttempt(ctx context.Context, proxyURL, authURL strin
 	}
 	defer func() { stop(); _ = cmd.Wait() }()
 	var port string
-	for i := 0; i < 100; i++ {
+	for i := 0; i < 300; i++ {
 		data, e := os.ReadFile(filepath.Join(profile, "DevToolsActivePort"))
 		if e == nil {
 			port = strings.Split(string(data), "\n")[0]
@@ -523,9 +848,23 @@ func runAuthorizationBrowserAttempt(ctx context.Context, proxyURL, authURL strin
 	}()
 	callback := make(chan string, 1)
 	accountBanned := make(chan struct{}, 1)
+	loginFailure := make(chan error, 1)
 	var precheckStatus atomic.Int64
 	var precheckChallenge atomic.Bool
 	var precheckNetworkError atomic.Value
+	var loginChallenge atomic.Bool
+	var secretSubmitted atomic.Bool
+	// A failure that happens after the password was submitted is never replayed
+	// in another browser identity, against another exit or in a second round.
+	defer func() {
+		if err == nil {
+			return
+		}
+		var failure *authorizationBrowserError
+		if errors.As(err, &failure) && secretSubmitted.Load() {
+			failure.noReplay = true
+		}
+	}()
 	var frameTree struct {
 		FrameTree struct {
 			Frame struct {
@@ -552,6 +891,11 @@ func runAuthorizationBrowserAttempt(ctx context.Context, proxyURL, authURL strin
 	}
 	go func() {
 		var documentRequest string
+		type loginResponse struct {
+			status    int
+			challenge bool
+		}
+		loginResponses := make(map[string]loginResponse)
 		for {
 			select {
 			case <-browserCtx.Done():
@@ -559,6 +903,39 @@ func runAuthorizationBrowserAttempt(ctx context.Context, proxyURL, authURL strin
 			case <-cdp.done:
 				return
 			case event := <-cdp.events:
+				if event.Method == "Network.loadingFinished" {
+					var v struct {
+						RequestID string `json:"requestId"`
+					}
+					if json.Unmarshal(event.Params, &v) == nil {
+						if response, ok := loginResponses[v.RequestID]; ok {
+							delete(loginResponses, v.RequestID)
+							go func(id string, response loginResponse) {
+								readCtx, done := context.WithTimeout(browserCtx, 5*time.Second)
+								defer done()
+								var body struct {
+									Body          string `json:"body"`
+									Base64Encoded bool   `json:"base64Encoded"`
+								}
+								_ = cdp.call(readCtx, "Network.getResponseBody", map[string]any{"requestId": id}, &body)
+								if body.Base64Encoded {
+									decoded, e := base64.StdEncoding.DecodeString(body.Body)
+									if e == nil {
+										body.Body = string(decoded)
+									} else {
+										body.Body = ""
+									}
+								}
+								if failure := authorizationLoginResponse(response.status, body.Body, response.challenge); failure != nil && !response.challenge {
+									select {
+									case loginFailure <- failure:
+									default:
+									}
+								}
+							}(v.RequestID, response)
+						}
+					}
+				}
 				if event.Method == "Network.requestWillBeSent" {
 					var v struct {
 						RequestID string `json:"requestId"`
@@ -574,24 +951,45 @@ func runAuthorizationBrowserAttempt(ctx context.Context, proxyURL, authURL strin
 						RequestID string `json:"requestId"`
 						ErrorText string `json:"errorText"`
 					}
-					if json.Unmarshal(event.Params, &v) == nil && documentRequest != "" && v.RequestID == documentRequest && v.ErrorText != "" {
-						precheckNetworkError.Store(v.ErrorText)
+					if json.Unmarshal(event.Params, &v) == nil {
+						delete(loginResponses, v.RequestID)
+						if documentRequest != "" && v.RequestID == documentRequest && v.ErrorText != "" {
+							precheckNetworkError.Store(v.ErrorText)
+						}
 					}
 				}
 				if event.Method == "Network.responseReceived" {
 					var v struct {
-						FrameID  string `json:"frameId"`
-						Type     string `json:"type"`
-						Response struct {
+						RequestID string `json:"requestId"`
+						FrameID   string `json:"frameId"`
+						Type      string `json:"type"`
+						Response  struct {
 							URL     string            `json:"url"`
 							Status  int               `json:"status"`
 							Headers map[string]string `json:"headers"`
 						} `json:"response"`
 					}
-					if json.Unmarshal(event.Params, &v) == nil && v.Type == "Document" && v.FrameID == rootFrame {
+					if json.Unmarshal(event.Params, &v) == nil {
 						u, e := url.Parse(v.Response.URL)
-						if e == nil && (u.Host == "chatgpt.com" || u.Host == "www.chatgpt.com") {
+						if e == nil && u.Host == "auth.openai.com" && strings.HasPrefix(u.Path, "/api/accounts/") && v.Response.Status >= 400 {
+							challenged := false
+							for key, value := range v.Response.Headers {
+								if strings.EqualFold(key, "cf-mitigated") && strings.EqualFold(value, "challenge") {
+									challenged = true
+								}
+							}
+							loginResponses[v.RequestID] = loginResponse{status: v.Response.Status, challenge: challenged}
+							if challenged {
+								// Cloudflare answered the account API with a managed
+								// challenge. A real browser renders and clears it, so this
+								// is neither a credential failure nor a ban: record it and
+								// let the login loop drive the challenge itself.
+								loginChallenge.Store(true)
+							}
+						}
+						if e == nil && v.Type == "Document" && v.FrameID == rootFrame && (u.Host == "chatgpt.com" || u.Host == "www.chatgpt.com") {
 							precheckStatus.Store(int64(v.Response.Status))
+							precheckChallenge.Store(false)
 							for key, value := range v.Response.Headers {
 								if strings.EqualFold(key, "cf-mitigated") && strings.EqualFold(strings.TrimSpace(value), "challenge") {
 									precheckChallenge.Store(true)
@@ -614,41 +1012,7 @@ func runAuthorizationBrowserAttempt(ctx context.Context, proxyURL, authURL strin
 					continue
 				}
 				u, e := url.Parse(v.Request.URL)
-				if v.ResponseStatusCode > 0 {
-					if e == nil && u.Scheme == "https" && u.Host == "auth.openai.com" && strings.HasPrefix(u.Path, "/api/accounts/") {
-						go func(requestID string) {
-							commandCtx, cancel := context.WithTimeout(browserCtx, 10*time.Second)
-							defer cancel()
-							var body struct {
-								Body          string `json:"body"`
-								Base64Encoded bool   `json:"base64Encoded"`
-							}
-							if cdp.call(commandCtx, "Fetch.getResponseBody", map[string]any{"requestId": requestID}, &body) == nil {
-								if body.Base64Encoded {
-									if decoded, decodeErr := base64.StdEncoding.DecodeString(body.Body); decodeErr == nil {
-										body.Body = string(decoded)
-									} else {
-										body.Body = ""
-									}
-								}
-								if authorizationBanJSON(body.Body) {
-									select {
-									case accountBanned <- struct{}{}:
-									default:
-									}
-								}
-							}
-							body.Body = ""
-							cancel()
-							// A slow response-body read must not consume the budget for
-							// resuming the paused response and stall the login page.
-							continueCtx, continueCancel := context.WithTimeout(browserCtx, 10*time.Second)
-							defer continueCancel()
-							_ = cdp.call(continueCtx, "Fetch.continueResponse", map[string]any{"requestId": requestID}, nil)
-						}(v.RequestID)
-					}
-					continue
-				}
+
 				method := "Fetch.failRequest"
 				params := map[string]any{"requestId": v.RequestID, "errorReason": "BlockedByClient"}
 				validCallback := ""
@@ -690,10 +1054,13 @@ func runAuthorizationBrowserAttempt(ctx context.Context, proxyURL, authURL strin
 			return "", err
 		}
 	}
+	if err = cdp.call(ctx, "Page.addScriptToEvaluateOnNewDocument", map[string]any{"source": authorizationBrowserStealthScript}, nil); err != nil {
+		return "", err
+	}
 	if err = authorizationBrowserIdentity(ctx, cdp); err != nil {
 		return "", err
 	}
-	if err = cdp.call(ctx, "Fetch.enable", map[string]any{"patterns": []map[string]any{{"urlPattern": "*", "requestStage": "Request"}, {"urlPattern": "https://auth.openai.com/api/accounts/*", "requestStage": "Response"}}}, nil); err != nil {
+	if err = cdp.call(ctx, "Fetch.enable", map[string]any{"patterns": []map[string]any{{"urlPattern": "*", "requestStage": "Request"}}}, nil); err != nil {
 		return "", err
 	}
 	if err = progress("proxy_check", "正在通过授权代理 GET 检查 chatgpt.com"); err != nil {
@@ -711,8 +1078,9 @@ func runAuthorizationBrowserAttempt(ctx context.Context, proxyURL, authURL strin
 	if navigation.ErrorText != "" {
 		return "", authorizationPrecheckNetworkFailure(navigation.ErrorText)
 	}
+	precheckDeadline := time.Now().Add(authorizationPrecheckWindow(mode))
 	passed := false
-	for i := 0; i < 45; i++ {
+	for time.Now().Before(precheckDeadline) {
 		if err = progress("", ""); err != nil {
 			return "", err
 		}
@@ -721,10 +1089,19 @@ func runAuthorizationBrowserAttempt(ctx context.Context, proxyURL, authURL strin
 				Value string `json:"value"`
 			} `json:"result"`
 		}
-		_ = cdp.call(ctx, "Runtime.evaluate", map[string]any{"expression": `(()=>{if(!document.body||document.readyState==='loading')return 'loading';const t=(document.title+' '+document.body.innerText).toLowerCase();if(/just a moment|verify.{0,20}human|security verification|enable javascript and cookies|验证您是真人|人机验证/.test(t))return 'challenge';return document.contentType==='text/html'&&document.documentElement?'html':'invalid'})()`, "returnByValue": true}, &result)
+		_ = cdp.call(ctx, "Runtime.evaluate", map[string]any{"expression": authorizationPrecheckScript, "returnByValue": true}, &result)
 		code := precheckStatus.Load()
+		// A challenge page is not an exit failure: the browser is given the same
+		// chance a human visitor gets, then the precheck reads the real document.
 		if precheckChallenge.Load() || result.Result.Value == "challenge" {
-			return "", authorizationBrowserFailure("proxy_challenge", "chatgpt.com 返回验证页（"+authorizationPrecheckHTTPState(code)+"）；代理可连接但当前出口未通过验证，未提交账号密码")
+			if !authorizationPassChallenge(ctx, cdp, mode) {
+				return "", authorizationBrowserFailure("proxy_challenge", "chatgpt.com 返回验证页（"+authorizationPrecheckHTTPState(code)+"）；当前浏览器身份未通过 Cloudflare 验证，未提交账号密码")
+			}
+			precheckChallenge.Store(false)
+			if err = cdp.call(ctx, "Page.navigate", map[string]any{"url": "https://chatgpt.com/"}, nil); err != nil {
+				return "", authorizationBrowserFailure("proxy_failed", "授权代理无法访问 chatgpt.com")
+			}
+			continue
 		}
 		if code >= 400 {
 			return "", authorizationBrowserFailure("proxy_http_failed", "chatgpt.com 首页返回 HTTP "+strconv.FormatInt(code, 10)+"，未提交账号密码")
@@ -752,11 +1129,15 @@ func runAuthorizationBrowserAttempt(ctx context.Context, proxyURL, authURL strin
 	if err = cdp.call(ctx, "Page.navigate", map[string]any{"url": authURL}, nil); err != nil {
 		return "", authorizationBrowserFailure("login_failed", "无法打开授权页面")
 	}
-	for i := 0; i < 240; i++ {
+	loginDeadline := time.Now().Add(420 * time.Second)
+	challengeRecoveries := 0
+	for time.Now().Before(loginDeadline) {
 		if err = progress("", ""); err != nil {
 			return "", err
 		}
 		select {
+		case failure := <-loginFailure:
+			return "", failure
 		case <-accountBanned:
 			return "", authorizationBannedFailure()
 		case value := <-callback:
@@ -779,12 +1160,57 @@ func runAuthorizationBrowserAttempt(ctx context.Context, proxyURL, authURL strin
 		expression := "(" + authorizationLoginScript + ")(" + string(data) + ")"
 		if err = cdp.call(ctx, "Runtime.evaluate", map[string]any{"expression": expression, "returnByValue": true}, &result); err == nil {
 			stage := result.Result.Value
+			if stage == "login_error" && loginChallenge.Load() {
+				// Cloudflare rejected the account API call and the app rendered its
+				// own error page. That is a security step, not a credential error.
+				stage = "challenge"
+			}
 			switch stage {
 			case "account_banned":
 				return "", authorizationBannedFailure()
-			case "needs_input", "invalid_credentials", "security":
+			case "login_error":
+				// Give a pending response-body read a bounded chance to identify the
+				// actual failure before falling back to the generic error page.
+				wait := time.NewTimer(2 * time.Second)
+				select {
+				case failure := <-loginFailure:
+					wait.Stop()
+					return "", failure
+				case <-ctx.Done():
+					wait.Stop()
+					return "", ctx.Err()
+				case <-wait.C:
+				}
+				return "", &authorizationBrowserError{stage: stage, message: "官方登录页面已进入错误终态，未取得授权回调；请查看登录接口错误", needsInput: true}
+			case "invalid_password":
+				return "", &authorizationBrowserError{stage: stage, message: "登录页面提示密码未被接受，请检查并补全密码后重试", needsInput: true}
+			case "invalid_twofa":
+				return "", &authorizationBrowserError{stage: stage, message: "登录页面提示2FA验证码未被接受，请检查密钥及系统时间", needsInput: true}
+			case "needs_input", "invalid_credentials":
 				return "", &authorizationBrowserError{stage: stage, message: "官方登录需要人工验证，或密码/2FA未被接受；请检查历史凭据后重试", needsInput: true}
+			case "security", "challenge":
+				// The challenge document replaced the login page. Clear it in place
+				// with a real mouse click on the Turnstile checkbox, then restart the
+				// same authorization URL on the cleared exit.
+				if challengeRecoveries >= 2 {
+					return "", &authorizationBrowserError{stage: "login_security", message: "登录页仍停留在 Cloudflare 验证，未进入密码或2FA步骤；请检查授权代理出口", needsInput: true}
+				}
+				challengeRecoveries++
+				if err = progress("challenge", "正在完成 Cloudflare 验证"); err != nil {
+					return "", err
+				}
+				if !authorizationPassChallenge(ctx, cdp, mode) {
+					return "", &authorizationBrowserError{stage: "login_security", message: "登录页 Cloudflare 验证未在限定时间内完成，未取得授权回调", needsInput: true}
+				}
+				loginChallenge.Store(false)
+				if err = cdp.call(ctx, "Page.navigate", map[string]any{"url": authURL}, nil); err != nil {
+					return "", authorizationBrowserFailure("login_failed", "无法打开授权页面")
+				}
+				continue
 			case "email", "password", "mfa", "consent":
+				if stage == "password" || stage == "mfa" || stage == "consent" {
+					secretSubmitted.Store(true)
+				}
 				messages := map[string]string{"email": "正在提交账号邮箱", "password": "正在提交账号密码", "mfa": "正在提交2FA验证码", "consent": "正在确认官方授权"}
 				if err = progress(stage, messages[stage]); err != nil {
 					return "", err
@@ -801,10 +1227,14 @@ func runAuthorizationBrowserAttempt(ctx context.Context, proxyURL, authURL strin
 const authorizationLoginScript = `(data)=>{
  if(location.origin!=='https://auth.openai.com'&&location.origin!=='https://auth0.openai.com')return 'waiting';
  const body=(document.body?.innerText||'').toLowerCase();
- if(/deleted or deactivated|\b(?:account|user)[_ -](?:deactivated|deleted|disabled|banned|suspended)\b|\b(?:this |your )?account (?:has been |was |is )(?:deleted|deactivated|disabled|banned|suspended)\b|(?:账号|账户)(?:已被|已经|已)(?:删除|停用|封禁|封号|禁用)/i.test(body))return 'account_banned';
+ if(/oops,? an error occurred|something went wrong/.test(document.title.toLowerCase())&&!document.querySelector('input[type=email],input[type=password]'))return 'login_error';
+  if(/deleted or deactivated|\b(?:account|user)[_ -](?:deactivated|deleted|disabled|banned|suspended)\b|\b(?:this |your )?account (?:has been |was |is )(?:deleted|deactivated|disabled|banned|suspended)\b|(?:账号|账户)(?:已被|已经|已)(?:删除|停用|封禁|封号|禁用)/i.test(body))return 'account_banned';
  if(location.pathname==='/error'){try{const encoded=new URL(location.href).searchParams.get('payload')||'';if(encoded.length<16384){const payload=JSON.parse(atob(encoded.replace(/-/g,'+').replace(/_/g,'/')));if(/^(?:account|user)_(?:deactivated|deleted|disabled|banned|suspended)$/.test(payload.errorCode||payload.error?.code||''))return 'account_banned';}}catch{}}
- if(/incorrect password|wrong password|invalid credentials|invalid code|incorrect code|密码错误|验证码错误/.test(body))return 'invalid_credentials';
- if(/verify.{0,20}human|complete.{0,20}captcha|人机验证/.test(body))return 'security';
+ if(/incorrect password|wrong password|invalid password|密码错误/.test(body))return 'invalid_password';
+  if(/invalid code|incorrect code|expired code|验证码错误/.test(body))return 'invalid_twofa';
+ if(/invalid credentials|invalid username or password|invalid email or password|email is not valid/.test(body))return 'invalid_credentials';
+ if(Array.from(document.querySelectorAll('iframe[src*="challenges.cloudflare.com"]')).some(f=>{const b=f.getBoundingClientRect();return b.width>80&&b.height>30;}))return 'challenge';
+ if(/just a moment|checking your browser|verify.{0,20}human|complete.{0,20}captcha|security verification|人机验证/.test(body))return 'challenge';
  const visible=e=>e&&!e.disabled&&e.getClientRects().length>0;
  const find=s=>Array.from(document.querySelectorAll(s)).find(visible);
  const fill=(e,v)=>{Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,v);e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}));};
@@ -815,7 +1245,7 @@ const authorizationLoginScript = `(data)=>{
  const state=window.__pkAuthorizationActions||(window.__pkAuthorizationActions={});
  const act=(key,fn)=>{const old=state[key];if(old&&Date.now()-old.at<8000)return 'waiting';if(old&&old.n>=3)return 'needs_input';state[key]={at:Date.now(),n:(old?.n||0)+1};fn();return key;};
  if(password)return act('password',()=>{if(email)fill(email,data.email);fill(password,data.password);submit(password);});
- if(otp){if(/check your (?:email|inbox)|code.{0,30}(?:sent to|email|sms|text message)|(?:sent|send).{0,30}(?:email|phone)|邮箱验证码|短信验证码/.test(body)||!data.otp)return 'needs_input';return act('mfa',()=>{const cells=Array.from(document.querySelectorAll('input[autocomplete=one-time-code],input[maxlength="1"]')).filter(visible);if(cells.length===6&&cells.every(e=>e.maxLength===1))cells.forEach((e,i)=>fill(e,data.otp[i]));else fill(otp,data.otp);submit(otp);});}
+  if(otp){if(/check your (?:email|inbox)|code.{0,30}(?:sent to|email|sms|text message)|(?:sent|send).{0,30}(?:email|phone)|邮箱验证码|短信验证码/.test(body)||!data.otp)return 'needs_input';return act('mfa',()=>{const cells=Array.from(document.querySelectorAll('input[autocomplete=one-time-code],input[maxlength="1"]')).filter(visible);if(cells.length===6&&cells.every(e=>e.maxLength===1))cells.forEach((e,i)=>fill(e,data.otp[i]));else fill(otp,data.otp);submit(otp);});}
  if(email)return act('email',()=>{fill(email,data.email);submit(email);});
  const choice=Array.from(document.querySelectorAll('button,a')).find(e=>visible(e)&&/use (?:a |your )?password|(?:log in|continue) with (?:a |your )?password|使用密码|密码登录/i.test(e.innerText));if(choice)return act('password_choice',()=>choice.click());
  const consent=Array.from(document.querySelectorAll('button')).find(e=>visible(e)&&/^(allow|authorize|continue|accept|continue to codex|允许|授权|继续|同意)[.!。！\s]*$/i.test(e.innerText.trim()));if(consent)return act('consent',()=>consent.click());

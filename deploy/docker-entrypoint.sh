@@ -1,6 +1,22 @@
 #!/bin/sh
 set -e
 
+# Normalize the command before deciding whether runtime browser setup is needed.
+if [ "$#" -eq 0 ]; then
+    set -- /app/sub2api
+elif [ "${1#-}" != "$1" ]; then
+    set -- /app/sub2api "$@"
+fi
+browser_runtime=false
+if [ "$1" = "/app/sub2api" ]; then
+    browser_runtime=true
+    for argument in "$@"; do
+        case "$argument" in
+            --version|-version|-v|version|--help|-help|-h|help) browser_runtime=false; break ;;
+        esac
+    done
+fi
+
 # Fix data directory permissions when running as root.
 # Docker named volumes / host bind-mounts may be owned by root,
 # preventing the non-root sub2api user from writing files.
@@ -8,18 +24,32 @@ if [ "$(id -u)" = "0" ]; then
     mkdir -p /app/data
     # Use || true to avoid failure on read-only mounted files (e.g. config.yaml:ro)
     chown -R sub2api:sub2api /app/data 2>/dev/null || true
+    # Web updates replace the executable and restart this same container. Only
+    # container recreation loses system packages. Restore missing dependencies
+    # at runtime, keeping browsers out of release archives and image layers.
+    # Help/version/custom commands and explicitly disabled bootstraps stay offline.
+    if [ "$browser_runtime" = "true" ] && [ "${PK_AUTH_BROWSER_BOOTSTRAP:-true}" = "true" ]; then
+        if [ -f /etc/alpine-release ]; then
+            if [ ! -x /usr/bin/chromium ] || [ ! -x /usr/bin/Xvfb ]; then
+                echo "sub2api: installing missing runtime browser dependencies (up to 240 seconds)" >&2
+                browser_install_status=0
+                timeout 240 apk add --no-cache chromium xvfb >/dev/null 2>&1 || browser_install_status=$?
+                if [ "$browser_install_status" -eq 0 ] && [ -x /usr/bin/chromium ] && [ -x /usr/bin/Xvfb ]; then
+                    echo "sub2api: runtime browser dependencies are ready" >&2
+                else
+                    echo "sub2api: browser setup incomplete (exit $browser_install_status); gateway will start, but browser authorization may be unavailable. Check Alpine repository access and run deploy/install-browser.sh." >&2
+                fi
+            fi
+        else
+            echo "sub2api: automatic browser setup requires Alpine; provide external browser dependencies for this runtime" >&2
+        fi
+    fi
+    # Containers cannot use the ordinary Chromium sandbox.
+    : "${PK_AUTH_BROWSER_NO_SANDBOX:=true}"
+    export PK_AUTH_BROWSER_NO_SANDBOX
     # Re-invoke this script as sub2api so the flag-detection below
     # also runs under the correct user.
     exec su-exec sub2api "$0" "$@"
-fi
-
-# Compatibility: if the first arg looks like a flag (e.g. --help),
-# prepend the default binary so it behaves the same as the old
-# ENTRYPOINT ["/app/sub2api"] style.
-if [ "$#" -eq 0 ]; then
-    set -- /app/sub2api
-elif [ "${1#-}" != "$1" ]; then
-    set -- /app/sub2api "$@"
 fi
 
 # This is deliberately opt-in. The normal image and arbitrary custom commands

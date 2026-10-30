@@ -166,7 +166,7 @@ func (s *AccountAuthorizationService) drainAuthorizationJobs() error {
 		return err
 	}
 	defer releaseAuthorizationLock(conn, authorizationWorkerLockID)
-	if _, err = s.db.ExecContext(ctx, `UPDATE pk_authorization_jobs SET status='failed',stage='interrupted',message='进程中断，凭据历史已保留；请重新提交或等待下轮重授权',finished_at=NOW() WHERE status='running'`); err != nil {
+	if _, err = s.db.ExecContext(ctx, `UPDATE pk_authorization_jobs SET status=CASE WHEN settings->>'authorization_completed'='true' THEN 'needs_input' ELSE 'failed' END,stage='interrupted',message=CASE WHEN settings->>'authorization_completed'='true' THEN '进程中断；授权凭据已保存，测智或分组未完成，账号保持未分组，请检查后重新提交' ELSE '进程中断，凭据历史已保留；请重新提交或等待下轮重授权' END,finished_at=NOW() WHERE status='running'`); err != nil {
 		return err
 	}
 	for ctx.Err() == nil {
@@ -197,14 +197,17 @@ func authorizationMatchesCode(cfg *AuthorizationConfig, code int) bool {
 	return false
 }
 
-var authorizationStoredCode = regexp.MustCompile(`(?:^|[^0-9])([45][0-9]{2})(?:[^0-9]|$)`)
+var authorizationStoredCode = regexp.MustCompile(`[0-9]+`)
 
 func authorizationAccountErrorCode(account *Account, cfg *AuthorizationConfig) int {
 	if account.Status != StatusError {
 		return 0
 	}
-	for _, match := range authorizationStoredCode.FindAllStringSubmatch(account.ErrorMessage, -1) {
-		code, _ := strconv.Atoi(match[1])
+	for _, match := range authorizationStoredCode.FindAllString(account.ErrorMessage, -1) {
+		if len(match) != 3 {
+			continue
+		}
+		code, _ := strconv.Atoi(match)
 		if authorizationMatchesCode(cfg, code) {
 			return code
 		}
@@ -297,28 +300,13 @@ func (s *AccountAuthorizationService) inspectAuthorizationAccount(ctx context.Co
 	if knownBanned {
 		return nil
 	}
-	ok := false
-	message := "账号管理已记录触发状态码，本轮不重复探测"
-	if code == 0 {
-		var priorCode int
-		var priorExpired bool
-		if err = s.db.QueryRowContext(ctx, `SELECT COALESCE(st.status IN ('expired','banned') AND st.credential_version=md5(a.credentials::text),false),CASE WHEN st.status='banned' THEN -1 ELSE COALESCE(st.http_status,0) END FROM accounts a LEFT JOIN pk_authorization_state st ON st.account_id=a.id WHERE a.id=$1 AND a.deleted_at IS NULL`, id).Scan(&priorExpired, &priorCode); err != nil {
-			return nil
-		}
-		if priorExpired && (priorCode == -1 || authorizationMatchesCode(cfg, priorCode)) {
-			return nil
-		}
-		probeCtx, cancel := context.WithTimeout(ctx, 65*time.Second)
-		code, ok = s.tests.probeAuthorization(probeCtx, account)
-		cancel()
-		message = "探测未完整完成，未判定授权失效"
-		if ok {
-			message = "hi 连接探测成功"
-		}
-	}
-	status := "error"
-	if ok {
-		status = "authorized"
+	// Native account management owns error detection. Inspection only mirrors
+	// the latest persisted state; historical probe failures never trigger login.
+	status, message := "unknown", "账号管理尚未记录授权错误，本轮未发送探测请求"
+	if account.Status == StatusActive {
+		status, message = "authorized", "账号管理状态正常（未发送额外探测）"
+	} else if account.Status == StatusError {
+		status, message = "error", "账号管理存在错误，但未命中配置的重授权状态码"
 	}
 	if authorizationMatchesCode(cfg, code) {
 		status = "expired"
@@ -341,7 +329,7 @@ func (s *AccountAuthorizationService) inspectAuthorizationAccount(ctx context.Co
 	if !current {
 		return nil
 	}
-	err = tx.QueryRowContext(ctx, `SELECT a.credentials=$2::jsonb FROM accounts a WHERE a.id=$1 AND a.deleted_at IS NULL AND a.platform='openai' AND `+authorizationSupportedSQL+` FOR UPDATE OF a`, id, string(raw)).Scan(&current)
+	err = tx.QueryRowContext(ctx, `SELECT a.credentials=$2::jsonb AND a.status=$3 AND COALESCE(a.error_message,'')=$4 FROM accounts a WHERE a.id=$1 AND a.deleted_at IS NULL AND a.platform='openai' AND `+authorizationSupportedSQL+` FOR UPDATE OF a`, id, string(raw), account.Status, account.ErrorMessage).Scan(&current)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
@@ -351,23 +339,12 @@ func (s *AccountAuthorizationService) inspectAuthorizationAccount(ctx context.Co
 	if !current {
 		return nil
 	}
-	if status == "expired" {
-		if _, err = tx.ExecContext(ctx, `UPDATE accounts SET status=CASE WHEN status='active' THEN 'error' ELSE status END,error_message=CASE WHEN status IN ('active','error') THEN $2 ELSE error_message END,updated_at=NOW() WHERE id=$1`, id, message); err != nil {
-			return err
-		}
-		if _, err = tx.ExecContext(ctx, `INSERT INTO scheduler_outbox(event_type,account_id) VALUES($1,$2)`, SchedulerOutboxEventAccountChanged, id); err != nil {
-			return err
-		}
-	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO pk_authorization_state(account_id,credential_version,status,http_status,message,checked_at) SELECT id,md5(credentials::text),$2,$3,$4,NOW() FROM accounts WHERE id=$1 ON CONFLICT(account_id) DO UPDATE SET credential_version=EXCLUDED.credential_version,status=EXCLUDED.status,http_status=EXCLUDED.http_status,message=EXCLUDED.message,checked_at=NOW(),updated_at=NOW() WHERE pk_authorization_state.updated_at<=$5`, id, status, code, message, started)
 	if err != nil {
 		return err
 	}
 	if err = tx.Commit(); err != nil {
 		return err
-	}
-	if status == "expired" {
-		s.authorizationAccountCommitted(ctx, id)
 	}
 	return nil
 }
@@ -423,8 +400,8 @@ func (s *AccountAuthorizationService) queueReauthorization(ctx context.Context, 
  LEFT JOIN pk_authorization_state st ON st.account_id=a.id
  WHERE a.deleted_at IS NULL AND a.platform='openai' AND `+authorizationSupportedSQL+`
  AND NOT (COALESCE(st.status='banned' AND st.credential_version=md5(a.credentials::text),false))
- AND COALESCE((SELECT status FROM pk_authorization_jobs WHERE email=`+authorizationEmailSQL+` AND status IN ('banned','completed') ORDER BY id DESC LIMIT 1),'')<>'banned'
- AND (`+authorizationErrorSQL+` OR (st.status='expired' AND st.credential_version=md5(a.credentials::text) AND EXISTS(SELECT 1 FROM pk_authorization_config c,jsonb_array_elements_text(c.reauth_status_codes) code WHERE c.id=1 AND code::int=st.http_status)))
+ AND COALESCE((SELECT status FROM pk_authorization_jobs WHERE email=`+authorizationEmailSQL+` AND (status IN ('banned','completed') OR settings->>'authorization_completed'='true') ORDER BY id DESC LIMIT 1),'')<>'banned'
+ AND `+authorizationErrorSQL+`
  AND EXISTS(SELECT 1 FROM pk_authorization_config c WHERE c.id=1 AND c.reauth_enabled AND c.revision=$3)
  ORDER BY a.id ON CONFLICT (email) WHERE status IN ('queued','running') DO NOTHING`, uuid.NewString(), string(settings), cfg.Revision)
 	return err

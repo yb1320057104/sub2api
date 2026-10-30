@@ -1,6 +1,8 @@
 import { apiClient } from '../client'
 
 export interface AuthorizationConfig {
+  pass_group_ids: number[]; fail_group_ids: number[]
+  intelligence_model: string; intelligence_effort: string
   inspection_enabled: boolean; reauth_enabled: boolean
   inspection_concurrency: number; authorization_concurrency: number
   account_concurrency: number; account_priority: number; group_ids: number[]
@@ -10,12 +12,14 @@ export interface AuthorizationConfig {
   encryption_key_configured: boolean
 }
 export interface AuthorizationSubmission {
+  pass_group_ids: number[]
   accounts: string; authorization_concurrency: number
   account_concurrency: number; account_priority: number; group_ids: number[]
 }
 export interface AuthorizationSecret { email: string; password: string; twofa: string }
 export type AuthorizationList = 'jobs' | 'history' | 'proxies' | 'accounts'
 export interface AuthorizationRecord {
+  intelligence_passed?: boolean | null; intelligence_answer?: number | null; authorization_completed?: boolean
   id: number; email: string; name?: string; status: string; message?: string
   account_id?: number; account_status?: string; source?: string; stage?: string
   groups?: string[]; has_history?: boolean; has_twofa?: boolean
