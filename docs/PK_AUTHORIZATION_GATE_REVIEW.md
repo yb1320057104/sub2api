@@ -66,6 +66,18 @@
 
 两次真机授权均完整走完邮箱 → 密码 → 2FA → 授权确认 → 回调，未出现挑战；后台会话的 chatgpt.com 预检 0.7s，无头为 2.4s。
 
+## 2026-10-31 追加：登录失败的上游依据（v0.2.19-pk.21）
+
+同一正确账号 `aaravadhikari421@gmail.com`，经授权代理 `socks5://us.1024proxy.io:3000`，在服务器上三种情形实跑：
+
+| 情形 | 上游实际响应 | 阶段 | 耗时 |
+| --- | --- | --- | --- |
+| 正确密码 + 正确 2FA | 无错误，`consent` 后回调 | 成功 | 21.0s |
+| 故意改错密码 | `POST /api/accounts/password/verify` → **401**，`code=invalid_username_or_password`，`message="Login failed. Please try again or seek help at https://help.openai.com/"` | `invalid_credentials` | 13.9s |
+| 正确密码 + 故意改错 2FA 密钥 | `POST /api/accounts/mfa/verify` → **403**，`code=incorrect_code`，`message="Incorrect code"` | 修正前 `login_http_failed`，修正后 `invalid_twofa` | 16.6s |
+
+由此产生三处修正：任务消息改为“HTTP 状态；接口；上游错误标识；上游说明”四段（上游说明截断 120 字并去换行）；阶段判定优先看接口（`password/`、`mfa/`），因为 `incorrect_code` 这类通用码无法单凭文本归到 2FA；`PK_AUTH_BROWSER_TRACE=true` 作为默认关闭的排障开关，把上游状态与响应正文写进进程日志（邮箱、密码、2FA 已脱敏，单行≤600 字）。`needs_input` 同时拆成“邮箱/短信验证码”与“页面停滞”两条独立提示。
+
 ### 未验证
 
 - 服务器（数据中心出口）真实触发 CF 挑战时的清除率、`Xvfb` 实际启动路径与 Alpine 下后台 Chrome 的行为，需按原计划在隔离环境回归。

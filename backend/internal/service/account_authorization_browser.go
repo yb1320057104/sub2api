@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -92,8 +93,29 @@ func authorizationBanJSON(raw string) bool {
 }
 
 // Authentication errors are semantic: HTTP 403 alone never proves a ban.
-// Only fixed messages and a bounded error identifier may reach task history.
-func authorizationLoginResponse(status int, raw string, challenge bool) error {
+// Only fixed messages, a bounded endpoint name, an upstream error identifier and
+// one short upstream sentence may reach the task history.
+func authorizationUpstreamDetail(status int, endpoint, code, message string) string {
+	parts := []string{"HTTP " + strconv.Itoa(status)}
+	if endpoint != "" {
+		parts = append(parts, "接口："+endpoint)
+	}
+	if regexp.MustCompile(`^[a-zA-Z0-9_.-]{1,64}$`).MatchString(code) {
+		parts = append(parts, "错误标识："+code)
+	}
+	message = strings.Join(strings.Fields(message), " ")
+	if message != "" {
+		if len(message) > 120 {
+			message = strings.TrimSpace(message[:120]) + "…"
+		}
+		parts = append(parts, "上游说明："+message)
+	}
+	return "（" + strings.Join(parts, "；") + "）"
+}
+
+// The endpoint decides the step, so a shared upstream code such as
+// incorrect_code is never reported as the wrong kind of failure.
+func authorizationLoginResponse(status int, raw string, challenge bool, endpoint string) error {
 	if len(raw) > 65536 {
 		raw = raw[:65536]
 	}
@@ -120,31 +142,47 @@ func authorizationLoginResponse(status int, raw string, challenge bool) error {
 	_ = json.Unmarshal(envelope.Error, &detail)
 	var errorText string
 	_ = json.Unmarshal(envelope.Error, &errorText)
+	code := detail.Code
+	if code == "" {
+		code = envelope.Code
+	}
+	if code == "" {
+		code = envelope.ErrorCode
+	}
+	message := detail.Message
+	if message == "" {
+		message = envelope.Message
+	}
 	text := strings.ToLower(strings.Join([]string{envelope.Code, envelope.ErrorCode, envelope.Message, detail.Code, detail.Type, detail.Message, errorText}, " "))
+	full := authorizationUpstreamDetail(status, endpoint, code, message)
+	step := strings.ToLower(endpoint)
+	switch {
+	case strings.Contains(step, "mfa/") || strings.Contains(step, "/verify_mfa"):
+		if status >= 400 {
+			return &authorizationBrowserError{stage: "invalid_twofa", message: "2FA验证失败，官方拒绝了这一步的验证码；请检查密钥与系统时间后重试" + full, needsInput: true}
+		}
+	case strings.Contains(step, "password/"):
+		if status >= 400 {
+			if regexp.MustCompile(`invalid_username_or_password|invalid_credentials|invalid_email_or_password`).MatchString(text) {
+				return &authorizationBrowserError{stage: "invalid_credentials", message: "邮箱或密码未被接受，请检查并补全凭据后重试；未确认账号封禁" + full, needsInput: true}
+			}
+			return &authorizationBrowserError{stage: "invalid_password", message: "账号密码未被接受，请补全正确密码后重试" + full, needsInput: true}
+		}
+	}
 	if regexp.MustCompile(`\b(?:invalid_credentials|invalid_username_or_password|invalid_email_or_password)\b`).MatchString(text) {
-		return &authorizationBrowserError{stage: "invalid_credentials", message: "邮箱或密码未被接受，请检查并补全凭据后重试；未确认账号封禁" + suffix, needsInput: true}
+		return &authorizationBrowserError{stage: "invalid_credentials", message: "邮箱或密码未被接受，请检查并补全凭据后重试；未确认账号封禁" + full, needsInput: true}
 	}
 	if regexp.MustCompile(`(?:invalid|incorrect|wrong)[_ -]*(?:password)|password[_ -]*(?:invalid|incorrect|wrong)`).MatchString(text) {
-		return &authorizationBrowserError{stage: "invalid_password", message: "账号密码未被接受，请补全正确密码后重试" + suffix, needsInput: true}
+		return &authorizationBrowserError{stage: "invalid_password", message: "账号密码未被接受，请补全正确密码后重试" + full, needsInput: true}
 	}
-	if regexp.MustCompile(`(?:invalid|incorrect|wrong|expired)[_ -]*(?:totp|otp|verification[_ -]*code|mfa[_ -]*code)|(?:totp|otp|mfa[_ -]*code|verification[_ -]*code)[_ -]*(?:invalid|incorrect|wrong|expired)`).MatchString(text) {
-		return &authorizationBrowserError{stage: "invalid_twofa", message: "2FA验证码未被接受，请检查密钥及系统时间后重试" + suffix, needsInput: true}
+	if regexp.MustCompile(`(?:invalid|incorrect|wrong|expired)[_ -]*code|(?:invalid|incorrect|wrong|expired)[_ -]*(?:totp|otp|verification[_ -]*code|mfa[_ -]*code)|(?:totp|otp|mfa[_ -]*code|verification[_ -]*code)[_ -]*(?:invalid|incorrect|wrong|expired)`).MatchString(text) {
+		return &authorizationBrowserError{stage: "invalid_twofa", message: "2FA验证码未被接受，请检查密钥及系统时间后重试" + full, needsInput: true}
 	}
 	if status == http.StatusTooManyRequests || strings.Contains(text, "rate_limit_exceeded") || strings.Contains(text, "auth_rate_limited") {
-		return &authorizationBrowserError{stage: "login_rate_limited", message: "官方登录请求被限流，请稍后重试；未确认账号封禁" + suffix, needsInput: true}
+		return &authorizationBrowserError{stage: "login_rate_limited", message: "官方登录请求被限流，请稍后重试；未确认账号封禁" + full, needsInput: true}
 	}
 	if status >= 400 {
-		code := detail.Code
-		if code == "" {
-			code = envelope.Code
-		}
-		if code == "" {
-			code = envelope.ErrorCode
-		}
-		if regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`).MatchString(code) {
-			suffix += "，错误标识：" + code
-		}
-		return &authorizationBrowserError{stage: "login_http_failed", message: "官方登录接口拒绝请求，未确认账号封禁" + suffix, needsInput: true}
+		return &authorizationBrowserError{stage: "login_http_failed", message: "官方登录接口拒绝请求，未确认账号封禁" + full, needsInput: true}
 	}
 	return nil
 }
@@ -518,6 +556,33 @@ func authorizationPrecheckHTTPState(code int64) string {
 		return "HTTP " + strconv.FormatInt(code, 10)
 	}
 	return "尚未收到 HTTP 响应"
+}
+
+// Optional diagnostic trace (PK_AUTH_BROWSER_TRACE=true). It is never enabled by
+// default: the trace writes upstream status and body into the process log with
+// the account email, password and 2FA secret redacted and the line truncated.
+func authorizationTrace(secret *AuthorizationSecret, format string, args ...any) {
+	if !strings.EqualFold(strings.TrimSpace(os.Getenv("PK_AUTH_BROWSER_TRACE")), "true") {
+		return
+	}
+	line := fmt.Sprintf(format, args...)
+	if secret != nil {
+		for _, value := range []string{secret.Password, secret.TwoFA, secret.Email} {
+			if len(value) >= 4 {
+				line = strings.ReplaceAll(line, value, "<redacted>")
+			}
+		}
+	}
+	if len(line) > 600 {
+		line = line[:600] + "..."
+	}
+	line = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return ' '
+		}
+		return r
+	}, line)
+	fmt.Fprintf(os.Stderr, "authorization-trace: %s\n", line)
 }
 
 // Cloudflare renders a managed challenge in a cross-origin iframe. The probe
@@ -894,6 +959,7 @@ func runAuthorizationBrowserAttempt(ctx context.Context, mode, proxyURL, authURL
 		type loginResponse struct {
 			status    int
 			challenge bool
+			url       string
 		}
 		loginResponses := make(map[string]loginResponse)
 		for {
@@ -926,7 +992,12 @@ func runAuthorizationBrowserAttempt(ctx context.Context, mode, proxyURL, authURL
 										body.Body = ""
 									}
 								}
-								if failure := authorizationLoginResponse(response.status, body.Body, response.challenge); failure != nil && !response.challenge {
+								authorizationTrace(secret, "login response status=%d url=%s body=%s", response.status, response.url, body.Body)
+								endpoint := ""
+								if parsed, parseErr := url.Parse(response.url); parseErr == nil {
+									endpoint = strings.TrimPrefix(parsed.Path, "/api/accounts/")
+								}
+								if failure := authorizationLoginResponse(response.status, body.Body, response.challenge, endpoint); failure != nil && !response.challenge {
 									select {
 									case loginFailure <- failure:
 									default:
@@ -978,7 +1049,7 @@ func runAuthorizationBrowserAttempt(ctx context.Context, mode, proxyURL, authURL
 									challenged = true
 								}
 							}
-							loginResponses[v.RequestID] = loginResponse{status: v.Response.Status, challenge: challenged}
+							loginResponses[v.RequestID] = loginResponse{status: v.Response.Status, challenge: challenged, url: v.Response.URL}
 							if challenged {
 								// Cloudflare answered the account API with a managed
 								// challenge. A real browser renders and clears it, so this
@@ -1160,6 +1231,9 @@ func runAuthorizationBrowserAttempt(ctx context.Context, mode, proxyURL, authURL
 		expression := "(" + authorizationLoginScript + ")(" + string(data) + ")"
 		if err = cdp.call(ctx, "Runtime.evaluate", map[string]any{"expression": expression, "returnByValue": true}, &result); err == nil {
 			stage := result.Result.Value
+			if stage != "" && stage != "waiting" {
+				authorizationTrace(secret, "login stage=%s", stage)
+			}
 			if stage == "login_error" && loginChallenge.Load() {
 				// Cloudflare rejected the account API call and the app rendered its
 				// own error page. That is a security step, not a credential error.
@@ -1186,8 +1260,12 @@ func runAuthorizationBrowserAttempt(ctx context.Context, mode, proxyURL, authURL
 				return "", &authorizationBrowserError{stage: stage, message: "登录页面提示密码未被接受，请检查并补全密码后重试", needsInput: true}
 			case "invalid_twofa":
 				return "", &authorizationBrowserError{stage: stage, message: "登录页面提示2FA验证码未被接受，请检查密钥及系统时间", needsInput: true}
-			case "needs_input", "invalid_credentials":
-				return "", &authorizationBrowserError{stage: stage, message: "官方登录需要人工验证，或密码/2FA未被接受；请检查历史凭据后重试", needsInput: true}
+			case "needs_input":
+				return "", &authorizationBrowserError{stage: stage, message: "官方登录要求邮箱或短信验证码，本流程不读取邮箱；请先在官方页面完成该验证后再重试", needsInput: true}
+			case "stalled":
+				return "", &authorizationBrowserError{stage: stage, message: "登录页重复提交后仍未前进，可能被官方安全策略拦截或页面结构已变化；请人工确认该账号当前的登录状态", needsInput: true}
+			case "invalid_credentials":
+				return "", &authorizationBrowserError{stage: stage, message: "登录页提示邮箱或密码不被接受，请检查并补全凭据后重试；未确认账号封禁", needsInput: true}
 			case "security", "challenge":
 				// The challenge document replaced the login page. Clear it in place
 				// with a real mouse click on the Turnstile checkbox, then restart the
@@ -1243,7 +1321,7 @@ const authorizationLoginScript = `(data)=>{
  const password=find('input[type=password]');
  const otp=find('input[autocomplete=one-time-code],input[name=code],input[name=otp],input[name=totp],input[name=verification_code],input[maxlength="1"][inputmode=numeric]');
  const state=window.__pkAuthorizationActions||(window.__pkAuthorizationActions={});
- const act=(key,fn)=>{const old=state[key];if(old&&Date.now()-old.at<8000)return 'waiting';if(old&&old.n>=3)return 'needs_input';state[key]={at:Date.now(),n:(old?.n||0)+1};fn();return key;};
+ const act=(key,fn)=>{const old=state[key];if(old&&Date.now()-old.at<8000)return 'waiting';if(old&&old.n>=3)return 'stalled';state[key]={at:Date.now(),n:(old?.n||0)+1};fn();return key;};
  if(password)return act('password',()=>{if(email)fill(email,data.email);fill(password,data.password);submit(password);});
   if(otp){if(/check your (?:email|inbox)|code.{0,30}(?:sent to|email|sms|text message)|(?:sent|send).{0,30}(?:email|phone)|邮箱验证码|短信验证码/.test(body)||!data.otp)return 'needs_input';return act('mfa',()=>{const cells=Array.from(document.querySelectorAll('input[autocomplete=one-time-code],input[maxlength="1"]')).filter(visible);if(cells.length===6&&cells.every(e=>e.maxLength===1))cells.forEach((e,i)=>fill(e,data.otp[i]));else fill(otp,data.otp);submit(otp);});}
  if(email)return act('email',()=>{fill(email,data.email);submit(email);});
