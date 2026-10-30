@@ -47,6 +47,17 @@ func TestLoadMinOutputTokensFromEnv(t *testing.T) {
 	require.Equal(t, 16, cfg.Gateway.MinOutputTokens)
 }
 
+func TestLoadTurnstileDeploymentConfigFromEnvironment(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	t.Setenv("TURNSTILE_REQUIRED", "true")
+	t.Setenv("TURNSTILE_EXPECTED_HOSTNAME", "team.example.com")
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.True(t, cfg.Turnstile.Required)
+	require.Equal(t, "team.example.com", cfg.Turnstile.ExpectedHostname)
+}
+
 func TestLoadGeminiSameAccountRetries(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	cfg, err := Load()

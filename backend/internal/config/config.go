@@ -2695,10 +2695,6 @@ func setEnvReachableDefaults() {
 	viper.SetDefault("gateway.user_message_queue.mode", "")
 	viper.SetDefault("update.proxy_url", "")
 	// Turnstile deployment policy is commonly supplied through Compose env
-	// variables. Register both keys so AutomaticEnv values survive Unmarshal.
-	viper.SetDefault("turnstile.required", false)
-	viper.SetDefault("turnstile.expected_hostname", "")
-	// Turnstile deployment policy is commonly supplied through Compose env
 	// variables. Register both keys so AutomaticEnv can override them even
 	// when no config.yaml is mounted.
 	viper.SetDefault("turnstile.required", false)
