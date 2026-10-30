@@ -12,6 +12,8 @@ export default {
     latest: '最近 30 条',
     autoRefresh: '结果自动更新',
     running: 'Agent工作中',
+    emptyPool: '号池空',
+    emptyPoolHint: '分组内没有账号，本轮已结束，等待下次定时任务。',
     completed: '作品已完成',
     passed: '合格',
     notPassed: '不合格',

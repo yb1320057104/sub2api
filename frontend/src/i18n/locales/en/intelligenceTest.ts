@@ -12,6 +12,8 @@ export default {
     latest: 'Latest 30 results',
     autoRefresh: 'Results update automatically',
     running: 'Agent working',
+    emptyPool: 'Account pool empty',
+    emptyPoolHint: 'This group has no accounts. This round has ended; waiting for the next scheduled run.',
     completed: 'Creation complete',
     passed: 'Passed',
     notPassed: 'Not passed',

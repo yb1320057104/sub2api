@@ -64,7 +64,8 @@
                 </div>
               </dl>
             </div>
-            <template v-if="result.mode === 'svg'">
+            <p v-if="result.empty_pool" class="px-3 py-5 text-xs leading-5 text-gray-500 dark:text-dark-400">{{ t('intelligenceTest.emptyPoolHint') }}</p>
+            <template v-else-if="result.mode === 'svg'">
               <ResultArtifact v-if="result.has_artifact" :group-id="result.group_id" :result-id="result.id" :load-artifact="publicIntelligenceTestAPI.artifact" />
               <p v-else class="flex min-h-44 items-center justify-center px-3 text-center text-xs leading-5 text-gray-400">{{ t('intelligenceTest.missingArtifact') }}</p>
             </template>
@@ -75,7 +76,7 @@
               </div>
             </dl>
             <ResultDetails
-              v-if="result.mode === 'candy'"
+              v-if="result.mode === 'candy' && !result.empty_pool"
               :group-id="result.group_id"
               :result-id="result.id"
               :mode="result.mode"
@@ -230,11 +231,13 @@ function moveGroup(event: KeyboardEvent) {
 }
 
 function resultLabel(result: IntelligenceTestResult) {
+  if (result.empty_pool) return t('intelligenceTest.emptyPool')
   if (result.mode === 'svg') return t('intelligenceTest.completed')
   return t(result.passed === true ? 'intelligenceTest.passed' : result.passed === false ? 'intelligenceTest.notPassed' : 'intelligenceTest.notRecorded')
 }
 
 function statusClass(result: IntelligenceTestResult) {
+  if (result.empty_pool) return 'bg-gray-100 text-gray-500 dark:bg-dark-700 dark:text-dark-300'
   if (result.mode === 'candy' && result.passed == null) return 'bg-gray-100 text-gray-500 dark:bg-dark-700 dark:text-dark-300'
   if (result.mode === 'candy' && !result.passed) return 'bg-red-50 text-red-600 dark:bg-red-950/30 dark:text-red-400'
   return 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-400'

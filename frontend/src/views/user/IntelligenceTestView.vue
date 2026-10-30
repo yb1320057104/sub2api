@@ -41,7 +41,7 @@
                 <div class="space-y-2 border-b border-gray-100 px-3 py-3 dark:border-dark-700">
                   <span class="inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-medium" :class="statusClass(result)">
                     <span v-if="result.status === 'running'" class="h-1.5 w-1.5 animate-pulse rounded-full bg-primary-500 motion-reduce:animate-none" />
-                    <svg v-else-if="result.status === 'completed' && (mode === 'svg' || result.passed === true)" class="h-3.5 w-3.5" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m3 8 3 3 7-7" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" /></svg>
+                    <svg v-else-if="!result.empty_pool && result.status === 'completed' && (mode === 'svg' || result.passed === true)" class="h-3.5 w-3.5" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m3 8 3 3 7-7" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" /></svg>
                     {{ resultLabel(result) }}
                   </span>
                   <time :datetime="result.started_at" :title="t('intelligenceTest.startedAt')" class="block break-words text-xs leading-5 tabular-nums text-gray-400">{{ formatTime(result.started_at) }}</time>
@@ -56,7 +56,8 @@
                     </div>
                   </dl>
                 </div>
-                <template v-if="mode === 'svg'">
+                <p v-if="result.empty_pool" class="px-3 py-5 text-xs leading-5 text-gray-500 dark:text-dark-400">{{ t('intelligenceTest.emptyPoolHint') }}</p>
+                <template v-else-if="mode === 'svg'">
                   <ResultArtifact v-if="result.status === 'completed' && result.has_artifact" :group-id="result.group_id" :result-id="result.id" />
                   <div v-else class="flex h-44 items-center justify-center bg-gray-50/60 px-3 text-center text-xs leading-5 text-gray-400 dark:bg-dark-900/40" role="status">{{ result.status === 'completed' ? t('intelligenceTest.missingArtifact') : resultLabel(result) }}</div>
                 </template>
@@ -64,7 +65,7 @@
                   <div class="flex flex-wrap items-center gap-x-2 gap-y-1"><dt class="text-gray-400">{{ t('intelligenceTest.duration') }}</dt><dd class="font-mono text-gray-600 dark:text-dark-300">{{ formatDuration(result) }}</dd></div>
                 </dl>
                 <ResultDetails
-                  v-if="result.status !== 'running' && (mode === 'candy' || (auth.isAdmin && result.status === 'failed'))"
+                  v-if="!result.empty_pool && result.status !== 'running' && (mode === 'candy' || (auth.isAdmin && result.status === 'failed'))"
                   :group-id="result.group_id"
                   :result-id="result.id"
                   :mode="mode"
@@ -202,6 +203,7 @@ async function poll() {
 }
 
 function resultLabel(result: IntelligenceTestResult) {
+  if (result.empty_pool) return t('intelligenceTest.emptyPool')
   if (result.status === 'running') return t('intelligenceTest.running')
   if (result.status === 'failed') return t('intelligenceTest.failed')
   if (mode.value === 'svg') return t('intelligenceTest.completed')
@@ -209,6 +211,7 @@ function resultLabel(result: IntelligenceTestResult) {
 }
 
 function statusClass(result: IntelligenceTestResult) {
+  if (result.empty_pool) return 'bg-gray-100 text-gray-500 dark:bg-dark-700 dark:text-dark-300'
   if (result.status === 'running') return 'bg-primary-50 text-primary-600 dark:bg-primary-950/40 dark:text-primary-300'
   if (result.status === 'failed' || (mode.value === 'candy' && result.passed === undefined)) return 'bg-gray-100 text-gray-500 dark:bg-dark-700 dark:text-dark-300'
   if (mode.value === 'candy' && !result.passed) return 'bg-red-50 text-red-600 dark:bg-red-950/30 dark:text-red-400'

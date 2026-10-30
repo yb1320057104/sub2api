@@ -72,7 +72,12 @@ func (s *IntelligenceTestService) abandonIntelligenceTestResult(groupID int64, m
 func (s *IntelligenceTestService) releaseIntelligenceTestLeaseWithRequeue(groupID int64, mode string, resultID int64, requeue bool) error {
 	ctx, cancel := context.WithTimeout(context.Background(), intelligenceTestLeaseReleaseTimeout)
 	defer cancel()
-	query := `UPDATE pk_intelligence_test_state SET lease_until=NULL,active_result_id=NULL WHERE group_id=$1 AND mode=$2 AND active_result_id=$3`
+	// An empty pool ends this round even if earlier retries have already passed
+	// its original due time. Wait one configured interval from completion instead
+	// of immediately claiming another empty round. Other outcomes keep their cadence.
+	query := `UPDATE pk_intelligence_test_state s SET
+		next_run_at=CASE WHEN EXISTS (SELECT 1 FROM pk_intelligence_test_results r WHERE r.id=$3 AND r.group_id=$1 AND r.mode=$2 AND r.status='completed' AND r.error_code='empty_account_pool') THEN NOW()+(s.interval_minutes*INTERVAL '1 minute') ELSE s.next_run_at END,
+		lease_until=NULL,active_result_id=NULL WHERE s.group_id=$1 AND s.mode=$2 AND s.active_result_id=$3`
 	if requeue {
 		// Delete and release together. A connection error cannot leave a deleted
 		// pending row while its old long-interval schedule remains stranded. The

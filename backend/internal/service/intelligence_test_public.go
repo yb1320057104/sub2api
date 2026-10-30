@@ -109,7 +109,7 @@ func (s *IntelligenceTestService) ListPublicResults(ctx context.Context, groupID
 	if !cfg.Enabled || (mode == "svg" && !cfg.SVG.Enabled) || (mode == "candy" && !cfg.Candy.Enabled) {
 		return results, nil
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT r.id,r.group_id,r.mode,r.status,r.request_model,r.request_effort,r.passed,(r.artifact<>''),r.started_at,r.finished_at,r.duration_ms
+	rows, err := s.db.QueryContext(ctx, `SELECT r.id,r.group_id,r.mode,r.status,r.request_model,r.request_effort,r.passed,(r.artifact<>''),r.started_at,r.finished_at,r.duration_ms,(r.error_code='empty_account_pool')
 		FROM pk_intelligence_test_results r
 		JOIN pk_intelligence_test_keys k ON k.group_id=r.group_id
 		JOIN groups g ON g.id=r.group_id AND g.status='active' AND g.deleted_at IS NULL
@@ -121,7 +121,7 @@ func (s *IntelligenceTestService) ListPublicResults(ctx context.Context, groupID
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var result IntelligenceTestResult
-		if err := rows.Scan(&result.ID, &result.GroupID, &result.Mode, &result.Status, &result.Model, &result.Effort, &result.Passed, &result.HasArtifact, &result.StartedAt, &result.FinishedAt, &result.DurationMS); err != nil {
+		if err := rows.Scan(&result.ID, &result.GroupID, &result.Mode, &result.Status, &result.Model, &result.Effort, &result.Passed, &result.HasArtifact, &result.StartedAt, &result.FinishedAt, &result.DurationMS, &result.EmptyPool); err != nil {
 			return nil, err
 		}
 		results = append(results, result)

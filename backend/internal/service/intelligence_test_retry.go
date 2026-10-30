@@ -15,6 +15,18 @@ type intelligenceTestOutcome struct {
 	artifact   string
 	answerText string
 	passed     *bool
+	emptyPool  bool
+}
+
+// Membership is read for every attempt, so removals stop retries and accounts
+// added later are considered by the next scheduled round. Temporary rate limits
+// or concurrency exhaustion must not be mistaken for an empty account pool.
+func (s *IntelligenceTestService) intelligenceTestPoolHasAccounts(ctx context.Context, groupID int64) (bool, error) {
+	queryCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	var exists bool
+	err := s.db.QueryRowContext(queryCtx, `SELECT EXISTS(SELECT 1 FROM account_groups ag JOIN accounts a ON a.id=ag.account_id WHERE ag.group_id=$1 AND a.deleted_at IS NULL)`, groupID).Scan(&exists)
+	return exists, err
 }
 
 func intelligenceTestRetryDelay(failures int) time.Duration {
@@ -134,6 +146,15 @@ func (s *IntelligenceTestService) runIntelligenceTestAttempts(ctx context.Contex
 		if err := s.renewIntelligenceTestLease(attemptCtx, groupID, mode, resultID, keyID, cfg); err != nil {
 			attemptCancel()
 			return nil, err // Ownership uncertainty never permits another HTTP call.
+		}
+		hasAccounts, poolErr := s.intelligenceTestPoolHasAccounts(attemptCtx, groupID)
+		if poolErr != nil {
+			attemptCancel()
+			return nil, poolErr
+		}
+		if !hasAccounts {
+			attemptCancel()
+			return &intelligenceTestOutcome{emptyPool: true}, nil
 		}
 		key, requestErr := s.intelligenceTestRetryKey(attemptCtx, groupID, keyID)
 		if errors.Is(requestErr, errIntelligenceTestLeaseLost) {

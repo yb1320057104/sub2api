@@ -37,6 +37,7 @@ export interface IntelligenceTestResult {
   group_id: number
   mode: IntelligenceTestMode
   status: 'running' | 'completed' | 'failed'
+  empty_pool?: boolean
   model?: string | null
   effort?: string | null
   passed?: boolean

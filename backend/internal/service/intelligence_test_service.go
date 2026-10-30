@@ -67,6 +67,7 @@ type IntelligenceTestResult struct {
 	GroupID     int64      `json:"group_id"`
 	Mode        string     `json:"mode"`
 	Status      string     `json:"status"`
+	EmptyPool   bool       `json:"empty_pool,omitempty"`
 	Model       *string    `json:"model"`
 	Effort      *string    `json:"effort"`
 	Passed      *bool      `json:"passed,omitempty"`
@@ -241,7 +242,7 @@ func (s *IntelligenceTestService) ListResults(ctx context.Context, groupID int64
 	if group == nil || !group.IsActive() {
 		return nil, ErrGroupNotFound
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id,group_id,mode,status,request_model,request_effort,passed,(artifact<>''),started_at,finished_at,duration_ms FROM pk_intelligence_test_results WHERE group_id=$1 AND mode=$2 AND status<>'failed' ORDER BY id DESC LIMIT 30`, groupID, mode)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,group_id,mode,status,request_model,request_effort,passed,(artifact<>''),started_at,finished_at,duration_ms,(error_code='empty_account_pool') FROM pk_intelligence_test_results WHERE group_id=$1 AND mode=$2 AND status<>'failed' ORDER BY id DESC LIMIT 30`, groupID, mode)
 	if err != nil {
 		return nil, err
 	}
@@ -249,7 +250,7 @@ func (s *IntelligenceTestService) ListResults(ctx context.Context, groupID int64
 	results := make([]IntelligenceTestResult, 0, 30)
 	for rows.Next() {
 		var result IntelligenceTestResult
-		if err := rows.Scan(&result.ID, &result.GroupID, &result.Mode, &result.Status, &result.Model, &result.Effort, &result.Passed, &result.HasArtifact, &result.StartedAt, &result.FinishedAt, &result.DurationMS); err != nil {
+		if err := rows.Scan(&result.ID, &result.GroupID, &result.Mode, &result.Status, &result.Model, &result.Effort, &result.Passed, &result.HasArtifact, &result.StartedAt, &result.FinishedAt, &result.DurationMS, &result.EmptyPool); err != nil {
 			return nil, err
 		}
 		results = append(results, result)
@@ -408,11 +409,16 @@ func (s *IntelligenceTestService) runOne(parent context.Context, groupID int64, 
 	if duration < 0 {
 		duration = 0
 	}
+	errorCode, errorDetail := "", ""
+	if outcome.emptyPool {
+		errorCode, errorDetail = "empty_account_pool", "号池空，本轮已结束，等待下次定时任务。"
+	}
 	// HTTP is finished before releasing this worker's fenced lease. The helper
 	// reports only fixed stage/identity metadata if persistence or release fails.
 	_ = s.finalizeIntelligenceTestResult(intelligenceTestCompletion{
 		id: id, groupID: groupID, mode: mode, status: "completed", passed: outcome.passed,
 		artifact: outcome.artifact, answerText: outcome.answerText,
+		errorCode: errorCode, errorDetail: errorDetail,
 		finishedAt: finished, durationMS: duration,
 	})
 	return claimed
