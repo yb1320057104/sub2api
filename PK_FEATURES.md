@@ -4,6 +4,8 @@
 
 - 2026-10-31 v0.2.19-pk.12：基于 pk.11 继续沿用浏览器网页更新资源、PK-036 账号授权/巡检与 PK-032 空号池行为；扩展 PK-013～017 的私库正式版本检测/回退边界和 Cloudflare Turnstile hostname/action 校验、上游 fail-closed、部署环境配置。无新增 ID，未运行本地/服务器构建或测试。
 
+- 2026-10-31 v0.2.19-pk.13：沿用 pk.12 的版本回退与 Turnstile 保护，补齐 `TURNSTILE_REQUIRED`/`TURNSTILE_EXPECTED_HOSTNAME` 的 Viper 环境可达性注册，确保纯 Compose 环境注入值进入配置结构。无新增 ID，未运行本地/服务器构建或测试。
+
 - 2026-10-30 v0.2.19-pk.8：沿用 PK-031/035/021；雷达标题单行省略、无整条白底的圆角分页、不合格底色进一步弱化为 #fffafa。仅雷达展示层与维护文档调整；未运行构建/测试，用户自行打包更新。
 
 - 2026-10-31 v0.2.19-pk.10：沿用 PK-013～017、PK-021 及既有认证验证码行为；在线更新/回退仅允许 release 构建和私库正式 `vX.Y.Z-pk.N` 标签，缓存同样拒绝其他来源，backup 回退校验普通可执行文件并修复 chunked 空请求判定。Turnstile 增加服务端 expected hostname、登录/注册/验证码/找回密码 action 绑定、上游非 2xx/nil 响应 fail-closed 和前端 action 传递；site/secret 继续保存在设置库，不复制 SN-team 密钥。未新增 ID。

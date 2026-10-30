@@ -1,8 +1,8 @@
 # PK出版：源码、发布与上游更新
 
-2026-10-31 当前目标为 `v0.2.19-pk.12`，基于私库正式 `v0.2.19-pk.11`（`5a7d1b0107a9adfac68de6baaef30412630f79f8`）。当前版本保留 pk.10/11 的部署浏览器资源、PK-036 账号授权/巡检与 PK-032 空号池修复，并扩展正式版本检测/回退安全边界，补全 Cloudflare Turnstile 的 expected hostname、认证 action、上游 fail-closed 和部署模板；无新增二开 ID。
+2026-10-31 当前目标为 `v0.2.19-pk.13`，基于私库正式 `v0.2.19-pk.12`（`f66c9ce28647a05e01f4a75e512866ebe16a0ff7`）。当前版本保留 pk.10/11 的部署浏览器资源、PK-036 账号授权/巡检与 PK-032 空号池修复，并补齐 Turnstile 环境变量可达性注册，沿用正式版本检测/回退安全边界和 Cloudflare Turnstile 的 expected hostname、认证 action、上游 fail-closed 与部署模板；无新增二开 ID。
 
-交接仍由用户点击 Jenkins：`ACTION=release`、`SOURCE_REF=v0.2.19-pk.12`，`COMMIT_SHA`/`PACKAGE_ID` 留空；未生成新制品前不宣称已部署。
+交接仍由用户点击 Jenkins：`ACTION=release`、`SOURCE_REF=v0.2.19-pk.13`，`COMMIT_SHA`/`PACKAGE_ID` 留空；未生成新制品前不宣称已部署。
 
 生产 Turnstile 配置：Cloudflare widget 必须允许实际前端域名，并设置 `turnstile.expected_hostname` 或 `TURNSTILE_EXPECTED_HOSTNAME`。site key、secret key 和启用状态继续由管理员设置并保存在数据库；secret 只放受限服务器配置/数据库，不进入 Git、镜像构建参数或前端。SN-team 的 `team.sayt.cloud` widget 不能直接复用，除非当前部署域名和 Cloudflare widget 配置明确一致。
 
