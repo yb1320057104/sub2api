@@ -30,38 +30,37 @@
         <div v-if="error" class="flex items-center justify-between gap-4 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/20 dark:text-red-300" role="alert"><span>{{ error }}</span><button class="shrink-0 underline" @click="loadAccounts()">{{ t('accountCandy.retry') }}</button></div>
         <div v-if="loading && !items.length" class="card p-16 text-center text-sm text-gray-500" role="status">{{ t('accountCandy.loading') }}</div>
         <div v-else-if="!items.length" class="card p-16 text-center text-sm text-gray-500">{{ t('radar.empty') }}</div>
-        <div v-else class="grid grid-cols-1 items-stretch gap-3 md:grid-cols-2 2xl:grid-cols-3" :aria-busy="loading">
-          <article v-for="item in items" :key="item.account.id" class="radar-account-card card relative flex min-w-0 flex-col overflow-hidden">
-            <div class="h-0.5 w-full" :class="item.verdict === 'fail' ? 'bg-red-400' : item.verdict === 'pass' ? 'bg-emerald-400' : 'bg-primary-200 dark:bg-primary-800'" />
-            <div class="flex-1 space-y-2.5 p-3">
+        <div v-else class="grid grid-cols-1 items-stretch gap-3 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4" :aria-busy="loading">
+          <article v-for="item in items" :key="item.account.id" class="radar-account-card card relative flex min-w-0 flex-col overflow-hidden" :class="{ 'radar-account-card-failed': item.verdict === 'fail' }">
+            <div class="flex-1 space-y-3 p-3">
               <div class="flex items-start justify-between gap-3">
-                <div class="min-w-0"><h2 class="break-words text-[8px] font-semibold text-gray-900 dark:text-white">{{ item.account.name }}</h2><div class="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[6px] text-gray-500"><span v-if="email(item.account)" class="max-w-full truncate" :title="email(item.account)">{{ email(item.account) }}</span><span v-for="group in accountGroups(item.account)" :key="group.id" class="rounded bg-emerald-50 px-1 py-0.5 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">{{ group.name }}</span></div></div>
-                <span class="shrink-0 rounded-full px-2.5 py-1 text-[6px] font-semibold" :class="item.verdict === 'fail' ? 'bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-300' : item.verdict === 'pass' ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300' : 'bg-gray-100 text-gray-500 dark:bg-dark-700 dark:text-dark-300'">{{ verdictText(item) }}</span>
+                <div class="min-w-0"><h2 class="break-words text-sm font-semibold text-gray-900 dark:text-white">{{ item.account.name }}</h2><div class="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px] text-gray-600 dark:text-dark-300"><span v-if="email(item.account)" class="max-w-full truncate" :title="email(item.account)">{{ email(item.account) }}</span><span v-for="group in accountGroups(item.account)" :key="group.id" class="rounded bg-emerald-50 px-1 py-0.5 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">{{ group.name }}</span></div></div>
+                <span class="shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold" :class="item.verdict === 'fail' ? 'bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-300' : item.verdict === 'pass' ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300' : 'bg-gray-100 text-gray-500 dark:bg-dark-700 dark:text-dark-300'">{{ verdictText(item) }}</span>
               </div>
-              <div class="flex items-center justify-between gap-3"><PlatformTypeBadge class="shrink-0" :platform="item.account.platform" :type="item.account.type" :auth-mode="stringValue(item.account.credentials?.auth_mode)" :plan-type="stringValue(item.account.credentials?.plan_type) || item.account.parent_plan_type" :privacy-mode="stringValue(item.account.extra?.privacy_mode) || item.account.parent_privacy_mode" :subscription-expires-at="stringValue(item.account.credentials?.subscription_expires_at) || item.account.parent_subscription_expires_at" />
-              <div class="min-w-0"><h3 class="mb-1 text-[6px] font-medium text-gray-400">{{ t('radar.usage') }}</h3><AccountUsageCell :account="item.account" :show-actions="false" :batched-usage="usage[item.account.id]" :batched-usage-error="usageError[item.account.id]" :batched-usage-loading="usageLoading[item.account.id]" :request-batched-usage="queueUsage" /></div></div>
-              <dl class="grid grid-cols-2 gap-x-4 gap-y-1.5 border-t border-gray-100 pt-2 text-[6px] dark:border-dark-700">
-                <div><dt class="text-gray-400">{{ t('radar.lastTest') }}</dt><dd class="mt-0.5 tabular-nums text-gray-700 dark:text-dark-200">{{ item.run ? formatDateTime(item.run.started_at) : '—' }}</dd></div>
-                <div><dt class="text-gray-400">{{ t('radar.nextTest') }}</dt><dd class="mt-0.5 tabular-nums text-gray-700 dark:text-dark-200">{{ item.next_run_at ? formatDateTime(item.next_run_at) : t('radar.reason.' + (item.schedule_reason || 'unknown')) }}</dd></div>
-                <div><dt class="text-gray-400">{{ t('radar.degraded') }}</dt><dd class="mt-0.5 font-medium" :class="item.verdict === 'fail' ? 'text-red-600 dark:text-red-400' : 'text-gray-700 dark:text-dark-200'">{{ t(item.verdict === 'fail' ? 'radar.yes' : item.verdict === 'pass' ? 'radar.no' : 'radar.unknown') }}</dd></div>
-                <div><dt class="text-gray-400">{{ t('radar.result') }}</dt><dd class="mt-0.5 text-gray-700 dark:text-dark-200">{{ verdictText(item) }}</dd></div>
+              <div class="grid grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)] items-start gap-2"><PlatformTypeBadge class="radar-account-platform min-w-0" :platform="item.account.platform" :type="item.account.type" :auth-mode="stringValue(item.account.credentials?.auth_mode)" :plan-type="stringValue(item.account.credentials?.plan_type) || item.account.parent_plan_type" :privacy-mode="stringValue(item.account.extra?.privacy_mode) || item.account.parent_privacy_mode" :subscription-expires-at="stringValue(item.account.credentials?.subscription_expires_at) || item.account.parent_subscription_expires_at" />
+              <div class="radar-account-usage min-w-0"><h3 class="mb-1 text-xs font-medium text-gray-500 dark:text-dark-400">{{ t('radar.usage') }}</h3><AccountUsageCell :account="item.account" :show-actions="false" :batched-usage="usage[item.account.id]" :batched-usage-error="usageError[item.account.id]" :batched-usage-loading="usageLoading[item.account.id]" :request-batched-usage="queueUsage" /></div></div>
+              <dl class="grid grid-cols-2 gap-x-3 gap-y-2 border-t border-gray-100 pt-2 text-xs dark:border-dark-700">
+                <div><dt class="text-gray-500 dark:text-dark-400">{{ t('radar.lastTest') }}</dt><dd class="mt-0.5 tabular-nums text-gray-700 dark:text-dark-200">{{ item.run ? formatDateTime(item.run.started_at) : '—' }}</dd></div>
+                <div><dt class="text-gray-500 dark:text-dark-400">{{ t('radar.nextTest') }}</dt><dd class="mt-0.5 tabular-nums text-gray-700 dark:text-dark-200">{{ item.next_run_at ? formatDateTime(item.next_run_at) : t('radar.reason.' + (item.schedule_reason || 'unknown')) }}</dd></div>
+                <div><dt class="text-gray-500 dark:text-dark-400">{{ t('radar.degraded') }}</dt><dd class="mt-0.5 font-medium" :class="item.verdict === 'fail' ? 'text-red-600 dark:text-red-400' : 'text-gray-700 dark:text-dark-200'">{{ t(item.verdict === 'fail' ? 'radar.yes' : item.verdict === 'pass' ? 'radar.no' : 'radar.unknown') }}</dd></div>
+                <div><dt class="text-gray-500 dark:text-dark-400">{{ t('radar.result') }}</dt><dd class="mt-0.5 text-gray-700 dark:text-dark-200">{{ verdictText(item) }}</dd></div>
               </dl>
-              <div class="rounded-lg bg-gray-50 p-2 dark:bg-dark-800/70" :title="t('radar.egressHint')">
-                <div class="flex items-center justify-between gap-2 text-[6px] text-gray-400"><span>{{ t('radar.egressIP') }}</span><span>{{ t((item.run?.egress_mode || (item.account.proxy_id ? 'proxy' : 'direct')) === 'proxy' ? 'radar.proxy' : 'radar.direct') }}</span></div>
-                <p class="mt-1 break-all font-mono text-[7px] text-gray-800 dark:text-dark-100">{{ item.run?.egress_ip || t('radar.unknown') }}</p>
-                <p v-if="item.run?.egress_checked_at" class="mt-1 text-[5.5px] text-gray-400">{{ formatDateTime(item.run.egress_checked_at) }}</p>
-                <p v-if="item.run?.egress_error" class="mt-1 text-[6px] text-amber-600 dark:text-amber-400">{{ item.run.egress_error }}</p>
+              <div class="radar-account-inset rounded-lg bg-gray-50 p-2 dark:bg-dark-800/70" :title="t('radar.egressHint')">
+                <div class="flex items-center justify-between gap-2 text-xs text-gray-500 dark:text-dark-400"><span>{{ t('radar.egressIP') }}</span><span>{{ t((item.run?.egress_mode || (item.account.proxy_id ? 'proxy' : 'direct')) === 'proxy' ? 'radar.proxy' : 'radar.direct') }}</span></div>
+                <p class="mt-1 break-all font-mono text-sm text-gray-800 dark:text-dark-100">{{ item.run?.egress_ip || t('radar.unknown') }}</p>
+                <p v-if="item.run?.egress_checked_at" class="mt-1 text-[11px] text-gray-500 dark:text-dark-400">{{ formatDateTime(item.run.egress_checked_at) }}</p>
+                <p v-if="item.run?.egress_error" class="mt-1 text-xs text-amber-600 dark:text-amber-400">{{ item.run.egress_error }}</p>
               </div>
               <div v-if="item.run?.model_results?.length" class="space-y-2">
-                <h3 class="text-[6px] font-medium text-gray-400">{{ t('radar.modelResults') }}</h3>
-                <div v-for="model in item.run.model_results" :key="model.id" class="flex flex-wrap items-start justify-between gap-x-2 gap-y-1 rounded-md px-1.5 py-1 text-[6px]" :class="model.passed === false ? 'bg-red-50 text-red-700 dark:bg-red-950/30 dark:text-red-300' : 'bg-gray-50 text-gray-600 dark:bg-dark-800 dark:text-dark-300'"><span class="min-w-0 break-all font-mono">{{ model.model }}</span><span class="shrink-0 font-medium">{{ model.status === 'completed' ? model.passed ? '21 ✓' : (model.answer ?? t('accountCandy.noAnswer')) + ' ✕' : t('accountCandy.' + model.status) }}</span><p v-if="model.error_message" class="basis-full whitespace-pre-wrap break-words text-amber-700 dark:text-amber-300">{{ model.error_message }}</p></div>
+                <h3 class="text-xs font-medium text-gray-500 dark:text-dark-400">{{ t('radar.modelResults') }}</h3>
+                <div v-for="model in item.run.model_results" :key="model.id" class="flex flex-wrap items-start justify-between gap-x-2 gap-y-1 rounded-md px-2 py-1.5 text-xs" :class="model.passed === false ? 'bg-red-50 text-red-700 dark:bg-red-950/30 dark:text-red-300' : 'bg-gray-50 text-gray-600 dark:bg-dark-800 dark:text-dark-300'"><span class="min-w-0 break-all font-mono">{{ model.model }}</span><span class="shrink-0 font-medium">{{ model.status === 'completed' ? model.passed ? '21 ✓' : (model.answer ?? t('accountCandy.noAnswer')) + ' ✕' : t('accountCandy.' + model.status) }}</span><p v-if="model.error_message" class="basis-full whitespace-pre-wrap break-words text-amber-700 dark:text-amber-300">{{ model.error_message }}</p></div>
               </div>
-              <p v-if="item.run?.moved_to_group_id" class="text-[6px] text-amber-700 dark:text-amber-300">{{ t('accountCandy.moved', { group: groupName(item.run.moved_to_group_id) }) }}</p>
-              <p v-if="item.run?.move_error || item.run?.error_message" class="break-words text-[6px] text-amber-700 dark:text-amber-300">{{ item.run.move_error || item.run.error_message }}</p>
+              <p v-if="item.run?.moved_to_group_id" class="text-xs text-amber-700 dark:text-amber-300">{{ t('accountCandy.moved', { group: groupName(item.run.moved_to_group_id) }) }}</p>
+              <p v-if="item.run?.move_error || item.run?.error_message" class="break-words text-xs text-amber-700 dark:text-amber-300">{{ item.run.move_error || item.run.error_message }}</p>
             </div>
-            <footer class="flex items-center justify-between gap-3 border-t border-gray-100 bg-gray-50/50 px-3 py-1 dark:border-dark-700 dark:bg-dark-800/30">
-              <span class="font-mono text-[5.5px] text-gray-400">#{{ item.account.id }}</span>
-              <div class="flex items-center gap-4"><button type="button" class="text-[6px] font-medium text-gray-500 hover:underline dark:text-dark-300" @click="selected = item">{{ t('radar.history') }}</button><button type="button" class="text-[6px] font-semibold text-primary-600 hover:underline disabled:cursor-not-allowed disabled:opacity-40 dark:text-primary-300" :disabled="!supportsAccountCandyTest(item.account) || starting.has(item.account.id) || item.run?.status === 'running'" @click="start(item)">{{ t(item.run?.status === 'running' ? 'accountCandy.running' : starting.has(item.account.id) ? 'accountCandy.starting' : 'accountCandy.run') }}</button></div>
+            <footer class="flex items-center justify-between gap-3 border-t border-gray-100 bg-gray-50/50 px-3 py-2 dark:border-dark-700 dark:bg-dark-800/30">
+              <span class="font-mono text-[11px] text-gray-500 dark:text-dark-400">#{{ item.account.id }}</span>
+              <div class="flex items-center gap-4"><button type="button" class="text-xs font-medium text-gray-500 hover:underline dark:text-dark-300" @click="selected = item">{{ t('radar.history') }}</button><button type="button" class="text-xs font-semibold text-primary-600 hover:underline disabled:cursor-not-allowed disabled:opacity-40 dark:text-primary-300" :disabled="!supportsAccountCandyTest(item.account) || starting.has(item.account.id) || item.run?.status === 'running'" @click="start(item)">{{ t(item.run?.status === 'running' ? 'accountCandy.running' : starting.has(item.account.id) ? 'accountCandy.starting' : 'accountCandy.run') }}</button></div>
             </footer>
           </article>
         </div>
@@ -193,8 +192,28 @@ onUnmounted(() => { disposed = true; controller?.abort(); if (usageTimer) clearT
 </script>
 
 <style scoped>
-.radar-account-card :deep(.text-xs) { font-size: 6px; line-height: 1.5; }
-.radar-account-card :deep(.text-sm) { font-size: 7px; line-height: 1.5; }
-.radar-account-card :deep([class~="text-[10px]"]) { font-size: 5px; line-height: 1.5; }
-.radar-account-card :deep([class~="text-[11px]"]) { font-size: 5.5px; line-height: 1.5; }
+.radar-account-card-failed {
+  @apply border-red-200 bg-red-50 dark:border-red-900/60 dark:bg-red-950/30;
+}
+
+.radar-account-card-failed .radar-account-inset {
+  @apply bg-red-100/50 dark:bg-red-900/20;
+}
+
+.radar-account-card-failed > footer {
+  @apply border-red-200/70 bg-transparent dark:border-red-900/60;
+}
+
+/* Keep table components readable inside the narrower four-column cards. */
+.radar-account-card :deep([class~="text-[9px]"]),
+.radar-account-card :deep([class~="text-[10px]"]),
+.radar-account-card :deep([class~="text-[11px]"]) {
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.radar-account-platform :deep(> div.inline-flex),
+.radar-account-usage :deep(.flex.items-center) {
+  flex-wrap: wrap;
+}
 </style>
