@@ -98,6 +98,10 @@ type AccountAuthorizationService struct {
 
 func NewAccountAuthorizationService(db *sql.DB, client *dbent.Client, accounts AccountRepository, admin AdminService, oauth *OpenAIOAuthService, tests *AccountTestService, encryptor SecretEncryptor, invalidator TokenCacheInvalidator, cfg *config.Config) *AccountAuthorizationService {
 	ctx, cancel := context.WithCancel(context.Background())
+	// Inside the container this process is PID 1, so adopted browser helper
+	// processes become its children; start collecting them with the service
+	// instead of waiting for the first authorization.
+	authorizationStartReaper()
 	return &AccountAuthorizationService{db: db, client: client, accounts: accounts, admin: admin, oauth: oauth, tests: tests, encryptor: encryptor, invalidator: invalidator, cfg: cfg, ctx: ctx, cancel: cancel}
 }
 
