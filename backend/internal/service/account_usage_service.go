@@ -84,6 +84,18 @@ type accountWindowStatsBatchReader interface {
 	GetAccountWindowStatsBatch(ctx context.Context, accountIDs []int64, startTime time.Time) (map[int64]*usagestats.AccountStats, error)
 }
 
+type accountRequestStatsBatchReader interface {
+	GetAccountRequestStatsBatch(ctx context.Context, accountIDs []int64) (map[int64]*usagestats.AccountRequestStats, error)
+}
+
+func (s *AccountUsageService) GetAccountRequestStatsBatch(ctx context.Context, accountIDs []int64) (map[int64]*usagestats.AccountRequestStats, error) {
+	reader, ok := s.usageLogRepo.(accountRequestStatsBatchReader)
+	if !ok {
+		return nil, fmt.Errorf("account request statistics unavailable")
+	}
+	return reader.GetAccountRequestStatsBatch(ctx, accountIDs)
+}
+
 // apiUsageCache 缓存从 Anthropic API 获取的使用率数据（utilization, resets_at）
 // 同时支持缓存错误响应（负缓存），防止 429 等错误导致的重试风暴
 type apiUsageCache struct {

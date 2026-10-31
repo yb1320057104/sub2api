@@ -3,6 +3,15 @@ package usagestats
 
 import "time"
 
+// AccountRequestStats describes the latest completed success and the following
+// upstream failure streak in retained logs, independently of today's totals.
+type AccountRequestStats struct {
+	LatestFirstTokenMs          *int       `json:"latest_first_token_ms"`
+	LatestCompletedAt           *time.Time `json:"latest_completed_at"`
+	ConsecutiveUpstreamFailures int64      `json:"consecutive_upstream_failures"`
+	LastUpstreamFailureAt       *time.Time `json:"last_upstream_failure_at"`
+}
+
 const (
 	ModelSourceRequested = "requested"
 	ModelSourceUpstream  = "upstream"

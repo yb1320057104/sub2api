@@ -508,7 +508,7 @@ export default {
         grokBaseURLModeEUWest1: 'Regional API (eu-west-1)',
         openaiTTFTMode: 'OpenAI Responses first-token metric',
         earlyHeartbeat: 'Early first response',
-        earlyHeartbeatHint: 'Off by default. On supported OpenAI-compatible streaming endpoints, respond early using the selected mode after a random delay in this range and once protocol requirements are met. Forward actual output immediately if it arrives first. This does not make the model generate faster. WebSocket and non-streaming requests are unchanged. The user-facing first-token label shows time to the first packet; only admins can see upstream first-token timing.',
+        earlyHeartbeatHint: 'Off by default. On supported OpenAI-compatible streaming endpoints, respond early using the selected mode after a random delay in this range and once protocol requirements are met. Forward actual output immediately if it arrives first. This does not make the model generate faster. WebSocket and non-streaming requests are unchanged. When off, first-token timing follows native upstream rules, including the semantic / visible setting. When on, the user-facing metric measures the first downstream packet; admins can also see native upstream timing. Changes affect new requests only; historical records are not recalculated.',
         earlyHeartbeatMode: 'Early response mode',
         earlyHeartbeatModeComment: 'Comment keepalive (default)',
         earlyHeartbeatModeDownstream: 'Downstream DP API compatibility',

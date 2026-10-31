@@ -117,6 +117,8 @@ export default {
         status: '状态',
         schedulable: '调度',
         todayStats: '今日统计',
+        latestFirstToken: '最近完成首字',
+        consecutiveFailures: '连续失败',
         groups: '分组',
         usageWindows: '用量窗口',
         proxy: '代理',
@@ -124,6 +126,11 @@ export default {
         createdAt: '创建时间',
         expiresAt: '过期时间',
         actions: '操作'
+      },
+      requestStats: {
+        firstTokenHint: '最近一条已完成成功请求的首字及完成时间，不取平均；未记录首字显示 —，不会用更早的数值代替。关闭首字提前响应的新请求沿用原上游计时。',
+        failuresHint: '按保留的请求记录统计：上次成功后连续的上游失败请求数，同账号同请求去重；余额不足、平台限额和客户端错误不计数也不清零。成功请求清零。最多缓存30秒。',
+        unavailable: '统计暂不可用'
       },
       schedulerScore: {
         baseShort: '普通',

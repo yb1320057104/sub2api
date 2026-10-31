@@ -461,7 +461,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	usageLog.OpenAIWSMode = result.OpenAIWSMode
 	usageLog.DurationMs = &durationMs
 	usageLog.FirstTokenMs = result.FirstTokenMs
-	usageLog.FirstResponseMs = FirstResponseMsFromContext(ctx)
+	usageLog.FirstResponseMs = UsageFirstResponseMsFromContext(ctx, result.FirstTokenMs)
 	usageLog.CreatedAt = time.Now()
 	// 设置渠道信息
 	usageLog.ChannelID = optionalInt64Ptr(input.ChannelID)

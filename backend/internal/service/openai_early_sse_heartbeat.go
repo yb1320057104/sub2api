@@ -25,6 +25,9 @@ type firstResponseTimingKey struct{}
 
 type firstResponseTiming struct {
 	started time.Time
+	// Snapshot the switch at request entry; a later settings change must not
+	// change the meaning of this request's persisted first-token metric.
+	earlyEnabled bool
 	// Store elapsed milliseconds plus one, so a successful zero-ms write is distinct from no write.
 	value atomic.Int64
 }
@@ -51,6 +54,24 @@ func FirstResponseMsFromContext(ctx context.Context) *int {
 	return &ms
 }
 
+// UsageFirstResponseMsFromContext selects the user-visible first-token metric.
+// With early response disabled (or on an unsupported path), preserve the native
+// upstream metric, including nil and a real zero. Metadata frames and periodic
+// transport keepalives must not look like an enabled early response. The raw
+// downstream measurement remains available via FirstResponseMsFromContext.
+func UsageFirstResponseMsFromContext(ctx context.Context, upstreamFirstTokenMs *int) *int {
+	if ctx != nil {
+		if timing, ok := ctx.Value(firstResponseTimingKey{}).(*firstResponseTiming); ok && timing != nil && timing.earlyEnabled {
+			return FirstResponseMsFromContext(ctx)
+		}
+	}
+	if upstreamFirstTokenMs == nil {
+		return nil
+	}
+	ms := *upstreamFirstTokenMs
+	return &ms
+}
+
 // CopyFirstResponseTiming preserves timing when usage work gets a detached context.
 func CopyFirstResponseTiming(parent, base context.Context) context.Context {
 	if base == nil {
@@ -66,11 +87,14 @@ func CopyFirstResponseTiming(parent, base context.Context) context.Context {
 
 // StartEarlySSEHeartbeat is called only for validated Responses, Chat and Messages
 // SSE requests. Compact, WebSocket, images and nonstreaming requests are excluded
-// by the handler. Disabling early heartbeats still collects first-response timing.
+// by the handler. Disabled requests retain the native writer and upstream TTFT.
 func (s *OpenAIGatewayService) StartEarlySSEHeartbeat(c *gin.Context, requestStart time.Time, protocol string, requestBody ...[]byte) func() {
 	settings := StreamEarlyHeartbeatSettings{}
 	if s != nil && s.settingService != nil && c != nil && c.Request != nil {
 		settings = s.settingService.GetStreamEarlyHeartbeatSettings(c.Request.Context())
+	}
+	if !settings.Enabled {
+		return func() {}
 	}
 	return startEarlySSEHeartbeat(c, requestStart, protocol, settings, earlySpaceRequestSnapshot(c, requestBody...))
 }
@@ -93,6 +117,11 @@ func earlySSEHeartbeatDelay(settings StreamEarlyHeartbeatSettings) time.Duration
 }
 
 func startEarlySSEHeartbeat(c *gin.Context, requestStart time.Time, protocol string, settings StreamEarlyHeartbeatSettings, snapshots ...earlySpaceRequest) func() {
+	if !settings.Enabled {
+		// Preserve the merged upstream write/keepalive path exactly when off.
+		// Usage recording will use result.FirstTokenMs without a first-packet clock.
+		return func() {}
+	}
 	if c == nil || c.Writer == nil || c.Request == nil || earlySSEWriterFromContext(c) != nil {
 		return func() {}
 	}
@@ -102,7 +131,7 @@ func startEarlySSEHeartbeat(c *gin.Context, requestStart time.Time, protocol str
 	if requestStart.IsZero() {
 		requestStart = time.Now()
 	}
-	timing := &firstResponseTiming{started: requestStart}
+	timing := &firstResponseTiming{started: requestStart, earlyEnabled: settings.Enabled}
 	c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), firstResponseTimingKey{}, timing))
 	original := c.Writer
 	w := &earlySSEHeartbeatWriter{
@@ -309,7 +338,8 @@ func (w *earlySSEHeartbeatWriter) beat() {
 }
 
 // Passthrough's existing periodic pre-output keepalive uses this same scheduler
-// and writer. It remains available when the optional early heartbeat is disabled.
+// and writer when early response is enabled. Disabled requests use the native
+// startOpenAISSEKeepalive path without installing this controller.
 func (w *earlySSEHeartbeatWriter) periodic(interval time.Duration) func() {
 	w.mu.Lock()
 	if !w.stopped {

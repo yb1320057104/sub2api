@@ -550,7 +550,8 @@ func TestPKEarlyHeartbeat_WireUsageAndBillingParity(t *testing.T) {
 								group.SubscriptionType = SubscriptionTypeSubscription
 								subscription = &UserSubscription{ID: 5}
 							}
-							result := &OpenAIForwardResult{RequestID: "pk-early-billing", Model: model, UpstreamModel: model, Usage: *observed, Stream: true}
+							upstreamTTFT := 21920
+							result := &OpenAIForwardResult{RequestID: "pk-early-billing", Model: model, UpstreamModel: model, Usage: *observed, Stream: true, FirstTokenMs: &upstreamTTFT}
 							require.NoError(t, svc.RecordUsage(timingCtx, &OpenAIRecordUsageInput{
 								Result: result, APIKey: key, User: user, Account: account, Subscription: subscription,
 								APIKeyService: &openAIRecordUsageAPIKeyQuotaStub{}, PricingAt: pricingAt,
@@ -561,7 +562,13 @@ func TestPKEarlyHeartbeat_WireUsageAndBillingParity(t *testing.T) {
 							log, command := usageRepo.lastLog, billingRepo.lastCmd
 							require.NotNil(t, log)
 							require.NotNil(t, command)
-							require.NotNil(t, log.FirstResponseMs, "timing remains present even when early output is disabled")
+							require.Equal(t, &upstreamTTFT, log.FirstTokenMs)
+							if mode == "disabled" {
+								require.Equal(t, log.FirstTokenMs, log.FirstResponseMs, "disabled uses the original upstream TTFT")
+							} else {
+								require.Equal(t, FirstResponseMsFromContext(timingCtx), log.FirstResponseMs)
+								require.NotNil(t, log.FirstResponseMs)
+							}
 							require.Equal(t, raw, result.Usage)
 							require.Equal(t, 900, log.InputTokens)
 							require.Equal(t, 200, log.CacheCreationTokens)

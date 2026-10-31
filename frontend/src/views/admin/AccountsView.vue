@@ -320,6 +320,22 @@
               :error="todayStatsError"
             />
           </template>
+          <template #cell-latest_first_token="{ row }">
+            <AccountRequestStatsCell
+              :stats="requestStatsByAccountId[String(row.id)] ?? null"
+              metric="first_token"
+              :loading="todayStatsLoading"
+              :error="requestStatsError"
+            />
+          </template>
+          <template #cell-consecutive_failures="{ row }">
+            <AccountRequestStatsCell
+              :stats="requestStatsByAccountId[String(row.id)] ?? null"
+              metric="failures"
+              :loading="todayStatsLoading"
+              :error="requestStatsError"
+            />
+          </template>
           <template #cell-groups="{ row }">
             <AccountGroupsCell :groups="accountGroupsForRow(row)" :max-display="4" />
           </template>
@@ -546,6 +562,8 @@ import type { SelectOption } from '@/components/common/Select.vue'
 import AccountStatusIndicator from '@/components/account/AccountStatusIndicator.vue'
 import AccountUsageCell from '@/components/account/AccountUsageCell.vue'
 import AccountTodayStatsCell from '@/components/account/AccountTodayStatsCell.vue'
+import AccountRequestStatsCell from '@/components/account/AccountRequestStatsCell.vue'
+import type { AccountRequestStats } from '@/types'
 import AccountGroupsCell from '@/components/account/AccountGroupsCell.vue'
 import AccountCapacityCell from '@/components/account/AccountCapacityCell.vue'
 import UpstreamBillingRateCell from '@/components/account/UpstreamBillingRateCell.vue'
@@ -757,6 +775,8 @@ const AUTO_REFRESH_SILENT_WINDOW_MS = 15000
 const autoRefreshSilentUntil = ref(0)
 const hasPendingListSync = ref(false)
 const todayStatsByAccountId = ref<Record<string, WindowStats>>({})
+const requestStatsByAccountId = ref<Record<string, AccountRequestStats>>({})
+const requestStatsError = ref(false)
 const todayStatsLoading = ref(false)
 const todayStatsError = ref<string | null>(null)
 const todayStatsReqSeq = ref(0)
@@ -922,20 +942,20 @@ const queueBatchedUsage = (account: Account, options?: { force?: boolean }) => {
 }
 
 const refreshTodayStatsBatch = async () => {
-  // Why this checks both columns:
-  // - today_stats column shows dedicated today's metrics.
-  // - usage column also embeds today's stats for Key/Bedrock rows.
-  // So we only skip fetching when BOTH columns are hidden.
-  if (hiddenColumns.has('today_stats') && hiddenColumns.has('usage')) {
+  const reqSeq = ++todayStatsReqSeq.value
+  const includeRequestStats = !hiddenColumns.has('latest_first_token') || !hiddenColumns.has('consecutive_failures')
+  // Reuse the page-level batch request for both today totals and request health.
+  if (hiddenColumns.has('today_stats') && hiddenColumns.has('usage') && !includeRequestStats) {
     todayStatsLoading.value = false
     todayStatsError.value = null
     return
   }
 
   const accountIDs = accounts.value.map(account => account.id)
-  const reqSeq = ++todayStatsReqSeq.value
   if (accountIDs.length === 0) {
     todayStatsByAccountId.value = {}
+    requestStatsByAccountId.value = {}
+    requestStatsError.value = false
     todayStatsError.value = null
     todayStatsLoading.value = false
     return
@@ -943,9 +963,10 @@ const refreshTodayStatsBatch = async () => {
 
   todayStatsLoading.value = true
   todayStatsError.value = null
+  requestStatsError.value = false
 
   try {
-    const result = await adminAPI.accounts.getBatchTodayStats(accountIDs)
+    const result = await adminAPI.accounts.getBatchTodayStats(accountIDs, includeRequestStats)
     if (reqSeq !== todayStatsReqSeq.value) return
     const serverStats = result.stats ?? {}
     const nextStats: Record<string, WindowStats> = {}
@@ -954,9 +975,12 @@ const refreshTodayStatsBatch = async () => {
       nextStats[key] = serverStats[key] ?? buildDefaultTodayStats()
     }
     todayStatsByAccountId.value = nextStats
+    requestStatsByAccountId.value = result.request_stats ?? {}
+    requestStatsError.value = includeRequestStats && (result.request_stats_unavailable === true || result.request_stats == null)
   } catch (error) {
     if (reqSeq !== todayStatsReqSeq.value) return
     todayStatsError.value = 'Failed'
+    requestStatsError.value = includeRequestStats
     console.error('Failed to load account today stats:', error)
   } finally {
     if (reqSeq === todayStatsReqSeq.value) {
@@ -1102,7 +1126,7 @@ const toggleColumn = (key: string) => {
     hiddenColumns.add(key)
   }
   saveColumnsToStorage()
-  if ((key === 'today_stats' || key === 'usage') && wasHidden) {
+  if (['today_stats', 'usage', 'latest_first_token', 'consecutive_failures'].includes(key) && wasHidden) {
     refreshTodayStatsBatch().catch((error) => {
       console.error('Failed to load account today stats after showing column:', error)
     })
@@ -1891,7 +1915,9 @@ const allColumns = computed(() => {
     { key: 'capacity', label: t('admin.accounts.columns.capacity'), sortable: false },
     { key: 'status', label: t('admin.accounts.columns.status'), sortable: true },
     { key: 'schedulable', label: t('admin.accounts.columns.schedulable'), sortable: true },
-    { key: 'today_stats', label: t('admin.accounts.columns.todayStats'), sortable: false }
+    { key: 'today_stats', label: t('admin.accounts.columns.todayStats'), sortable: false },
+    { key: 'latest_first_token', label: t('admin.accounts.columns.latestFirstToken'), sortable: false },
+    { key: 'consecutive_failures', label: t('admin.accounts.columns.consecutiveFailures'), sortable: false }
   ]
   if (!authStore.isSimpleMode) {
     c.push({ key: 'groups', label: t('admin.accounts.columns.groups'), sortable: false })

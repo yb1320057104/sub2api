@@ -28,7 +28,7 @@ func TestSubmitUsageRecordTaskCopiesRequestContext(t *testing.T) {
 	require.Equal(t, "request-456", gotRequestID)
 }
 
-func TestPKFirstResponseSurvivesDetachedUsageContext(t *testing.T) {
+func TestPKFirstResponseNativeSurvivesDetachedUsageContext(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest("POST", "/v1/responses", nil)
@@ -38,15 +38,16 @@ func TestPKFirstResponseSurvivesDetachedUsageContext(t *testing.T) {
 	_, err := c.Writer.Write([]byte("data: {\"type\":\"response.completed\"}\n\n"))
 	require.NoError(t, err)
 	c.Writer.Flush()
-	want := service.FirstResponseMsFromContext(c.Request.Context())
-	require.NotNil(t, want)
+	upstream := 21920
+	want := &upstream
+	require.Nil(t, service.FirstResponseMsFromContext(c.Request.Context()))
 	var got *int
 	h := &OpenAIGatewayHandler{}
 	h.submitUsageRecordTask(c.Request.Context(), func(ctx context.Context) {
-		got = service.FirstResponseMsFromContext(ctx)
+		got = service.UsageFirstResponseMsFromContext(ctx, want)
 	})
 	require.Equal(t, want, got)
-	require.GreaterOrEqual(t, *got, 100)
+	require.Equal(t, upstream, *got)
 }
 
 func TestOpenAISubmitUsageRecordTaskCopiesRequestContext(t *testing.T) {

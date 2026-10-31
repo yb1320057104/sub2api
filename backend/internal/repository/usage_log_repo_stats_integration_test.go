@@ -13,6 +13,74 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestUsageLog_AccountRequestStats_LatestCompletionAndUpstreamFailureStreak(t *testing.T) {
+	ctx := context.Background()
+	tx := testEntTx(t)
+	client := tx.Client()
+	repo := newUsageLogRepositoryWithSQL(client, tx)
+	user := mustCreateUser(t, client, &service.User{Email: "request-health@test.com"})
+	key := mustCreateApiKey(t, client, &service.APIKey{UserID: user.ID, Key: "sk-request-health", Name: "request-health"})
+	account := mustCreateAccount(t, client, &service.Account{Name: "request-health-account"})
+	emptyAccount := mustCreateAccount(t, client, &service.Account{Name: "request-health-empty"})
+	base := time.Now().UTC().Add(-72 * time.Hour).Truncate(time.Second)
+	addUsage := func(requestID string, at time.Time, timing *int) {
+		_, err := repo.Create(ctx, &service.UsageLog{
+			UserID: user.ID, APIKeyID: key.ID, AccountID: account.ID, RequestID: requestID,
+			Model: "request-health", InputTokens: 1, OutputTokens: 1, Stream: true,
+			FirstTokenMs: timing, FirstResponseMs: timing, CreatedAt: at,
+		})
+		require.NoError(t, err)
+	}
+	addError := func(requestID, clientID, owner, phase string, status int, at time.Time, business, countTokens bool) {
+		_, err := tx.ExecContext(ctx, `INSERT INTO ops_error_logs
+			(account_id, api_key_id, request_id, client_request_id, error_owner, error_phase, error_type, status_code, created_at, is_business_limited, is_count_tokens)
+			VALUES ($1,$2,$3,$4,$5,$6,'api_error',$7,$8,$9,$10)`,
+			account.ID, key.ID, requestID, clientID, owner, phase, status, at, business, countTokens)
+		require.NoError(t, err)
+	}
+	read := func() *usagestats.AccountRequestStats {
+		stats, err := repo.GetAccountRequestStatsBatch(ctx, []int64{account.ID, emptyAccount.ID, account.ID, -1})
+		require.NoError(t, err)
+		require.Len(t, stats, 2)
+		require.Nil(t, stats[emptyAccount.ID].LatestFirstTokenMs)
+		require.Zero(t, stats[emptyAccount.ID].ConsecutiveUpstreamFailures)
+		return stats[account.ID]
+	}
+	oldTTFT := 10930
+	addUsage("local:old-success", base, &oldTTFT)
+	// The latest successful record has no timing: never borrow an older value.
+	latest := base.Add(time.Hour)
+	addUsage("local:new-success", latest, nil)
+	addError("upstream-1", "", "provider", "upstream", 502, base.Add(2*time.Hour), false, false)
+	addError("upstream-1", "", "provider", "upstream", 502, base.Add(2*time.Hour+time.Second), false, false)
+	addError("network-2", "", "provider", "network", 504, base.Add(3*time.Hour), false, false)
+	// Ignored records neither increment nor reset the streak.
+	addError("balance", "", "client", "auth", 402, base.Add(4*time.Hour), true, false)
+	addError("routing", "", "platform", "routing", 503, base.Add(5*time.Hour), false, false)
+	addError("cancelled", "", "provider", "network", 499, base.Add(6*time.Hour), false, false)
+	addError("recovered", "", "provider", "upstream", 200, base.Add(7*time.Hour), false, false)
+	addError("token-count", "", "provider", "upstream", 500, base.Add(8*time.Hour), false, true)
+	stats := read()
+	require.Nil(t, stats.LatestFirstTokenMs)
+	require.Equal(t, latest, *stats.LatestCompletedAt)
+	require.Equal(t, int64(2), stats.ConsecutiveUpstreamFailures)
+	// Late usage insertion after a failed partial stream must not reset it.
+	addError("partial-local", "", "provider", "upstream", 502, base.Add(9*time.Hour), false, false)
+	addUsage("local:partial-local", base.Add(10*time.Hour), &oldTTFT)
+	addError("partial-request", "partial-client", "provider", "upstream", 502, base.Add(11*time.Hour), false, false)
+	addUsage("client:partial-client", base.Add(12*time.Hour), &oldTTFT)
+	stats = read()
+	require.Equal(t, int64(4), stats.ConsecutiveUpstreamFailures)
+	require.Equal(t, latest, *stats.LatestCompletedAt)
+	// A free success with actual zero-ms TTFT still resets all earlier failures.
+	zero := 0
+	addUsage("local:free-success", base.Add(13*time.Hour), &zero)
+	stats = read()
+	require.Equal(t, &zero, stats.LatestFirstTokenMs)
+	require.Zero(t, stats.ConsecutiveUpstreamFailures)
+	require.Nil(t, stats.LastUpstreamFailureAt)
+}
+
 func TestUsageLog_UpstreamModelMismatchFilterAndPartialIndex(t *testing.T) {
 	ctx := context.Background()
 	tx := testEntTx(t)

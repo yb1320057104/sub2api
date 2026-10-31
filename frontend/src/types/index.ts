@@ -1428,6 +1428,13 @@ export interface AccountSchedulerGroupScore {
 }
 
 // Account Usage types
+export interface AccountRequestStats {
+  latest_first_token_ms: number | null
+  latest_completed_at: string | null
+  consecutive_upstream_failures: number
+  last_upstream_failure_at: string | null
+}
+
 export interface WindowStats {
   requests: number
   tokens: number

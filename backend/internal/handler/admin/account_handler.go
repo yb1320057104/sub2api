@@ -2687,7 +2687,8 @@ func (h *AccountHandler) GetTodayStats(c *gin.Context) {
 
 // BatchTodayStatsRequest 批量今日统计请求体。
 type BatchTodayStatsRequest struct {
-	AccountIDs []int64 `json:"account_ids" binding:"required"`
+	AccountIDs          []int64 `json:"account_ids" binding:"required"`
+	IncludeRequestStats bool    `json:"include_request_stats"`
 }
 
 type BatchUsageRequest struct {
@@ -2711,6 +2712,9 @@ func (h *AccountHandler) GetBatchTodayStats(c *gin.Context) {
 	}
 
 	cacheKey := buildAccountTodayStatsBatchCacheKey(accountIDs)
+	if req.IncludeRequestStats {
+		cacheKey += ":request_stats"
+	}
 	if cached, ok := accountTodayStatsBatchCache.Get(cacheKey); ok {
 		if cached.ETag != "" {
 			c.Header("ETag", cached.ETag)
@@ -2732,6 +2736,16 @@ func (h *AccountHandler) GetBatchTodayStats(c *gin.Context) {
 	}
 
 	payload := gin.H{"stats": stats}
+	if req.IncludeRequestStats {
+		requestStats, requestErr := h.accountUsageService.GetAccountRequestStatsBatch(c.Request.Context(), accountIDs)
+		if requestErr != nil {
+			// Keep existing today stats available without displaying false zeroes
+			// for a failed health query or exposing database error details.
+			payload["request_stats_unavailable"] = true
+		} else {
+			payload["request_stats"] = requestStats
+		}
+	}
 	cached := accountTodayStatsBatchCache.Set(cacheKey, payload)
 	if cached.ETag != "" {
 		c.Header("ETag", cached.ETag)

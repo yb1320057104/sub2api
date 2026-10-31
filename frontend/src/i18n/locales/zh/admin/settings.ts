@@ -501,7 +501,7 @@ export default {
         grokBaseURLModeEUWest1: '区域 API（eu-west-1）',
         openaiTTFTMode: 'OpenAI Responses 首 token 统计口径',
         earlyHeartbeat: '首字提前响应',
-        earlyHeartbeatHint: '默认关闭。在支持的 OpenAI 兼容流式入口中，按所选模式及协议条件，在设定范围内随机等待后提前响应；真实响应先到时直接转发，不额外等待。这不会加快模型生成。WebSocket 和非流式请求不受影响。用户页面的“首字”表示首包耗时，原上游首字仅管理员可见。',
+        earlyHeartbeatHint: '默认关闭。在支持的 OpenAI 兼容流式入口中，按所选模式及协议条件，在设定范围内随机等待后提前响应；真实响应先到时直接转发，不额外等待。这不会加快模型生成。WebSocket 和非流式请求不受影响。关闭时完整沿用原上游首字判定（包括 semantic / visible 配置）；开启时用户页面的“首字”使用实际首包耗时，管理员另可查看原上游首字。设置变更只影响新请求，历史记录不重算。',
         earlyHeartbeatMode: '提前响应模式',
         earlyHeartbeatModeComment: '注释保活（默认）',
         earlyHeartbeatModeDownstream: '下游 DP API 兼容',

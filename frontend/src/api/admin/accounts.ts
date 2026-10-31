@@ -13,6 +13,7 @@ import type {
   PaginatedResponse,
   AccountUsageInfo,
   WindowStats,
+  AccountRequestStats,
   ClaudeModel,
   AccountUsageStatsResponse,
   TempUnschedulableStatus,
@@ -571,6 +572,8 @@ export async function getTodayStats(id: number): Promise<WindowStats> {
 
 export interface BatchTodayStatsResponse {
   stats: Record<string, WindowStats>
+  request_stats?: Record<string, AccountRequestStats>
+  request_stats_unavailable?: boolean
 }
 
 /**
@@ -578,9 +581,10 @@ export interface BatchTodayStatsResponse {
  * @param accountIds - 账号 ID 列表
  * @returns 以账号 ID（字符串）为键的统计映射
  */
-export async function getBatchTodayStats(accountIds: number[]): Promise<BatchTodayStatsResponse> {
+export async function getBatchTodayStats(accountIds: number[], includeRequestStats = false): Promise<BatchTodayStatsResponse> {
   const { data } = await apiClient.post<BatchTodayStatsResponse>('/admin/accounts/today-stats/batch', {
-    account_ids: accountIds
+    account_ids: accountIds,
+    include_request_stats: includeRequestStats
   })
   return data
 }

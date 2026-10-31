@@ -271,6 +271,8 @@ export default {
         status: 'Status',
         schedulable: 'Schedulable',
         todayStats: 'Today Stats',
+        latestFirstToken: 'Latest Completed TTFT',
+        consecutiveFailures: 'Consecutive Failures',
         groups: 'Groups',
         usageWindows: 'Usage Windows',
         proxy: 'Proxy',
@@ -278,6 +280,11 @@ export default {
         createdAt: 'Created',
         expiresAt: 'Expires At',
         actions: 'Actions'
+      },
+      requestStats: {
+        firstTokenHint: 'First-token time and completion time of the latest successful request, not an average. Missing timing stays empty; older timings are never substituted. New requests use native upstream timing when early response is off.',
+        failuresHint: 'Upstream request failures since the last success, deduplicated per account and request in retained logs. Platform balance/quota and client errors neither count nor reset the streak. A success resets it. Cached for up to 30 seconds.',
+        unavailable: 'Statistics unavailable'
       },
       schedulerScore: {
         baseShort: 'Base',

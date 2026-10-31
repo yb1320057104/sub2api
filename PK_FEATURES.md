@@ -1,6 +1,8 @@
 # PK出版二开功能清单
 
-2026-10-31 当前任务 v0.2.19-pk.24：基于私库 main / v0.2.19-pk.23（25af35a06），按用户最新要求让**定时重授权也走测智关卡**，并在任务列表标出重授权。`queueReauthorization` 读取糖果测试配置后写入 `intelligence_gate=true`、全部启用模型与推理强度、`fail_group_ids`=糖果设置的不合格目标；`pass_group_ids` 取该账号当前分组（`account_groups`），账号无分组时回退到配置 `group_ids`；没有可用糖果配置（无启用模型或无不合格目标）时保持旧行为，只换凭据、不清分组，避免凭据刷新被卡住。授权成功后由既有 `applyAuthorization` 分支清空分组、暂停调度并按结果分组：及格回到原分组/配置分组，不及格进糖果设置的不合格分组，请求失败或取消保持未分组。前端 `AuthorizationRecords.vue` 对 `source=reauthorization` 增加“定时重授权”标签与创建时间徽标。沿用 PK-034/035/036/021，无新增 ID，不改表结构。此条取代此前“定时重授权不套用工作台关卡”的描述。完成后提交 main 并推送唯一新正式标签 v0.2.19-pk.24；旧标签不移动。Jenkins 由用户自行选择 `ACTION=release`、`SOURCE_REF=v0.2.19-pk.24`，`COMMIT_SHA`/`PACKAGE_ID` 留空。
+2026-10-31 当前任务 v0.2.19-pk.25：基于私库 main / v0.2.19-pk.24（e080d558963242ca4bbc619c6afdcede6be1cf0b），新增账号列表“最近完成首字”和“连续失败”。统计复用保留的 usage_logs / ops_error_logs，按完成时间取最新成功请求、不取平均；只累计该账号上次成功后的上游失败请求，平台余额/配额、客户端错误与已恢复的2xx尝试不计数，按账号及请求去重。新增 PK-037，扩展 PK-007～010/021。用户确认：关闭首字提前响应时完全使用合入上游的原判定 result.FirstTokenMs，保留 semantic / visible；关闭时不安装提前响应 writer 或启动其调度，原生保活保留；开启三模式、计费及原上游指标不变。仅新请求使用新口径，不回写历史，不改表结构。仅静态核对，不运行本地/服务器构建、测试、真实模型请求或线上操作。完成后提交版本分支、合入并推送 main 与唯一新正式标签 v0.2.19-pk.25；旧标签不移动。用户自行 Jenkins 选择 ACTION=release、SOURCE_REF=v0.2.19-pk.25，COMMIT_SHA/PACKAGE_ID 留空。核对记录见 docs/PK_ACCOUNT_REQUEST_STATS_PK25_REVIEW.md。
+
+2026-10-31 历史任务 v0.2.19-pk.24：基于私库 main / v0.2.19-pk.23（25af35a06），按用户最新要求让**定时重授权也走测智关卡**，并在任务列表标出重授权。`queueReauthorization` 读取糖果测试配置后写入 `intelligence_gate=true`、全部启用模型与推理强度、`fail_group_ids`=糖果设置的不合格目标；`pass_group_ids` 取该账号当前分组（`account_groups`），账号无分组时回退到配置 `group_ids`；没有可用糖果配置（无启用模型或无不合格目标）时保持旧行为，只换凭据、不清分组，避免凭据刷新被卡住。授权成功后由既有 `applyAuthorization` 分支清空分组、暂停调度并按结果分组：及格回到原分组/配置分组，不及格进糖果设置的不合格分组，请求失败或取消保持未分组。前端 `AuthorizationRecords.vue` 对 `source=reauthorization` 增加“定时重授权”标签与创建时间徽标。沿用 PK-034/035/036/021，无新增 ID，不改表结构。此条取代此前“定时重授权不套用工作台关卡”的描述。完成后提交 main 并推送唯一新正式标签 v0.2.19-pk.24；旧标签不移动。Jenkins 由用户自行选择 `ACTION=release`、`SOURCE_REF=v0.2.19-pk.24`，`COMMIT_SHA`/`PACKAGE_ID` 留空。
 
 2026-10-31 历史任务 v0.2.19-pk.23：基于私库 main / v0.2.19-pk.22（1c7d60ba4），把授权码交换失败的真实原因显示出来并加重试。`exchange_failed` 消息附带 `authorizationExchangeDetail`（单行、截断 200 字，来自 OAuth 客户端的 `token exchange failed: status %d, body: %s` / `request failed: %v`）；`authorizationExchangeRetryable` 只在无 HTTP 应答（`request failed`/5xx/超时/连接重置/EOF/TLS）时重试一次，4xx（code 已消费、无效或过期）不重试；trace 增加 `exchange retry` / `exchange failed` / `exchange completed`。实测：同一账号经授权代理，正常客户端配置换 token HTTP 200，同 code 重放 400，Firefox 伪装 200；90 秒后才交换仍 200（code 存活超过 114 秒）。沿用 PK-034/035/036/021，无新增 ID。完成后提交 main 并推送唯一新正式标签 v0.2.19-pk.23；旧标签不移动。
 
@@ -59,7 +61,7 @@
 - 2026-10-02 合并上游 `v0.2.12`（commit `5106065716e494204fc0e8db16f68f6e9d576be0`，tag 对象 `cbe9966432317e6757b47f598a103d2132ec27db`），合并前私库为 `162a58972bee08078a43eefa761da1b245f667fa`。逐项核对见 [0.2.12 合并记录](docs/PK_UPSTREAM_0.2.12_REVIEW.md)，正式发布目标为 `v0.2.12-pk.1`；发布与线上更新分别记录。
 - 2026-10-02 合并上游 `v0.2.11`（commit `96f4c115c9749078f90cbf210a01d39baf3f53b6`），合并前私库为 `32f068dcbdc75063ff7f6488aef6c85912d7bf3f`。逐项核对及本次验证见 [合并记录](docs/PK_UPSTREAM_0.2.11_REVIEW.md)；合并源码不代表已发布或更新线上。
 - 本次清点覆盖从该上游基线到私库 `23e5fe663338c86cd0cebbf2f688c8a75dd8c152` 的全部二开提交；应用发行参照 `v0.2.10-pk.7`，另登记本次新增的项目约束机制。此处是代码核对基线，不代表线上当前版本。
-- 以下 PK-001 至 PK-028 及 PK-031 至 PK-036 均为有效保护项；PK-029、PK-030 已按用户授权移除，保留原 ID 与回退记录，不得复用。文件路径用于定位，不是完整修改白名单；所有新调用入口、迁移和旁路都要检查。
+- 以下 PK-001 至 PK-028 及 PK-031 至 PK-037 均为有效保护项；PK-029、PK-030 已按用户授权移除，保留原 ID 与回退记录，不得复用。文件路径用于定位，不是完整修改白名单；所有新调用入口、迁移和旁路都要检查。
 - 每项说明“必须保持”的行为。文末另列验证入口与已知边界；测试存在、历史验证通过和本次候选通过是三件不同的事。
 - 2026-10-21 用户最新要求取代 2026-10-08/19 的源码测试及 notes 前置门禁：核对二开保护和变更后直接提交、合入私库 main 并推送不带 `origin/` 的正式版本标签，交给用户点击 Jenkins `ACTION=release`。不再默认运行完整源码测试，不要求源码验证 notes；Jenkins 继续执行构建、同制品运行时验收和私库发布，不使用 GitHub Actions。可选测试如实记录，未执行不能声称通过。下文历史门禁仅说明当时状态，现行规则以 PK-017 为准。
 
@@ -79,8 +81,8 @@
 | PK-005 | 下游 usage 改写 | JSON/SSE 无损、别名/显式 0、原始用量保留 |
 | PK-006 | 多协议与通道接入 | Responses/Chat/Messages、直通、桥接、WS、图片、embeddings |
 | PK-007 | 首字设置 | 独立页签、默认关闭、随机范围、局部保存与缓存 |
-| PK-008 | 首字提前响应 | 注释/ping/空格三模式、协议边界、禁用时仍统计首包 |
-| PK-009 | 双计时与持久化 | 首包和原上游计时分开、异步传递、所有 SQL 路径 |
+| PK-008 | 首字提前响应 | 注释/ping/空格三模式、协议边界、禁用时沿用原上游首字 |
+| PK-009 | 双计时与持久化 | 开启时真实首包、关闭时原上游首字、请求快照、异步传递、所有 SQL 路径 |
 | PK-010 | 首字显示与权限 | 用户原文案、管理员上游指标、导出和监控不泄露 |
 | PK-011 | 心跳与排队/换号 | 注释/ping不占正文提交判定，空格算正文，周期保活不丢 |
 | PK-012 | 提前响应后的错误与并发 | 协议终止事件、响应头隔离、写锁、停止与 context 生命周期 |
@@ -108,6 +110,7 @@
 | PK-034 | 账号级糖果测试与自动转组 | OpenAI 全部账号类型、固定账号直测、手动/独立定时、答案21、失败不转组、不合格移除全部原组 |
 | PK-035 | 管理员雷达观测站 | 分组/账号/授权巡检页签、账号卡片、多模型判定、出口IP、服务端筛选、新表隔离、旧历史只读兼容 |
 | PK-036 | 账号授权与巡检 | 原生OAuth并发、独立代理预检、CF挑战页内完成与无头→后台Chrome身份升级、加密凭据历史、cron巡检/重授权、可配错误码、实时账号、缺凭据补全 |
+| PK-037 | 账号请求健康统计 | 最近完成首字、连续上游失败、保留日志批量读取、平台错误排除、管理员列表刷新 |
 
 ## PK-001
 
@@ -234,7 +237,7 @@
 - 单纯修改 Header 或写出成功响应头不能取消等待心跳；首个心跳设置 SSE/no-cache/`X-Accel-Buffering: no` 并移除 `Content-Length`。真实输出更早到达时立即转发，不等待随机时间。
 - 不注入非流式、WebSocket 入站、图片、legacy compact、native V2 compact 等排除路径；上游 WS 转下游 SSE 的既有重连语义保留。
 - 适用范围由 `OpenAIGatewayHandler` 及其路由决定（包括复用该处理器的兼容平台），原生 Claude/Gemini handler 不因这项改动自动纳入；新增路由必须重新核对处理器。
-- 禁用提前心跳时，已纳入测量的入口仍采集真实首包。服务器写出耗时不等于客户端网络到达耗时，部分 SDK 忽略注释。
+- 2026-10-31 pk.25 用户明确：禁用提前响应时不安装二开 writer/定时器，完整沿用合入上游的首字判定，包括原 semantic / visible 配置；原生周期保活和协议转发不变。开启时才采集真实首包，服务器写出耗时不等于客户端网络到达耗时，部分 SDK 忽略注释。
 - 2026-10-02 下游兼容调查：原版 Sub2API 的 Responses 会忽略注释及 `response.created/in_progress/keepalive`；语义模式与可见内容模式判定不同，空语义事件不能保证所有下游识别。Chat 原始转发会对非 usage-only 的数据块记时。账号测试页的 `_` 是 `AccountTestModal.vue` 的 UI 光标，不是可被协议撤回的模型字符；不得据此宣称注入 `_` 后能无损替换正文。
 - 入口：`backend/internal/service/{openai_early_sse_heartbeat,openai_early_sse_space}.go`；`backend/internal/handler/{openai_gateway_handler,openai_chat_completions}.go`。
 - 验证：`TestPKEarlyHeartbeat_*`、`TestPKFirstResponse_DisabledHeartbeatStillRecordsBodyAndCopiesContext`，以及获准的隔离远端通过实际反代读取 SSE。
@@ -249,9 +252,9 @@
 **双计时与全部持久化路径。** 引入：`54b4372c2`，完善：`41958f4d4`。
 
 - `usage_logs.first_response_ms` 独立记录首次成功非空下游正文写出的实测耗时（可为心跳）；原 `first_token_ms` 保存原上游计时，调度/计费不得改用随机值。
-- 保留 nullable 字段和真实 `0` 的区分。历史或未接入测量的记录保持 null，不回填原上游指标冒充首包。
+- 保留 nullable 字段和真实 `0` 的区分。历史记录保持原值/null，不回填或按当前开关重算。2026-10-31 pk.25 起，新记录 first_response_ms 表示按请求启动设置选定的展示首字：关闭或不适用提前响应的路径原样使用 result.FirstTokenMs；开启且适用时使用实际下游首包。字段名保持兼容。
 - 异步 usage worker 使用独立原子计时状态，通过 `CopyFirstResponseTiming` 传递到 detached context；不能异步持有已回收的 Gin context。
-- 只记录第一次实际 body 写出，header-only flush 不计；换号不重置同一个下游请求的首包计时。
+- 开启提前响应时只记录第一次实际 body 写出，header-only flush 不计；换号不重置同一个下游请求的首包计时。关闭时直接使用原上游记录值，不因前导事件或保活提前。
 - SQL select/scan、单条插入、批量、best-effort、查询和 DTO 均保留字段。插入追加在既有参数末尾，不打乱账务参数位置。
 - 迁移 `backend/migrations/241_usage_log_first_response_ms.sql` 增加可空列，保留旧显式 SQL 兼容。当前由 SQL repository 管理该扩展字段；若以后转入 Ent，必须同步生成描述符并验证索引，不能直接往旧 Ent schema 中插字段。
 - 入口：`backend/internal/service/{openai_early_sse_heartbeat,openai_early_sse_space,usage_log,openai_gateway_usage,gateway_usage_billing}.go`、handler usage context、`backend/internal/repository/usage_log_repo_{insert,query}.go`。
@@ -261,6 +264,8 @@
 2026-10-26 合入 v0.2.18：PK-009 的异步上下文边界覆盖原生 Anthropic 兼容 Chat/Responses 新共用 `submitForwardUsage`。在入队前同步保存纯值 `ChannelUsageFields`，成功及中断用量计费 worker 不再访问可回收 Gin context；原首包原子状态、预留引用、计费去重与 nullable 持久化保持。仅静态核对，未运行测试或构建。
 
 ## PK-010
+
+2026-10-31 pk.25：普通用户和管理员的“首字”沿用该请求持久化的展示口径；关闭提前响应的新请求等于原上游首字，开启时仍为真实下游首包。管理员额外上游字段/双列保留，普通用户不新增管理员专属字段；历史不重算。
 
 **首字显示、导出与上游指标权限。** 引入：`54b4372c2`，完善：`41958f4d4`。
 
@@ -868,6 +873,18 @@
 - 迁移253只新增config/history/proxies/jobs/state五张独立表；pk.20按用户要求改为按邮箱更新凭据，旧表结构不改。Chromium按pk.14规则外置，网页二进制更新不安装浏览器；备份恢复须保留数据库及原加密密钥。
 - 入口：service/account_authorization_*.go、handler/account_authorization_handler.go、迁移253、admin路由与Wire；repository/account_repo.go的ListAllWithFilters沿用已有事务作用域，入库前同邮箱查询不另占连接；前端AccountAuthorizationView、AuthorizationSchedule/Records、accountAuthorization API、中英文案和雷达入口。
 - 本轮仅源码、格式化、差异、权限/事务/生命周期和文案静态核对。未运行本地/服务器构建或测试、真实模型/登录请求、浏览器视觉验收，未新建测试文件；既有最小Cleanup回归仅同步参数。Jenkins实际构建/制品验收由用户触发，不把静态检查说成登录已实测。详见 docs/PK_ACCOUNT_AUTHORIZATION_PLAN.md。
+
+## PK-037
+
+**账号列表最近完成首字与连续上游失败。** 引入：`v0.2.19-pk.25`。
+
+- 账号列表新增默认显示、可隐藏的两列，含完成/最近失败时间，失败次数大于零标红。随分页、筛选、手动与自动刷新更新，即使账号列表 ETag 未变化也更新统计。
+- 最新完成请求按 usage_logs.created_at DESC、id DESC 取一条成功记录，读取其 first_response_ms，不取平均、不跳过该条缺失的时间去取旧值。失败占位、安全策略拦截与有终态错误的部分计费流不当作成功；免费但有真实用量或首字的请求可以清零。
+- 连续失败只统计最近成功以后 ops_error_logs 中 account_id 对应、error_owner=provider、phase 为 upstream/network/account_auth、HTTP>=400（排除499）、非业务限制/非count_tokens的请求。按账号、API Key和请求ID去重，回退client_request_id或独立错误行ID；支持 usage 的 local:/client: 计费关联。平台余额不足/本地配额/路由错误既不加数也不清零，恢复成功的2xx过程记录不计作最终失败。
+- 沿用现有管理员 today-stats/batch 接口，显式 include_request_stats 才附带独立 request_stats；每页一次批量SQL、复用账号/完成时间索引与30秒快照缓存，缓存键区分新旧请求。失败返回不可用标记，不伪造0，不泄露数据库错误。
+- 不添加表或迁移、不改历史数据、失败归因写入、调度/配额/计费或账号状态。统计仅代表仍保留且实际写入的日志；关闭错误日志或历史清理后不能据此还原未保存事件。
+- 入口：`backend/internal/repository/account_request_stats.go`、`service/account_usage_service.go`、`handler/admin/account_handler.go`、`pkg/usagestats/usage_log_types.go`；前端 `AccountsView.vue`、`AccountRequestStatsCell.vue`、账号API/类型/中英文案。
+- 验证：扩展既有 `usage_log_repo_stats_integration_test.go` 的跨日、重复、免费成功、缺失/零耗时、平台错误排除及部分计费失败关联用例；本轮仅静态审查，未运行构建、测试或线上请求。
 
 ## 验证入口与现有边界
 

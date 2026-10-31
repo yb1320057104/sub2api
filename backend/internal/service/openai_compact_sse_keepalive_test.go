@@ -343,7 +343,7 @@ func firePKEarlyHeartbeat(t *testing.T, w *earlySSEHeartbeatWriter) {
 func TestPKEarlyHeartbeat_HeaderPreparationDoesNotCancelFirstComment(t *testing.T) {
 	c, rec := newCompactBridgeTestContext(t, false)
 	c.Writer.Header().Set("X-Request-ID", "gateway-request")
-	stop := startEarlySSEHeartbeat(c, time.Now(), "responses", StreamEarlyHeartbeatSettings{})
+	stop := startEarlySSEHeartbeat(c, time.Now(), "responses", StreamEarlyHeartbeatSettings{Enabled: true, MinDelayMS: 30000, MaxDelayMS: 30000})
 	defer stop()
 	w := earlySSEWriterFromContext(c)
 	c.Writer.Header().Set("Content-Type", "text/event-stream")
@@ -372,7 +372,7 @@ func TestPKEarlyHeartbeat_HeaderPreparationDoesNotCancelFirstComment(t *testing.
 
 func TestPKEarlyHeartbeat_FlushedHeadersStillAllowCommentBeforeBody(t *testing.T) {
 	c, rec := newCompactBridgeTestContext(t, false)
-	stop := startEarlySSEHeartbeat(c, time.Now(), "chat", StreamEarlyHeartbeatSettings{})
+	stop := startEarlySSEHeartbeat(c, time.Now(), "chat", StreamEarlyHeartbeatSettings{Enabled: true, MinDelayMS: 30000, MaxDelayMS: 30000})
 	defer stop()
 	c.Writer.Header().Set("Content-Type", "text/event-stream")
 	c.Writer.WriteHeader(http.StatusOK)
@@ -405,7 +405,7 @@ func TestPKEarlyHeartbeat_EnabledTimerUsesRequestStart(t *testing.T) {
 
 func TestPKEarlyHeartbeat_FastErrorKeepsHTTPStatusAndJSON(t *testing.T) {
 	c, rec := newCompactBridgeTestContext(t, false)
-	stop := startEarlySSEHeartbeat(c, time.Now(), "responses", StreamEarlyHeartbeatSettings{})
+	stop := startEarlySSEHeartbeat(c, time.Now(), "responses", StreamEarlyHeartbeatSettings{Enabled: true, MinDelayMS: 30000, MaxDelayMS: 30000})
 	defer stop()
 	c.JSON(http.StatusForbidden, map[string]any{"error": map[string]any{"type": "permission_error", "message": "denied"}})
 	firePKEarlyHeartbeat(t, earlySSEWriterFromContext(c))
@@ -419,7 +419,7 @@ func TestPKEarlyHeartbeat_LateJSONErrorUsesProtocolTerminal(t *testing.T) {
 	for _, protocol := range []string{"responses", "chat", "messages"} {
 		t.Run(protocol, func(t *testing.T) {
 			c, rec := newCompactBridgeTestContext(t, false)
-			stop := startEarlySSEHeartbeat(c, time.Now(), protocol, StreamEarlyHeartbeatSettings{})
+			stop := startEarlySSEHeartbeat(c, time.Now(), protocol, StreamEarlyHeartbeatSettings{Enabled: true, MinDelayMS: 30000, MaxDelayMS: 30000})
 			defer stop()
 			firePKEarlyHeartbeat(t, earlySSEWriterFromContext(c))
 			c.JSON(http.StatusServiceUnavailable, map[string]any{"error": map[string]any{"type": "overloaded_error", "code": "capacity", "message": "try later"}})
@@ -455,7 +455,7 @@ func TestPKEarlyHeartbeat_LateJSONErrorUsesProtocolTerminal(t *testing.T) {
 
 func TestPKEarlyHeartbeat_HeaderMutationDoesNotRaceTimer(t *testing.T) {
 	c, rec := newCompactBridgeTestContext(t, false)
-	stop := startEarlySSEHeartbeat(c, time.Now(), "responses", StreamEarlyHeartbeatSettings{})
+	stop := startEarlySSEHeartbeat(c, time.Now(), "responses", StreamEarlyHeartbeatSettings{Enabled: true, MinDelayMS: 30000, MaxDelayMS: 30000})
 	defer stop()
 	w := earlySSEWriterFromContext(c)
 	w.mu.Lock()
@@ -480,7 +480,7 @@ func TestPKEarlyHeartbeat_HeaderMutationDoesNotRaceTimer(t *testing.T) {
 
 func TestPKEarlyHeartbeat_ReusesExistingPassthroughKeepalive(t *testing.T) {
 	c, rec := newCompactBridgeTestContext(t, false)
-	stop := startEarlySSEHeartbeat(c, time.Now(), "responses", StreamEarlyHeartbeatSettings{})
+	stop := startEarlySSEHeartbeat(c, time.Now(), "responses", StreamEarlyHeartbeatSettings{Enabled: true, MinDelayMS: 30000, MaxDelayMS: 30000})
 	defer stop()
 	w := earlySSEWriterFromContext(c)
 	stopPeriodic := startOpenAISSEKeepalive(c, time.Hour)
@@ -498,7 +498,7 @@ func TestPKEarlyHeartbeat_ReusesExistingPassthroughKeepalive(t *testing.T) {
 
 func TestPKEarlyHeartbeat_AdjustmentCombinesStreamComments(t *testing.T) {
 	c, _ := newCompactBridgeTestContext(t, false)
-	stop := startEarlySSEHeartbeat(c, time.Now(), "responses", StreamEarlyHeartbeatSettings{})
+	stop := startEarlySSEHeartbeat(c, time.Now(), "responses", StreamEarlyHeartbeatSettings{Enabled: true, MinDelayMS: 30000, MaxDelayMS: 30000})
 	defer stop()
 	firePKEarlyHeartbeat(t, earlySSEWriterFromContext(c))
 	queueBytes, queueErr := c.Writer.WriteString(": queue\n\n")
@@ -530,6 +530,21 @@ func TestPKEarlyHeartbeat_ExternalHeartbeatAllowsLaterPeriodicKeepalive(t *testi
 						recordOpenAIStreamKeepaliveBytes(c, n)
 					} else {
 						c.Set(GatewayStreamHeartbeatBytesKey, n)
+					}
+					if !enabled {
+						require.Nil(t, w)
+						before := OpenAICompactKeepaliveAdjustedWrittenSize(c)
+						require.Equal(t, -1, before)
+						stopPeriodic := startOpenAISSEKeepalive(c, time.Hour)
+						defer stopPeriodic()
+						value, ok := c.Get(openAICompactSSEKeepaliveKey)
+						require.True(t, ok)
+						periodic := value.(*openAICompactSSEKeepalive)
+						require.True(t, periodic.beat())
+						require.Equal(t, frame+": keepalive\n\n", rec.Body.String())
+						require.Equal(t, before, OpenAICompactKeepaliveAdjustedWrittenSize(c))
+						require.Nil(t, FirstResponseMsFromContext(c.Request.Context()))
+						return
 					}
 					w.mu.Lock()
 					stopped, firstDue, internalBytes := w.stopped, w.firstDue, w.bytes
@@ -571,7 +586,7 @@ func TestPKEarlyHeartbeat_OnlyCompleteTransportFramesPreserveController(t *testi
 
 func TestPKEarlyHeartbeat_QueueOnlyLateJSONErrorUsesSSE(t *testing.T) {
 	c, rec := newCompactBridgeTestContext(t, false)
-	stop := startEarlySSEHeartbeat(c, time.Now(), "messages", StreamEarlyHeartbeatSettings{})
+	stop := startEarlySSEHeartbeat(c, time.Now(), "messages", StreamEarlyHeartbeatSettings{Enabled: true, MinDelayMS: 30000, MaxDelayMS: 30000})
 	defer stop()
 	c.Writer.Header().Set("Content-Type", "text/event-stream")
 	n, err := c.Writer.WriteString("data: {\"type\": \"ping\"}\n\n")
@@ -631,28 +646,44 @@ func TestPKEarlyHeartbeat_RandomDelayBounds(t *testing.T) {
 	require.Equal(t, time.Duration(0), earlySSEHeartbeatDelay(StreamEarlyHeartbeatSettings{MinDelayMS: -10, MaxDelayMS: -1}))
 }
 
-func TestPKFirstResponse_DisabledHeartbeatStillRecordsBodyAndCopiesContext(t *testing.T) {
-	c, rec := newCompactBridgeTestContext(t, false)
-	var service *OpenAIGatewayService
-	stop := service.StartEarlySSEHeartbeat(c, time.Now().Add(-20*time.Millisecond), "chat")
+func TestPKFirstResponse_DisabledUsesNativeWriterAndTiming(t *testing.T) {
+	for _, mode := range []string{StreamEarlyHeartbeatModeComment, StreamEarlyHeartbeatModeDownstreamPing, StreamEarlyHeartbeatModeSpace} {
+		t.Run(mode, func(t *testing.T) {
+			c, rec := newCompactBridgeTestContext(t, false)
+			original := c.Writer
+			stop := startEarlySSEHeartbeat(c, time.Now().Add(-20*time.Millisecond), "responses", StreamEarlyHeartbeatSettings{Mode: mode})
+			defer stop()
+			require.Same(t, original, c.Writer)
+			require.Nil(t, earlySSEWriterFromContext(c))
+			_, err := c.Writer.WriteString("event: response.created\ndata: {}\n\n")
+			require.NoError(t, err)
+			require.Nil(t, FirstResponseMsFromContext(c.Request.Context()))
+			require.NotContains(t, rec.Body.String(), "keepalive")
+			upstream := 21920
+			detached := CopyFirstResponseTiming(c.Request.Context(), context.Background())
+			require.Equal(t, &upstream, UsageFirstResponseMsFromContext(detached, &upstream))
+			zero := 0
+			require.Equal(t, &zero, UsageFirstResponseMsFromContext(detached, &zero))
+			require.Nil(t, UsageFirstResponseMsFromContext(detached, nil))
+		})
+	}
+}
+
+func TestPKFirstResponse_EnabledSnapshotSurvivesDetachedUsage(t *testing.T) {
+	c, _ := newCompactBridgeTestContext(t, false)
+	settings := StreamEarlyHeartbeatSettings{Enabled: true, MinDelayMS: 30000, MaxDelayMS: 30000}
+	stop := startEarlySSEHeartbeat(c, time.Now(), "chat", settings)
 	defer stop()
-	require.Nil(t, FirstResponseMsFromContext(c.Request.Context()))
-	c.Writer.Header().Set("Content-Type", "text/event-stream")
-	c.Writer.Header().Set("X-Upstream-ID", "preserved-before-commit")
 	_, err := c.Writer.WriteString("data: first\n\n")
 	require.NoError(t, err)
 	first := FirstResponseMsFromContext(c.Request.Context())
 	require.NotNil(t, first)
-	require.GreaterOrEqual(t, *first, 20)
-	_, err = c.Writer.WriteString("data: second\n\n")
-	require.NoError(t, err)
-	require.Equal(t, first, FirstResponseMsFromContext(c.Request.Context()))
-	require.NotContains(t, rec.Body.String(), "keepalive")
-	require.Equal(t, "preserved-before-commit", rec.Result().Header.Get("X-Upstream-ID"))
+	settings.Enabled = false
 	baseKey := struct{ name string }{"retained"}
 	base := context.WithValue(context.Background(), baseKey, "base value")
 	detached := CopyFirstResponseTiming(c.Request.Context(), base)
-	require.Equal(t, first, FirstResponseMsFromContext(detached))
+	upstream := 21920
+	require.Equal(t, first, UsageFirstResponseMsFromContext(detached, &upstream))
 	require.Equal(t, "base value", detached.Value(baseKey))
 	require.Nil(t, FirstResponseMsFromContext(context.Background()))
 	require.Nil(t, FirstResponseMsFromContext(nil)) //nolint:staticcheck // Exercise the documented nil-context guard.
@@ -661,7 +692,7 @@ func TestPKFirstResponse_DisabledHeartbeatStillRecordsBodyAndCopiesContext(t *te
 func TestPKEarlyHeartbeat_StopRestoresWriterAndPendingHeaders(t *testing.T) {
 	c, rec := newCompactBridgeTestContext(t, false)
 	original := c.Writer
-	stop := startEarlySSEHeartbeat(c, time.Now(), "responses", StreamEarlyHeartbeatSettings{})
+	stop := startEarlySSEHeartbeat(c, time.Now(), "responses", StreamEarlyHeartbeatSettings{Enabled: true, MinDelayMS: 30000, MaxDelayMS: 30000})
 	w := earlySSEWriterFromContext(c)
 	c.Writer.Header().Set("X-Pending", "kept")
 	stop()
