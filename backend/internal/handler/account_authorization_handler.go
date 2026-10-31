@@ -269,3 +269,55 @@ func (h *AccountAuthorizationHandler) Cancel(c *gin.Context) {
 		response.Success(c, map[string]any{"cancelled": true})
 	}
 }
+
+func (h *AccountAuthorizationHandler) DeleteProxies(c *gin.Context) {
+	if !authorizationAdmin(c) {
+		return
+	}
+	var input struct {
+		IDs []int64 `json:"ids"`
+	}
+	if !authorizationInput(c, &input) {
+		return
+	}
+	middleware.SetAuditAction(c, "authorization.proxies.delete_batch")
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
+	defer cancel()
+	count, err := h.service.DeleteAuthorizationProxies(ctx, input.IDs)
+	if !authorizationError(c, err) {
+		response.Success(c, map[string]any{"deleted": count})
+	}
+}
+
+func (h *AccountAuthorizationHandler) RetryJob(c *gin.Context) {
+	if !authorizationAdmin(c) {
+		return
+	}
+	id, ok := authorizationID(c)
+	if !ok {
+		return
+	}
+	middleware.SetAuditAction(c, "authorization.jobs.retry")
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	defer cancel()
+	result, err := h.service.RetryAuthorizationJob(ctx, id)
+	if !authorizationError(c, err) {
+		response.Success(c, result)
+	}
+}
+func (h *AccountAuthorizationHandler) AuthorizeNow(c *gin.Context) {
+	if !authorizationAdmin(c) {
+		return
+	}
+	id, ok := authorizationID(c)
+	if !ok {
+		return
+	}
+	middleware.SetAuditAction(c, "authorization.accounts.authorize_now")
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	defer cancel()
+	result, err := h.service.AuthorizeAccountNow(ctx, id)
+	if !authorizationError(c, err) {
+		response.Success(c, result)
+	}
+}

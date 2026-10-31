@@ -1,5 +1,11 @@
 export default {
   authorization: {
+    retryJob: '重试', authorizeNow: '立即授权', immediateJob: '管理员立即授权', retryOrigin: '重试原任务 #{id}',
+    manualJobQueued: '已提交授权任务 #{id}，立即进入执行队列', completeBeforeAuthorize: '请先补全账号密码和2FA',
+    proxyAttemptProgress: '代理 #{id} · 预检通过 {passed}/{limit} · 已检查 {scanned} 条',
+    proxiesSelected: '已选择 {count} 条', selectProxyPage: '全选当前页代理', selectProxy: '选择代理 #{id}',
+    deleteSelectedProxies: '批量删除', proxiesDeleted: '已删除 {count} 条授权代理',
+    deleteProxiesHint: '确定删除选中的 {count} 条授权代理？删除后将不再用于新的授权连接；已开始的连接可能继续完成。此操作不会删除IP管理中的代理。',
     accountProxyMode: "入库账号出口",
     accountDirect: "服务器直连",
     accountManaged: "从IP管理分配代理",
@@ -12,7 +18,7 @@ export default {
     gateModels: '本轮并发测试 {count} 个启用模型（提交时固定本批配置）', credentialsAuthorized: '授权凭据已保存', gatePassed: '测智及格', gateFailed: '测智不及格', gateAnswer: '答案：{answer}', finalGroups: '最终分组', ungrouped: '暂未分组', currentStage: '当前阶段：{stage}',
     modelResults: '逐模型测智结果', modelDuration: '耗时 {seconds} 秒',
     modelStates: { running: '测试中', completed: '已完成', failed: '请求失败，不作为答错', cancelled: '已取消', interrupted: '未完成' },
-    stages: { account_proxy_capacity: '入库IP容量不足', queued: '等待执行', starting: '读取凭据', proxy_check: '检查授权出口', proxy_retry: '重试出口预检', login: '打开授权页面', email: '提交邮箱', password: '提交密码', mfa: '提交2FA', consent: '确认授权', exchange: '交换授权码', saving: '保存授权凭据', intelligence_pending: '等待测智', intelligence_testing: '正在测智', intelligence_grouping: '写入目标分组', intelligence_completed: '测智和分组已完成', intelligence_failed: '测智或分组未完成', intelligence_account_changed: '账号已变化，停止分组', intelligence_group_failed: '分组写入失败', intelligence_groups_missing: '缺少目标分组', login_security: '需要完成安全验证', login_http_failed: '登录接口拒绝请求', login_rate_limited: '登录请求被限流', login_error: '登录页面错误', login_timeout: '登录超时', invalid_password: '密码未通过验证', invalid_twofa: '2FA未通过验证', invalid_credentials: '凭据未通过验证', account_banned: '官方已确认封禁', completed: '已完成', cancelled: '已取消', interrupted: '执行中断', failed: '执行失败', needs_input: '需要人工处理', security: '需要安全验证' },
+    stages: { proxy_switch: '切换授权代理', proxy_network_failed: '授权出口连接失败', proxy_navigation_timeout: '授权出口导航超时', proxy_http_failed: '授权出口请求失败', proxy_precheck_timeout: '授权出口预检超时', proxy_pool_exhausted: '可用授权代理已用尽', proxy_attempts_exhausted: '5条预检通过代理均未完成授权', authorization_timeout: '授权任务达到总时限', account_proxy_capacity: '入库IP容量不足', queued: '等待执行', starting: '读取凭据', proxy_check: '检查授权出口', proxy_retry: '重试出口预检', login: '打开授权页面', email: '提交邮箱', password: '提交密码', mfa: '提交2FA', consent: '确认授权', exchange: '交换授权码', saving: '保存授权凭据', intelligence_pending: '等待测智', intelligence_testing: '正在测智', intelligence_grouping: '写入目标分组', intelligence_completed: '测智和分组已完成', intelligence_failed: '测智或分组未完成', intelligence_account_changed: '账号已变化，停止分组', intelligence_group_failed: '分组写入失败', intelligence_groups_missing: '缺少目标分组', login_security: '需要完成安全验证', login_http_failed: '登录接口拒绝请求', login_rate_limited: '登录请求被限流', login_error: '登录页面错误', login_timeout: '登录超时', invalid_password: '密码未通过验证', invalid_twofa: '2FA未通过验证', invalid_credentials: '凭据未通过验证', account_banned: '官方已确认封禁', completed: '已完成', cancelled: '已取消', interrupted: '执行中断', failed: '执行失败', needs_input: '需要人工处理', security: '需要安全验证' },
     encryptionMissing: '请先配置并持久保存 TOTP_ENCRYPTION_KEY，才能保存账号凭据和授权代理。未固定密钥时，重启会导致历史无法解密。',
     title: '账号授权', description: '批量提交邮箱、密码和2FA，使用本项目授权链接完成入库；历史凭据供账号巡检后的统一重授权使用。',
     tabs: { workbench: '工作台', proxies: '授权代理', history: '凭据历史' },

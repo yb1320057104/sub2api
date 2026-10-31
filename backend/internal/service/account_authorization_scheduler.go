@@ -154,7 +154,9 @@ func releaseAuthorizationLock(conn *sql.Conn, id int64) {
 }
 
 func (s *AccountAuthorizationService) drainAuthorizationJobs() error {
-	ctx, cancel := context.WithTimeout(s.ctx, 45*time.Minute)
+	// Stop starting new waves after one job budget, but leave a full budget
+	// for the final wave and keep all database operations deadline-bounded.
+	ctx, cancel := context.WithTimeout(s.ctx, 2*authorizationJobTimeout)
 	defer cancel()
 	conn, err := s.db.Conn(ctx)
 	if err != nil {
@@ -172,7 +174,8 @@ func (s *AccountAuthorizationService) drainAuthorizationJobs() error {
 	if err = s.recoverAuthorizationHistory(ctx); err != nil {
 		return err
 	}
-	for ctx.Err() == nil {
+	drainUntil := time.Now().Add(authorizationJobTimeout)
+	for ctx.Err() == nil && time.Now().Before(drainUntil) {
 		if err = conn.PingContext(ctx); err != nil {
 			return err
 		}

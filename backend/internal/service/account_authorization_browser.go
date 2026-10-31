@@ -710,7 +710,7 @@ const (
 	authorizationPrecheckBackground = 180 * time.Second
 	authorizationChallengeHeadless  = 30 * time.Second
 	authorizationChallengeHeadful   = 180 * time.Second
-	// The browser phase stays inside the job's 10-minute context even when both
+	// Each proxy's browser phase has an 8-minute budget even when both
 	// identities have to wait for a Cloudflare challenge twice.
 	authorizationBrowserBudget = 8 * time.Minute
 )

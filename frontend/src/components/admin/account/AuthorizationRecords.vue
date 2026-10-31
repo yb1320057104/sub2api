@@ -9,9 +9,14 @@
       <button class="btn btn-secondary" type="button" :disabled="loading" @click="load()">{{ t('authorization.refresh') }}</button>
     </div>
     <p v-if="error" role="alert" class="text-sm text-red-600 dark:text-red-400">{{ error }}</p>
+    <div v-if="kind === 'proxies'" class="flex flex-wrap items-center gap-3 text-sm">
+      <span class="text-gray-500 dark:text-dark-400">{{ t('authorization.proxiesSelected', { count: selectedProxies.size }) }}</span>
+      <button type="button" class="btn btn-danger btn-sm" :disabled="!selectedProxies.size || proxyDeleting || busy.size > 0" @click="openProxyDelete">{{ t('authorization.deleteSelectedProxies') }}</button>
+    </div>
     <div class="overflow-x-auto rounded-2xl border border-gray-200 bg-white dark:border-dark-700 dark:bg-dark-800" :aria-busy="loading">
       <table class="w-full min-w-[760px] text-left text-sm">
         <thead class="border-b border-gray-200 bg-gray-50 text-xs text-gray-500 dark:border-dark-700 dark:bg-dark-900/50 dark:text-dark-400"><tr>
+          <th v-if="kind === 'proxies'" class="w-12 px-4 py-3"><input type="checkbox" class="h-4 w-4 rounded border-gray-300 text-primary-600" :checked="allProxiesSelected" :indeterminate="someProxiesSelected" :disabled="!rows.length || proxyDeleting" :aria-label="t('authorization.selectProxyPage')" @change="toggleProxyPage" /></th>
           <th class="px-4 py-3">{{ t(kind === 'proxies' ? 'authorization.proxyEndpoint' : 'authorization.account') }}</th>
           <th class="px-4 py-3">{{ t('authorization.status') }}</th>
           <th class="px-4 py-3">{{ t(kind === 'history' ? 'authorization.credentials' : 'authorization.details') }}</th>
@@ -20,9 +25,15 @@
         </tr></thead>
         <tbody class="divide-y divide-gray-100 dark:divide-dark-700">
           <tr v-for="row in rows" :key="row.id" class="align-top">
+            <td v-if="kind === 'proxies'" class="px-4 py-4"><input type="checkbox" class="h-4 w-4 rounded border-gray-300 text-primary-600" :checked="selectedProxies.has(row.id)" :disabled="proxyDeleting" :aria-label="t('authorization.selectProxy', { id: row.id })" @change="toggleProxy(row.id)" /></td>
             <td class="max-w-72 px-4 py-4"><p class="truncate font-medium text-gray-900 dark:text-white" :title="row.name || row.endpoint || row.email">{{ row.name || row.endpoint || row.email }}</p><p v-if="row.name" class="mt-1 break-all text-xs text-gray-500 dark:text-dark-400">{{ row.email || '—' }}</p><div v-if="row.groups?.length" class="mt-2 flex max-w-64 flex-wrap gap-1"><span v-for="group in row.groups" :key="group" class="rounded-md bg-primary-50 px-1.5 py-0.5 text-[11px] text-primary-700 dark:bg-primary-950/50 dark:text-primary-300">{{ group }}</span></div><p class="mt-1 text-[11px] text-gray-400">#{{ row.id }}<span v-if="row.source"> · {{ t('authorization.source.' + row.source) }}</span><span v-if="row.source === 'reauthorization'" class="ml-1 rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-700 dark:bg-amber-950/50 dark:text-amber-300">{{ date(row.created_at) }}</span></p></td>
             <td class="px-4 py-4"><span class="inline-block max-w-56 rounded-lg px-2 py-1 text-xs font-medium" :class="tone(row.status)">{{ state(row.status) }}</span><p v-if="kind === 'jobs' && row.stage" class="mt-2 text-xs text-gray-500 dark:text-dark-400">{{ stageLabel(row.stage) }}</p><p v-if="row.http_status" class="mt-2 font-mono text-xs text-gray-500">HTTP {{ row.http_status }}</p></td>
             <td class="max-w-80 px-4 py-4 text-xs leading-5 text-gray-600 dark:text-dark-300">
+              <template v-if="kind === 'jobs'">
+                <p v-if="row.immediate_authorization" class="mb-1 font-medium">{{ t('authorization.immediateJob') }}</p>
+                <p v-if="row.retry_of_job_id" class="mb-1">{{ t('authorization.retryOrigin', { id: row.retry_of_job_id }) }}</p>
+                <p v-if="row.authorization_proxy_id" class="mb-2 tabular-nums">{{ t('authorization.proxyAttemptProgress', { id: row.authorization_proxy_id, passed: row.authorization_proxy_passed || 0, limit: row.authorization_proxy_limit || 5, scanned: row.authorization_proxy_scanned || 0 }) }}</p>
+              </template>
               <template v-if="kind === 'jobs' && row.authorization_completed"><p class="mb-1 font-medium text-emerald-700 dark:text-emerald-300">{{ t('authorization.credentialsAuthorized') }}</p><p v-if="typeof row.intelligence_passed === 'boolean'">{{ t(row.intelligence_passed ? 'authorization.gatePassed' : 'authorization.gateFailed') }}<span v-if="row.intelligence_answer != null"> · {{ t('authorization.gateAnswer', { answer: row.intelligence_answer }) }}</span></p><p class="mb-2">{{ t('authorization.finalGroups') }}：{{ row.groups?.length ? row.groups.join('、') : t('authorization.ungrouped') }}</p></template>
               <div v-if="kind === 'jobs' && row.intelligence_results?.length" class="mb-3 space-y-2">
                 <p class="font-medium text-gray-700 dark:text-dark-200">{{ t('authorization.modelResults') }}</p>
@@ -41,15 +52,17 @@
             </td>
             <td class="whitespace-nowrap px-4 py-4 text-xs tabular-nums text-gray-500 dark:text-dark-400">{{ date(row.checked_at || row.last_checked_at || row.created_at) }}<p v-if="row.authorized_at" class="mt-1">{{ t('authorization.authorizedAt') }}<br />{{ date(row.authorized_at) }}</p></td>
             <td class="px-4 py-4 text-right"><div class="flex justify-end gap-3 whitespace-nowrap text-xs font-semibold">
-              <template v-if="kind === 'proxies'"><button type="button" class="text-primary-600 disabled:opacity-40 dark:text-primary-300" :disabled="busy.has(row.id)" @click="action(row, 'check')">{{ t(busy.has(row.id) ? 'authorization.checking' : 'authorization.checkProxy') }}</button><button type="button" class="text-gray-500 disabled:opacity-40" :disabled="busy.has(row.id)" @click="action(row, 'disable')">{{ t('authorization.disable') }}</button></template>
+              <template v-if="kind === 'proxies'"><button type="button" class="text-primary-600 disabled:opacity-40 dark:text-primary-300" :disabled="busy.has(row.id) || proxyDeleting" @click="action(row, 'check')">{{ t(busy.has(row.id) ? 'authorization.checking' : 'authorization.checkProxy') }}</button><button type="button" class="text-gray-500 disabled:opacity-40" :disabled="busy.has(row.id) || proxyDeleting" @click="action(row, 'disable')">{{ t('authorization.disable') }}</button></template>
               <button v-if="kind === 'jobs' && ['queued', 'running'].includes(row.status)" type="button" class="text-red-600 disabled:opacity-40 dark:text-red-400" :disabled="busy.has(row.id)" @click="action(row, 'cancel')">{{ t('authorization.cancel') }}</button>
+              <button v-if="kind === 'jobs' && ['failed', 'needs_input'].includes(row.status) && !row.authorization_completed" type="button" class="text-primary-600 disabled:opacity-40 dark:text-primary-300" :disabled="busy.has(row.id)" @click="queueAuthorization(row, false)">{{ t('authorization.retryJob') }}</button>
+              <button v-if="kind === 'accounts' && ['expired', 'credentials_completed', 'missing_credentials'].includes(row.status)" type="button" class="rounded-lg bg-primary-50 px-2 py-1.5 text-primary-700 disabled:opacity-40 dark:bg-primary-950/50 dark:text-primary-300" :disabled="busy.has(row.id) || !row.has_history" :title="!row.has_history ? t('authorization.completeBeforeAuthorize') : undefined" @click="queueAuthorization(row, true)">{{ t('authorization.authorizeNow') }}</button>
               <button v-if="kind === 'history'" type="button" class="text-primary-600 disabled:opacity-40 dark:text-primary-300" :disabled="busy.has(row.id)" @click="reveal(row)">{{ t('authorization.viewCredentials') }}</button>
               <button v-if="kind === 'history'" type="button" class="text-primary-600 disabled:opacity-40 dark:text-primary-300" :disabled="busy.has(row.id)" @click="editCredential(row)">{{ t('authorization.updateCredentials') }}</button>
               <button v-if="kind === 'history'" type="button" class="text-red-600 disabled:opacity-40 dark:text-red-400" :disabled="busy.has(row.id)" @click="openDelete(row)">{{ t('authorization.deleteCredentials') }}</button>
               <button v-if="kind === 'accounts' && row.status !== 'unsupported' && !row.has_history" type="button" class="rounded-lg bg-primary-50 px-2 py-1.5 text-primary-700 dark:bg-primary-950/50 dark:text-primary-300" @click="openSupplement(row)">{{ t('authorization.supplement') }}</button>
             </div></td>
           </tr>
-          <tr v-if="!rows.length"><td colspan="5" class="px-5 py-12 text-center text-sm text-gray-500">{{ t(loading ? 'common.loading' : 'authorization.empty.' + kind) }}</td></tr>
+          <tr v-if="!rows.length"><td :colspan="kind === 'proxies' ? 6 : 5" class="px-5 py-12 text-center text-sm text-gray-500">{{ t(loading ? 'common.loading' : 'authorization.empty.' + kind) }}</td></tr>
         </tbody>
       </table>
     </div>
@@ -71,6 +84,11 @@
       <p class="text-sm leading-6 text-gray-600 dark:text-dark-300">{{ t('authorization.deleteCredentialsHint', { email: deleteTarget?.email || '' }) }}</p>
       <p v-if="deleteError" role="alert" class="mt-3 text-sm text-red-600">{{ deleteError }}</p>
       <template #footer><button type="button" class="btn btn-secondary" :disabled="deleting" @click="closeDelete">{{ t('common.cancel') }}</button><button type="button" class="btn btn-danger" :disabled="deleting" @click="deleteCredential">{{ t('authorization.deleteCredentials') }}</button></template>
+    </BaseDialog>
+    <BaseDialog :show="proxyDeleteIDs.length > 0" :title="t('authorization.deleteSelectedProxies')" @close="closeProxyDelete">
+      <p class="text-sm leading-6 text-gray-600 dark:text-dark-300">{{ t('authorization.deleteProxiesHint', { count: proxyDeleteIDs.length }) }}</p>
+      <p v-if="proxyDeleteError" role="alert" class="mt-3 text-sm text-red-600">{{ proxyDeleteError }}</p>
+      <template #footer><button type="button" class="btn btn-secondary" :disabled="proxyDeleting" @click="closeProxyDelete">{{ t('common.cancel') }}</button><button type="button" class="btn btn-danger" :disabled="proxyDeleting" @click="deleteProxies">{{ t('authorization.deleteSelectedProxies') }}</button></template>
     </BaseDialog>
     <TotpStepUpDialog :controller="stepUp" />
   </section>
@@ -103,6 +121,12 @@ const status = ref('all')
 const loading = ref(false)
 const error = ref('')
 const busy = ref(new Set<number>())
+const selectedProxies = ref(new Set<number>())
+const proxyDeleteIDs = ref<number[]>([])
+const proxyDeleteError = ref('')
+const proxyDeleting = ref(false)
+const allProxiesSelected = computed(() => rows.value.length > 0 && rows.value.every(row => selectedProxies.value.has(row.id)))
+const someProxiesSelected = computed(() => !allProxiesSelected.value && rows.value.some(row => selectedProxies.value.has(row.id)))
 const supplementTarget = ref<AuthorizationRecord | null>(null)
 const supplement = ref<AuthorizationSecret>({ email: '', password: '', twofa: '' })
 const supplementSaving = ref(false)
@@ -125,16 +149,62 @@ function tone(value: string) { return ['authorized', 'passed', 'completed', 'sav
 async function load(silent = false) {
   if (disposed || (silent && loading.value)) return
   request?.abort(); const current = new AbortController(); request = current; loading.value = true
-  try { const data = await accountAuthorizationAPI.list(props.kind, { page: page.value, page_size: pageSize, search: query.value, status: status.value }, current.signal); if (disposed || current.signal.aborted) return; total.value = data.total; if (page.value > pages.value) { page.value = pages.value; return }; rows.value = data.items; error.value = '' }
+  try { const data = await accountAuthorizationAPI.list(props.kind, { page: page.value, page_size: pageSize, search: query.value, status: status.value }, current.signal); if (disposed || current.signal.aborted) return; total.value = data.total; if (page.value > pages.value) { page.value = pages.value; return }; rows.value = data.items; selectedProxies.value = new Set([...selectedProxies.value].filter(id => data.items.some(row => row.id === id))); error.value = '' }
   catch (e) { if (!disposed && !current.signal.aborted) error.value = extractApiErrorMessage(e, t('authorization.loadFailed')) }
   finally { if (!disposed && !current.signal.aborted) loading.value = false }
 }
-function search() { query.value = draft.value.trim(); if (page.value !== 1) page.value = 1; else void load() }
+function search() { selectedProxies.value = new Set<number>(); query.value = draft.value.trim(); if (page.value !== 1) page.value = 1; else void load() }
 function mark(id: number, active: boolean) { const next = new Set(busy.value); if (active) next.add(id); else next.delete(id); busy.value = next }
 async function action(row: AuthorizationRecord, operation: 'check' | 'disable' | 'cancel') {
+  if (busy.value.has(row.id) || proxyDeleting.value) return
   mark(row.id, true)
   try { if (operation === 'check') await accountAuthorizationAPI.checkProxy(row.id); else if (operation === 'disable') await accountAuthorizationAPI.disableProxy(row.id); else await accountAuthorizationAPI.cancel(row.id); if (!disposed) await load() }
   catch (e) { if (!disposed) app.showError(extractApiErrorMessage(e, t('authorization.operationFailed'))) }
+  finally { mark(row.id, false) }
+}
+function toggleProxy(id: number) {
+  if (proxyDeleting.value) return
+  const next = new Set(selectedProxies.value)
+  if (next.has(id)) next.delete(id); else next.add(id)
+  selectedProxies.value = next
+}
+function toggleProxyPage() {
+  if (proxyDeleting.value) return
+  selectedProxies.value = allProxiesSelected.value ? new Set<number>() : new Set(rows.value.map(row => row.id))
+}
+function openProxyDelete() {
+  if (proxyDeleting.value || busy.value.size > 0) return
+  proxyDeleteIDs.value = rows.value.filter(row => selectedProxies.value.has(row.id)).map(row => row.id)
+  proxyDeleteError.value = ''
+}
+function closeProxyDelete() {
+  if (proxyDeleting.value) return
+  proxyDeleteIDs.value = []; proxyDeleteError.value = ''
+}
+async function deleteProxies() {
+  if (!proxyDeleteIDs.value.length || proxyDeleting.value) return
+  proxyDeleting.value = true
+  try {
+    const result = await accountAuthorizationAPI.deleteProxies([...proxyDeleteIDs.value])
+    if (!disposed) {
+      selectedProxies.value = new Set<number>(); proxyDeleting.value = false; closeProxyDelete()
+      app.showSuccess(t('authorization.proxiesDeleted', { count: result.deleted })); await load()
+    }
+  } catch (e) { if (!disposed) proxyDeleteError.value = extractApiErrorMessage(e, t('authorization.operationFailed')) }
+  finally { proxyDeleting.value = false }
+}
+async function queueAuthorization(row: AuthorizationRecord, immediate: boolean) {
+  if (busy.value.has(row.id)) return
+  mark(row.id, true)
+  try {
+    const result = immediate ? await accountAuthorizationAPI.authorizeNow(row.id) : await accountAuthorizationAPI.retryJob(row.id)
+    if (!disposed) {
+      app.showSuccess(t('authorization.manualJobQueued', { id: result.job_id }))
+      if (!immediate && props.kind === 'jobs' && status.value !== 'all') status.value = 'all'
+      else if (!immediate && props.kind === 'jobs' && page.value !== 1) page.value = 1
+      else await load()
+    }
+  } catch (e) { if (!disposed) app.showError(extractApiErrorMessage(e, t('authorization.operationFailed'))) }
   finally { mark(row.id, false) }
 }
 async function reveal(row: AuthorizationRecord) {
@@ -186,10 +256,10 @@ async function deleteCredential() {
 }
 
 function visibility() { if (document.hidden) { clearReveal(); supplement.value.password = ''; supplement.value.twofa = '' } else void load(true) }
-watch(() => props.kind, () => { request?.abort(); rows.value = []; total.value = 0; page.value = 1; status.value = 'all'; query.value = ''; draft.value = ''; deleteTarget.value = null; clearReveal(); stepUp.onCancel(); supplementTarget.value = null; supplement.value = { email: '', password: '', twofa: '' }; void load() })
-watch(status, () => { if (page.value !== 1) page.value = 1; else void load() })
-watch([page, () => props.refreshKey], () => { void load() })
-useIntervalFn(() => { if (!document.hidden && !supplementTarget.value && !revealed.value && !deleteTarget.value) void load(true) }, 5000)
+watch(() => props.kind, () => { selectedProxies.value = new Set<number>(); closeProxyDelete(); request?.abort(); rows.value = []; total.value = 0; page.value = 1; status.value = 'all'; query.value = ''; draft.value = ''; deleteTarget.value = null; clearReveal(); stepUp.onCancel(); supplementTarget.value = null; supplement.value = { email: '', password: '', twofa: '' }; void load() })
+watch(status, () => { selectedProxies.value = new Set<number>(); if (page.value !== 1) page.value = 1; else void load() })
+watch([page, () => props.refreshKey], () => { selectedProxies.value = new Set<number>(); void load() })
+useIntervalFn(() => { if (!document.hidden && !supplementTarget.value && !revealed.value && !deleteTarget.value && !proxyDeleteIDs.value.length) void load(true) }, 5000)
 onMounted(() => { document.addEventListener('visibilitychange', visibility); void load() })
 onUnmounted(() => { disposed = true; request?.abort(); document.removeEventListener('visibilitychange', visibility); clearReveal(); supplement.value = { email: '', password: '', twofa: '' }; stepUp.onCancel() })
 </script>

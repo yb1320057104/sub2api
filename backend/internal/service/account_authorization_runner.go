@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
-	"net/url"
 	"reflect"
 	"strings"
 	"sync"
@@ -16,7 +15,10 @@ import (
 	"github.com/google/uuid"
 )
 
+const authorizationJobTimeout = 45 * time.Minute
+
 type authorizationJob struct {
+	immediateAuthorization bool
 	authorizationCompleted bool
 	resumeScheduling       bool
 	id, historyID          int64
@@ -32,7 +34,7 @@ type authorizationProxy struct {
 func (s *AccountAuthorizationService) runAuthorizationBatch(ctx context.Context, cfg *AuthorizationConfig, conn *sql.Conn) error {
 	var batch string
 	var raw []byte
-	err := s.db.QueryRowContext(ctx, `SELECT batch_id,settings FROM pk_authorization_jobs WHERE status='queued' ORDER BY id LIMIT 1`).Scan(&batch, &raw)
+	err := s.db.QueryRowContext(ctx, `SELECT batch_id,settings FROM pk_authorization_jobs WHERE status='queued' ORDER BY CASE WHEN settings->>'manual_action'='true' THEN 0 ELSE 1 END,id LIMIT 1`).Scan(&batch, &raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
@@ -49,7 +51,7 @@ func (s *AccountAuthorizationService) runAuthorizationBatch(ctx context.Context,
 	}
 	// Each wave respects the submitted concurrency. The independent coordinator
 	// continues inspecting the latest roster while these browser sessions run.
-	rows, err := s.db.QueryContext(ctx, `SELECT id,history_id,account_id,email,source,settings FROM pk_authorization_jobs WHERE batch_id=$1 AND status='queued' ORDER BY id LIMIT $2`, batch, concurrency)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,history_id,account_id,email,source,settings,COALESCE(settings->>'immediate_authorization','false')='true' FROM pk_authorization_jobs WHERE batch_id=$1 AND status='queued' ORDER BY id LIMIT $2`, batch, concurrency)
 	if err != nil {
 		return err
 	}
@@ -57,7 +59,7 @@ func (s *AccountAuthorizationService) runAuthorizationBatch(ctx context.Context,
 	for rows.Next() {
 		var job authorizationJob
 		var data []byte
-		if err = rows.Scan(&job.id, &job.historyID, &job.accountID, &job.email, &job.source, &data); err != nil {
+		if err = rows.Scan(&job.id, &job.historyID, &job.accountID, &job.email, &job.source, &data, &job.immediateAuthorization); err != nil {
 			break
 		}
 		if err = json.Unmarshal(data, &job.settings); err != nil {
@@ -185,7 +187,7 @@ func (s *AccountAuthorizationService) loadAuthorizationProxies(ctx context.Conte
 }
 
 func (s *AccountAuthorizationService) runAuthorizationJob(parent context.Context, cfg *AuthorizationConfig, job *authorizationJob, lease *sql.Conn) {
-	ctx, cancel := context.WithTimeout(parent, 10*time.Minute)
+	ctx, cancel := context.WithTimeout(parent, authorizationJobTimeout)
 	defer cancel()
 	defer func() {
 		cleanup, done := context.WithTimeout(context.Background(), 10*time.Second)
@@ -245,7 +247,7 @@ func (s *AccountAuthorizationService) runAuthorizationJob(parent context.Context
 		return
 	}
 	defer func() { secret.Password = ""; secret.TwoFA = "" }()
-	if job.source == "reauthorization" && (secret.Password == "" || secret.TwoFA == "") {
+	if (job.source == "reauthorization" || job.immediateAuthorization) && (secret.Password == "" || secret.TwoFA == "") {
 		resultErr = authorizationBrowserFailure("missing_credentials", "账号凭据不够，已跳过授权，请补全凭证")
 		return
 	}
@@ -258,9 +260,13 @@ func (s *AccountAuthorizationService) runAuthorizationJob(parent context.Context
 		resultErr = authorizationBrowserFailure("unsupported", "该账号类型不支持密码与2FA重新授权")
 		return
 	}
-	if job.source == "reauthorization" {
+	if job.source == "reauthorization" || job.immediateAuthorization {
+		if job.accountID == nil || before == nil {
+			resultErr = authorizationBrowserFailure("account_changed", "原账号不存在，本次任务跳过")
+			return
+		}
 		var eligible bool
-		err = s.db.QueryRowContext(ctx, `SELECT `+authorizationErrorSQL+` FROM accounts a WHERE a.id=$1 AND a.deleted_at IS NULL`, *job.accountID).Scan(&eligible)
+		err = s.db.QueryRowContext(ctx, `SELECT `+authorizationErrorSQL+` AND NOT EXISTS(SELECT 1 FROM pk_authorization_state st WHERE st.account_id=a.id AND st.status='banned' AND st.credential_version=md5(a.credentials::text)) FROM accounts a WHERE a.id=$1 AND a.deleted_at IS NULL`, *job.accountID).Scan(&eligible)
 		if err != nil || !eligible {
 			resultErr = authorizationBrowserFailure("account_changed", "账号已恢复或不再命中重授权状态码，本次任务跳过")
 			return
@@ -275,70 +281,13 @@ func (s *AccountAuthorizationService) runAuthorizationJob(parent context.Context
 		resultErr = authorizationBrowserFailure("proxy_missing", "请先在授权代理页添加可用代理")
 		return
 	}
-	var token *OpenAITokenInfo
-	for i := 0; i < len(proxies); i++ {
-		proxy := proxies[(int(job.id)+i)%len(proxies)]
-		var enabled bool
-		if err = s.db.QueryRowContext(ctx, `SELECT enabled FROM pk_authorization_proxies WHERE id=$1`, proxy.id).Scan(&enabled); err != nil || !enabled {
-			continue
-		}
-		session, e := s.oauth.generateWorkbenchAuthURL(ctx, proxy.raw)
-		if e != nil {
-			resultErr = authorizationBrowserFailure("session_failed", "无法生成授权链接")
-			return
-		}
-		callback, e := runAuthorizationBrowser(ctx, proxy.raw, session.AuthURL, secret, progress)
-		if e != nil {
-			s.oauth.sessionStore.Delete(session.SessionID)
-			var failure *authorizationBrowserError
-			if errors.As(e, &failure) && (failure.stage == "proxy_precheck_failed" || failure.stage == "proxy_failed") {
-				_, _ = s.db.ExecContext(ctx, `UPDATE pk_authorization_proxies SET last_checked_at=NOW(),last_status='failed',last_message=$2 WHERE id=$1`, proxy.id, failure.message)
-				resultErr = e
-				continue
-			}
-			resultErr = e
-			return
-		}
-		_, _ = s.db.ExecContext(ctx, `UPDATE pk_authorization_proxies SET last_checked_at=NOW(),last_status='passed',last_message='chatgpt.com GET预检通过' WHERE id=$1`, proxy.id)
-		u, e := url.Parse(callback)
-		if e != nil {
-			s.oauth.sessionStore.Delete(session.SessionID)
-			resultErr = e
-			return
-		}
-		if resultErr = progress("exchange", "正在交换并校验授权凭据"); resultErr != nil {
-			s.oauth.sessionStore.Delete(session.SessionID)
-			return
-		}
-		token, e = s.oauth.ExchangeCode(ctx, &OpenAIExchangeCodeInput{SessionID: session.SessionID, Code: u.Query().Get("code"), State: u.Query().Get("state")})
-		if e != nil && authorizationExchangeRetryable(e) {
-			// One retry is only safe when the first attempt produced no HTTP
-			// answer; a consumed or invalid code comes back as 4xx and is
-			// reported as it is instead of being replayed.
-			authorizationTrace(secret, "exchange retry after transport failure: %v", e)
-			token, e = s.oauth.ExchangeCode(ctx, &OpenAIExchangeCodeInput{SessionID: session.SessionID, Code: u.Query().Get("code"), State: u.Query().Get("state")})
-		}
-		s.oauth.sessionStore.Delete(session.SessionID)
-		if e != nil {
-			authorizationTrace(secret, "exchange failed: %v", e)
-			if authorizationBanText(e.Error()) {
-				resultErr = authorizationBannedFailure()
-				return
-			}
-			resultErr = authorizationBrowserFailure("exchange_failed", "授权码交换失败"+authorizationExchangeDetail(e)+"，请检查授权出口或重新提交任务")
-			return
-		}
-		authorizationTrace(secret, "exchange completed")
-		resultErr = nil
-		break
-	}
-	if token == nil {
-		if resultErr == nil {
-			resultErr = authorizationBrowserFailure("proxy_failed", "没有可用授权出口")
-		}
+	token, err := s.authorizeWithProxyRotation(ctx, job, secret, proxies, progress)
+	if err != nil {
+		resultErr = err
 		return
 	}
-	if token.AccessToken == "" || token.RefreshToken == "" || strings.ToLower(strings.TrimSpace(token.Email)) != job.email {
+
+	if token == nil || token.AccessToken == "" || token.RefreshToken == "" || strings.ToLower(strings.TrimSpace(token.Email)) != job.email {
 		resultErr = authorizationBrowserFailure("identity_mismatch", "授权凭据不完整或邮箱不匹配，未写入账号")
 		return
 	}
