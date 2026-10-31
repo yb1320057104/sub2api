@@ -21,6 +21,7 @@
               <fieldset class="min-w-0"><legend class="input-label">{{ t('authorization.passGroups') }}</legend><div class="max-h-36 space-y-2 overflow-y-auto rounded-xl border border-gray-200 p-3 dark:border-dark-600"><label v-for="group in groups" :key="group.id" class="flex cursor-pointer items-center gap-2 text-sm"><input v-model="form.pass_group_ids" type="checkbox" :value="group.id" class="rounded border-gray-300 text-primary-600" /><span class="break-all">{{ group.name }}</span></label><p v-if="!groups.length" class="text-xs text-gray-500">{{ t('authorization.noGroups') }}</p></div></fieldset>
               <div class="min-w-0"><p class="input-label">{{ t('authorization.failGroups') }}</p><div class="rounded-xl border border-gray-200 p-3 text-sm dark:border-dark-600"><p class="break-all">{{ failureGroupName }}</p><p class="mt-2 text-xs leading-5 text-gray-500 dark:text-dark-400">{{ t('authorization.failureGroupHint') }}</p><button type="button" class="mt-2 text-xs font-medium text-primary-600 dark:text-primary-300" @click="showCandySettings = true">{{ t('accountCandy.settings') }}</button></div></div>
             </div>
+            <p v-if="removedPassGroupIds.length" role="status" class="rounded-xl bg-amber-50 p-3 text-xs leading-5 text-amber-800 dark:bg-amber-950/30 dark:text-amber-200">{{ t('authorization.passGroupsRemoved', { ids: removedPassGroupIds.map(id => '#' + id).join(', ') }) }}</p>
             <p class="text-xs leading-5 text-gray-500 dark:text-dark-400">{{ t('authorization.importHint') }}</p>
             <button type="submit" class="btn btn-primary w-full" :disabled="submitting || !ready">{{ t(submitting ? 'authorization.submitting' : 'authorization.submit') }}</button>
           </fieldset>
@@ -60,6 +61,8 @@ const tab = ref<typeof tabs[number]>(route.query.tab === 'proxies' ? 'proxies' :
 const config = ref<AuthorizationConfig | null>(null)
 const groups = ref<AdminGroup[]>([])
 const ready = ref(false)
+const removedPassGroupIds = ref<number[]>([])
+let loadVersion = 0
 const error = ref('')
 const submitting = ref(false)
 const proxySaving = ref(false)
@@ -70,16 +73,49 @@ const showCandySettings = ref(false)
 const gateModels = computed(() => config.value?.intelligence_models ?? (config.value?.intelligence_model ? [{ model: config.value.intelligence_model, effort: config.value.intelligence_effort, enabled: true }] : []))
 const failureGroupName = computed(() => { const id = config.value?.fail_group_ids?.[0]; return id ? (groups.value.find(group => group.id === id)?.name || '#' + id) : t('authorization.failureGroupMissing') })
 const form = ref<AuthorizationSubmission>({ accounts: '', authorization_concurrency: 3, account_concurrency: 3, account_priority: 50, account_proxy_mode: 'direct', max_accounts_per_proxy: 1, group_ids: [], pass_group_ids: [] })
-async function load() {
-  try { const [value, groupResponse] = await Promise.all([accountAuthorizationAPI.config(controller.signal), apiClient.get<AdminGroup[]>('/admin/groups/all', { params: { platform: 'openai' }, signal: controller.signal })]); if (controller.signal.aborted) return; config.value = value; groups.value = groupResponse.data.filter(group => group.platform === 'openai' && group.status === 'active'); if (!ready.value) form.value = { ...form.value, authorization_concurrency: value.authorization_concurrency, account_concurrency: value.account_concurrency, account_priority: value.account_priority, account_proxy_mode: value.account_proxy_mode || 'direct', max_accounts_per_proxy: value.max_accounts_per_proxy || 1, group_ids: [], pass_group_ids: [...(value.pass_group_ids || [])] }; ready.value = true; error.value = '' }
-  catch (e) { if (!controller.signal.aborted) error.value = extractApiErrorMessage(e, t('authorization.loadFailed')) }
+async function load(): Promise<boolean> {
+  const version = ++loadVersion
+  try {
+    const [value, groupResponse] = await Promise.all([
+      accountAuthorizationAPI.config(controller.signal),
+      apiClient.get<AdminGroup[]>('/admin/groups/all', { params: { platform: 'openai' }, signal: controller.signal })
+    ])
+    if (controller.signal.aborted || version !== loadVersion) return false
+    config.value = value
+    groups.value = groupResponse.data.filter(group => group.platform === 'openai' && group.status === 'active')
+    if (!ready.value) {
+      form.value = { ...form.value, authorization_concurrency: value.authorization_concurrency, account_concurrency: value.account_concurrency, account_priority: value.account_priority, account_proxy_mode: value.account_proxy_mode || 'direct', max_accounts_per_proxy: value.max_accounts_per_proxy || 1, group_ids: [], pass_group_ids: [...(value.pass_group_ids || [])] }
+    }
+    // Deleted choices are no longer rendered as checkboxes, but can remain in
+    // the saved/draft array. Preserve valid choices and require review after removal.
+    const availableIDs = new Set(groups.value.map(group => group.id))
+    const removed = form.value.pass_group_ids.filter(id => !availableIDs.has(id))
+    form.value.pass_group_ids = form.value.pass_group_ids.filter(id => availableIDs.has(id))
+    if (removed.length) removedPassGroupIds.value = [...new Set(removed)]
+    ready.value = true
+    error.value = ''
+    return removed.length === 0
+  } catch (e) {
+    if (!controller.signal.aborted && version === loadVersion) error.value = extractApiErrorMessage(e, t('authorization.loadFailed'))
+    return false
+  }
 }
 async function submit() {
   if (!ready.value || submitting.value) return
-  if (!form.value.pass_group_ids.length) { app.showError(t('authorization.gateGroupsRequired')); return }
   submitting.value = true
-  try { await accountAuthorizationAPI.submit(form.value); form.value.accounts = ''; if (!controller.signal.aborted) { refreshKey.value++; app.showSuccess(t('authorization.submitted')) } }
-  catch (e) { if (!controller.signal.aborted) app.showError(extractApiErrorMessage(e, t('authorization.operationFailed'))) }
+  try {
+    // Recheck a long-lived page before posting. If choices changed, this click
+    // only refreshes the form; a new explicit click is needed to submit a task.
+    if (!await load()) return
+    if (!form.value.pass_group_ids.length) { app.showError(t('authorization.gateGroupsRequired')); return }
+    await accountAuthorizationAPI.submit(form.value)
+    form.value.accounts = ''
+    if (!controller.signal.aborted) {
+      removedPassGroupIds.value = []
+      refreshKey.value++
+      app.showSuccess(t('authorization.submitted'))
+    }
+  } catch (e) { if (!controller.signal.aborted) app.showError(extractApiErrorMessage(e, t('authorization.operationFailed'))) }
   finally { submitting.value = false }
 }
 async function addProxies() {

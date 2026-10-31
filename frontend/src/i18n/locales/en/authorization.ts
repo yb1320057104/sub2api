@@ -1,5 +1,6 @@
 export default {
   authorization: {
+    passGroupsRemoved: 'Removed deleted or disabled passing groups: {ids}. Review the current choices or select replacement groups, then submit the task again.',
     retryJob: 'Retry', authorizeNow: 'Authorize now', immediateJob: 'Immediate authorization', retryOrigin: 'Retry of job #{id}',
     manualJobQueued: 'Authorization job #{id} has entered the execution queue', completeBeforeAuthorize: 'Complete the password and 2FA credentials first',
     proxyAttemptProgress: 'Proxy #{id} · Prechecked {passed}/{limit} · Inspected {scanned}',

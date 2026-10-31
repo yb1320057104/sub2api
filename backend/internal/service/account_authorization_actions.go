@@ -82,6 +82,7 @@ func (s *AccountAuthorizationService) enqueueAuthorizationAction(ctx context.Con
 	var options AuthorizationSubmit
 	retryOf := int64(0)
 	immediateAuthorization := accountAction
+	reauthorizationRetry := false
 	if accountAction {
 		var eligible, supported, banned bool
 		err = tx.QueryRowContext(ctx, `SELECT `+authorizationEmailSQL+`,`+authorizationErrorSQL+`,(a.platform='openai' AND `+authorizationSupportedSQL+`),EXISTS(SELECT 1 FROM pk_authorization_state st WHERE st.account_id=a.id AND st.status='banned' AND st.credential_version=md5(a.credentials::text)) FROM accounts a WHERE a.id=$1 AND a.deleted_at IS NULL FOR UPDATE OF a`, id).Scan(&email, &eligible, &supported, &banned)
@@ -116,21 +117,16 @@ func (s *AccountAuthorizationService) enqueueAuthorizationAction(ctx context.Con
 			options.IntelligenceGeneration = candy.Generation
 			options.IntelligenceModel, options.IntelligenceEffort = candy.Models[0].Model, candy.Models[0].Effort
 			options.FailGroupIDs = []int64{*candy.TargetGroupID}
-			if err = tx.QueryRowContext(ctx, `SELECT COALESCE(jsonb_agg(group_id ORDER BY group_id),'[]'::jsonb) FROM account_groups WHERE account_id=$1`, id).Scan(&groups); err != nil {
+			options.PassGroupIDs, err = authorizationAccountPassGroups(ctx, tx, accountID, options.GroupIDs)
+			if err != nil {
 				return nil, err
-			}
-			if err = json.Unmarshal(groups, &options.PassGroupIDs); err != nil {
-				return nil, err
-			}
-			if len(options.PassGroupIDs) == 0 {
-				options.PassGroupIDs = options.GroupIDs
 			}
 		}
 	} else {
-		var status string
+		var status, source string
 		var raw []byte
 		var completed bool
-		err = tx.QueryRowContext(ctx, `SELECT email,account_id,status,settings,COALESCE(settings->>'authorization_completed','false')='true' FROM pk_authorization_jobs WHERE id=$1 FOR UPDATE`, id).Scan(&email, &accountID, &status, &raw, &completed)
+		err = tx.QueryRowContext(ctx, `SELECT email,account_id,status,source,settings,COALESCE(settings->>'authorization_completed','false')='true' FROM pk_authorization_jobs WHERE id=$1 FOR UPDATE`, id).Scan(&email, &accountID, &status, &source, &raw, &completed)
 		if err != nil {
 			return nil, err
 		}
@@ -141,12 +137,21 @@ func (s *AccountAuthorizationService) enqueueAuthorizationAction(ctx context.Con
 			return nil, err
 		}
 		var metadata struct {
-			ImmediateAuthorization bool `json:"immediate_authorization"`
+			ImmediateAuthorization bool  `json:"immediate_authorization"`
+			ReauthorizationRetry   bool  `json:"reauthorization_retry"`
+			RetryOfJobID           int64 `json:"retry_of_job_id"`
 		}
 		if err = json.Unmarshal(raw, &metadata); err != nil {
 			return nil, err
 		}
 		immediateAuthorization = metadata.ImmediateAuthorization
+		reauthorizationRetry = source == "reauthorization" || metadata.ReauthorizationRetry
+		if !reauthorizationRetry && !immediateAuthorization && metadata.RetryOfJobID > 0 {
+			reauthorizationRetry, err = authorizationRetryOrigin(ctx, tx, metadata.RetryOfJobID)
+			if err != nil {
+				return nil, err
+			}
+		}
 		retryOf = id
 	}
 	var active bool
@@ -193,6 +198,29 @@ func (s *AccountAuthorizationService) enqueueAuthorizationAction(ctx context.Con
 		return nil, err
 	}
 	if options.IntelligenceGate {
+		// Retrying creates a new task. Refresh destinations before validating;
+		// the old task may still refer to a group that has since been replaced.
+		if retryOf > 0 {
+			candy, e := authorizationCandyConfigTx(ctx, tx)
+			if e != nil {
+				return nil, e
+			}
+			if candy.TargetGroupID == nil || *candy.TargetGroupID < 1 {
+				return nil, infraerrors.BadRequest("AUTHORIZATION_CANDY_TARGET", "请先在糖果测试设置中配置不合格账号移入分组")
+			}
+			options.FailGroupIDs = []int64{*candy.TargetGroupID}
+			if immediateAuthorization || reauthorizationRetry {
+				options.PassGroupIDs, err = authorizationAccountPassGroups(ctx, tx, accountID, options.PassGroupIDs)
+			} else {
+				options.PassGroupIDs, err = authorizationSavedPassGroups(ctx, tx, options.PassGroupIDs)
+			}
+			if err != nil {
+				return nil, err
+			}
+		}
+		if len(options.PassGroupIDs) == 0 {
+			return nil, infraerrors.BadRequest("AUTHORIZATION_GATE_GROUPS", "请在授权工作台选择并保存至少一个及格分组")
+		}
 		if _, err = authorizationIntelligenceModels(options); err != nil {
 			return nil, err
 		}
@@ -211,7 +239,7 @@ func (s *AccountAuthorizationService) enqueueAuthorizationAction(ctx context.Con
 	}
 	out := &AuthorizationActionResult{BatchID: uuid.NewString()}
 	// Immediate/retry is an explicit manual action, independent of the auto-reauth switch.
-	err = tx.QueryRowContext(ctx, `INSERT INTO pk_authorization_jobs(batch_id,history_id,email,account_id,source,message,settings) VALUES($1,$2,$3,$4,'manual',$5,$6::jsonb||$7::jsonb||jsonb_build_object('manual_action',true,'retry_of_job_id',$8::bigint,'immediate_authorization',$9::boolean)) ON CONFLICT(email) WHERE status IN ('queued','running') DO NOTHING RETURNING id`, out.BatchID, historyID, email, accountID, "管理员已提交，等待授权执行", string(raw), string(snapshot), retryOf, immediateAuthorization).Scan(&out.JobID)
+	err = tx.QueryRowContext(ctx, `INSERT INTO pk_authorization_jobs(batch_id,history_id,email,account_id,source,message,settings) VALUES($1,$2,$3,$4,'manual',$5,$6::jsonb||$7::jsonb||jsonb_build_object('manual_action',true,'retry_of_job_id',$8::bigint,'immediate_authorization',$9::boolean,'reauthorization_retry',$10::boolean)) ON CONFLICT(email) WHERE status IN ('queued','running') DO NOTHING RETURNING id`, out.BatchID, historyID, email, accountID, "管理员已提交，等待授权执行", string(raw), string(snapshot), retryOf, immediateAuthorization, reauthorizationRetry).Scan(&out.JobID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, infraerrors.Conflict("AUTHORIZATION_RUNNING", "该账号已有授权任务，请刷新列表")
 	}

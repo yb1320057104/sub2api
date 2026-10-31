@@ -39,31 +39,38 @@ func validateAuthorizationGateGroups(ctx context.Context, query authorizationGro
 	for i, id := range ordered {
 		args[i], placeholders[i] = id, fmt.Sprintf("$%d", i+1)
 	}
-	rows, err := query.QueryContext(ctx, `SELECT platform,status,require_oauth_only,require_privacy_set FROM groups WHERE deleted_at IS NULL AND id IN (`+strings.Join(placeholders, ",")+`) ORDER BY id FOR SHARE`, args...)
+	rows, err := query.QueryContext(ctx, `SELECT id,platform,status,require_oauth_only,require_privacy_set FROM groups WHERE deleted_at IS NULL AND id IN (`+strings.Join(placeholders, ",")+`) ORDER BY id FOR SHARE`, args...)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = rows.Close() }()
-	count := 0
+	found := make(map[int64]bool, len(ordered))
 	for rows.Next() {
+		var id int64
 		var platform, status string
 		var oauthOnly, privacyRequired bool
-		if err = rows.Scan(&platform, &status, &oauthOnly, &privacyRequired); err != nil {
+		if err = rows.Scan(&id, &platform, &status, &oauthOnly, &privacyRequired); err != nil {
 			return err
 		}
 		if platform != PlatformOpenAI || status != StatusActive {
-			return infraerrors.BadRequest("AUTHORIZATION_GATE_GROUPS", "测智目标分组必须是启用的 OpenAI 分组")
+			return infraerrors.BadRequest("AUTHORIZATION_GATE_GROUPS", fmt.Sprintf("测智目标分组 #%d 必须是启用的 OpenAI 分组，请重新选择", id))
 		}
 		if account != nil && (account.Platform != platform || (oauthOnly && account.Type != AccountTypeOAuth && account.Type != AccountTypeSetupToken) || (privacyRequired && account.GetExtraString("privacy_mode") != PrivacyModeTrainingOff)) {
 			return infraerrors.BadRequest("AUTHORIZATION_GATE_ADMISSION", "账号未满足测智目标分组的类型或隐私准入要求")
 		}
-		count++
+		found[id] = true
 	}
 	if err = rows.Err(); err != nil {
 		return err
 	}
-	if count != len(ordered) {
-		return infraerrors.BadRequest("AUTHORIZATION_GATE_GROUPS", "测智目标分组不存在或已删除")
+	missing := make([]string, 0)
+	for _, id := range ordered {
+		if !found[id] {
+			missing = append(missing, fmt.Sprintf("#%d", id))
+		}
+	}
+	if len(missing) > 0 {
+		return infraerrors.BadRequest("AUTHORIZATION_GATE_GROUPS", "测智目标分组不存在或已删除（"+strings.Join(missing, "、")+"），请重新选择后提交")
 	}
 	return nil
 }

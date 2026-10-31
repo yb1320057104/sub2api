@@ -1,5 +1,6 @@
 export default {
   authorization: {
+    passGroupsRemoved: '已移除已删除或停用的及格分组：{ids}。请确认当前选择或重新选择分组后，再次提交任务。',
     retryJob: '重试', authorizeNow: '立即授权', immediateJob: '管理员立即授权', retryOrigin: '重试原任务 #{id}',
     manualJobQueued: '已提交授权任务 #{id}，立即进入执行队列', completeBeforeAuthorize: '请先补全账号密码和2FA',
     proxyAttemptProgress: '代理 #{id} · 预检通过 {passed}/{limit} · 已检查 {scanned} 条',

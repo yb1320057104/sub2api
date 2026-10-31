@@ -429,10 +429,16 @@ func (s *AccountAuthorizationService) queueReauthorization(ctx context.Context, 
 	groupExpr := ""
 	groupFallback := "[]"
 	if gate {
-		groupExpr = `||jsonb_build_object('pass_group_ids',COALESCE((SELECT to_jsonb(array_agg(ag.group_id ORDER BY ag.group_id)) FROM account_groups ag WHERE ag.account_id=a.id),$4::jsonb))`
-		if encoded, encodeErr := json.Marshal(cfg.GroupIDs); encodeErr == nil {
-			groupFallback = string(encoded)
+		groupExpr = `||jsonb_build_object('pass_group_ids',COALESCE((SELECT to_jsonb(array_agg(ag.group_id ORDER BY ag.group_id)) FROM account_groups ag JOIN groups g ON g.id=ag.group_id AND g.deleted_at IS NULL WHERE ag.account_id=a.id),$4::jsonb))`
+		passGroups, groupErr := authorizationSavedPassGroups(ctx, tx, cfg.GroupIDs)
+		if groupErr != nil {
+			return groupErr
 		}
+		encoded, encodeErr := json.Marshal(passGroups)
+		if encodeErr != nil {
+			return encodeErr
+		}
+		groupFallback = string(encoded)
 	}
 	// The source is the current account table, never the historical roster. Deleted
 	// accounts and stale credential versions cannot be resurrected by this query.
