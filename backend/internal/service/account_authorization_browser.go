@@ -461,23 +461,43 @@ func authorizationBrowserIdentity(ctx context.Context, cdp *authorizationCDP) er
 	if _, err := strconv.Atoi(major); err != nil || version.UserAgent == "" {
 		return authorizationBrowserFailure("browser_identity", "无法读取授权浏览器版本，未发送预检请求")
 	}
-	platform, navigatorPlatform, platformVersion := "Linux", "Linux x86_64", "6.5.0"
-	if strings.Contains(version.UserAgent, "Windows") {
-		platform, navigatorPlatform, platformVersion = "Windows", "Win32", "15.0.0"
-	} else if strings.Contains(version.UserAgent, "Macintosh") {
-		platform, navigatorPlatform, platformVersion = "macOS", "MacIntel", "14.6.1"
+	// The OpenAI account page records the device from this metadata, so the
+	// session always presents a macOS Chrome identity regardless of the host
+	// that runs Chromium. PK_AUTH_BROWSER_DEVICE=host keeps the real platform
+	// for local debugging.
+	hostIdentity := strings.EqualFold(strings.TrimSpace(os.Getenv("PK_AUTH_BROWSER_DEVICE")), "host")
+	platform, navigatorPlatform, platformVersion := "macOS", "MacIntel", "15.0.0"
+	ua := strings.ReplaceAll(version.UserAgent, "HeadlessChrome/", "Chrome/")
+	// Replace only the leading platform token; the WebKit token must stay intact.
+	if start := strings.Index(ua, "("); start >= 0 {
+		if end := strings.Index(ua[start:], ")"); end > 0 {
+			ua = ua[:start+1] + "Macintosh; Intel Mac OS X 10_15_7" + ua[start+end:]
+		}
 	}
-	// Cloudflare scores the brand list and the empty platformVersion, so both
-	// must describe the binary that is really running: Google Chrome adds its own
-	// brand only when the Chrome channel is used, Chromium never claims it.
+	if hostIdentity {
+		platform, navigatorPlatform, platformVersion = "Linux", "Linux x86_64", "6.5.0"
+		ua = strings.ReplaceAll(version.UserAgent, "HeadlessChrome/", "Chrome/")
+		if strings.Contains(version.UserAgent, "Windows") {
+			platform, navigatorPlatform, platformVersion = "Windows", "Win32", "15.0.0"
+		} else if strings.Contains(version.UserAgent, "Macintosh") {
+			platform, navigatorPlatform, platformVersion = "macOS", "MacIntel", "14.6.1"
+		}
+	}
+	// The brand list must agree with the user agent: a Chrome UA without the
+	// Google Chrome brand is a mismatch Cloudflare scores against.
 	brands := []map[string]string{{"brand": "Not.A/Brand", "version": "99"}, {"brand": "Chromium", "version": major}}
 	fullBrands := []map[string]string{{"brand": "Not.A/Brand", "version": "99.0.0.0"}, {"brand": "Chromium", "version": full}}
-	if strings.HasPrefix(version.Product, "Chrome/") {
+	if hostIdentity {
+		if strings.HasPrefix(version.Product, "Chrome/") {
+			brands = append(brands, map[string]string{"brand": "Google Chrome", "version": major})
+			fullBrands = append(fullBrands, map[string]string{"brand": "Google Chrome", "version": full})
+		}
+	} else {
 		brands = append(brands, map[string]string{"brand": "Google Chrome", "version": major})
 		fullBrands = append(fullBrands, map[string]string{"brand": "Google Chrome", "version": full})
 	}
 	params := map[string]any{
-		"userAgent":      strings.ReplaceAll(version.UserAgent, "HeadlessChrome/", "Chrome/"),
+		"userAgent":      ua,
 		"acceptLanguage": "en-US,en;q=0.9",
 		"platform":       navigatorPlatform,
 		"userAgentMetadata": map[string]any{
@@ -492,6 +512,11 @@ func authorizationBrowserIdentity(ctx context.Context, cdp *authorizationCDP) er
 	if err := cdp.call(ctx, "Network.setUserAgentOverride", params, nil); err != nil {
 		return authorizationBrowserFailure("browser_identity", "授权浏览器身份配置失败，未发送预检请求")
 	}
+	authorizationTrace(nil, "identity platform=%s platformVersion=%s brands=%d ua=%s", platform, platformVersion, len(brands), ua)
+	// Keep the rendered environment consistent with the claimed device; both
+	// overrides are best effort and never block the flow.
+	_ = cdp.call(ctx, "Emulation.setTimezoneOverride", map[string]any{"timezoneId": "America/Los_Angeles"}, nil)
+	_ = cdp.call(ctx, "Emulation.setLocaleOverride", map[string]any{"locale": "en-US"}, nil)
 	return nil
 }
 
