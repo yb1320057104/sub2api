@@ -109,7 +109,7 @@ func (s *AccountAuthorizationService) saveAuthorizationIntelligence(ctx context.
 	return nil
 }
 
-func (s *AccountAuthorizationService) executeAuthorizationIntelligence(ctx context.Context, accountID int64, identity [32]byte, status string, model RadarModel) (result AuthorizationIntelligenceResult) {
+func (s *AccountAuthorizationService) executeAuthorizationIntelligence(ctx context.Context, accountID int64, snapshot *authorizationGateSnapshot, model RadarModel) (result AuthorizationIntelligenceResult) {
 	result = AuthorizationIntelligenceResult{Model: model.Model, Effort: model.Effort, Status: "failed"}
 	started := time.Now()
 	result.StartedAt = &started
@@ -129,8 +129,7 @@ func (s *AccountAuthorizationService) executeAuthorizationIntelligence(ctx conte
 		result.ErrorMessage = "无法读取测智账号，请重新检查账号状态"
 		return result
 	}
-	currentIdentity, err := accountCandySnapshotIdentity(account, account)
-	if err != nil || currentIdentity != identity || len(account.GroupIDs) > 0 || account.Schedulable || account.Status != status {
+	if !snapshot.matches(account) {
 		result.ErrorMessage = "账号凭据、分组或状态已变化，此模型未继续测试"
 		return result
 	}
@@ -159,7 +158,7 @@ func (s *AccountAuthorizationService) executeAuthorizationIntelligence(ctx conte
 	return result
 }
 
-func (s *AccountAuthorizationService) runAuthorizationIntelligenceModels(ctx context.Context, job *authorizationJob, account *Account, identity [32]byte, models []RadarModel, progress func(string, string) error) ([]AuthorizationIntelligenceResult, error) {
+func (s *AccountAuthorizationService) runAuthorizationIntelligenceModels(ctx context.Context, job *authorizationJob, account *Account, snapshot *authorizationGateSnapshot, models []RadarModel, progress func(string, string) error) ([]AuthorizationIntelligenceResult, error) {
 	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	results := make([]AuthorizationIntelligenceResult, len(models))
@@ -177,7 +176,7 @@ func (s *AccountAuthorizationService) runAuthorizationIntelligenceModels(ctx con
 	completed := make(chan completion, len(models))
 	for i, model := range models {
 		go func(index int, current RadarModel) {
-			completed <- completion{index: index, result: s.executeAuthorizationIntelligence(probeCtx, account.ID, identity, account.Status, current)}
+			completed <- completion{index: index, result: s.executeAuthorizationIntelligence(probeCtx, account.ID, snapshot, current)}
 		}(i, model)
 	}
 	ticker := time.NewTicker(time.Second)

@@ -484,6 +484,10 @@ const PluginIcon = {
   render: () => h(Icon, { name: 'cube' })
 }
 
+const AuthorizationIcon = {
+  render: () => h(Icon, { name: 'badge' })
+}
+
 const BellIcon = {
   render: () =>
     h(
@@ -789,7 +793,7 @@ const adminNavItems = computed((): NavItem[] => {
   const baseItems: NavItem[] = [
     { path: '/admin/dashboard', label: t('nav.dashboard'), icon: DashboardIcon },
     { path: '/admin/radar', label: t('radar.title'), icon: SignalIcon },
-    { path: '/admin/account-authorization', label: t('authorization.title'), icon: SignalIcon },
+    { path: '/admin/account-authorization', label: t('authorization.title'), icon: AuthorizationIcon },
     { path: '/admin/ops', label: t('nav.ops'), icon: ChartIcon, featureFlag: flagOpsMonitoring },
     { path: '/admin/users', label: t('nav.users'), icon: UsersIcon, hideInSimpleMode: true },
     { path: '/admin/groups', label: t('nav.groups'), icon: FolderIcon },

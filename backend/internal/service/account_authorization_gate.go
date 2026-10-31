@@ -5,8 +5,10 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
@@ -75,8 +77,67 @@ func validateAuthorizationGateGroups(ctx context.Context, query authorizationGro
 	return nil
 }
 
-// Manual submissions are quarantined without groups until the model round
-// yields a verdict. Scheduled reauthorization retains existing group policy.
+type authorizationGateSnapshot struct {
+	identity    [32]byte
+	status      string
+	schedulable bool
+	groupIDs    []int64
+}
+
+func authorizationSameGroupIDs(a, b []int64) bool {
+	left, right := slices.Clone(a), slices.Clone(b)
+	slices.Sort(left)
+	slices.Sort(right)
+	return slices.Equal(left, right)
+}
+
+// Capture the account inside the credentials transaction, before the wait.
+// Neither a later reload nor a completed probe may adopt an administrator's
+// intervening changes as its new baseline and overwrite them during grouping.
+func newAuthorizationGateSnapshot(account *Account) (*authorizationGateSnapshot, error) {
+	identity, err := accountCandySnapshotIdentity(account, account)
+	if err != nil {
+		return nil, err
+	}
+	return &authorizationGateSnapshot{identity: identity, status: account.Status, schedulable: account.Schedulable, groupIDs: slices.Clone(account.GroupIDs)}, nil
+}
+
+func (snapshot *authorizationGateSnapshot) matches(account *Account) bool {
+	if snapshot == nil || account == nil {
+		return false
+	}
+	identity, err := accountCandySnapshotIdentity(account, account)
+	return err == nil && identity == snapshot.identity && account.Status == snapshot.status && account.Schedulable == snapshot.schedulable && authorizationSameGroupIDs(account.GroupIDs, snapshot.groupIDs)
+}
+
+func (job *authorizationJob) intelligenceAccountDisposition() string {
+	if job.preserveAccount {
+		return "已有账号保留分组及授权恢复后的调度设置"
+	}
+	return "新账号保持未分组、暂停调度"
+}
+
+// This is a cancellable phase of the existing durable worker, not a separate
+// scheduling loop. The cron coordinator and job concurrency remain unchanged.
+func waitAuthorizationIntelligence(ctx context.Context, progress func(string, string) error) error {
+	deadline := time.Now().Add(time.Minute)
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return progress("", "")
+		}
+		seconds := int((remaining + time.Second - 1) / time.Second)
+		if err := progress("intelligence_waiting", fmt.Sprintf("授权凭据已保存，等待60秒后重新读取账号测智；剩余%d秒", seconds)); err != nil {
+			return err
+		}
+		if err := authorizationPause(ctx, min(5*time.Second, remaining)); err != nil {
+			return err
+		}
+	}
+}
+
+// Only newly imported accounts remain quarantined until a complete verdict.
+// Existing accounts keep credential recovery independent of the model result.
 func (s *AccountAuthorizationService) runAuthorizationIntelligenceGate(ctx context.Context, job *authorizationJob, progress func(string, string) error) error {
 	if job.accountID == nil {
 		return authorizationBrowserFailure("intelligence_failed", "授权已完成，但测智账号不存在；未分组")
@@ -89,21 +150,23 @@ func (s *AccountAuthorizationService) runAuthorizationIntelligenceGate(ctx conte
 	for _, model := range models {
 		names = append(names, model.Model)
 	}
-	if err := progress("intelligence_testing", fmt.Sprintf("授权成功，暂不分组；正在并发测试 %d 个模型：%s", len(models), strings.Join(names, "、"))); err != nil {
+	if err := waitAuthorizationIntelligence(ctx, progress); err != nil {
 		return err
 	}
 	account, err := s.accounts.GetByID(ctx, *job.accountID)
 	if err != nil {
 		return err
 	}
-	if len(account.GroupIDs) > 0 || account.Schedulable {
-		return authorizationBrowserFailure("intelligence_account_changed", "账号分组或调度状态已被修改，未覆盖当前设置")
+	if !job.gateSnapshot.matches(account) {
+		return authorizationBrowserFailure("intelligence_account_changed", "等待测智期间账号凭据、连接、分组或调度状态已变化，未覆盖当前设置")
 	}
-	identity, err := accountCandySnapshotIdentity(account, account)
-	if err != nil {
+	if err = s.refreshAuthorizationAccountCache(ctx, account); err != nil {
+		return &authorizationBrowserError{stage: "intelligence_cache_pending", message: "授权凭据已保存，但缓存刷新尚未完成，本次未发送测智请求；请等待系统刷新后检查", needsInput: true}
+	}
+	if err := progress("intelligence_testing", fmt.Sprintf("授权成功；正在使用最新凭据并发测试 %d 个模型：%s", len(models), strings.Join(names, "、"))); err != nil {
 		return err
 	}
-	results, err := s.runAuthorizationIntelligenceModels(ctx, job, account, identity, models, progress)
+	results, err := s.runAuthorizationIntelligenceModels(ctx, job, account, job.gateSnapshot, models, progress)
 	if err != nil {
 		return err
 	}
@@ -112,7 +175,7 @@ func (s *AccountAuthorizationService) runAuthorizationIntelligenceGate(ctx conte
 	}
 	passedResult, answer := authorizationIntelligenceVerdict(results)
 	if passedResult == nil {
-		return &authorizationBrowserError{stage: "intelligence_failed", message: "授权成功，但部分模型未取得完整测智结果，且没有已确认的不及格结果；账号保持未分组，请查看逐模型详情", needsInput: true}
+		return &authorizationBrowserError{stage: "intelligence_failed", message: "授权成功，但部分模型未取得完整测智结果，且没有已确认的不及格结果；" + job.intelligenceAccountDisposition() + "，请查看逐模型详情", needsInput: true}
 	}
 	passed := *passedResult
 	target := job.settings.PassGroupIDs
@@ -123,7 +186,7 @@ func (s *AccountAuthorizationService) runAuthorizationIntelligenceGate(ctx conte
 	// Every completed model and the aggregate verdict are already persisted,
 	// even if the following admission checks fail or the job is cancelled.
 	if passed && len(target) == 0 {
-		return &authorizationBrowserError{stage: "intelligence_groups_missing", message: "授权及测智已完成，但目标分组未配置；账号保持未分组", needsInput: true}
+		return &authorizationBrowserError{stage: "intelligence_groups_missing", message: "授权及测智已完成，但目标分组未配置；" + job.intelligenceAccountDisposition(), needsInput: true}
 	}
 	if err = progress("intelligence_grouping", "测智"+verdict+"，正在校验并写入目标分组"); err != nil {
 		return err
@@ -164,7 +227,7 @@ func (s *AccountAuthorizationService) runAuthorizationIntelligenceGate(ctx conte
 			return queryErr
 		}
 		if !targetGroupID.Valid || targetGroupID.Int64 < 1 {
-			return &authorizationBrowserError{stage: "intelligence_groups_missing", message: "测智不及格，但糖果测试设置未配置有效的不合格账号移入分组；账号保持未分组", needsInput: true}
+			return &authorizationBrowserError{stage: "intelligence_groups_missing", message: "测智不及格，但糖果测试设置未配置有效的不合格账号移入分组；" + job.intelligenceAccountDisposition(), needsInput: true}
 		}
 		target = []int64{targetGroupID.Int64}
 	}
@@ -178,20 +241,16 @@ func (s *AccountAuthorizationService) runAuthorizationIntelligenceGate(ctx conte
 	if err != nil {
 		return err
 	}
-	latestIdentity, err := accountCandySnapshotIdentity(current, current)
-	if err != nil {
-		return err
-	}
-	if latestIdentity != identity || len(current.GroupIDs) > 0 || current.Schedulable || current.Status != account.Status {
+	if !job.gateSnapshot.matches(current) {
 		return &authorizationBrowserError{stage: "intelligence_account_changed", message: "测智期间账号凭据、连接、分组或状态发生变化，未覆盖当前设置", needsInput: true}
 	}
 	if err = validateAuthorizationGateGroups(txctx, tx.Client(), target, current); err != nil {
-		return &authorizationBrowserError{stage: "intelligence_group_failed", message: "授权及测智已完成，但目标分组已失效或账号未满足类型/隐私准入要求；未分组", needsInput: true}
+		return &authorizationBrowserError{stage: "intelligence_group_failed", message: "授权及测智已完成，但目标分组已失效或账号未满足类型/隐私准入要求；未变更分组", needsInput: true}
 	}
 	// Native updates retain simple-mode and mixed-channel admission checks,
 	// transactional group replacement and outbox invalidation.
 	if _, err = s.admin.UpdateAccount(txctx, account.ID, &UpdateAccountInput{GroupIDs: &target}); err != nil {
-		return &authorizationBrowserError{stage: "intelligence_group_failed", message: "授权及测智已完成，但目标分组已失效或账号未满足准入要求；未分组", needsInput: true}
+		return &authorizationBrowserError{stage: "intelligence_group_failed", message: "授权及测智已完成，但目标分组已失效或账号未满足准入要求；未变更分组", needsInput: true}
 	}
 	if job.resumeScheduling {
 		if _, err = s.admin.SetAccountSchedulable(txctx, account.ID, true); err != nil {

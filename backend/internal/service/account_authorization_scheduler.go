@@ -168,7 +168,7 @@ func (s *AccountAuthorizationService) drainAuthorizationJobs() error {
 		return err
 	}
 	defer releaseAuthorizationLock(conn, authorizationWorkerLockID)
-	if _, err = s.db.ExecContext(ctx, `UPDATE pk_authorization_jobs SET status=CASE WHEN settings->>'authorization_completed'='true' THEN 'needs_input' ELSE 'failed' END,stage='interrupted',message=CASE WHEN settings->>'authorization_completed'='true' THEN '进程中断；授权凭据已保存，测智或分组未完成，账号保持未分组，请检查后重新提交' ELSE '进程中断，凭据历史已保留；请重新提交或等待下轮重授权' END,finished_at=NOW() WHERE status='running'`); err != nil {
+	if _, err = s.db.ExecContext(ctx, `UPDATE pk_authorization_jobs SET status=CASE WHEN settings->>'authorization_completed'='true' THEN 'needs_input' ELSE 'failed' END,stage='interrupted',message=CASE WHEN settings->>'authorization_completed'='true' AND settings->>'intelligence_preserve_account'='true' THEN '进程中断；授权凭据已保存，未回退已有账号的分组与调度设置，测智或分组尚未完成，请检查任务' WHEN settings->>'authorization_completed'='true' THEN '进程中断；授权凭据已保存，测智或分组未完成，账号保持未分组，请检查后重新提交' ELSE '进程中断，凭据历史已保留；请重新提交或等待下轮重授权' END,finished_at=NOW() WHERE status='running'`); err != nil {
 		return err
 	}
 	if err = s.recoverAuthorizationHistory(ctx); err != nil {
@@ -383,11 +383,8 @@ func (s *AccountAuthorizationService) retryAuthorizationCache(ctx context.Contex
 		if e != nil {
 			continue
 		}
-		if e = s.invalidator.InvalidateToken(ctx, a); e != nil {
+		if e = s.refreshAuthorizationAccountCache(ctx, a); e != nil {
 			continue
-		}
-		if _, e = s.db.ExecContext(ctx, `UPDATE pk_authorization_state st SET status='authorized',message='授权成功',updated_at=NOW() FROM accounts a WHERE st.account_id=$1 AND a.id=st.account_id AND st.status='cache_pending' AND st.credential_version=md5(a.credentials::text)`, id); e != nil {
-			return e
 		}
 	}
 	return nil
@@ -399,10 +396,9 @@ func (s *AccountAuthorizationService) queueReauthorization(ctx context.Context, 
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	// Reauthorization runs the same gate as a workbench submission: credentials
-	// are refreshed, the account is cleared, tested once, and only then returned
-	// to its groups. Without a usable candy configuration the old behaviour is
-	// kept so credential refresh never stalls.
+	// Existing accounts recover credentials and system-error scheduling while
+	// keeping their groups, then run the delayed intelligence round. Without
+	// a usable candy configuration, credential recovery still proceeds.
 	submit := AuthorizationSubmit{AuthorizationConcurrency: cfg.AuthorizationConcurrency, AccountConcurrency: cfg.AccountConcurrency, AccountPriority: cfg.AccountPriority, GroupIDs: cfg.GroupIDs}
 	gate := false
 	if candy, candyErr := authorizationCandyConfigTx(ctx, tx); candyErr == nil && candy != nil && len(candy.Models) > 0 && candy.TargetGroupID != nil && *candy.TargetGroupID > 0 {

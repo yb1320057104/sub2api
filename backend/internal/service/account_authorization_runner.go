@@ -21,6 +21,8 @@ type authorizationJob struct {
 	immediateAuthorization bool
 	authorizationCompleted bool
 	resumeScheduling       bool
+	preserveAccount        bool
+	gateSnapshot           *authorizationGateSnapshot
 	id, historyID          int64
 	accountID              *int64
 	email, source, token   string
@@ -207,7 +209,7 @@ func (s *AccountAuthorizationService) runAuthorizationJob(parent context.Context
 		}
 		status, stage, message := "failed", "failed", "授权失败，请检查账号、代理及运行依赖后重试"
 		if job.authorizationCompleted {
-			status, stage, message = "needs_input", "intelligence_failed", "授权凭据已保存，但测智或分组未完成；账号保持未分组，请检查任务后重试"
+			status, stage, message = "needs_input", "intelligence_failed", "授权凭据已保存，但测智或分组未完成；"+job.intelligenceAccountDisposition()+"，请检查任务"
 		}
 		var failure *authorizationBrowserError
 		if errors.As(resultErr, &failure) {
@@ -297,7 +299,10 @@ func (s *AccountAuthorizationService) runAuthorizationJob(parent context.Context
 	}
 	savingMessage := "正在保存新凭据并保留原账号设置"
 	if job.settings.IntelligenceGate {
-		savingMessage = "正在保存授权凭据，清空分组并暂停调度，随后执行测智"
+		savingMessage = "正在保存授权凭据，新账号暂不分组并暂停调度，等待60秒后执行测智"
+		if before != nil {
+			savingMessage = "正在更新授权凭据，保留原分组并恢复系统错误停调，等待60秒后执行测智"
+		}
 	}
 	if resultErr = progress("saving", savingMessage); resultErr != nil {
 		return
@@ -372,6 +377,7 @@ func (s *AccountAuthorizationService) applyAuthorization(ctx context.Context, cf
 		}
 	}
 	credentials := s.oauth.BuildAccountCredentials(token)
+	credentials["_token_version"] = time.Now().UnixMilli()
 	var account *Account
 	if before != nil {
 		if _, err = tx.Client().ExecContext(txctx, `SELECT id FROM accounts WHERE id=$1 AND deleted_at IS NULL FOR UPDATE`, before.ID); err != nil {
@@ -381,14 +387,24 @@ func (s *AccountAuthorizationService) applyAuthorization(ctx context.Context, cf
 		if e != nil {
 			return e
 		}
-		if current.Platform != before.Platform || current.Type != before.Type || current.IsCredentialShadow() || current.IsSyntheticUITest() || authorizationEmail(current) != job.email || !reflect.DeepEqual(current.Credentials, before.Credentials) || current.Status != before.Status || current.Schedulable != before.Schedulable || current.ErrorMessage != before.ErrorMessage {
+		if current.Platform != before.Platform || current.Type != before.Type || current.IsCredentialShadow() || current.IsSyntheticUITest() || authorizationEmail(current) != job.email || !reflect.DeepEqual(current.Credentials, before.Credentials) || current.Status != before.Status || current.Schedulable != before.Schedulable || current.ErrorMessage != before.ErrorMessage || !authorizationSameGroupIDs(current.GroupIDs, before.GroupIDs) {
 			return authorizationBrowserFailure("account_changed", "账号凭据或启用状态在授权期间发生变化，未覆盖")
 		}
-		input := &UpdateAccountInput{Credentials: SanitizeStoredCredentials(PlatformOpenAI, MergeCredentials(current.Credentials, credentials))}
-		if job.settings.IntelligenceGate {
-			empty := []int64{}
-			input.GroupIDs = &empty
+		// Advance the native cache generation while the account row is locked.
+		// Requests holding the old account must not refill the cache with its
+		// access token after this transaction replaces the credentials.
+		version := time.Now().UnixMilli()
+		if previous := current.GetCredentialAsInt64("_token_version"); previous >= version {
+			version = previous + 1
+			if version <= previous {
+				return authorizationBrowserFailure("account_changed", "账号凭据版本异常，未覆盖当前账号")
+			}
 		}
+		credentials["_token_version"] = version
+		input := &UpdateAccountInput{Credentials: SanitizeStoredCredentials(PlatformOpenAI, MergeCredentials(current.Credentials, credentials))}
+		// Reauthorization repairs this existing account immediately. Keep its
+		// groups while the later intelligence round runs; a failed probe must
+		// not undo successful credential recovery or disable it again.
 		// Clear system error state atomically; inactive accounts keep their status
 		// and scheduling switch. The error path below explicitly restores scheduling.
 		if current.Status == StatusError {
@@ -440,8 +456,15 @@ func (s *AccountAuthorizationService) applyAuthorization(ctx context.Context, cf
 		}
 	}
 	if job.settings.IntelligenceGate {
-		job.resumeScheduling = before == nil || before.Status == StatusError || (before.Status == StatusActive && before.Schedulable)
-		account, err = s.admin.SetAccountSchedulable(txctx, account.ID, false)
+		job.preserveAccount = before != nil
+		job.resumeScheduling = before == nil
+		if !job.preserveAccount {
+			account, err = s.admin.SetAccountSchedulable(txctx, account.ID, false)
+			if err != nil {
+				return err
+			}
+		}
+		job.gateSnapshot, err = newAuthorizationGateSnapshot(account)
 		if err != nil {
 			return err
 		}
@@ -452,8 +475,10 @@ func (s *AccountAuthorizationService) applyAuthorization(ctx context.Context, cf
 	status, stage, message := "completed", "completed", "授权成功，凭据已写入账号"
 	metadata := map[string]any{"authorization_completed": true, "account_proxy_id": account.ProxyID}
 	if job.settings.IntelligenceGate {
-		status, stage, message = "running", "intelligence_pending", "授权成功，暂不分组，正在准备测智"
-	} else {
+		status, stage, message = "running", "intelligence_waiting", "授权凭据已保存，等待60秒后使用最新凭据测智；"+job.intelligenceAccountDisposition()
+		metadata["intelligence_preserve_account"] = job.preserveAccount
+	}
+	if !job.settings.IntelligenceGate || job.preserveAccount {
 		names := make([]string, 0, len(account.Groups))
 		for _, group := range account.Groups {
 			if group != nil {
@@ -478,15 +503,33 @@ func (s *AccountAuthorizationService) applyAuthorization(ctx context.Context, cf
 	job.accountID = &account.ID
 	job.authorizationCompleted = true
 	s.authorizationAccountCommitted(ctx, account.ID)
-	if s.invalidator != nil {
-		if err = s.invalidator.InvalidateToken(ctx, account); err != nil {
-			raw, marshalErr := json.Marshal(account.Credentials)
-			if marshalErr == nil {
-				_, _ = s.db.ExecContext(ctx, `UPDATE pk_authorization_state st SET status='cache_pending',message='凭据已保存，等待缓存刷新',updated_at=NOW() FROM accounts a WHERE st.account_id=$1 AND a.id=st.account_id AND a.credentials=$2::jsonb AND st.status='authorized' AND st.credential_version=md5(a.credentials::text)`, account.ID, string(raw))
-			}
-		}
-	}
+	// The committed credentials are durable even if cache invalidation needs
+	// a retry. The intelligence phase checks this again after its wait.
+	_ = s.refreshAuthorizationAccountCache(ctx, account)
 	return nil
+}
+
+func (s *AccountAuthorizationService) refreshAuthorizationAccountCache(ctx context.Context, account *Account) error {
+	if s.invalidator == nil {
+		return nil
+	}
+	raw, err := json.Marshal(account.Credentials)
+	if err != nil {
+		return err
+	}
+	if strict, ok := s.invalidator.(interface {
+		InvalidateTokenStrict(context.Context, *Account) error
+	}); ok {
+		err = strict.InvalidateTokenStrict(ctx, account)
+	} else {
+		err = s.invalidator.InvalidateToken(ctx, account)
+	}
+	if err != nil {
+		_, _ = s.db.ExecContext(ctx, `UPDATE pk_authorization_state st SET status='cache_pending',message='凭据已保存，等待缓存刷新',updated_at=NOW() FROM accounts a WHERE st.account_id=$1 AND a.id=st.account_id AND a.credentials=$2::jsonb AND st.status='authorized' AND st.credential_version=md5(a.credentials::text)`, account.ID, string(raw))
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `UPDATE pk_authorization_state st SET status='authorized',message='授权成功',updated_at=NOW() FROM accounts a WHERE st.account_id=$1 AND a.id=st.account_id AND a.credentials=$2::jsonb AND st.status='cache_pending' AND st.credential_version=md5(a.credentials::text)`, account.ID, string(raw))
+	return err
 }
 
 func (s *AccountAuthorizationService) authorizationAccountCommitted(ctx context.Context, id int64) {
