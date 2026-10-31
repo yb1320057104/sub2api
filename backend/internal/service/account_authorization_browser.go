@@ -580,6 +580,38 @@ func authorizationProxyEndpoint(proxyURL string) string {
 	return parsed.Scheme + "://" + parsed.Host
 }
 
+// The OAuth client formats failures as "token exchange failed: status %d,
+// body: %s" and "request failed: %v". The task message keeps one bounded,
+// single-line copy so a failed exchange is diagnosable from the UI.
+func authorizationExchangeDetail(err error) string {
+	if err == nil {
+		return ""
+	}
+	text := strings.Join(strings.Fields(err.Error()), " ")
+	if len(text) > 200 {
+		text = strings.TrimSpace(text[:200]) + "…"
+	}
+	return "（" + text + "）"
+}
+
+// A retry cannot recover a 4xx: the code is either consumed or invalid. Only a
+// request that produced no HTTP answer is worth one more attempt.
+func authorizationExchangeRetryable(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	if strings.Contains(text, "status 4") {
+		return false
+	}
+	for _, marker := range []string{"request failed", "status 5", "timeout", "deadline exceeded", "connection", "eof", "no such host", "tls"} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 func authorizationTrace(secret *AuthorizationSecret, format string, args ...any) {
 	if !authorizationTraceEnabled() {
 		return

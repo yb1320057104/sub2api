@@ -311,15 +311,24 @@ func (s *AccountAuthorizationService) runAuthorizationJob(parent context.Context
 			return
 		}
 		token, e = s.oauth.ExchangeCode(ctx, &OpenAIExchangeCodeInput{SessionID: session.SessionID, Code: u.Query().Get("code"), State: u.Query().Get("state")})
+		if e != nil && authorizationExchangeRetryable(e) {
+			// One retry is only safe when the first attempt produced no HTTP
+			// answer; a consumed or invalid code comes back as 4xx and is
+			// reported as it is instead of being replayed.
+			authorizationTrace(secret, "exchange retry after transport failure: %v", e)
+			token, e = s.oauth.ExchangeCode(ctx, &OpenAIExchangeCodeInput{SessionID: session.SessionID, Code: u.Query().Get("code"), State: u.Query().Get("state")})
+		}
 		s.oauth.sessionStore.Delete(session.SessionID)
 		if e != nil {
+			authorizationTrace(secret, "exchange failed: %v", e)
 			if authorizationBanText(e.Error()) {
 				resultErr = authorizationBannedFailure()
 				return
 			}
-			resultErr = authorizationBrowserFailure("exchange_failed", "授权码交换失败，请检查授权出口或重新提交任务")
+			resultErr = authorizationBrowserFailure("exchange_failed", "授权码交换失败"+authorizationExchangeDetail(e)+"，请检查授权出口或重新提交任务")
 			return
 		}
+		authorizationTrace(secret, "exchange completed")
 		resultErr = nil
 		break
 	}
