@@ -136,6 +136,68 @@ ssh -L 18080:127.0.0.1:8080 你的SSH用户@你的服务器地址
 
 恢复和回退按 [PK维护文档](../PK_MAINTENANCE.md#回退与恢复先选热回滚) 执行：使用私库对应版本和原密钥，先确认数据库迁移兼容性。退回旧程序不会撤销数据库迁移；同镜像重建会保留网页升级后的程序，不能直接当作回退。
 
+## 8. 账号授权所需的外置浏览器（Linux）
+
+账号授权（PK-036）用真实浏览器完成 OpenAI 登录与 Cloudflare 验证。浏览器**不打包**进主程序、网页更新归档或应用镜像，必须在服务器运行环境单独安装；缺少浏览器时授权任务直接报 `browser_missing`，不会静默降级。
+
+### 8.1 安装
+
+在宿主机执行（只把依赖装进指定容器，不重启服务、不动数据）：
+
+```bash
+sh deploy/install-browser.sh <应用容器名>
+```
+
+脚本做三件事：`apk add --no-cache chromium xvfb`、校验 `/usr/bin/Xvfb`、生成 `/usr/local/bin/chromium` 包装器（默认带 `--no-sandbox`）。
+
+手动等价操作：
+
+```bash
+docker exec --user 0 <应用容器名> apk add --no-cache chromium xvfb
+docker exec <应用容器名> sh -c 'command -v chromium; command -v Xvfb; chromium --version'
+```
+
+**为什么必须装 Xvfb**：无头 Chromium 常被 Cloudflare 判为机器人，授权流程在挑战失败后会切换到“后台真 Chrome 会话”，这需要一个图形环境。既没有 `Xvfb` 也没有 `DISPLAY` 时，后台会话报 `browser_display_missing`。
+
+### 8.2 自动补装
+
+入口脚本默认 `PK_AUTH_BROWSER_BOOTSTRAP=true`：容器启动时若缺 `chromium` 或 `Xvfb`，自动执行 `apk add`（最多等待 240 秒）。安装失败只打印一行警告，不阻塞网关启动；首次或重建容器需要能访问 Alpine 软件源。
+
+- 网页更新只替换二进制并重启同一容器，**已安装的依赖保留**，不会重复安装。
+- 更换镜像或删除重建容器会丢失系统依赖，由入口脚本自动补装；也可再执行一次 8.1 的安装脚本。
+- 关闭自动补装：设置 `PK_AUTH_BROWSER_BOOTSTRAP=false`。
+
+### 8.3 相关环境变量
+
+| 变量 | 默认 | 作用 |
+|---|---|---|
+| `PK_AUTH_BROWSER_PATH` | 自动查找 `chromium` | 指定浏览器可执行文件路径 |
+| `PK_AUTH_BROWSER_MODE` | 空（先无头，挑战失败转后台） | `headless` / `background`；机房 IP 建议直接 `background` |
+| `PK_AUTH_BROWSER_NO_SANDBOX` | 容器内 `true` | 容器中的 Chromium 需要关闭沙箱 |
+| `PK_AUTH_BROWSER_DEVICE` | macOS 身份 | 设为 `host` 时使用宿主真实平台，仅调试用 |
+| `PK_AUTH_BROWSER_TRACE` | `true` | 授权流程日志（阶段、上游状态与响应、已脱敏），设 `false` 关闭 |
+
+### 8.4 验收
+
+```bash
+docker exec <应用容器名> chromium --version
+docker exec <应用容器名> sh -c 'Xvfb -help 2>&1 | head -2'
+# 授权任务结束后确认没有残留进程
+docker exec <应用容器名> sh -c 'ps -eo args | grep -c "[c]hrom"'
+```
+
+浏览器按任务回收：每次尝试结束都会调用 `Browser.close`、取消上下文杀进程、删除临时 profile 并关闭自启的 Xvfb，宿主机上不应出现持续运行的 chromium。
+
+### 8.5 常见报错
+
+| stage | 含义 | 处理 |
+|---|---|---|
+| `browser_missing` | 没找到浏览器 | 按 8.1 安装 |
+| `browser_display_missing` | 后台会话缺少图形环境 | 安装 `xvfb` |
+| `proxy_challenge` | 授权代理出口被 Cloudflare 拦住 | 更换授权代理 |
+| `login_security` | 挑战未在窗口内完成 | 换出口或稍后重试 |
+| `login_reload` | 页面无响应，已自动刷新重填 | 属正常自愈；频繁出现说明出口过慢 |
+
 ## 常见问题
 
 | 现象 | 优先检查 |
