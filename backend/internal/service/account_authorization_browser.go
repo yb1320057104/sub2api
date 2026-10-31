@@ -522,8 +522,35 @@ func authorizationBrowserIdentity(ctx context.Context, cdp *authorizationCDP) er
 
 // Cloudflare detects automation through navigator.webdriver and a missing
 // window.chrome far more often than through the CDP session itself. This runs
-// before any document exists and never touches the page's own state.
-const authorizationBrowserStealthScript = `(()=>{try{Object.defineProperty(Navigator.prototype,'webdriver',{get:()=>undefined,configurable:true});}catch(e){}try{if(!navigator.languages||navigator.languages.length===0){Object.defineProperty(Navigator.prototype,'languages',{get:()=>['en-US','en'],configurable:true});}}catch(e){}try{if(!window.chrome){window.chrome={runtime:{}};}}catch(e){}})()`
+// before any document exists and never touches the page's own state. It also
+// keeps the renderer and font answers consistent with the macOS identity the
+// user agent announces, because a Linux SwiftShader renderer is the loudest
+// remaining headless tell.
+const authorizationBrowserStealthScript = `(()=>{
+const def=(o,k,v)=>{try{Object.defineProperty(o,k,{get:()=>v,configurable:true});}catch(e){}};
+try{def(Navigator.prototype,'webdriver',undefined);}catch(e){}
+try{if(!navigator.languages||!navigator.languages.length)def(Navigator.prototype,'languages',['en-US','en']);}catch(e){}
+try{def(Navigator.prototype,'hardwareConcurrency',10);}catch(e){}
+try{def(Navigator.prototype,'deviceMemory',8);}catch(e){}
+try{def(Navigator.prototype,'maxTouchPoints',0);}catch(e){}
+try{def(Navigator.prototype,'vendor','Google Inc.');}catch(e){}
+try{def(Navigator.prototype,'platform','MacIntel');}catch(e){}
+try{def(Navigator.prototype,'pdfViewerEnabled',true);}catch(e){}
+try{if(!window.chrome)window.chrome={runtime:{}};}catch(e){}
+try{
+const V='Google Inc. (Apple)',R='ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)';
+for(const P of [window.WebGLRenderingContext&&WebGLRenderingContext.prototype,window.WebGL2RenderingContext&&WebGL2RenderingContext.prototype]){
+if(!P||!P.getParameter)continue;
+P.getParameter=new Proxy(P.getParameter,{apply(t,s,a){const p=a[0];if(p===37445)return V;if(p===37446)return R;return Reflect.apply(t,s,a);}});
+}
+}catch(e){}
+try{
+const MAC=['sf pro text','sf pro display','.sf ns','.sf ns text','helvetica neue','helvetica','lucida grande','menlo','monaco','avenir','avenir next','sf mono','san francisco','geneva','optima','futura','baskerville','copperplate','pingfang sc','hiragino sans gb','apple color emoji','apple symbols','songti sc','stheiti'];
+if(window.FontFaceSet&&FontFaceSet.prototype&&FontFaceSet.prototype.check){
+FontFaceSet.prototype.check=new Proxy(FontFaceSet.prototype.check,{apply(t,s,a){try{const spec=String(a[0]||'');const fam=spec.replace(/^\s*\d+(?:\.\d+)?(?:px|em|pt)\s+/,'').replace(/^["']|["']$/g,'').trim().toLowerCase();if(fam&&MAC.indexOf(fam)>=0)return true;}catch(e){}return Reflect.apply(t,s,a);}});
+}
+}catch(e){}
+})()`
 
 // A private Xvfb-backed display for the background Chrome identity.
 func authorizationBrowserDisplayEnv(mode string) ([]string, func(), error) {
@@ -784,6 +811,9 @@ func authorizationBrowserHeadlessArg(path string) string {
 
 func authorizationBrowserLaunchArgs(mode, profile, bridge string) []string {
 	args := []string{
+		// Software WebGL is not enabled on purpose: on Alpine's Chromium the
+		// SwiftShader flags stall startup, and a stalled browser costs the whole
+		// authorization. Keep the pixel path off and let the request succeed.
 		"--disable-gpu", "--disable-dev-shm-usage", "--no-first-run", "--no-default-browser-check",
 		"--disable-background-networking", "--disable-sync", "--disable-quic",
 		"--disable-blink-features=AutomationControlled",
