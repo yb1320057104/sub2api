@@ -604,6 +604,20 @@ func authorizationPrecheckNetworkFailure(reason string) error {
 	return authorizationBrowserFailure("proxy_network_failed", message+"，未提交账号密码")
 }
 
+// A terminal error page carries no API response to classify, so the trace keeps
+// what the page itself said: address, title and visible text.
+func authorizationCaptureErrorPage(ctx context.Context, cdp *authorizationCDP, secret *AuthorizationSecret) {
+	var out struct {
+		Result struct {
+			Value string `json:"value"`
+		} `json:"result"`
+	}
+	expression := `(()=>{const t=(document.body?document.body.innerText:'').replace(/\s+/g,' ').slice(0,400);return JSON.stringify({url:location.href,title:document.title,text:t})})()`
+	if err := cdp.call(ctx, "Runtime.evaluate", map[string]any{"expression": expression, "returnByValue": true}, &out); err == nil && out.Result.Value != "" {
+		authorizationTrace(secret, "error page %s", out.Result.Value)
+	}
+}
+
 func authorizationPrecheckHTTPState(code int64) string {
 	if code >= 100 && code <= 599 {
 		return "HTTP " + strconv.FormatInt(code, 10)
@@ -1154,7 +1168,7 @@ func runAuthorizationBrowserAttempt(ctx context.Context, mode, proxyURL, authURL
 					}
 					if json.Unmarshal(event.Params, &v) == nil {
 						u, e := url.Parse(v.Response.URL)
-						if e == nil && u.Host == "auth.openai.com" && strings.HasPrefix(u.Path, "/api/accounts/") && v.Response.Status >= 400 {
+						if e == nil && u.Host == "auth.openai.com" && strings.HasPrefix(u.Path, "/api/accounts/") {
 							challenged := false
 							for key, value := range v.Response.Headers {
 								if strings.EqualFold(key, "cf-mitigated") && strings.EqualFold(value, "challenge") {
@@ -1309,11 +1323,21 @@ func runAuthorizationBrowserAttempt(ctx context.Context, mode, proxyURL, authURL
 	if err = progress("login", "代理预检通过，正在打开本项目生成的授权链接"); err != nil {
 		return "", err
 	}
+	// A slow exit can leave the first navigation unanswered; one immediate retry
+	// costs less than discarding the whole attempt.
+	authorizationTrace(secret, "navigate auth url")
 	if err = cdp.call(ctx, "Page.navigate", map[string]any{"url": authURL}, nil); err != nil {
-		return "", authorizationBrowserFailure("login_failed", "无法打开授权页面")
+		authorizationTrace(secret, "navigate retry after %v", err)
+		if pauseErr := authorizationPause(ctx, 2*time.Second); pauseErr != nil {
+			return "", pauseErr
+		}
+		if err = cdp.call(ctx, "Page.navigate", map[string]any{"url": authURL}, nil); err != nil {
+			return "", authorizationBrowserFailure("login_failed", "无法打开授权页面")
+		}
 	}
 	loginDeadline := time.Now().Add(420 * time.Second)
 	challengeRecoveries := 0
+	reloadRecoveries := 0
 	for time.Now().Before(loginDeadline) {
 		if err = progress("", ""); err != nil {
 			return "", err
@@ -1355,6 +1379,7 @@ func runAuthorizationBrowserAttempt(ctx context.Context, mode, proxyURL, authURL
 			case "account_banned":
 				return "", authorizationBannedFailure()
 			case "login_error":
+				authorizationCaptureErrorPage(ctx, cdp, secret)
 				// Give a pending response-body read a bounded chance to identify the
 				// actual failure before falling back to the generic error page.
 				wait := time.NewTimer(2 * time.Second)
@@ -1376,6 +1401,23 @@ func runAuthorizationBrowserAttempt(ctx context.Context, mode, proxyURL, authURL
 				return "", &authorizationBrowserError{stage: stage, message: "官方登录要求邮箱或短信验证码，本流程不读取邮箱；请先在官方页面完成该验证后再重试", needsInput: true}
 			case "stalled":
 				return "", &authorizationBrowserError{stage: stage, message: "登录页重复提交后仍未前进，可能被官方安全策略拦截或页面结构已变化；请人工确认该账号当前的登录状态", needsInput: true}
+			case "reload":
+				// The submit produced no reaction: a slow exit usually means the
+				// page never finished its own request. Reload the same
+				// authorization URL and fill the form again instead of giving up.
+				if reloadRecoveries >= 3 {
+					return "", &authorizationBrowserError{stage: "stalled", message: "登录页多次刷新后仍未前进，授权代理出口过慢或页面被安全策略拦截；请更换授权代理后重试", needsInput: true}
+				}
+				reloadRecoveries++
+				authorizationTrace(secret, "login page reload %d", reloadRecoveries)
+				if err = progress("login_reload", "登录页没有响应，正在刷新并重新填写（"+strconv.Itoa(reloadRecoveries)+"/3）"); err != nil {
+					return "", err
+				}
+				_ = cdp.call(ctx, "Page.navigate", map[string]any{"url": authURL}, nil)
+				if err = authorizationPause(ctx, 3*time.Second); err != nil {
+					return "", err
+				}
+				continue
 			case "invalid_credentials":
 				return "", &authorizationBrowserError{stage: stage, message: "登录页提示邮箱或密码不被接受，请检查并补全凭据后重试；未确认账号封禁", needsInput: true}
 			case "security", "challenge":
@@ -1433,7 +1475,7 @@ const authorizationLoginScript = `(data)=>{
  const password=find('input[type=password]');
  const otp=find('input[autocomplete=one-time-code],input[name=code],input[name=otp],input[name=totp],input[name=verification_code],input[maxlength="1"][inputmode=numeric]');
  const state=window.__pkAuthorizationActions||(window.__pkAuthorizationActions={});
- const act=(key,fn)=>{const old=state[key];if(old&&Date.now()-old.at<8000)return 'waiting';if(old&&old.n>=3)return 'stalled';state[key]={at:Date.now(),n:(old?.n||0)+1};fn();return key;};
+ const act=(key,fn)=>{const old=state[key];if(old&&Date.now()-old.at<12000)return 'waiting';if(old&&old.n>=2)return 'reload';state[key]={at:Date.now(),n:(old?.n||0)+1};fn();return key;};
  if(password)return act('password',()=>{if(email)fill(email,data.email);fill(password,data.password);submit(password);});
   if(otp){if(/check your (?:email|inbox)|code.{0,30}(?:sent to|email|sms|text message)|(?:sent|send).{0,30}(?:email|phone)|邮箱验证码|短信验证码/.test(body)||!data.otp)return 'needs_input';return act('mfa',()=>{const cells=Array.from(document.querySelectorAll('input[autocomplete=one-time-code],input[maxlength="1"]')).filter(visible);if(cells.length===6&&cells.every(e=>e.maxLength===1))cells.forEach((e,i)=>fill(e,data.otp[i]));else fill(otp,data.otp);submit(otp);});}
  if(email)return act('email',()=>{fill(email,data.email);submit(email);});
