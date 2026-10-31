@@ -20,6 +20,7 @@
         <IntelligenceTestSettings :groups="testGroups" :groups-loaded="groupsLoaded" @saved="loadGroups" @keys-synced="loadGroups" />
       </section>
       <section v-else-if="tab === 'authorization'" id="radar-panel-authorization" role="tabpanel" aria-labelledby="radar-tab-authorization" class="space-y-5"><AuthorizationSchedule /><AuthorizationRecords kind="accounts" /></section>
+      <section v-else-if="tab === 'statistics'" id="radar-panel-statistics" role="tabpanel" aria-labelledby="radar-tab-statistics"><AccountHealthObservation /></section>
       <section v-else id="radar-panel-accounts" role="tabpanel" aria-labelledby="radar-tab-accounts" class="space-y-5">
         <div class="flex flex-wrap items-center justify-between gap-3">
           <div class="flex flex-wrap items-center gap-3">
@@ -110,6 +111,7 @@ import AccountUsageCell from '@/components/account/AccountUsageCell.vue'
 import IntelligenceTestSettings from '@/components/intelligenceTest/IntelligenceTestSettings.vue'
 import AccountCandyTestSettings from '@/components/admin/account/AccountCandyTestSettings.vue'
 import AccountCandyTestDetails from '@/components/admin/account/AccountCandyTestDetails.vue'
+import AccountHealthObservation from '@/components/admin/account/AccountHealthObservation.vue'
 import AuthorizationSchedule from '@/components/admin/account/AuthorizationSchedule.vue'
 import AuthorizationRecords from '@/components/admin/account/AuthorizationRecords.vue'
 import { accountCandyAPI, type RadarObservation } from '@/api/admin/accountCandy'
@@ -126,8 +128,8 @@ const { t } = useI18n()
 const app = useAppStore()
 const route = useRoute()
 const router = useRouter()
-const tabs = ['groups', 'accounts', 'authorization'] as const
-const tab = ref<typeof tabs[number]>(route.query.tab === 'authorization' ? 'authorization' : route.query.tab === 'accounts' ? 'accounts' : 'groups')
+const tabs = ['groups', 'accounts', 'authorization', 'statistics'] as const
+const tab = ref<typeof tabs[number]>(route.query.tab === 'statistics' ? 'statistics' : route.query.tab === 'authorization' ? 'authorization' : route.query.tab === 'accounts' ? 'accounts' : 'groups')
 const items = ref<RadarObservation[]>([])
 const groups = ref<AdminGroup[]>([])
 const testGroups = ref<IntelligenceTestGroup[]>([])
@@ -220,8 +222,8 @@ async function flushUsage() {
 
 watch(filter, () => { items.value = []; if (page.value !== 1) page.value = 1; else void loadAccounts() })
 watch(page, () => { items.value = []; void loadAccounts() })
-watch(() => route.query.tab, value => { tab.value = value === 'authorization' ? 'authorization' : value === 'accounts' ? 'accounts' : 'groups' })
-watch(tab, () => { if (route.query.tab !== tab.value) void router.replace({ query: { ...route.query, tab: tab.value } }); if (tab.value === 'accounts') void loadAccounts(); else { controller?.abort(); loading.value = false; void loadGroups() } })
+watch(() => route.query.tab, value => { tab.value = value === 'statistics' ? 'statistics' : value === 'authorization' ? 'authorization' : value === 'accounts' ? 'accounts' : 'groups' })
+watch(tab, () => { if (route.query.tab !== tab.value) void router.replace({ query: { ...route.query, tab: tab.value } }); if (tab.value === 'accounts') void loadAccounts(); else { controller?.abort(); loading.value = false; if (tab.value === 'groups') void loadGroups() } })
 useIntervalFn(() => { if (!document.hidden && !showSettings.value) void loadAccounts(true) }, 5000)
 onMounted(async () => {
   void loadAccounts(); void loadGroups()

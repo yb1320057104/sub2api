@@ -11,6 +11,11 @@
           <fieldset :disabled="submitting || !ready" class="space-y-4">
             <div class="grid grid-cols-2 gap-4"><label><span class="input-label">{{ t('authorization.authorizationConcurrency') }}</span><input v-model.number="form.authorization_concurrency" class="input" type="number" min="1" max="50" step="1" required /></label><label><span class="input-label">{{ t('authorization.accountConcurrency') }}</span><input v-model.number="form.account_concurrency" class="input" type="number" min="1" max="1000" step="1" required /></label></div>
             <label class="block"><span class="input-label">{{ t('authorization.priority') }}</span><input v-model.number="form.account_priority" class="input" type="number" min="0" max="1000" step="1" required /></label>
+            <div class="space-y-3 rounded-xl border border-gray-200 p-3 dark:border-dark-600">
+              <label class="block"><span class="input-label">{{ t('authorization.accountProxyMode') }}</span><Select :model-value="form.account_proxy_mode" @update:model-value="form.account_proxy_mode = $event === 'managed' ? 'managed' : 'direct'" :aria-label="t('authorization.accountProxyMode')" :disabled="submitting || !ready" :options="[{ value: 'direct', label: t('authorization.accountDirect') }, { value: 'managed', label: t('authorization.accountManaged') }]" /></label>
+              <label v-if="form.account_proxy_mode === 'managed'" class="block"><span class="input-label">{{ t('authorization.maxAccountsPerProxy') }}</span><input v-model.number="form.max_accounts_per_proxy" class="input" type="number" min="1" max="1000" step="1" required /></label>
+              <p class="text-xs leading-5 text-gray-500 dark:text-dark-400">{{ t('authorization.accountProxyHint') }}</p>
+            </div>
             <div class="rounded-xl bg-primary-50 p-3 text-xs leading-5 text-primary-800 dark:bg-primary-950/30 dark:text-primary-200"><p class="font-semibold">{{ t('authorization.gateTitle') }}</p><p>{{ t('authorization.gateHint') }}</p><p class="mt-2 font-medium">{{ t('authorization.gateModels', { count: gateModels.length }) }}</p><p v-for="model in gateModels" :key="model.model">{{ model.model }} / {{ model.effort || t('accountCandy.defaultEffort') }}</p></div>
             <div class="grid gap-4 sm:grid-cols-2">
               <fieldset class="min-w-0"><legend class="input-label">{{ t('authorization.passGroups') }}</legend><div class="max-h-36 space-y-2 overflow-y-auto rounded-xl border border-gray-200 p-3 dark:border-dark-600"><label v-for="group in groups" :key="group.id" class="flex cursor-pointer items-center gap-2 text-sm"><input v-model="form.pass_group_ids" type="checkbox" :value="group.id" class="rounded border-gray-300 text-primary-600" /><span class="break-all">{{ group.name }}</span></label><p v-if="!groups.length" class="text-xs text-gray-500">{{ t('authorization.noGroups') }}</p></div></fieldset>
@@ -38,6 +43,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import AppLayout from '@/components/layout/AppLayout.vue'
+import Select from '@/components/common/Select.vue'
 import AuthorizationRecords from '@/components/admin/account/AuthorizationRecords.vue'
 import AccountCandyTestSettings from '@/components/admin/account/AccountCandyTestSettings.vue'
 import { accountAuthorizationAPI, type AuthorizationConfig, type AuthorizationSubmission } from '@/api/admin/accountAuthorization'
@@ -63,9 +69,9 @@ const controller = new AbortController()
 const showCandySettings = ref(false)
 const gateModels = computed(() => config.value?.intelligence_models ?? (config.value?.intelligence_model ? [{ model: config.value.intelligence_model, effort: config.value.intelligence_effort, enabled: true }] : []))
 const failureGroupName = computed(() => { const id = config.value?.fail_group_ids?.[0]; return id ? (groups.value.find(group => group.id === id)?.name || '#' + id) : t('authorization.failureGroupMissing') })
-const form = ref<AuthorizationSubmission>({ accounts: '', authorization_concurrency: 3, account_concurrency: 3, account_priority: 50, group_ids: [], pass_group_ids: [] })
+const form = ref<AuthorizationSubmission>({ accounts: '', authorization_concurrency: 3, account_concurrency: 3, account_priority: 50, account_proxy_mode: 'direct', max_accounts_per_proxy: 1, group_ids: [], pass_group_ids: [] })
 async function load() {
-  try { const [value, groupResponse] = await Promise.all([accountAuthorizationAPI.config(controller.signal), apiClient.get<AdminGroup[]>('/admin/groups/all', { params: { platform: 'openai' }, signal: controller.signal })]); if (controller.signal.aborted) return; config.value = value; groups.value = groupResponse.data.filter(group => group.platform === 'openai' && group.status === 'active'); if (!ready.value) form.value = { ...form.value, authorization_concurrency: value.authorization_concurrency, account_concurrency: value.account_concurrency, account_priority: value.account_priority, group_ids: [], pass_group_ids: [...(value.pass_group_ids || [])] }; ready.value = true; error.value = '' }
+  try { const [value, groupResponse] = await Promise.all([accountAuthorizationAPI.config(controller.signal), apiClient.get<AdminGroup[]>('/admin/groups/all', { params: { platform: 'openai' }, signal: controller.signal })]); if (controller.signal.aborted) return; config.value = value; groups.value = groupResponse.data.filter(group => group.platform === 'openai' && group.status === 'active'); if (!ready.value) form.value = { ...form.value, authorization_concurrency: value.authorization_concurrency, account_concurrency: value.account_concurrency, account_priority: value.account_priority, account_proxy_mode: value.account_proxy_mode || 'direct', max_accounts_per_proxy: value.max_accounts_per_proxy || 1, group_ids: [], pass_group_ids: [...(value.pass_group_ids || [])] }; ready.value = true; error.value = '' }
   catch (e) { if (!controller.signal.aborted) error.value = extractApiErrorMessage(e, t('authorization.loadFailed')) }
 }
 async function submit() {

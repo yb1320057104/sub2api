@@ -320,6 +320,9 @@
               :error="todayStatsError"
             />
           </template>
+          <template #cell-health_stats="{ row }">
+            <AccountHealthCell :stats="healthStatsByAccountId[String(row.id)] ?? null" :loading="todayStatsLoading" :error="healthStatsError" />
+          </template>
           <template #cell-latest_first_token="{ row }">
             <AccountRequestStatsCell
               :stats="requestStatsByAccountId[String(row.id)] ?? null"
@@ -563,7 +566,8 @@ import AccountStatusIndicator from '@/components/account/AccountStatusIndicator.
 import AccountUsageCell from '@/components/account/AccountUsageCell.vue'
 import AccountTodayStatsCell from '@/components/account/AccountTodayStatsCell.vue'
 import AccountRequestStatsCell from '@/components/account/AccountRequestStatsCell.vue'
-import type { AccountRequestStats } from '@/types'
+import type { AccountRequestStats, AccountHealthStats } from '@/types'
+import AccountHealthCell from '@/components/account/AccountHealthCell.vue'
 import AccountGroupsCell from '@/components/account/AccountGroupsCell.vue'
 import AccountCapacityCell from '@/components/account/AccountCapacityCell.vue'
 import UpstreamBillingRateCell from '@/components/account/UpstreamBillingRateCell.vue'
@@ -777,6 +781,8 @@ const hasPendingListSync = ref(false)
 const todayStatsByAccountId = ref<Record<string, WindowStats>>({})
 const requestStatsByAccountId = ref<Record<string, AccountRequestStats>>({})
 const requestStatsError = ref(false)
+const healthStatsByAccountId = ref<Record<string, AccountHealthStats>>({})
+const healthStatsError = ref(false)
 const todayStatsLoading = ref(false)
 const todayStatsError = ref<string | null>(null)
 const todayStatsReqSeq = ref(0)
@@ -944,8 +950,10 @@ const queueBatchedUsage = (account: Account, options?: { force?: boolean }) => {
 const refreshTodayStatsBatch = async () => {
   const reqSeq = ++todayStatsReqSeq.value
   const includeRequestStats = !hiddenColumns.has('latest_first_token') || !hiddenColumns.has('consecutive_failures')
-  // Reuse the page-level batch request for both today totals and request health.
-  if (hiddenColumns.has('today_stats') && hiddenColumns.has('usage') && !includeRequestStats) {
+  const includeHealthStats = !hiddenColumns.has('health_stats')
+  const skipTodayStats = hiddenColumns.has('today_stats') && hiddenColumns.has('usage')
+  // Health only reads saved snapshots, without triggering a history aggregation.
+  if (skipTodayStats && !includeRequestStats && !includeHealthStats) {
     todayStatsLoading.value = false
     todayStatsError.value = null
     return
@@ -955,6 +963,8 @@ const refreshTodayStatsBatch = async () => {
   if (accountIDs.length === 0) {
     todayStatsByAccountId.value = {}
     requestStatsByAccountId.value = {}
+    healthStatsByAccountId.value = {}
+    healthStatsError.value = false
     requestStatsError.value = false
     todayStatsError.value = null
     todayStatsLoading.value = false
@@ -966,7 +976,7 @@ const refreshTodayStatsBatch = async () => {
   requestStatsError.value = false
 
   try {
-    const result = await adminAPI.accounts.getBatchTodayStats(accountIDs, includeRequestStats)
+    const result = await adminAPI.accounts.getBatchTodayStats(accountIDs, includeRequestStats, includeHealthStats, skipTodayStats)
     if (reqSeq !== todayStatsReqSeq.value) return
     const serverStats = result.stats ?? {}
     const nextStats: Record<string, WindowStats> = {}
@@ -976,11 +986,14 @@ const refreshTodayStatsBatch = async () => {
     }
     todayStatsByAccountId.value = nextStats
     requestStatsByAccountId.value = result.request_stats ?? {}
+    healthStatsByAccountId.value = result.health_stats ?? {}
+    healthStatsError.value = includeHealthStats && (result.health_stats_unavailable === true || result.health_stats == null)
     requestStatsError.value = includeRequestStats && (result.request_stats_unavailable === true || result.request_stats == null)
   } catch (error) {
     if (reqSeq !== todayStatsReqSeq.value) return
     todayStatsError.value = 'Failed'
     requestStatsError.value = includeRequestStats
+    healthStatsError.value = includeHealthStats
     console.error('Failed to load account today stats:', error)
   } finally {
     if (reqSeq === todayStatsReqSeq.value) {
@@ -1126,7 +1139,7 @@ const toggleColumn = (key: string) => {
     hiddenColumns.add(key)
   }
   saveColumnsToStorage()
-  if (['today_stats', 'usage', 'latest_first_token', 'consecutive_failures'].includes(key) && wasHidden) {
+  if (['today_stats', 'usage', 'latest_first_token', 'consecutive_failures', 'health_stats'].includes(key) && wasHidden) {
     refreshTodayStatsBatch().catch((error) => {
       console.error('Failed to load account today stats after showing column:', error)
     })
@@ -1916,6 +1929,7 @@ const allColumns = computed(() => {
     { key: 'status', label: t('admin.accounts.columns.status'), sortable: true },
     { key: 'schedulable', label: t('admin.accounts.columns.schedulable'), sortable: true },
     { key: 'today_stats', label: t('admin.accounts.columns.todayStats'), sortable: false },
+    { key: 'health_stats', label: t('accountHealth.health'), sortable: false },
     { key: 'latest_first_token', label: t('admin.accounts.columns.latestFirstToken'), sortable: false },
     { key: 'consecutive_failures', label: t('admin.accounts.columns.consecutiveFailures'), sortable: false }
   ]

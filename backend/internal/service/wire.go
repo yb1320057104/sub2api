@@ -246,6 +246,7 @@ func ProvideOpenAIQuotaAutoResetService(
 }
 
 func ProvideAccountUsageService(
+	db *sql.DB,
 	accountRepo AccountRepository,
 	usageLogRepo UsageLogRepository,
 	usageFetcher ClaudeUsageFetcher,
@@ -273,6 +274,8 @@ func ProvideAccountUsageService(
 		tlsFPProfileService,
 	)
 	service.agentIdentityWS = openAIGatewayService
+	service.healthStats = NewAccountHealthService(db, usageLogRepo)
+	startBackgroundAfterActivation("AccountHealthService", service.healthStats.Start)
 	return service
 }
 

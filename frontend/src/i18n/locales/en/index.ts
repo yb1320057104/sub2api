@@ -8,6 +8,7 @@ import binanceRecharge from './binanceRecharge'
 import securityPolicyRanking from './securityPolicyRanking'
 import intelligenceTest from './intelligenceTest'
 import accountCandy from './accountCandy'
+import accountHealth from './accountHealth'
 import authorization from './authorization'
 import admin from './admin'
 import misc from './misc'
@@ -23,6 +24,7 @@ export default {
   ...securityPolicyRanking,
   ...intelligenceTest,
   ...accountCandy,
+  ...accountHealth,
   ...authorization,
   admin,
   ...misc,

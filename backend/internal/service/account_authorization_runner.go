@@ -476,12 +476,16 @@ func (s *AccountAuthorizationService) applyAuthorization(ctx context.Context, cf
 				return authorizationBrowserFailure("account_changed", "授权期间出现同邮箱账号，请重新提交以更新原账号")
 			}
 		}
+		proxyID, proxyErr := authorizationImportProxy(txctx, tx, &job.settings)
+		if proxyErr != nil {
+			return proxyErr
+		}
 		load := job.settings.AccountConcurrency
 		name := []rune(job.email)
 		if len(name) > 100 {
 			name = name[:100]
 		}
-		account, err = s.admin.CreateAccount(txctx, &CreateAccountInput{Name: string(name), Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: credentials, Concurrency: load, LoadFactor: &load, Priority: job.settings.AccountPriority, GroupIDs: job.settings.GroupIDs, SkipDefaultGroupBind: true})
+		account, err = s.admin.CreateAccount(txctx, &CreateAccountInput{Name: string(name), Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: credentials, Concurrency: load, LoadFactor: &load, Priority: job.settings.AccountPriority, ProxyID: proxyID, GroupIDs: job.settings.GroupIDs, SkipDefaultGroupBind: true})
 		if err != nil {
 			return authorizationBrowserFailure("admission_failed", "入库被拒绝，请检查分组有效性及准入要求")
 		}
@@ -497,7 +501,7 @@ func (s *AccountAuthorizationService) applyAuthorization(ctx context.Context, cf
 		return err
 	}
 	status, stage, message := "completed", "completed", "授权成功，凭据已写入账号"
-	metadata := map[string]any{"authorization_completed": true}
+	metadata := map[string]any{"authorization_completed": true, "account_proxy_id": account.ProxyID}
 	if job.settings.IntelligenceGate {
 		status, stage, message = "running", "intelligence_pending", "授权成功，暂不分组，正在准备测智"
 	} else {

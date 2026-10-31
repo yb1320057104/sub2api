@@ -28,6 +28,9 @@ const authorizationReauthCron = "*/10 * * * *"
 const authorizationWorkbenchSettingKey = "pk_authorization_workbench"
 
 type AuthorizationConfig struct {
+	AccountProxyMode    string `json:"account_proxy_mode"`
+	MaxAccountsPerProxy int    `json:"max_accounts_per_proxy"`
+
 	IntelligenceModels       []RadarModel `json:"intelligence_models"`
 	PassGroupIDs             []int64      `json:"pass_group_ids"`
 	FailGroupIDs             []int64      `json:"fail_group_ids"`
@@ -57,6 +60,9 @@ type AuthorizationSecret struct {
 }
 
 type AuthorizationSubmit struct {
+	AccountProxyMode    string `json:"account_proxy_mode"`
+	MaxAccountsPerProxy int    `json:"max_accounts_per_proxy"`
+
 	IntelligenceGeneration   string       `json:"intelligence_generation,omitempty"`
 	IntelligenceModels       []RadarModel `json:"intelligence_models,omitempty"`
 	PassGroupIDs             []int64      `json:"pass_group_ids"`
@@ -137,6 +143,7 @@ func (s *AccountAuthorizationService) GetConfig(ctx context.Context) (*Authoriza
 		return nil, err
 	}
 	c.PassGroupIDs, c.FailGroupIDs = []int64{}, []int64{}
+	c.AccountProxyMode, c.MaxAccountsPerProxy = "direct", 1
 	var saved string
 	if err = s.db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key=$1`, authorizationWorkbenchSettingKey).Scan(&saved); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, err
@@ -147,6 +154,10 @@ func (s *AccountAuthorizationService) GetConfig(ctx context.Context) (*Authoriza
 			return nil, err
 		}
 		c.PassGroupIDs = workbench.PassGroupIDs
+		if err = normalizeAuthorizationProxyOptions(&workbench); err != nil {
+			return nil, err
+		}
+		c.AccountProxyMode, c.MaxAccountsPerProxy = workbench.AccountProxyMode, workbench.MaxAccountsPerProxy
 	}
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
@@ -315,6 +326,9 @@ func (s *AccountAuthorizationService) Submit(ctx context.Context, input *Authori
 		return "", err
 	}
 	settings := *input
+	if err := normalizeAuthorizationProxyOptions(&settings); err != nil {
+		return "", err
+	}
 	settings.Accounts = ""
 	settings.GroupIDs = []int64{}
 	settings.IntelligenceGate = true

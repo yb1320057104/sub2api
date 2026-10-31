@@ -2689,6 +2689,8 @@ func (h *AccountHandler) GetTodayStats(c *gin.Context) {
 type BatchTodayStatsRequest struct {
 	AccountIDs          []int64 `json:"account_ids" binding:"required"`
 	IncludeRequestStats bool    `json:"include_request_stats"`
+	IncludeHealthStats  bool    `json:"include_health_stats"`
+	SkipTodayStats      bool    `json:"skip_today_stats"`
 }
 
 type BatchUsageRequest struct {
@@ -2712,6 +2714,12 @@ func (h *AccountHandler) GetBatchTodayStats(c *gin.Context) {
 	}
 
 	cacheKey := buildAccountTodayStatsBatchCacheKey(accountIDs)
+	if req.IncludeHealthStats {
+		cacheKey += ":health_stats"
+	}
+	if req.SkipTodayStats {
+		cacheKey += ":no_today"
+	}
 	if req.IncludeRequestStats {
 		cacheKey += ":request_stats"
 	}
@@ -2729,13 +2737,28 @@ func (h *AccountHandler) GetBatchTodayStats(c *gin.Context) {
 		return
 	}
 
-	stats, err := h.accountUsageService.GetTodayStatsBatch(c.Request.Context(), accountIDs)
-	if err != nil {
-		response.ErrorFrom(c, err)
-		return
+	payload := gin.H{"stats": map[string]any{}}
+	if !req.SkipTodayStats {
+		stats, err := h.accountUsageService.GetTodayStatsBatch(c.Request.Context(), accountIDs)
+		if err != nil {
+			response.ErrorFrom(c, err)
+			return
+		}
+		payload["stats"] = stats
 	}
-
-	payload := gin.H{"stats": stats}
+	if req.IncludeHealthStats {
+		health, healthErr := h.accountUsageService.RequireAccountHealth()
+		if healthErr != nil {
+			payload["health_stats_unavailable"] = true
+		} else {
+			snapshots, readErr := health.Snapshots(c.Request.Context(), accountIDs)
+			if readErr != nil {
+				payload["health_stats_unavailable"] = true
+			} else {
+				payload["health_stats"] = snapshots
+			}
+		}
+	}
 	if req.IncludeRequestStats {
 		requestStats, requestErr := h.accountUsageService.GetAccountRequestStatsBatch(c.Request.Context(), accountIDs)
 		if requestErr != nil {

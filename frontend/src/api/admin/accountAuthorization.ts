@@ -7,6 +7,7 @@ export interface AuthorizationIntelligenceResult {
 }
 
 export interface AuthorizationConfig {
+ account_proxy_mode?: 'direct' | 'managed'; max_accounts_per_proxy?: number;
   intelligence_models?: AuthorizationIntelligenceModel[]
   pass_group_ids: number[]; fail_group_ids: number[]
   intelligence_model: string; intelligence_effort: string
@@ -19,6 +20,7 @@ export interface AuthorizationConfig {
   encryption_key_configured: boolean
 }
 export interface AuthorizationSubmission {
+ account_proxy_mode?: 'direct' | 'managed'; max_accounts_per_proxy?: number;
   pass_group_ids: number[]
   accounts: string; authorization_concurrency: number
   account_concurrency: number; account_priority: number; group_ids: number[]

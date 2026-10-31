@@ -2570,3 +2570,16 @@ export type {
   PlatformQuotaWindow,
   PlatformQuotasResponse,
 } from '@/api/admin/users'
+
+/** Background-only health aggregation; HTTP reads persisted snapshots. */
+export interface AccountHealthStats {
+ success_requests: number
+ upstream_failures: number
+ total_requests: number
+ health_score: number | null
+ fastest_first_token_ms: number | null
+ slowest_first_token_ms: number | null
+ window_start: string
+ window_end: string
+ computed_at: string
+}

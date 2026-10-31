@@ -70,6 +70,8 @@ func RegisterAdminRoutes(
 			admin.GET("/radar/accounts/:id/candy-runs", h.AccountCandyTest.RadarHistory)
 			admin.GET("/radar/accounts/:id/candy-runs/:run_id", h.AccountCandyTest.RadarResult)
 		}
+		admin.GET("/radar/account-statistics", h.Admin.Account.GetAccountHealthProgress)
+		admin.PUT("/radar/account-statistics/config", h.Admin.Account.SaveAccountHealthConfig)
 		// 部署与运营合规确认
 		registerAdminComplianceRoutes(admin, h)
 

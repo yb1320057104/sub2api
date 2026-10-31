@@ -14,6 +14,7 @@ import type {
   AccountUsageInfo,
   WindowStats,
   AccountRequestStats,
+  AccountHealthStats,
   ClaudeModel,
   AccountUsageStatsResponse,
   TempUnschedulableStatus,
@@ -574,6 +575,8 @@ export interface BatchTodayStatsResponse {
   stats: Record<string, WindowStats>
   request_stats?: Record<string, AccountRequestStats>
   request_stats_unavailable?: boolean
+  health_stats?: Record<string, AccountHealthStats>
+  health_stats_unavailable?: boolean
 }
 
 /**
@@ -581,10 +584,12 @@ export interface BatchTodayStatsResponse {
  * @param accountIds - 账号 ID 列表
  * @returns 以账号 ID（字符串）为键的统计映射
  */
-export async function getBatchTodayStats(accountIds: number[], includeRequestStats = false): Promise<BatchTodayStatsResponse> {
+export async function getBatchTodayStats(accountIds: number[], includeRequestStats = false, includeHealthStats = false, skipTodayStats = false): Promise<BatchTodayStatsResponse> {
   const { data } = await apiClient.post<BatchTodayStatsResponse>('/admin/accounts/today-stats/batch', {
     account_ids: accountIds,
-    include_request_stats: includeRequestStats
+    include_request_stats: includeRequestStats,
+    include_health_stats: includeHealthStats,
+    skip_today_stats: skipTodayStats
   })
   return data
 }
