@@ -117,8 +117,8 @@ func (job *authorizationJob) intelligenceAccountDisposition() string {
 	return "新账号保持未分组、暂停调度"
 }
 
-// This is a cancellable phase of the existing durable worker, not a separate
-// scheduling loop. The cron coordinator and job concurrency remain unchanged.
+// Reauthorization waits inside the existing durable worker. New imports skip
+// this phase. The cron coordinator and job concurrency remain unchanged.
 func waitAuthorizationIntelligence(ctx context.Context, progress func(string, string) error) error {
 	deadline := time.Now().Add(time.Minute)
 	for {
@@ -150,15 +150,17 @@ func (s *AccountAuthorizationService) runAuthorizationIntelligenceGate(ctx conte
 	for _, model := range models {
 		names = append(names, model.Model)
 	}
-	if err := waitAuthorizationIntelligence(ctx, progress); err != nil {
-		return err
+	if job.preserveAccount {
+		if err := waitAuthorizationIntelligence(ctx, progress); err != nil {
+			return err
+		}
 	}
 	account, err := s.accounts.GetByID(ctx, *job.accountID)
 	if err != nil {
 		return err
 	}
 	if !job.gateSnapshot.matches(account) {
-		return authorizationBrowserFailure("intelligence_account_changed", "等待测智期间账号凭据、连接、分组或调度状态已变化，未覆盖当前设置")
+		return authorizationBrowserFailure("intelligence_account_changed", "准备或等待测智期间账号凭据、连接、分组或调度状态已变化，未覆盖当前设置")
 	}
 	if err = s.refreshAuthorizationAccountCache(ctx, account); err != nil {
 		return &authorizationBrowserError{stage: "intelligence_cache_pending", message: "授权凭据已保存，但缓存刷新尚未完成，本次未发送测智请求；请等待系统刷新后检查", needsInput: true}

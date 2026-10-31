@@ -299,7 +299,7 @@ func (s *AccountAuthorizationService) runAuthorizationJob(parent context.Context
 	}
 	savingMessage := "正在保存新凭据并保留原账号设置"
 	if job.settings.IntelligenceGate {
-		savingMessage = "正在保存授权凭据，新账号暂不分组并暂停调度，等待60秒后执行测智"
+		savingMessage = "正在保存授权凭据，新账号暂不分组并暂停调度，保存后立即执行测智"
 		if before != nil {
 			savingMessage = "正在更新授权凭据，保留原分组并恢复系统错误停调，等待60秒后执行测智"
 		}
@@ -475,7 +475,10 @@ func (s *AccountAuthorizationService) applyAuthorization(ctx context.Context, cf
 	status, stage, message := "completed", "completed", "授权成功，凭据已写入账号"
 	metadata := map[string]any{"authorization_completed": true, "account_proxy_id": account.ProxyID}
 	if job.settings.IntelligenceGate {
-		status, stage, message = "running", "intelligence_waiting", "授权凭据已保存，等待60秒后使用最新凭据测智；"+job.intelligenceAccountDisposition()
+		status, stage, message = "running", "intelligence_pending", "授权凭据已保存，新账号立即使用最新凭据测智；"+job.intelligenceAccountDisposition()
+		if job.preserveAccount {
+			stage, message = "intelligence_waiting", "授权凭据已保存，重授权等待60秒后使用最新凭据测智；"+job.intelligenceAccountDisposition()
+		}
 		metadata["intelligence_preserve_account"] = job.preserveAccount
 	}
 	if !job.settings.IntelligenceGate || job.preserveAccount {

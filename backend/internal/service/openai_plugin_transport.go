@@ -1,6 +1,10 @@
 package service
 
-import "net/http"
+import (
+	"net/http"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
+)
 
 func (s *OpenAIGatewayService) SetPluginManager(manager *PluginManager) {
 	s.pluginManager = manager
@@ -26,20 +30,31 @@ func (s *AccountTestService) doOpenAIAccountTestUpstream(
 	account *Account,
 	useTLSFallback bool,
 ) (*http.Response, error) {
-	if s.pluginManager != nil {
-		response, handled, err := s.pluginManager.RoundTripOpenAIOAuth(request.Context(), request, proxyURL, account)
-		if handled {
-			return response, err
+	return s.openAIAccountTestSender(proxyURL, account, useTLSFallback)(request)
+}
+
+func (s *AccountTestService) doOpenAIAccountCandyUpstream(request *http.Request, proxyURL string, account *Account) (*http.Response, error) {
+	return doAccountCandyTLSHandshakeRetry(request, s.openAIAccountTestSender(proxyURL, account, true))
+}
+
+func (s *AccountTestService) openAIAccountTestSender(proxyURL string, account *Account, useTLSFallback bool) func(*http.Request) (*http.Response, error) {
+	var profile *tlsfingerprint.Profile
+	profileResolved := false
+	return func(request *http.Request) (*http.Response, error) {
+		if s.pluginManager != nil {
+			response, handled, err := s.pluginManager.RoundTripOpenAIOAuth(request.Context(), request, proxyURL, account)
+			if handled {
+				return response, err
+			}
 		}
+		if useTLSFallback {
+			// Resolve even a random profile only once across handshake retries.
+			if !profileResolved {
+				profile = s.tlsFPProfileService.ResolveTLSProfile(account)
+				profileResolved = true
+			}
+			return s.httpUpstream.DoWithTLS(request, proxyURL, account.ID, account.Concurrency, profile)
+		}
+		return s.httpUpstream.Do(request, proxyURL, account.ID, account.Concurrency)
 	}
-	if useTLSFallback {
-		return s.httpUpstream.DoWithTLS(
-			request,
-			proxyURL,
-			account.ID,
-			account.Concurrency,
-			s.tlsFPProfileService.ResolveTLSProfile(account),
-		)
-	}
-	return s.httpUpstream.Do(request, proxyURL, account.ID, account.Concurrency)
 }

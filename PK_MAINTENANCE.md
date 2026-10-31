@@ -1,5 +1,7 @@
 # PK出版：源码、发布与上游更新
 
+2026-11-01 当前交接 v0.2.19-pk.35：基于用户最新main cec58b9c6273a9162f3dc124a8dc6406e845fe83，保留孤儿浏览器进程回收及服务启动即启动清理。用户授权只读应用日志确认自动测智TLS握手超时；新导入立即测智、已有账号重授权60秒；糖果请求同出口最多3次握手尝试，普通测试/业务网关不扩改，首次无组停调准入保留。核对记录见docs/PK_AUTHORIZATION_TLS_PK35_REVIEW.md。未执行构建、测试、真实登录/模型请求、Jenkins或线上改动。完成分支/main/新正式标签后，用户自行选择ACTION=release、SOURCE_REF=v0.2.19-pk.35，COMMIT_SHA/PACKAGE_ID留空。
+
 2026-10-31 当前交接 v0.2.19-pk.33：基于私库main / pk.32，授权保存后等待60秒再用重新读取的凭据测智；已有账号立即保留分组并恢复系统错误停调，测智请求失败不反向停调，首次新账号继续隔离准入。账号快照防止覆盖等待/测智期间人工变更；菜单换认证徽章。旧流程已留下的active+false账号不批量开启，需管理员核对后手动恢复；本版本不会把人工停调当作系统错误解除。核对见docs/PK_AUTHORIZATION_RECOVERY_PK33_REVIEW.md。仅静态检查，未运行构建、测试或真实接口，未操作线上。提交版本分支/main/正式标签后，用户自行Jenkins选择ACTION=release、SOURCE_REF=v0.2.19-pk.33，COMMIT_SHA/PACKAGE_ID留空；旧标签不移动。
 
 2026-10-31 当前源码交接 v0.2.19-pk.31：基于用户最新pk.30修复工作台隐藏旧分组ID、重试旧目标快照及无组账号重授权fallback来源。保留pk.28～30浏览器代码；无迁移、不改历史数据。核对见docs/PK_AUTHORIZATION_GROUPS_PK31_REVIEW.md。仅静态核对，未运行构建/测试、真实接口或线上操作；提交分支/main及正式标签后由用户自行Jenkins选择ACTION=release、SOURCE_REF=v0.2.19-pk.31，COMMIT_SHA/PACKAGE_ID留空。

@@ -964,8 +964,19 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 		proxyURL = account.Proxy.URL()
 	}
 
-	resp, err := s.doOpenAIAccountTestUpstream(req, proxyURL, account, true)
+	var resp *http.Response
+	if candy != nil {
+		resp, err = s.doOpenAIAccountCandyUpstream(req, proxyURL, account)
+	} else {
+		resp, err = s.doOpenAIAccountTestUpstream(req, proxyURL, account, true)
+	}
 	if err != nil {
+		if candy != nil {
+			// Keep the existing redacted transport diagnostics in server logs;
+			// the candy result writer separately applies its fixed safe messages.
+			logAccountTestError(c, fmt.Sprintf("Request failed: %s", err.Error()))
+			return err
+		}
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Request failed: %s", err.Error()))
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -2191,8 +2202,21 @@ func (s *AccountTestService) testOpenAIChatCompletionsConnection(
 		proxyURL = account.Proxy.URL()
 	}
 
-	resp, err := s.httpUpstream.DoWithTLS(req, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
+	profile := s.tlsFPProfileService.ResolveTLSProfile(account)
+	send := func(request *http.Request) (*http.Response, error) {
+		return s.httpUpstream.DoWithTLS(request, proxyURL, account.ID, account.Concurrency, profile)
+	}
+	var resp *http.Response
+	if candyProbe(c) != nil {
+		resp, err = doAccountCandyTLSHandshakeRetry(req, send)
+	} else {
+		resp, err = send(req)
+	}
 	if err != nil {
+		if candyProbe(c) != nil {
+			logAccountTestError(c, fmt.Sprintf("Chat Completions API (/v1/chat/completions) request failed: %s", err.Error()))
+			return err
+		}
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Chat Completions API (/v1/chat/completions) request failed: %s", err.Error()))
 	}
 	defer func() { _ = resp.Body.Close() }()
