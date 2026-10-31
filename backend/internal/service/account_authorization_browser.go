@@ -951,6 +951,11 @@ func runAuthorizationBrowserMode(ctx context.Context, mode, proxyURL, authURL st
 }
 
 func runAuthorizationBrowserAttempt(ctx context.Context, mode, proxyURL, authURL string, secret *AuthorizationSecret, progress func(string, string) error) (value string, err error) {
+	// Every child started below is covered by the reaper guard, so orphaned
+	// browser helper processes can be collected between attempts.
+	authorizationStartReaper()
+	authorizationChildStart()
+	defer authorizationChildDone()
 	path := authorizationBrowserPath()
 	if path == "" {
 		return "", authorizationBrowserFailure("browser_missing", "未找到外置授权浏览器，请在应用运行环境安装 Chromium，或设置 PK_AUTH_BROWSER_PATH；Docker 部署可执行 deploy/install-browser.sh")
