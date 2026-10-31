@@ -391,25 +391,50 @@ func (s *AccountAuthorizationService) retryAuthorizationCache(ctx context.Contex
 }
 
 func (s *AccountAuthorizationService) queueReauthorization(ctx context.Context, cfg *AuthorizationConfig) error {
-	settings, err := json.Marshal(AuthorizationSubmit{AuthorizationConcurrency: cfg.AuthorizationConcurrency, AccountConcurrency: cfg.AccountConcurrency, AccountPriority: cfg.AccountPriority, GroupIDs: cfg.GroupIDs})
-	if err != nil {
-		return err
-	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	// Reauthorization runs the same gate as a workbench submission: credentials
+	// are refreshed, the account is cleared, tested once, and only then returned
+	// to its groups. Without a usable candy configuration the old behaviour is
+	// kept so credential refresh never stalls.
+	submit := AuthorizationSubmit{AuthorizationConcurrency: cfg.AuthorizationConcurrency, AccountConcurrency: cfg.AccountConcurrency, AccountPriority: cfg.AccountPriority, GroupIDs: cfg.GroupIDs}
+	gate := false
+	if candy, candyErr := authorizationCandyConfigTx(ctx, tx); candyErr == nil && candy != nil && len(candy.Models) > 0 && candy.TargetGroupID != nil && *candy.TargetGroupID > 0 {
+		gate = true
+		submit.IntelligenceGate = true
+		submit.IntelligenceModels = candy.Models
+		submit.IntelligenceGeneration = candy.Generation
+		submit.IntelligenceModel = candy.Models[0].Model
+		submit.IntelligenceEffort = candy.Models[0].Effort
+		submit.FailGroupIDs = []int64{*candy.TargetGroupID}
+	}
+	settings, err := json.Marshal(submit)
+	if err != nil {
+		return err
+	}
 	if err = lockAuthorizationHistory(ctx, tx); err != nil {
 		return err
 	}
 	if err = settleAuthorizationHistoryTx(ctx, tx, ""); err != nil {
 		return err
 	}
+	// When the gate is on, the account keeps its own groups as the pass target
+	// and falls back to the saved workbench groups when it has none.
+	groupExpr := ""
+	groupFallback := "[]"
+	if gate {
+		groupExpr = `||jsonb_build_object('pass_group_ids',COALESCE((SELECT to_jsonb(array_agg(ag.group_id ORDER BY ag.group_id)) FROM account_groups ag WHERE ag.account_id=a.id),$4::jsonb))`
+		if encoded, encodeErr := json.Marshal(cfg.GroupIDs); encodeErr == nil {
+			groupFallback = string(encoded)
+		}
+	}
 	// The source is the current account table, never the historical roster. Deleted
 	// accounts and stale credential versions cannot be resurrected by this query.
 	_, err = tx.ExecContext(ctx, `INSERT INTO pk_authorization_jobs(batch_id,history_id,email,account_id,source,settings)
- SELECT $1,h.id,`+authorizationEmailSQL+`,a.id,'reauthorization',$2::jsonb||jsonb_build_object('credential_snapshot_encrypted',h.secret_encrypted,'credential_has_twofa',h.has_twofa,'credential_history_revision',md5(h.secret_encrypted||h.source||(extract(epoch FROM h.created_at))::text)) FROM accounts a
+ SELECT $1,h.id,`+authorizationEmailSQL+`,a.id,'reauthorization',$2::jsonb||jsonb_build_object('credential_snapshot_encrypted',h.secret_encrypted,'credential_has_twofa',h.has_twofa,'credential_history_revision',md5(h.secret_encrypted||h.source||(extract(epoch FROM h.created_at))::text))`+groupExpr+` FROM accounts a
  JOIN (`+authorizationCurrentHistorySQL+`) h ON h.email=`+authorizationEmailSQL+` AND h.has_twofa=true
  LEFT JOIN pk_authorization_state st ON st.account_id=a.id
  WHERE a.deleted_at IS NULL AND a.platform='openai' AND `+authorizationSupportedSQL+`
@@ -418,7 +443,7 @@ func (s *AccountAuthorizationService) queueReauthorization(ctx context.Context, 
  AND `+authorizationErrorSQL+`
  AND NOT EXISTS(SELECT 1 FROM pk_authorization_jobs pending WHERE pending.email=`+authorizationEmailSQL+` AND pending.source='manual' AND pending.settings ? 'credential_snapshot_encrypted')
  AND EXISTS(SELECT 1 FROM pk_authorization_config c WHERE c.id=1 AND c.reauth_enabled AND c.revision=$3)
- ORDER BY a.id ON CONFLICT (email) WHERE status IN ('queued','running') DO NOTHING`, uuid.NewString(), string(settings), cfg.Revision)
+ ORDER BY a.id ON CONFLICT (email) WHERE status IN ('queued','running') DO NOTHING`, uuid.NewString(), string(settings), cfg.Revision, groupFallback)
 	if err != nil {
 		return err
 	}
