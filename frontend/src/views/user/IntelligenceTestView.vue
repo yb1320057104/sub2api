@@ -1,14 +1,6 @@
 <template>
   <AppLayout>
     <div class="mx-auto max-w-[1440px] space-y-6">
-      <header class="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <h1 class="text-2xl font-semibold tracking-tight text-gray-900 dark:text-white">{{ t('intelligenceTest.title') }}</h1>
-          <p class="mt-2 text-sm leading-6 text-gray-500 dark:text-dark-400">{{ t('intelligenceTest.description') }}</p>
-        </div>
-      </header>
-
-
       <p v-if="auth.isAdmin && status.loaded && !status.enabled" class="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300">{{ t('intelligenceTest.disabledHint') }}</p>
 
       <section class="space-y-5">

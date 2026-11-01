@@ -1,11 +1,14 @@
 <template>
+  <!-- Keep keyboard focus outside the opaque sandbox so dialog shortcuts work. -->
   <iframe
     :srcdoc="document"
     :title="title"
     sandbox=""
     referrerpolicy="no-referrer"
     loading="lazy"
-    class="h-44 w-full border-0 bg-white"
+    tabindex="-1"
+    class="pointer-events-none w-full border-0 bg-white"
+    :class="expanded ? 'h-[70vh]' : 'h-44'"
   />
 </template>
 
@@ -13,7 +16,9 @@
 import { computed } from 'vue'
 import DOMPurify from 'dompurify'
 
-const props = defineProps<{ artifact: string; title: string }>()
+const props = withDefaults(defineProps<{ artifact: string; title: string; expanded?: boolean }>(), {
+  expanded: false,
+})
 
 const animationTags = new Set(['animate', 'set', 'animatecolor', 'animatemotion', 'animatetransform'])
 const animationAttributes = new Set([
@@ -75,6 +80,9 @@ const document = computed(() => {
   const body = window.document.implementation.createHTMLDocument('').createElement('div')
   body.append(fragment)
   const policy = "default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; font-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
-  return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${policy}"><meta charset="utf-8"><meta name="referrer" content="no-referrer"><style>html,body{margin:0;height:100%;background:#fff}body{display:grid;place-items:center;padding:8px;box-sizing:border-box;overflow:auto}svg{max-width:100%;max-height:156px}*{box-sizing:border-box}</style></head><body>${body.innerHTML}</body></html>`
+  const svgSizing = props.expanded
+    ? 'svg{max-width:100%;max-height:calc(100vh - 16px)}body>svg{width:100%;height:100%}'
+    : 'svg{max-width:100%;max-height:156px}'
+  return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${policy}"><meta charset="utf-8"><meta name="referrer" content="no-referrer"><style>html,body{margin:0;height:100%;background:#fff}body{display:grid;place-items:center;padding:8px;box-sizing:border-box;overflow:auto}${svgSizing}*{box-sizing:border-box}</style></head><body>${body.innerHTML}</body></html>`
 })
 </script>

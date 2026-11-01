@@ -455,13 +455,13 @@ const routes: RouteRecordRaw[] = [
     path: '/admin/radar',
     name: 'AdminRadar',
     component: () => import('@/views/admin/RadarObservationView.vue'),
-    meta: { requiresAuth: true, requiresAdmin: true, title: 'Radar Observatory', titleKey: 'radar.title' }
+    meta: { requiresAuth: true, requiresAdmin: true, title: 'Radar Observatory', titleKey: 'radar.title', descriptionKey: 'radar.description' }
   },
   {
     path: '/admin/account-authorization',
     name: 'AdminAccountAuthorization',
     component: () => import('@/views/admin/AccountAuthorizationView.vue'),
-    meta: { requiresAuth: true, requiresAdmin: true, title: 'Account Authorization', titleKey: 'authorization.title' }
+    meta: { requiresAuth: true, requiresAdmin: true, title: 'Account Authorization', titleKey: 'authorization.title', descriptionKey: 'authorization.description' }
   },
   {
     path: '/admin/ops',

@@ -1,19 +1,15 @@
 <template>
   <AppLayout>
     <div class="mx-auto max-w-[1600px] space-y-6">
-      <header class="flex flex-wrap items-start justify-between gap-4">
-        <div class="flex items-center gap-4">
-          <div class="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-primary-100 text-primary-600 dark:bg-primary-950/50 dark:text-primary-300" aria-hidden="true"><svg viewBox="0 0 40 40" class="h-8 w-8" fill="none"><circle cx="20" cy="20" r="15" stroke="currentColor" stroke-width="1.5"/><circle cx="20" cy="20" r="8" stroke="currentColor" stroke-width="1.2" opacity=".45"/><path d="M20 5v15l11 10M5 20h30" stroke="currentColor" stroke-width="1.2" opacity=".45"/><path d="M20 20 30 9" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="13" cy="25" r="2" fill="currentColor"/></svg></div>
-          <div><h1 class="text-2xl font-semibold tracking-tight text-gray-900 dark:text-white">{{ t('radar.title') }}</h1><p class="mt-1 max-w-3xl text-sm leading-6 text-gray-500 dark:text-dark-400">{{ t('radar.description') }}</p></div>
-        </div>
-        <button v-if="tab === 'accounts'" type="button" class="btn btn-primary" @click="showSettings = true">{{ t('accountCandy.settings') }}</button>
-      </header>
       <div class="flex flex-wrap items-center justify-between gap-3 border-b border-gray-200 pb-4 dark:border-dark-700">
         <div class="inline-flex max-w-full flex-wrap rounded-2xl bg-primary-100/60 p-1 dark:bg-dark-800" role="tablist" :aria-label="t('radar.title')">
           <button v-for="item in tabs" :id="'radar-tab-' + item" :key="item" type="button" role="tab" :aria-selected="tab === item" :aria-controls="'radar-panel-' + item" :tabindex="tab === item ? 0 : -1" class="rounded-xl px-6 py-2.5 text-sm font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary-500" :class="tab === item ? 'bg-white text-primary-700 shadow-sm dark:bg-dark-700 dark:text-primary-300' : 'text-gray-500 dark:text-dark-400'" @click="tab = item" @keydown.left.prevent="switchTab" @keydown.right.prevent="switchTab">{{ t('radar.' + item) }}</button>
         </div>
-        <RouterLink v-if="tab === 'groups'" to="/intelligence-test" class="text-sm font-medium text-primary-600 hover:underline dark:text-primary-400">{{ t('radar.viewResults') }} →</RouterLink>
-        <p v-else class="flex items-center gap-2 text-xs text-gray-500 dark:text-dark-400"><span class="h-1.5 w-1.5 rounded-full bg-primary-400" />{{ t(tab === 'emails' ? 'radarEmail.refreshShort' : 'radar.refreshHint') }}</p>
+        <div class="flex flex-wrap items-center gap-3">
+          <button v-if="tab === 'accounts'" type="button" class="btn btn-primary" @click="showSettings = true">{{ t('accountCandy.settings') }}</button>
+          <RouterLink v-if="tab === 'groups'" to="/intelligence-test" class="text-sm font-medium text-primary-600 hover:underline dark:text-primary-400">{{ t('radar.viewResults') }} →</RouterLink>
+          <p v-else class="flex items-center gap-2 text-xs text-gray-500 dark:text-dark-400"><span class="h-1.5 w-1.5 rounded-full bg-primary-400" />{{ t(tab === 'emails' ? 'radarEmail.refreshShort' : 'radar.refreshHint') }}</p>
+        </div>
       </div>
       <section v-if="tab === 'groups'" id="radar-panel-groups" role="tabpanel" aria-labelledby="radar-tab-groups" class="space-y-4">
         <p v-if="groupError" class="text-sm text-red-600" role="alert">{{ groupError }} <button class="underline" @click="loadGroups">{{ t('accountCandy.retry') }}</button></p>

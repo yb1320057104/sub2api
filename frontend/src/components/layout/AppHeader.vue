@@ -11,11 +11,11 @@
           <Icon name="menu" size="md" />
         </button>
 
-        <div class="hidden min-w-0 lg:block">
+        <div class="min-w-0" :class="showMobilePageTitle ? 'block' : 'hidden lg:block'">
           <h1 class="truncate text-lg font-semibold tracking-tight text-gray-900 dark:text-white">
             {{ pageTitle }}
           </h1>
-          <p v-if="pageDescription" class="mt-0.5 truncate text-xs text-gray-500 dark:text-dark-400">
+          <p v-if="pageDescription" class="mt-0.5 truncate text-xs text-gray-500 dark:text-dark-400" :class="{ 'hidden lg:block': showMobilePageTitle }">
             {{ pageDescription }}
           </p>
         </div>
@@ -302,6 +302,10 @@ const subscriptionFeatureEnabled = computed(() => isFeatureFlagEnabled(FeatureFl
 const routeMetaKeys = computed(() => resolveRouteMetaKeys(route, {
   billingMode: resolveSiteBillingMode(appStore.cachedPublicSettings),
 }))
+
+const showMobilePageTitle = computed(() =>
+  ['IntelligenceTest', 'AdminIntelligenceTest', 'AdminRadar', 'AdminAccountAuthorization'].includes(String(route.name))
+)
 
 const pageTitle = computed(() => {
   // For custom pages, use the menu item's label instead of generic "自定义页面"
