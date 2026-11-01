@@ -28,6 +28,9 @@ const authorizationReauthCron = "*/10 * * * *"
 const authorizationWorkbenchSettingKey = "pk_authorization_workbench"
 
 type AuthorizationConfig struct {
+	WorkbenchAccountConcurrency int `json:"workbench_account_concurrency"`
+	WorkbenchAccountPriority    int `json:"workbench_account_priority"`
+
 	AccountProxyMode    string `json:"account_proxy_mode"`
 	MaxAccountsPerProxy int    `json:"max_accounts_per_proxy"`
 
@@ -147,22 +150,24 @@ func (s *AccountAuthorizationService) GetConfig(ctx context.Context) (*Authoriza
 		return nil, err
 	}
 	c.PassGroupIDs, c.FailGroupIDs = []int64{}, []int64{}
-	c.AccountProxyMode, c.MaxAccountsPerProxy = "direct", 1
+	// Workbench defaults are independent from the inspection/reauthorization
+	// configuration. Saved values override them, including an explicit priority 0.
+	workbench := AuthorizationSubmit{AccountConcurrency: 20, AccountPriority: 1, AccountProxyMode: "direct", MaxAccountsPerProxy: 3}
 	var saved string
 	if err = s.db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key=$1`, authorizationWorkbenchSettingKey).Scan(&saved); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, err
 	}
 	if saved != "" {
-		var workbench AuthorizationSubmit
 		if err = json.Unmarshal([]byte(saved), &workbench); err != nil {
 			return nil, err
 		}
 		c.PassGroupIDs = workbench.PassGroupIDs
-		if err = normalizeAuthorizationProxyOptions(&workbench); err != nil {
-			return nil, err
-		}
-		c.AccountProxyMode, c.MaxAccountsPerProxy = workbench.AccountProxyMode, workbench.MaxAccountsPerProxy
 	}
+	if err = normalizeAuthorizationProxyOptions(&workbench); err != nil {
+		return nil, err
+	}
+	c.WorkbenchAccountConcurrency, c.WorkbenchAccountPriority = workbench.AccountConcurrency, workbench.AccountPriority
+	c.AccountProxyMode, c.MaxAccountsPerProxy = workbench.AccountProxyMode, workbench.MaxAccountsPerProxy
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, err

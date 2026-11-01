@@ -72,7 +72,7 @@ const controller = new AbortController()
 const showCandySettings = ref(false)
 const gateModels = computed(() => config.value?.intelligence_models ?? (config.value?.intelligence_model ? [{ model: config.value.intelligence_model, effort: config.value.intelligence_effort, enabled: true }] : []))
 const failureGroupName = computed(() => { const id = config.value?.fail_group_ids?.[0]; return id ? (groups.value.find(group => group.id === id)?.name || '#' + id) : t('authorization.failureGroupMissing') })
-const form = ref<AuthorizationSubmission>({ accounts: '', authorization_concurrency: 3, account_concurrency: 3, account_priority: 50, account_proxy_mode: 'direct', max_accounts_per_proxy: 1, group_ids: [], pass_group_ids: [] })
+const form = ref<AuthorizationSubmission>({ accounts: '', authorization_concurrency: 3, account_concurrency: 20, account_priority: 1, account_proxy_mode: 'direct', max_accounts_per_proxy: 3, group_ids: [], pass_group_ids: [] })
 async function load(): Promise<boolean> {
   const version = ++loadVersion
   try {
@@ -84,7 +84,7 @@ async function load(): Promise<boolean> {
     config.value = value
     groups.value = groupResponse.data.filter(group => group.platform === 'openai' && group.status === 'active')
     if (!ready.value) {
-      form.value = { ...form.value, authorization_concurrency: value.authorization_concurrency, account_concurrency: value.account_concurrency, account_priority: value.account_priority, account_proxy_mode: value.account_proxy_mode || 'direct', max_accounts_per_proxy: value.max_accounts_per_proxy || 1, group_ids: [], pass_group_ids: [...(value.pass_group_ids || [])] }
+      form.value = { ...form.value, authorization_concurrency: value.authorization_concurrency, account_concurrency: value.workbench_account_concurrency ?? 20, account_priority: value.workbench_account_priority ?? 1, account_proxy_mode: value.account_proxy_mode || 'direct', max_accounts_per_proxy: value.max_accounts_per_proxy || 3, group_ids: [], pass_group_ids: [...(value.pass_group_ids || [])] }
     }
     // Deleted choices are no longer rendered as checkboxes, but can remain in
     // the saved/draft array. Preserve valid choices and require review after removal.

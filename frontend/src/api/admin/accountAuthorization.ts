@@ -7,6 +7,7 @@ export interface AuthorizationIntelligenceResult {
 }
 
 export interface AuthorizationConfig {
+  workbench_account_concurrency?: number; workbench_account_priority?: number
  account_proxy_mode?: 'direct' | 'managed'; max_accounts_per_proxy?: number;
   intelligence_models?: AuthorizationIntelligenceModel[]
   pass_group_ids: number[]; fail_group_ids: number[]

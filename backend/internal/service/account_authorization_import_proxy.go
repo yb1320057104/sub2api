@@ -14,7 +14,7 @@ func normalizeAuthorizationProxyOptions(settings *AuthorizationSubmit) error {
 		settings.AccountProxyMode = "direct"
 	}
 	if settings.MaxAccountsPerProxy == 0 {
-		settings.MaxAccountsPerProxy = 1
+		settings.MaxAccountsPerProxy = 3
 	}
 	if settings.AccountProxyMode != "direct" && settings.AccountProxyMode != "managed" {
 		return infraerrors.BadRequest("AUTHORIZATION_PROXY_MODE", "账号出口必须选择直连或IP管理代理")
