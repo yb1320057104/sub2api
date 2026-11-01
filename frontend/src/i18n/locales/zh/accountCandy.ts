@@ -1,5 +1,6 @@
 export default {
   radar: {
+    emails: '邮件配置',
     statistics: "账号统计观测",
     authorizationTest: '导入授权测智', notRecorded: '未记录', authorizationResponseMissing: '此授权记录没有保存完整响应正文。', authorizationTimeFallback: '此历史记录未保存独立的测智开始时间，显示当次授权任务的开始时间。',
     authorization: '授权巡检',

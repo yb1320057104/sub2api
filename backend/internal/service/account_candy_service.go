@@ -69,6 +69,7 @@ type AccountCandyTestService struct {
 	groupRepo   GroupRepository
 	settingRepo SettingRepository
 	testService *AccountTestService
+	emailAlerts *RadarEmailAlertService
 	mu          sync.Mutex
 	ctx         context.Context
 	cancel      context.CancelFunc
@@ -215,12 +216,18 @@ func (s *AccountCandyTestService) Start() {
 func (s *AccountCandyTestService) Stop() {
 	s.mu.Lock()
 	cancel, done := s.cancel, s.done
+	if cancel != nil {
+		cancel()
+	}
+	s.mu.Unlock()
+	// Cancel candy work before waiting for an admitted SMTP call to finish.
+	// Email alerts stop independently even if candy was never started.
+	if s.emailAlerts != nil {
+		s.emailAlerts.Stop()
+	}
 	if cancel == nil {
-		s.mu.Unlock()
 		return
 	}
-	cancel()
-	s.mu.Unlock()
 	<-done
 	s.mu.Lock()
 	if s.done == done {

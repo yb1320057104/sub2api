@@ -1126,9 +1126,11 @@ func ProvideIntelligenceTestService(db *sql.DB, groups GroupRepository, settings
 	return svc
 }
 
-func ProvideAccountCandyTestService(db *sql.DB, accounts AccountRepository, groups GroupRepository, settings SettingRepository, tests *AccountTestService) *AccountCandyTestService {
+func ProvideAccountCandyTestService(db *sql.DB, accounts AccountRepository, groups GroupRepository, settings SettingRepository, tests *AccountTestService, email *EmailService) *AccountCandyTestService {
 	svc := NewAccountCandyTestService(db, accounts, groups, settings, tests)
+	svc.emailAlerts = NewRadarEmailAlertService(db, svc, email)
 	startBackgroundAfterActivation("AccountCandyTestService", svc.Start)
+	startBackgroundAfterActivation("RadarEmailAlertService", svc.emailAlerts.Start)
 	return svc
 }
 

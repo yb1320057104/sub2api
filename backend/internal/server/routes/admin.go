@@ -66,6 +66,8 @@ func RegisterAdminRoutes(
 			admin.POST("/accounts/:id/candy-test", panelRateLimiter.Heavy(), h.AccountCandyTest.LegacyRadarWrite)
 			admin.GET("/accounts/:id/candy-test/results/:result_id", h.AccountCandyTest.GetResult)
 			admin.GET("/radar/accounts", h.AccountCandyTest.RadarAccounts)
+			admin.GET("/radar/email-alert", h.AccountCandyTest.RadarEmailAlert)
+			admin.PUT("/radar/email-alert/config", h.AccountCandyTest.SaveRadarEmailAlert)
 			admin.GET("/radar/account-candy/config", h.AccountCandyTest.RadarConfig)
 			admin.PUT("/radar/account-candy/config", h.AccountCandyTest.SaveRadarConfig)
 			admin.GET("/radar/account-candy/results", h.AccountCandyTest.RadarLatest)

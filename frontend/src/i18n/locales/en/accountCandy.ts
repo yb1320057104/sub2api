@@ -1,5 +1,6 @@
 export default {
   radar: {
+    emails: 'Email settings',
     statistics: "Account statistics",
     authorizationTest: 'Import admission test', notRecorded: 'Not recorded', authorizationResponseMissing: 'This authorization record did not retain the full response.', authorizationTimeFallback: 'This historical record has no separate test start time; the authorization job start time is shown.',
     authorization: 'Authorization inspection',

@@ -13,7 +13,7 @@
           <button v-for="item in tabs" :id="'radar-tab-' + item" :key="item" type="button" role="tab" :aria-selected="tab === item" :aria-controls="'radar-panel-' + item" :tabindex="tab === item ? 0 : -1" class="rounded-xl px-6 py-2.5 text-sm font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary-500" :class="tab === item ? 'bg-white text-primary-700 shadow-sm dark:bg-dark-700 dark:text-primary-300' : 'text-gray-500 dark:text-dark-400'" @click="tab = item" @keydown.left.prevent="switchTab" @keydown.right.prevent="switchTab">{{ t('radar.' + item) }}</button>
         </div>
         <RouterLink v-if="tab === 'groups'" to="/intelligence-test" class="text-sm font-medium text-primary-600 hover:underline dark:text-primary-400">{{ t('radar.viewResults') }} →</RouterLink>
-        <p v-else class="flex items-center gap-2 text-xs text-gray-500 dark:text-dark-400"><span class="h-1.5 w-1.5 rounded-full bg-primary-400" />{{ t('radar.refreshHint') }}</p>
+        <p v-else class="flex items-center gap-2 text-xs text-gray-500 dark:text-dark-400"><span class="h-1.5 w-1.5 rounded-full bg-primary-400" />{{ t(tab === 'emails' ? 'radarEmail.refreshShort' : 'radar.refreshHint') }}</p>
       </div>
       <section v-if="tab === 'groups'" id="radar-panel-groups" role="tabpanel" aria-labelledby="radar-tab-groups" class="space-y-4">
         <p v-if="groupError" class="text-sm text-red-600" role="alert">{{ groupError }} <button class="underline" @click="loadGroups">{{ t('accountCandy.retry') }}</button></p>
@@ -21,6 +21,7 @@
       </section>
       <section v-else-if="tab === 'authorization'" id="radar-panel-authorization" role="tabpanel" aria-labelledby="radar-tab-authorization" class="space-y-5"><AuthorizationSchedule /><AuthorizationRecords kind="accounts" /></section>
       <section v-else-if="tab === 'statistics'" id="radar-panel-statistics" role="tabpanel" aria-labelledby="radar-tab-statistics"><AccountHealthObservation /></section>
+      <section v-else-if="tab === 'emails'" id="radar-panel-emails" role="tabpanel" aria-labelledby="radar-tab-emails"><RadarEmailAlerts /></section>
       <section v-else id="radar-panel-accounts" role="tabpanel" aria-labelledby="radar-tab-accounts" class="space-y-5">
         <div class="flex flex-wrap items-center justify-between gap-3">
           <div class="flex flex-wrap items-center gap-3">
@@ -112,6 +113,7 @@ import IntelligenceTestSettings from '@/components/intelligenceTest/Intelligence
 import AccountCandyTestSettings from '@/components/admin/account/AccountCandyTestSettings.vue'
 import AccountCandyTestDetails from '@/components/admin/account/AccountCandyTestDetails.vue'
 import AccountHealthObservation from '@/components/admin/account/AccountHealthObservation.vue'
+import RadarEmailAlerts from '@/components/admin/account/RadarEmailAlerts.vue'
 import AuthorizationSchedule from '@/components/admin/account/AuthorizationSchedule.vue'
 import AuthorizationRecords from '@/components/admin/account/AuthorizationRecords.vue'
 import { accountCandyAPI, type RadarObservation } from '@/api/admin/accountCandy'
@@ -128,8 +130,9 @@ const { t } = useI18n()
 const app = useAppStore()
 const route = useRoute()
 const router = useRouter()
-const tabs = ['groups', 'accounts', 'authorization', 'statistics'] as const
-const tab = ref<typeof tabs[number]>(route.query.tab === 'statistics' ? 'statistics' : route.query.tab === 'authorization' ? 'authorization' : route.query.tab === 'accounts' ? 'accounts' : 'groups')
+const tabs = ['groups', 'accounts', 'authorization', 'statistics', 'emails'] as const
+const resolveTab = (value: unknown): typeof tabs[number] => tabs.find(item => item === value) ?? 'groups'
+const tab = ref<typeof tabs[number]>(resolveTab(route.query.tab))
 const items = ref<RadarObservation[]>([])
 const groups = ref<AdminGroup[]>([])
 const testGroups = ref<IntelligenceTestGroup[]>([])
@@ -222,7 +225,7 @@ async function flushUsage() {
 
 watch(filter, () => { items.value = []; if (page.value !== 1) page.value = 1; else void loadAccounts() })
 watch(page, () => { items.value = []; void loadAccounts() })
-watch(() => route.query.tab, value => { tab.value = value === 'statistics' ? 'statistics' : value === 'authorization' ? 'authorization' : value === 'accounts' ? 'accounts' : 'groups' })
+watch(() => route.query.tab, value => { tab.value = resolveTab(value) })
 watch(tab, () => { if (route.query.tab !== tab.value) void router.replace({ query: { ...route.query, tab: tab.value } }); if (tab.value === 'accounts') void loadAccounts(); else { controller?.abort(); loading.value = false; if (tab.value === 'groups') void loadGroups() } })
 useIntervalFn(() => { if (!document.hidden && !showSettings.value) void loadAccounts(true) }, 5000)
 onMounted(async () => {
