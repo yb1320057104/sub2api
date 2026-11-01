@@ -126,6 +126,27 @@ docker compose -f compose.yaml ps
 
 需要升级专用 daemon 时，另行核对 `compose.yaml` 中的 Docker 版本并在无构建运行时更新 `docker` 服务，随后确认 agent 的 TLS 连接恢复。普通重建不重新初始化 Jenkins、不重建 deploy key，也不复制新的管理员密码覆盖现有账号。若更换了 controller 数据导致 agent 身份重新生成，按首次安装中的 root 安装步骤更新 `bootstrap/agent-secret` 后重建 agent。不要执行 `down -v` 或删除 controller/产物目录作为升级步骤；这些操作会破坏可恢复状态。本 Compose 只管理 Jenkins 基础设施，不能替代或操作生产应用的 Compose。
 
+## Agent 孤儿进程回收与单节点维护
+
+`agent` 服务必须保留 `init: true`，让 Docker 的轻量 init 作为容器 PID 1，Java 作为其子进程启动。这样无人等待的孤儿 git/shell 进程由 init 收养并回收，避免 JVM 直接作为 PID 1 时积累僵尸。该设置不修改 Agent 镜像、资源限额、工作目录或凭据，也不改变应用的授权浏览器。它不代替存活父进程对自己普通子进程的等待，不能保证所有来源的僵尸都消失。
+
+这是 Jenkins 基础设施配置。发布或网页更新应用不会同步已部署的 Jenkins Compose；已有环境需核对并更新实际使用的 Compose，再仅重建 Agent。普通 `restart` 不会应用新增的 `HostConfig.Init`。本次修复无需重新构建或拉取镜像。
+
+1. 从现有容器的 Compose 标签确认项目、配置文件和工作目录，备份配置；核对渲染配置与运行容器一致、Agent 镜像已在本机且 ID 一致。记录所有挂载、节点名、标签、执行器、工作目录及其他服务的容器 ID/启动时间。
+2. 记录节点原来的临时离线状态和原因；仅为该节点设置唯一维护标记，暂停接收新任务。复查普通执行器和一次性执行器均无任务，队列为空后操作；有任务则等待结束，不取消构建。原本离线的节点不在结束时强制上线。
+3. 在实际配置中仅增加 `services.agent.init: true`，核对渲染结果除这一项外完全一致。在服务器设置指向实际配置的 `COMPOSE_FILE`、`COMPOSE_PROJECT`、`COMPOSE_DIR` 后执行：
+
+   ```sh
+   docker compose --project-name "$COMPOSE_PROJECT" \
+     --project-directory "$COMPOSE_DIR" -f "$COMPOSE_FILE" \
+     up -d --no-deps --no-build --pull never --force-recreate agent
+   ```
+
+4. 等待 Agent 通道重新连接，先保持临时离线并核对：`HostConfig.Init=true`、PID 1 为 `docker-init`/`tini`、Java 是其直接子进程；旧僵尸已清除，镜像 ID/挂载/secret 保持，其他服务的容器 ID 和启动时间未改变。临时离线期间节点 XML 会增加 `temporaryOfflineCause`，应在相同离线状态比较配置；恢复原状态后再与原始配置比较，不能把维护标记误报为节点配置漂移。
+5. 恢复前再次确认执行器和队列为空；仅在临时离线原因仍是本次标记时恢复原临时离线状态。原本在线的节点确认重新在线，原本离线的节点保留其原原因并继续离线，两种情况均核对通道连接。失败则恢复备份配置，仍用上述无构建/无拉取命令仅恢复 Agent，并验证连接；保留备份及脱敏结果。后续在用户正常构建后观察是否再次积累，不能把此次进程检查写成构建回归通过。
+
+本流程不执行通用维护段落中的 `build controller agent`，不重建 controller、专用 Docker daemon 或业务应用，不重跑 bootstrap，不删除卷，不改变任务、账号或发布凭据。2026-11-01 的实际修复证据见 [pk.39 核验记录](../../docs/PK_JENKINS_AGENT_INIT_PK39_REVIEW.md)。
+
 ## 凭据和目录
 
 | Jenkins 凭据 ID | 类型 | 用途 |

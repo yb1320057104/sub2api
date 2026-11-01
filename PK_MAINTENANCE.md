@@ -1,5 +1,7 @@
 # PK出版：源码、发布与上游更新
 
+2026-11-01 当前任务 v0.2.19-pk.39：Jenkins Agent启用init进程回收，用户授权的线上空闲节点维护已完成：234个僵尸清空至0，docker-init为PID 1，Agent恢复在线；镜像、挂载、节点配置和其他运行容器保持。配置模板及仅Agent重建流程见deploy/jenkins/README.md，现场证据见docs/PK_JENKINS_AGENT_INIT_PK39_REVIEW.md。该修复已在服务器生效，不需应用打包或业务升级；应用发布不会同步Jenkins Compose。未运行构建/测试、未触发Jenkins作业，按既定规则交接版本分支/main/正式标签v0.2.19-pk.39；若另行打包仍由用户选择ACTION=release、SOURCE_REF=v0.2.19-pk.39，COMMIT_SHA/PACKAGE_ID留空。
+
 2026-11-01 当前交接 v0.2.19-pk.38：新增雷达“邮件配置”，按可配周期和账号筛选条件检查数量，低于阈值时使用系统SMTP向配置收件人发送提醒。默认关闭，升级后由管理员保存并启用；新迁移255仅新增本功能独立表，不修改账号或测智历史。保留pk.37健康统计cron修复及全部已有二开。仅静态核对，未构建/测试/发真实邮件或部署；版本分支/main/新正式标签交接后，用户自行Jenkins选择ACTION=release、SOURCE_REF=v0.2.19-pk.38，COMMIT_SHA/PACKAGE_ID留空。详见docs/PK_RADAR_EMAIL_PK38_REVIEW.md。
 
 2026-11-01 历史交接 v0.2.19-pk.37：修复账号统计轮次创建SQL参数类型冲突。线上只读日志确认cron每分钟执行，错误使下一轮时间停在2026-10-31；修复给时间/计数参数显式类型并补SQLSTATE日志。保留原配置、均分5批及数据，更新后由下一次分钟cron重新尝试；未构建/测试/部署或主动执行统计。版本分支/main/新正式标签交接后，用户自行Jenkins选择ACTION=release、SOURCE_REF=v0.2.19-pk.37，COMMIT_SHA/PACKAGE_ID留空。

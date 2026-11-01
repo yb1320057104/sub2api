@@ -1,5 +1,7 @@
 # 项目约束入口
 
+2026-11-01 当前任务 v0.2.19-pk.39：基于私库main / pk.38（ec3feb68cec1ce9955306ce0a0270fd02e7cf4f2），按用户要求修复Jenkins Agent僵尸进程。Compose仅增加agent.init=true，沿用PK-017/021，无新增ID。已确认节点空闲及队列为空，临时离线后备份配置、仅用现有镜像无构建/无拉取重建Agent；最终234个僵尸清空至0，docker-init为PID 1、Java为直接子进程，Agent恢复在线，节点配置/挂载/镜像一致，其他容器未重启。首次因临时离线标记配置差异回退，核实后按同状态比较完成修复，证据见docs/PK_JENKINS_AGENT_INIT_PK39_REVIEW.md。未运行构建/测试、Jenkins作业或真实授权/模型请求，不改应用或业务数据。同步模板和单节点维护说明；按既定授权交接版本分支/main/唯一正式标签。此次线上修复已生效，不需打应用包；后续打包仍由用户自行操作。
+
 2026-11-01 当前任务 v0.2.19-pk.38：基于私库main / pk.37（d2cac661a5b2cdb94cab55f1611281c20bf4093a），新增PK-038雷达邮件提醒。管理员可配置检查周期、数量阈值、收件邮箱及额度使用率低于100%/测智合格/非401三个AND条件；每轮读取最新账号和原生持久化额度、最新有效测智判定，不发送账号探测。服务端cron及持久下一次时间，低于阈值才复用系统SMTP发信；独立配置/结果表、跨实例互斥和配置修订保护。默认关闭，沿用PK-019/021/035，不改授权、测智、统计或业务网关。仅格式化及静态核对，不构建/测试、不发送真实邮件、不操作线上或触发Jenkins；完成后按既定授权交接版本分支/main/新正式标签，由用户打包。详见docs/PK_RADAR_EMAIL_PK38_REVIEW.md。
 
 2026-11-01 当前任务 v0.2.19-pk.37：基于私库main / pk.36，修复雷达账号统计始终等待首次调度。按用户授权只读核对配置、队列、锁和日志：enabled=true、7账号、cycle/job/snapshot均0、next_cycle_at停在2026-10-31 14:46:16；11月1日每分钟cron实际执行，但创建轮次SQL反复报inconsistent types deduced for parameter $3。给ensureCycle INSERT复用时间参数及CASE显式timestamptz、账号数显式integer；失败日志仅追加SQLSTATE和固定类别，保留脱敏。cron启动链、每轮最新账号、均分5批/批内串行/每次最多100项及统计口径不改，无迁移或历史回写。沿用PK-037/021，仅静态核对和只读线上证据，不构建/测试、不主动触发统计、不写线上、不执行Jenkins或部署。按既定授权提交版本分支、合入推送main和新正式标签v0.2.19-pk.37；用户自行Jenkins选择ACTION=release、SOURCE_REF=v0.2.19-pk.37，COMMIT_SHA/PACKAGE_ID留空。

@@ -30,6 +30,8 @@ services:
     mem_limit: 20g
     cpus: 12
   agent:
+    # Reap orphaned git/shell children; the JVM is not a general-purpose init.
+    init: true
     build:
       context: .
       dockerfile: Dockerfile.agent
