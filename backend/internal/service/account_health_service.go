@@ -88,7 +88,13 @@ func (s *AccountHealthService) wake() {
 	ctx, cancel := context.WithTimeout(s.ctx, 45*time.Second)
 	defer cancel()
 	if err := s.work(ctx); err != nil && s.ctx.Err() == nil && !errors.Is(err, context.DeadlineExceeded) {
-		slog.Warn("account_health_statistics_incomplete", "message", "账号统计暂未完成，下次cron继续")
+		errorKind, sqlState := "worker", ""
+		var databaseError interface{ SQLState() string }
+		if errors.As(err, &databaseError) {
+			errorKind, sqlState = "database", databaseError.SQLState()
+		}
+		// Retain diagnostic codes without logging SQL, parameters or account data.
+		slog.Warn("account_health_statistics_incomplete", "message", "账号统计暂未完成，下次cron继续", "error_kind", errorKind, "sqlstate", sqlState)
 	}
 }
 func (s *AccountHealthService) Config(ctx context.Context) (*AccountHealthConfig, error) {
@@ -276,7 +282,9 @@ func (s *AccountHealthService) ensureCycle(ctx context.Context, conn *sql.Conn) 
 	end = now
 	start = now.Add(-time.Duration(c.WindowHours) * time.Hour)
 	revision = c.Revision
-	err = tx.QueryRowContext(ctx, `INSERT INTO pk_account_health_cycles(revision,status,started_at,window_start,window_end,interval_minutes,batch_count,total_accounts,finished_at) VALUES($1,$2,$3,$4,$3,$5,$6,$7,CASE WHEN $7=0 THEN $3 ELSE NULL END) RETURNING id`, revision, status, now, start, c.IntervalMinutes, batches, count).Scan(&id)
+	// The repeated timestamp also appears in CASE; type every occurrence so
+	// PostgreSQL cannot infer a conflicting text type from the nullable branch.
+	err = tx.QueryRowContext(ctx, `INSERT INTO pk_account_health_cycles(revision,status,started_at,window_start,window_end,interval_minutes,batch_count,total_accounts,finished_at) VALUES($1,$2,$3::timestamptz,$4::timestamptz,$3::timestamptz,$5,$6,$7::integer,CASE WHEN $7::integer=0 THEN $3::timestamptz ELSE NULL::timestamptz END) RETURNING id`, revision, status, now, start, c.IntervalMinutes, batches, count).Scan(&id)
 	if err != nil {
 		return 0, 0, start, end, err
 	}
