@@ -108,3 +108,15 @@ Gemini列表准确筛选为`^TestGeminiCachedContent(sListAndGet|sListForGroupsP
 ## 发布边界
 
 仅新私库 `yb1320057104/sub2api` 的GitHub Release交付同一二进制网页更新包、Docker镜像归档、SHA256及绑定源码的实际证据，用户自行切换生产；不宣称GHCR已发布，不部署/重启生产，不触发真实模型、授权或币安请求，不运行全套源码回归。正式标签仍为唯一`v0.2.19-pk.47`，旧标签/制品不移动；前端构建已完成，最终后端/制品构建、验收和Release发布尚未完成，不把计划写成结果。
+
+## 最终发行结果
+
+- 正式提交 `104334fa2157da7d8259441e49e8879fac71e86d`，tree `7fc3cfc271685a381895ff78e8a6f6f83b700162`；版本分支及正式标签均绑定该提交，提交已在私库 main 历史中。后续仅补录此结果，不移动标签、不重打已发布制品。
+- Go 1.27.3 windows/amd64 本机构建 Linux/amd64，CGO关闭、embed、trimpath、release标识；程序 SHA256 `0521096f87857bce06a32c000719389e1d79cb97da924894826e7e54048b57f7`。本轮源码、前端产物、工具和二进制证据绑定一致。
+- Package `1793641195-104334fa2157`；同一程序进入网页更新包和 Docker 镜像归档。更新包 SHA256 `d8b965c240db012eae268f616452edbb7e0c57a2592e4d8bd106a85d4db45e3b`；镜像归档 SHA256 `b2cf4fef2966febbfbcf6798313fd2e5202d7874b6ac76ee45425a2d5f422c4c`；镜像ID `sha256:d42f51e8e484ac797fa2207e113eec4c2a37a12257ae5fb2cde0fce264f13b26`。
+- 服务器独立 DinD 的 `pk-artifact-v2` 十一项全部 passed/exit 0，独立空库升级回退七项及同一制品服务API十三项全部通过。旧迁移清单及校验值保留，仅新增258/259；兼容基线 `0.2.19-pk.46`，实际程序与镜像seed分别绑定。新分组配置/计数/扣费证据、有序分组对象及原币安专属代理字段在升级回退后保留；旧程序保存旧设置字段兼容，仅写group_id时有序分组兼容收敛为该单组。测试容器、数据卷、内部网络和专用daemon清理已验证。
+- 第一轮正式验收的十一项制品检查、四项升级/迁移检查及前十项服务API通过，随后分组列表返回数组被夹具的统一对象断言拒绝，整轮失败。仅修正该GET端点的严格数组/元素校验，业务源码、正式标签及本地二进制保持；第一轮原报告及独立清理回执保留于`.runtime/pk47-stage-attempt1/`，随后在新隔离环境用同一本地二进制完整重验取得本次通过证据。未将首次失败改写为通过。
+- 隔离PostgreSQL普通表/分区表专项共88项通过：计数36项、独立审计24项、自动扣费24项、附加4项（有序分组迁移/回退和实际成功率SQL各覆盖两种表布局）。报告绑定正式提交、244/245/258/259迁移源码哈希及三份实际统计SQL源码哈希；具体检查与清理证据完整归档于cyber-count-migration.json，未使用生产数据库或业务数据。
+- 三份实际统计SQL源码SHA256：`channel_monitor_v2_aggregation.go` `bfb51647d52384ddb528c5084b876df1bb1f0b8bfc7028889443c14e41e66425`；`account_health_stats.go` `60fa1177dd315bb8eff945a9e7bdc152e8568062a868e0cab85f920ea6f98ef7`；`account_request_stats.go` `e62a964f3b88a25e27bc23232f2f3adff8091610f62622255e9e71b35ca36ede`。
+- 正式私库 Release 已发布并核对为 latest、非draft、非prerelease：[v0.2.19-pk.47](https://github.com/yb1320057104/sub2api/releases/tag/v0.2.19-pk.47)。9项资产逐项核对名称、长度及GitHub SHA256，包含网页更新包、镜像归档、checksums及本轮构建、制品、计数专项和回退证据。
+- 本轮未执行生产切换、重启或生产数据修改，未发布GHCR；由用户手动切换 pk.47。首字计时起点保持；成功率、账号健康度/连续失败及channel monitor v2使用新口径，仅精确排除实际本地审计block且响应码/WS轮次匹配的security_audit_block/security_audit记录，上游403、相似文案、warn及技术失败不在豁免范围，历史日志不回写。不运行全套源码回归或真实模型、授权、币安接口。
