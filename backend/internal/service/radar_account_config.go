@@ -71,6 +71,7 @@ type RadarRun struct {
 	EgressError        string             `json:"egress_error"`
 	leaseToken         string
 	groupRule          *RadarGroupRule
+	proxySession       *accountCandyProxySession
 }
 
 // Initialize new storage atomically; legacy data is only read. Deployment must

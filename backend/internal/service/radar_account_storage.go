@@ -194,6 +194,7 @@ func writeRadarModelWith(ctx context.Context, db radarModelExecutor, run *RadarR
 }
 
 func (s *AccountCandyTestService) finishRadar(ctx, executionCtx context.Context, run *RadarRun, cfg *RadarConfig, callErr error, elapsed int64) error {
+	executionErrAtStart := executionCtx.Err()
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
 	if err != nil {
 		return err
@@ -290,6 +291,18 @@ func (s *AccountCandyTestService) finishRadar(ctx, executionCtx context.Context,
 			moved = &movedIDs[0]
 		}
 	}
+	if (status == "completed" || status == "partial_failed") && executionCtx.Err() == nil {
+		proxyMessage, bindErr := run.proxySession.bindUsable(ctx, tx, run.AccountID)
+		if bindErr != nil {
+			return bindErr
+		}
+		if proxyMessage != "" {
+			if failure != "" {
+				failure += "；"
+			}
+			failure += proxyMessage
+		}
+	}
 	movedJSON, err = json.Marshal(append([]int64{}, movedIDs...))
 	if err != nil {
 		return err
@@ -302,6 +315,11 @@ func (s *AccountCandyTestService) finishRadar(ctx, executionCtx context.Context,
 	}
 	if _, err = tx.ExecContext(ctx, `DELETE FROM pk_radar_account_runs WHERE account_id=$1 AND id NOT IN(SELECT id FROM pk_radar_account_runs WHERE account_id=$1 ORDER BY id DESC LIMIT 30) AND status<>'running' AND id<>$2`, run.AccountID, run.ID); err != nil {
 		return err
+	}
+	// A cancellation arriving while final grouping/proxy checks were running
+	// rolls this transaction back. The next finalization records cancellation.
+	if executionErrAtStart == nil && executionCtx.Err() != nil && status != "cancelled" {
+		return executionCtx.Err()
 	}
 	return tx.Commit()
 }

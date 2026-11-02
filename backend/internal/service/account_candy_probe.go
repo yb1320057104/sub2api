@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -17,10 +18,19 @@ import (
 
 const accountCandyProbeKey = "pk_account_candy_probe"
 
-type accountCandyProbeError struct{ message string }
+type accountCandyProbeError struct {
+	message     string
+	httpStatus  int
+	networkRead bool
+}
 
-func (e *accountCandyProbeError) Error() string { return e.message }
-func candyProbeFailure(message string) error    { return &accountCandyProbeError{message: message} }
+func (e *accountCandyProbeError) Error() string {
+	if e.httpStatus >= 100 && e.httpStatus <= 599 {
+		return fmt.Sprintf("HTTP %d：%s", e.httpStatus, e.message)
+	}
+	return e.message
+}
+func candyProbeFailure(message string) error { return &accountCandyProbeError{message: message} }
 
 type accountCandyProbe struct {
 	prompt, effort, text string
@@ -70,7 +80,7 @@ func (s *AccountTestService) runAccountCandyProbe(ctx context.Context, account, 
 	if err != nil {
 		var failure *accountCandyProbeError
 		if errors.As(err, &failure) {
-			return "", candyProbeFailure(redactCandyAccountError(failure.message, account, credentialAccount))
+			return "", &accountCandyProbeError{message: redactCandyAccountError(failure.message, account, credentialAccount), httpStatus: failure.httpStatus, networkRead: failure.networkRead}
 		}
 		return "", err
 	}
@@ -106,6 +116,10 @@ func finishAccountCandyProbe(c *gin.Context, response *http.Response, chat bool)
 	probe := candyProbe(c)
 	text, err := readAccountCandyReply(response, chat)
 	if err != nil {
+		var failure *accountCandyProbeError
+		if radar, _ := c.Request.Context().Value(radarCandyProxyRetryKey{}).(bool); radar && c.Request.Context().Err() == nil && errors.As(err, &failure) && failure.networkRead {
+			return &radarCandyRetryableNetworkError{HTTPStatus: failure.httpStatus}
+		}
 		return err
 	}
 	probe.text = text
@@ -162,9 +176,20 @@ func accountCandyFinalText(response *intelligenceTestResponse) (string, error) {
 	return text, nil
 }
 
-func readAccountCandyReply(response *http.Response, chat bool) (string, error) {
+func readAccountCandyReply(response *http.Response, chat bool) (text string, resultErr error) {
+	// Keep the wire status separate from untrusted diagnostic text. Redaction
+	// may replace the entire message (for example HTML), never the actual code.
+	defer func() {
+		var failure *accountCandyProbeError
+		if response != nil && errors.As(resultErr, &failure) {
+			failure.httpStatus = response.StatusCode
+		}
+	}()
 	fail := func(message string) (string, error) {
 		return "", candyProbeFailure(message)
+	}
+	readFail := func(err error) (string, error) {
+		return "", &accountCandyProbeError{message: "读取模型响应失败；未转组。", networkRead: isRadarCandyNetworkFailure(err)}
 	}
 	if response == nil || response.Body == nil {
 		return fail("响应正文为空或类型不受支持；未转组。")
@@ -185,7 +210,7 @@ func readAccountCandyReply(response *http.Response, chat bool) (string, error) {
 			return fail("响应正文为空或类型不受支持；未转组。")
 		}
 		if err != nil {
-			return fail("读取模型响应失败；未转组。")
+			return readFail(err)
 		}
 		if r == utf8.RuneError && size == 1 {
 			return fail("响应包含无效文本编码；未转组。")
@@ -201,7 +226,7 @@ func readAccountCandyReply(response *http.Response, chat bool) (string, error) {
 		}
 		first = r
 		if err := reader.UnreadRune(); err != nil {
-			return fail("读取模型响应失败；未转组。")
+			return readFail(err)
 		}
 		break
 	}
@@ -215,8 +240,11 @@ func readAccountCandyReply(response *http.Response, chat bool) (string, error) {
 		if limited.N <= 0 || len(data) > intelligenceTestResponseLimit {
 			return fail("模型响应超过 4 MiB；未转组。")
 		}
-		if err != nil {
-			return fail("读取模型响应失败；未转组。")
+		// A transport may report a truncated HTTP body after delivering a whole
+		// JSON document (for example an incorrect Content-Length). Its complete
+		// answer or structured error must not be replayed as a network failure.
+		if err != nil && !json.Valid(data) {
+			return readFail(err)
 		}
 		if !utf8.Valid(data) {
 			return fail("响应包含无效文本编码；未转组。")
@@ -260,7 +288,7 @@ func readAccountCandyReply(response *http.Response, chat bool) (string, error) {
 	}
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 4096), 1024*1024)
-	var event, text strings.Builder
+	var event, reply strings.Builder
 	finished, assistant, sawData := false, false, false
 	consume := func() (string, bool, error) {
 		if event.Len() == 0 {
@@ -269,8 +297,8 @@ func readAccountCandyReply(response *http.Response, chat bool) (string, error) {
 		data := strings.TrimSpace(event.String())
 		event.Reset()
 		if data == "[DONE]" {
-			if chat && finished && assistant && strings.TrimSpace(text.String()) != "" {
-				return strings.TrimSpace(text.String()), true, nil
+			if chat && finished && assistant && strings.TrimSpace(reply.String()) != "" {
+				return strings.TrimSpace(reply.String()), true, nil
 			}
 			return "", false, candyProbeFailure("响应流缺少完整最终回复；未转组。")
 		}
@@ -331,8 +359,8 @@ func readAccountCandyReply(response *http.Response, chat bool) (string, error) {
 					return "", false, candyProbeFailure("模型结束后的回复内容无效；未转组。")
 				}
 				assistant = true
-				_, _ = text.WriteString(choice.Delta.Content)
-				if text.Len() > intelligenceTestArtifactLimit {
+				_, _ = reply.WriteString(choice.Delta.Content)
+				if reply.Len() > intelligenceTestArtifactLimit {
 					return "", false, candyProbeFailure("最终回复超过 256 KiB；未转组。")
 				}
 			}
@@ -375,7 +403,7 @@ func readAccountCandyReply(response *http.Response, chat bool) (string, error) {
 		return fail("响应事件行超过 1 MiB；未转组。")
 	}
 	if scanner.Err() != nil {
-		return fail("读取模型响应失败；未转组。")
+		return readFail(scanner.Err())
 	}
 	result, done, err := consume()
 	if err != nil {

@@ -109,7 +109,7 @@ func (s *AccountAuthorizationService) saveAuthorizationIntelligence(ctx context.
 	return nil
 }
 
-func (s *AccountAuthorizationService) executeAuthorizationIntelligence(ctx context.Context, accountID, sourceGroupID int64, snapshot *authorizationGateSnapshot, model RadarModel) (result AuthorizationIntelligenceResult) {
+func (s *AccountAuthorizationService) executeAuthorizationIntelligence(ctx context.Context, accountID, sourceGroupID int64, snapshot *authorizationGateSnapshot, model RadarModel, proxies *accountCandyProxySession) (result AuthorizationIntelligenceResult) {
 	result = AuthorizationIntelligenceResult{Model: model.Model, Effort: model.Effort, Status: "failed"}
 	started := time.Now()
 	result.StartedAt = &started
@@ -142,7 +142,7 @@ func (s *AccountAuthorizationService) executeAuthorizationIntelligence(ctx conte
 		result.ErrorMessage = "来源分组规则已变化或暂不可用，此模型未继续测试"
 		return result
 	}
-	text, err := runAccountCandyWithProxyRetry(ctx, s.db, s.tests, account, account, &AccountCandyTestConfig{Model: model.Model, Effort: model.Effort}, func(attemptCtx context.Context, route *Account, _ int) error {
+	text, err := runAccountCandyWithProxyRetry(ctx, s.db, s.tests, account, account, &AccountCandyTestConfig{Model: model.Model, Effort: model.Effort}, func(attemptCtx context.Context, route *Account, attempt int) error {
 		current, err := s.accounts.GetByID(attemptCtx, accountID)
 		if err != nil {
 			return err
@@ -157,7 +157,7 @@ func (s *AccountAuthorizationService) executeAuthorizationIntelligence(ctx conte
 		if route.ProxyID != nil {
 			result.EgressMode = "proxy"
 		}
-		result.EgressIP, result.EgressCheckedAt, result.EgressError = probeRadarEgress(attemptCtx, route)
+		result.EgressIP, result.EgressCheckedAt, result.EgressError = proxies.observe(attemptCtx, route, attempt)
 		if err = s.checkAuthorizationSourceRule(attemptCtx, sourceGroupID); err != nil {
 			return err
 		}
@@ -168,8 +168,11 @@ func (s *AccountAuthorizationService) executeAuthorizationIntelligence(ctx conte
 		if !snapshot.matches(current) {
 			return context.Canceled
 		}
+		if result.EgressError != "" {
+			return &accountCandyRetryableNetworkError{}
+		}
 		return nil
-	})
+	}, proxies)
 	if err != nil {
 		result.ErrorMessage = redactCandyAccountError(accountCandySafeError(err), account)
 		result.ErrorMessage = strings.ReplaceAll(result.ErrorMessage, "未转组", "此错误不作为不及格依据")
@@ -191,6 +194,8 @@ func (s *AccountAuthorizationService) executeAuthorizationIntelligence(ctx conte
 func (s *AccountAuthorizationService) runAuthorizationIntelligenceModels(ctx context.Context, job *authorizationJob, account *Account, snapshot *authorizationGateSnapshot, models []RadarModel, progress func(string, string) error) ([]AuthorizationIntelligenceResult, error) {
 	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
+	proxies := newAccountCandyProxySession(s.db)
+	defer proxies.close()
 	results := make([]AuthorizationIntelligenceResult, len(models))
 	startedAt := time.Now()
 	for i, model := range models {
@@ -206,7 +211,7 @@ func (s *AccountAuthorizationService) runAuthorizationIntelligenceModels(ctx con
 	completed := make(chan completion, len(models))
 	for i, model := range models {
 		go func(index int, current RadarModel) {
-			completed <- completion{index: index, result: s.executeAuthorizationIntelligence(probeCtx, account.ID, job.settings.IntelligenceSourceGroupID, snapshot, current)}
+			completed <- completion{index: index, result: s.executeAuthorizationIntelligence(probeCtx, account.ID, job.settings.IntelligenceSourceGroupID, snapshot, current, proxies)}
 		}(i, model)
 	}
 	ticker := time.NewTicker(time.Second)

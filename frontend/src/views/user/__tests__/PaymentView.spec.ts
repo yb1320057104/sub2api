@@ -16,7 +16,7 @@ import { formatBinanceMultiplier, isValidBinanceMultiplier } from '@/components/
 import AdminBinanceRechargeView from '@/views/admin/orders/AdminBinanceRechargeView.vue'
 import BinanceLiveBills from '@/components/payment/BinanceLiveBills.vue'
 import BinanceBillFields from '@/components/payment/BinanceBillFields.vue'
-import type { BinanceRechargeOrder } from '@/types/binanceRecharge'
+import type { BinanceRechargeAccount, BinanceRechargeOrder } from '@/types/binanceRecharge'
 
 const binanceHarness = vi.hoisted(() => ({
   isAdmin: false,
@@ -29,6 +29,7 @@ const binanceHarness = vi.hoisted(() => ({
   copyToClipboard: vi.fn(),
   showSuccess: vi.fn(),
   getAccounts: vi.fn(),
+  checkAccount: vi.fn(),
   createAccount: vi.fn(),
   updateAccount: vi.fn(),
   getBills: vi.fn(),
@@ -42,7 +43,7 @@ vi.mock('@/api/binanceRecharge', () => ({
     refreshOrder: binanceHarness.refreshOrder,
     getStats: binanceHarness.getStats,
   },
-  adminBinanceRechargeAPI: { getAccounts: binanceHarness.getAccounts, createAccount: binanceHarness.createAccount, updateAccount: binanceHarness.updateAccount, getBills: binanceHarness.getBills, getStats: binanceHarness.getStats },
+  adminBinanceRechargeAPI: { getAccounts: binanceHarness.getAccounts, checkAccount: binanceHarness.checkAccount, createAccount: binanceHarness.createAccount, updateAccount: binanceHarness.updateAccount, getBills: binanceHarness.getBills, getStats: binanceHarness.getStats },
 }))
 
 vi.mock('@/stores/binanceRecharge', () => ({
@@ -948,6 +949,14 @@ describe('PaymentView subscription feature flag', () => {
 
 describe('Binance UID top-up page', () => {
   const wrappers: ReturnType<typeof shallowMount>[] = []
+  function receivingAccount(overrides: Partial<BinanceRechargeAccount> = {}): BinanceRechargeAccount {
+    return {
+      id: 7, name: 'Receiving account', recipient_uid: '123456', enabled: true, order_ttl_minutes: 15,
+      credit_multiplier: '1.000000', has_orders: true, api_key_configured: true, api_secret_configured: true,
+      proxy_configured: true, proxy_preflight: false, check_state: 'ready', retry_after_seconds: 0,
+      created_at: '2026-10-01T00:00:00Z', updated_at: '2026-10-01T00:00:00Z', ...overrides,
+    }
+  }
   function pendingOrder(): BinanceRechargeOrder {
     return {
       id: 41, order_no: 'BN-41', user_id: 5, account_id: 7,
@@ -969,6 +978,7 @@ describe('Binance UID top-up page', () => {
     binanceHarness.copyToClipboard.mockReset().mockResolvedValue(true)
     binanceHarness.showSuccess.mockReset()
     binanceHarness.getAccounts.mockReset().mockResolvedValue({ data: [] })
+    binanceHarness.checkAccount.mockReset().mockResolvedValue({ data: { matched: 0, review: 0 } })
     binanceHarness.createAccount.mockReset().mockResolvedValue({ data: {} })
     binanceHarness.updateAccount.mockReset().mockResolvedValue({ data: {} })
     binanceHarness.getBills.mockReset().mockResolvedValue({ data: {
@@ -984,12 +994,16 @@ describe('Binance UID top-up page', () => {
       if (key === 'binanceRecharge.exchangeRate') return `1 USDT = ${params?.multiplier} USD`
       if (key === 'binanceRecharge.snapshotRate') return `Order rate: 1 USDT = ${params?.multiplier} USD`
       if (key === 'binanceRecharge.creditHint') return `Receive ${params?.payAmount} USDT to credit ${params?.systemAmount} USD`
+      if (key === 'binanceRecharge.checkCountdown') return `Wait ${params?.seconds} seconds`
+      if (key === 'binanceRecharge.checkAvailableAt') return `Retry at ${params?.time}`
       return key
     })
   })
 
   afterEach(() => {
     for (const wrapper of wrappers.splice(0)) wrapper.unmount()
+    vi.useRealTimers()
+    vi.restoreAllMocks()
     binanceHarness.isAdmin = false
     translate.mockImplementation((key: string) => key)
   })
@@ -1155,6 +1169,84 @@ describe('Binance UID top-up page', () => {
     expect(binanceHarness.updateAccount).toHaveBeenCalledWith(7, {
       name: 'Receiving account', recipient_uid: '123456', enabled: true, order_ttl_minutes: 15, credit_multiplier: '6.7',
     })
+  })
+
+  it.each(['running', 'interval_wait', 'retry_wait', 'rate_limited'] as const)('shows the server %s state and keeps the previous error visible', async (check_state) => {
+    binanceHarness.getAccounts.mockResolvedValue({ data: [receivingAccount({
+      check_state, retry_after_seconds: 960, check_available_at: '2026-11-02T03:16:00Z',
+      last_error: 'Proxy connection failed',
+    })] })
+    const wrapper = await mountAdminAccounts()
+    expect(wrapper.get('[data-testid="binance-check-state-7"]').text()).toBe(`binanceRecharge.checkStates.${check_state}`)
+    expect(wrapper.get('[data-testid="binance-check-countdown-7"]').text()).toBe('Wait 960 seconds')
+    expect(wrapper.text()).toContain(`Retry at ${new Date('2026-11-02T03:16:00Z').toLocaleString()}`)
+    expect(wrapper.text()).toContain('Proxy connection failed')
+    expect(wrapper.get('[data-testid="binance-check-7"]').attributes('disabled')).toBeDefined()
+    expect(binanceHarness.checkAccount).not.toHaveBeenCalled()
+  })
+
+  it('allows a manual check when the wait expires without sending an automatic payment request', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] })
+    vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
+    vi.setSystemTime(new Date('2026-11-02T03:00:00Z'))
+    binanceHarness.getAccounts.mockResolvedValue({ data: [receivingAccount({
+      check_state: 'retry_wait', retry_after_seconds: 2, check_available_at: '2026-11-02T03:00:02Z',
+    })] })
+    const wrapper = await mountAdminAccounts()
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(wrapper.get('[data-testid="binance-check-countdown-7"]').text()).toBe('Wait 1 seconds')
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(wrapper.find('[data-testid="binance-check-countdown-7"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="binance-check-state-7"]').text()).toBe('binanceRecharge.checkWaitElapsed')
+    expect(wrapper.get('[data-testid="binance-check-7"]').attributes('disabled')).toBeUndefined()
+    expect(binanceHarness.checkAccount).not.toHaveBeenCalled()
+    expect(binanceHarness.getAccounts).toHaveBeenCalledTimes(1)
+
+    binanceHarness.getAccounts.mockResolvedValue({ data: [receivingAccount()] })
+    await wrapper.get('[data-testid="binance-check-7"]').trigger('click')
+    await flushPromises()
+    expect(binanceHarness.checkAccount).toHaveBeenCalledOnce()
+    expect(binanceHarness.getAccounts).toHaveBeenCalledTimes(2)
+    expect(wrapper.get('[data-testid="binance-check-state-7"]').text()).toBe('binanceRecharge.checkStates.ready')
+  })
+
+  it('refreshes authoritative wait state after a rejected manual check', async () => {
+    binanceHarness.getAccounts.mockResolvedValueOnce({ data: [receivingAccount()] })
+    const wrapper = await mountAdminAccounts()
+    binanceHarness.checkAccount.mockRejectedValue({ response: { data: { code: 'BINANCE_CHECK_COOLDOWN', message: 'Retry in 60 seconds' } } })
+    binanceHarness.getAccounts.mockResolvedValue({ data: [receivingAccount({
+      check_state: 'retry_wait', retry_after_seconds: 60, last_error: 'Proxy connection failed',
+    })] })
+    await wrapper.get('[data-testid="binance-check-7"]').trigger('click')
+    await flushPromises()
+    expect(binanceHarness.getAccounts).toHaveBeenCalledTimes(2)
+    expect(wrapper.get('[data-testid="binance-check-state-7"]').text()).toBe('binanceRecharge.checkStates.retry_wait')
+    expect(wrapper.get('[data-testid="binance-check-countdown-7"]').text()).toBe('Wait 60 seconds')
+    expect(wrapper.text()).toContain('Proxy connection failed')
+    expect(wrapper.get('[data-testid="binance-check-7"]').attributes('disabled')).toBeDefined()
+  })
+
+  it('stops countdown timers while hidden or unmounted and resyncs elapsed time on return', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] })
+    const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
+    vi.setSystemTime(new Date('2026-11-02T03:00:00Z'))
+    binanceHarness.getAccounts.mockResolvedValue({ data: [receivingAccount({ check_state: 'retry_wait', retry_after_seconds: 2 })] })
+    const wrapper = await mountAdminAccounts()
+    expect(vi.getTimerCount()).toBe(1)
+    hidden.mockReturnValue(true)
+    document.dispatchEvent(new Event('visibilitychange'))
+    expect(vi.getTimerCount()).toBe(0)
+    await vi.advanceTimersByTimeAsync(3000)
+    hidden.mockReturnValue(false)
+    document.dispatchEvent(new Event('visibilitychange'))
+    await flushPromises()
+    expect(wrapper.get('[data-testid="binance-check-7"]').attributes('disabled')).toBeUndefined()
+    expect(vi.getTimerCount()).toBe(1)
+    wrapper.unmount()
+    wrappers.splice(wrappers.indexOf(wrapper), 1)
+    expect(vi.getTimerCount()).toBe(0)
+    expect(binanceHarness.checkAccount).not.toHaveBeenCalled()
+    expect(binanceHarness.getAccounts).toHaveBeenCalledTimes(1)
   })
 
   it('replaces a dedicated Binance proxy without reading it back and explicitly clears it', async () => {

@@ -23,10 +23,11 @@
               <div class="col-span-2"><dt class="text-gray-500">{{ t('binanceRecharge.proxy') }}</dt><dd>{{ account.proxy_configured ? t(account.proxy_preflight ? 'binanceRecharge.proxyWithPreflight' : 'binanceRecharge.proxyConfigured') : t('binanceRecharge.proxyInherited') }}</dd></div>
               <div class="col-span-2"><dt class="text-gray-500">{{ t('binanceRecharge.creditMultiplier') }}</dt><dd>{{ t('binanceRecharge.exchangeRate', { multiplier: formatBinanceMultiplier(account.credit_multiplier) }) }}</dd></div>
               <div class="col-span-2"><dt class="text-gray-500">{{ t('binanceRecharge.lastChecked') }}</dt><dd>{{ account.last_checked_at ? date(account.last_checked_at) : t('binanceRecharge.neverChecked') }}</dd></div>
+              <div class="col-span-2"><dt class="text-gray-500">{{ t('binanceRecharge.checkStatus') }}</dt><dd :data-testid="`binance-check-state-${account.id}`">{{ checkStateLabel(account) }}</dd><dd v-if="account.check_available_at && account.check_state !== 'ready'" class="mt-1 text-xs text-gray-500">{{ t('binanceRecharge.checkAvailableAt', { time: date(account.check_available_at) }) }}</dd><dd v-if="remainingWait(account) > 0" class="mt-1 text-xs text-gray-500" :data-testid="`binance-check-countdown-${account.id}`">{{ t('binanceRecharge.checkCountdown', { seconds: remainingWait(account) }) }}</dd></div>
             </dl>
             <p v-if="account.last_error" class="break-words rounded-lg bg-red-50 p-3 text-sm text-red-700 dark:bg-red-900/20 dark:text-red-300">{{ t('binanceRecharge.lastError') }}: {{ account.last_error }}</p>
             <div class="flex flex-wrap justify-end gap-2">
-              <button class="btn btn-secondary" :disabled="checkingId !== null" @click="checkAccount(account)">{{ checkingId === account.id ? t('binanceRecharge.refreshing') : t('binanceRecharge.check') }}</button>
+              <button class="btn btn-secondary" :data-testid="`binance-check-${account.id}`" :disabled="checkingId !== null || remainingWait(account) > 0" @click="checkAccount(account)">{{ checkingId === account.id ? t('binanceRecharge.refreshing') : t('binanceRecharge.check') }}</button>
               <button class="btn btn-secondary" @click="editAccount(account)">{{ t('common.edit') }}</button>
             </div>
           </article>
@@ -116,17 +117,54 @@ const page = ref(1)
 const pageSize = ref(20)
 const total = ref(0)
 let listSequence = 0
+let accountsSequence = 0
 let disposed = false
+const waitClock = ref(Date.now())
+const waitDeadlines = ref<Record<number, number>>({})
+let waitTimer: number | undefined
 const date = (value: string) => new Date(value).toLocaleString()
 function reportError(error: unknown) { appStore.showError(extractApiErrorMessage(error, t('common.error'))) }
 
+function remainingWait(account: BinanceRechargeAccount) {
+  if (!account.check_state || account.check_state === 'ready') return 0
+  return Math.max(0, Math.ceil(((waitDeadlines.value[account.id] ?? waitClock.value) - waitClock.value) / 1000))
+}
+function checkStateLabel(account: BinanceRechargeAccount) {
+  if (account.check_state && account.check_state !== 'ready' && remainingWait(account) === 0) {
+    return t('binanceRecharge.checkWaitElapsed')
+  }
+  return t(`binanceRecharge.checkStates.${account.check_state || 'ready'}`)
+}
+function syncWaitTimer() {
+  if (waitTimer !== undefined) window.clearInterval(waitTimer)
+  waitTimer = undefined
+  waitClock.value = Date.now()
+  if (!disposed && activeTab.value === 'accounts' && !document.hidden) {
+    // Only update the display; a countdown must never trigger a payment lookup.
+    waitTimer = window.setInterval(() => { waitClock.value = Date.now() }, 1000)
+  }
+}
 async function loadAccounts() {
+  if (disposed) return
+  const sequence = ++accountsSequence
   accountsLoading.value = true
   try {
     const { data } = await adminBinanceRechargeAPI.getAccounts()
-    if (!disposed) accounts.value = data || []
-  } catch (error) { reportError(error) }
-  finally { accountsLoading.value = false }
+    if (!disposed && sequence === accountsSequence) {
+      accounts.value = data || []
+      waitClock.value = Date.now()
+      waitDeadlines.value = Object.fromEntries(accounts.value.map(account => {
+        // Use the server's relative wait to avoid depending on the browser clock.
+        const seconds = Number(account.retry_after_seconds)
+        const availableAt = account.check_available_at ? Date.parse(account.check_available_at) : NaN
+        const deadline = Number.isFinite(seconds) && seconds >= 0
+          ? waitClock.value + seconds * 1000
+          : Number.isFinite(availableAt) ? availableAt : waitClock.value
+        return [account.id, deadline]
+      }))
+    }
+  } catch (error) { if (!disposed && sequence === accountsSequence) reportError(error) }
+  finally { if (sequence === accountsSequence) accountsLoading.value = false }
 }
 
 function editAccount(account?: BinanceRechargeAccount) {
@@ -187,7 +225,7 @@ async function saveAccount() {
   finally { saving.value = false }
 }
 async function checkAccount(account: BinanceRechargeAccount) {
-  if (checkingId.value !== null) return
+  if (checkingId.value !== null || remainingWait(account) > 0) return
   checkingId.value = account.id
   try {
     const { data } = await adminBinanceRechargeAPI.checkAccount(account.id)
@@ -217,7 +255,16 @@ async function refreshOrder() {
 }
 function changePage(value: number) { page.value = value; void loadOrders() }
 function changePageSize(value: number) { pageSize.value = value; page.value = 1; void loadOrders() }
-watch(activeTab, value => { if (value === 'orders') void loadOrders() })
-onMounted(() => { void loadAccounts() })
-onUnmounted(() => { disposed = true; form.api_key = ''; form.api_secret = '' })
+watch(activeTab, value => { syncWaitTimer(); if (value === 'orders') void loadOrders() })
+onMounted(() => {
+  document.addEventListener('visibilitychange', syncWaitTimer)
+  syncWaitTimer()
+  void loadAccounts()
+})
+onUnmounted(() => {
+  disposed = true
+  document.removeEventListener('visibilitychange', syncWaitTimer)
+  syncWaitTimer()
+  form.api_key = ''; form.api_secret = ''; form.proxy_url = ''
+})
 </script>

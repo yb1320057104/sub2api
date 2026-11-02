@@ -65,14 +65,20 @@ func (s *AccountCandyTestService) executeRadarModel(ctx context.Context, run *Ra
 		}
 		m.ErrorMessage = ""
 		if attempt > 1 {
-			m.ErrorMessage = fmt.Sprintf("连接失败，已切换临时代理 #%d；正在进行第%d/%d次尝试", *route.ProxyID, attempt, accountCandyProxyAttempts)
+			m.ErrorMessage = fmt.Sprintf("连接失败，已选取尚未分配账号的备用代理 #%d；正在进行第%d次尝试", *route.ProxyID, attempt)
 		}
-		m.EgressIP, m.EgressCheckedAt, m.EgressError = probeRadarEgress(attemptCtx, route)
+		m.EgressIP, m.EgressCheckedAt, m.EgressError = run.proxySession.observe(attemptCtx, route, attempt)
 		if err := s.writeRadarModel(attemptCtx, run, m); err != nil {
 			return err
 		}
-		return s.checkRadarIdentity(attemptCtx, run)
-	})
+		if err := s.checkRadarIdentity(attemptCtx, run); err != nil {
+			return err
+		}
+		if m.EgressError != "" {
+			return &accountCandyRetryableNetworkError{}
+		}
+		return nil
+	}, run.proxySession)
 	finished := time.Now()
 	elapsed := finished.Sub(now).Milliseconds()
 	m.FinishedAt, m.DurationMS = &finished, &elapsed

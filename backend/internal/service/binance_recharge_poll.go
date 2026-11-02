@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"log/slog"
+	"strconv"
 	"sync"
 	"time"
 
@@ -132,14 +134,7 @@ func (s *BinanceRechargeService) checkAccountWindow(ctx context.Context, account
 	err := s.db.QueryRowContext(ctx, `UPDATE binance_recharge_accounts SET next_poll_at=NOW()+INTERVAL '120 seconds',api_locked_until=NOW()+INTERVAL '120 seconds',poll_token=$2
 WHERE id=$1 AND next_poll_at<=NOW() AND api_locked_until<=NOW() RETURNING failure_count`, accountID, token).Scan(&failures)
 	if errors.Is(err, sql.ErrNoRows) {
-		var exists bool
-		if e := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM binance_recharge_accounts WHERE id=$1)`, accountID).Scan(&exists); e != nil {
-			return nil, e
-		}
-		if !exists {
-			return nil, infraerrors.NotFound("BINANCE_ACCOUNT_NOT_FOUND", "收款账户不存在")
-		}
-		return nil, infraerrors.TooManyRequests("BINANCE_CHECK_COOLDOWN", "查收进行中或限流等待中，请稍后刷新")
+		return nil, s.binanceCooldownError(ctx, accountID, false)
 	}
 	if err != nil {
 		return nil, err
@@ -183,6 +178,7 @@ WHERE id=$1 AND next_poll_at<=NOW() AND api_locked_until<=NOW() RETURNING failur
 	defer finishCancel()
 	delay := binanceRechargePollInterval
 	message := ""
+	providerLimited := false
 	if err != nil {
 		failures++
 		if failures > 6 {
@@ -190,7 +186,8 @@ WHERE id=$1 AND next_poll_at<=NOW() AND api_locked_until<=NOW() RETURNING failur
 		}
 		delay = time.Duration(1<<uint(failures)) * binanceRechargePollInterval
 		var limited *binancepay.RateLimitError
-		if errors.As(err, &limited) && limited.RetryAfter > delay {
+		providerLimited = errors.As(err, &limited)
+		if providerLimited && limited.RetryAfter > delay {
 			delay = limited.RetryAfter
 		}
 		message = binanceRechargePollError(err)
@@ -198,9 +195,10 @@ WHERE id=$1 AND next_poll_at<=NOW() AND api_locked_until<=NOW() RETURNING failur
 		failures = 0
 	}
 	_, finishErr := s.db.ExecContext(finishCtx, `UPDATE binance_recharge_accounts SET last_checked_at=NOW(),last_error=$3,
-next_poll_at=NOW()+make_interval(secs=>$4),failure_count=$5,poll_token='',api_locked_until=to_timestamp(0),
+next_poll_at=NOW()+make_interval(secs=>$4),failure_count=$5,poll_token='',
+api_locked_until=CASE WHEN $6 THEN NOW()+make_interval(secs=>$4) ELSE to_timestamp(0) END,
 bills_next_query_at=CASE WHEN $3<>'' THEN GREATEST(bills_next_query_at,NOW()+make_interval(secs=>$4)) ELSE bills_next_query_at END
-WHERE id=$1 AND poll_token=$2`, accountID, token, message, delay.Seconds(), failures)
+WHERE id=$1 AND poll_token=$2`, accountID, token, message, delay.Seconds(), failures, providerLimited)
 	_, expiryErr := s.db.ExecContext(finishCtx, `UPDATE binance_recharge_orders SET status='EXPIRED',updated_at=NOW() WHERE account_id=$1 AND status='PENDING' AND expires_at<NOW()`, accountID)
 	if err != nil {
 		return nil, infraerrors.ServiceUnavailable("BINANCE_CHECK_FAILED", message)
@@ -212,6 +210,79 @@ WHERE id=$1 AND poll_token=$2`, accountID, token, message, delay.Seconds(), fail
 		return nil, expiryErr
 	}
 	return result, nil
+}
+
+const binanceRechargeRateLimitMessage = "币安 API 限流，已延后查收"
+
+// A nonempty token identifies an in-flight query. A future API lock without
+// a token is a durable provider cooldown, shared by both query paths. Older
+// releases stored that cooldown only in next_poll_at/bills_next_query_at and
+// this exact fixed error; retain it until both windows have elapsed.
+func (a *BinanceRechargeAccount) setCheckState(now time.Time, bills bool) {
+	a.CheckState, a.RetryAfterSeconds, a.CheckAvailableAt = "ready", 0, nil
+	until := a.nextPollAt
+	if bills {
+		until = a.billsNextQueryAt
+	}
+	switch {
+	case a.hasPollToken && a.apiLockedUntil.After(now):
+		a.CheckState, until = "running", a.apiLockedUntil
+	case (!a.hasPollToken && a.apiLockedUntil.After(now)) ||
+		(a.LastError == binanceRechargeRateLimitMessage && (a.nextPollAt.After(now) || a.billsNextQueryAt.After(now))):
+		a.CheckState = "rate_limited"
+		for _, candidate := range []time.Time{a.apiLockedUntil, a.nextPollAt, a.billsNextQueryAt} {
+			if candidate.After(until) {
+				until = candidate
+			}
+		}
+	case until.After(now):
+		a.CheckState = "interval_wait"
+		if a.LastError != "" {
+			a.CheckState = "retry_wait"
+		}
+	default:
+		return
+	}
+	a.CheckAvailableAt = &until
+	a.RetryAfterSeconds = int64((until.Sub(now) + time.Second - 1) / time.Second)
+}
+
+func (s *BinanceRechargeService) binanceCooldownError(ctx context.Context, accountID int64, bills bool) error {
+	var a BinanceRechargeAccount
+	err := s.db.QueryRowContext(ctx, `SELECT next_poll_at,api_locked_until,bills_next_query_at,poll_token<>'',last_error FROM binance_recharge_accounts WHERE id=$1`, accountID).
+		Scan(&a.nextPollAt, &a.apiLockedUntil, &a.billsNextQueryAt, &a.hasPollToken, &a.LastError)
+	if errors.Is(err, sql.ErrNoRows) {
+		return infraerrors.NotFound("BINANCE_ACCOUNT_NOT_FOUND", "收款账户不存在")
+	}
+	if err != nil {
+		return err
+	}
+	a.setCheckState(time.Now().UTC(), bills)
+	reason := "BINANCE_CHECK_COOLDOWN"
+	if bills {
+		reason = "BINANCE_BILLS_COOLDOWN"
+	}
+	message := "距下次查询尚需等待 %d 秒，请稍后刷新"
+	switch a.CheckState {
+	case "running":
+		message = "币安查询正在进行，当前查询锁剩余 %d 秒，请稍后刷新"
+	case "retry_wait":
+		message = "上次币安查询失败，尚需等待 %d 秒；可查看渠道最近错误"
+	case "rate_limited":
+		message = "币安 API 限流，尚需等待 %d 秒，请稍后刷新"
+	case "ready":
+		// The previous holder may have just completed, or a bill query is
+		// yielding to due collection. Never start another request from here.
+		a.CheckState, a.RetryAfterSeconds = "interval_wait", 1
+		available := time.Now().UTC().Add(time.Second)
+		a.CheckAvailableAt = &available
+		message = "查询状态正在更新或等待优先查收，%d 秒后请刷新"
+	}
+	return infraerrors.TooManyRequests(reason, fmt.Sprintf(message, a.RetryAfterSeconds)).WithMetadata(map[string]string{
+		"check_state":         a.CheckState,
+		"retry_after_seconds": strconv.FormatInt(a.RetryAfterSeconds, 10),
+		"check_available_at":  a.CheckAvailableAt.UTC().Format(time.RFC3339),
+	})
 }
 
 func (s *BinanceRechargeService) CheckOrder(ctx context.Context, orderID, userID int64) (*BinanceRechargeOrder, error) {

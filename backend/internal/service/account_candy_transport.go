@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptrace"
@@ -16,6 +18,18 @@ import (
 const accountCandyTLSHandshakeAttempts = 3
 
 type accountCandyProxyRetryKey struct{}
+type radarCandyProxyRetryKey struct{}
+
+// Radar explicitly retries interrupted requests with no complete model answer.
+// Other candy callers keep their original pre-send-only retry boundary.
+type radarCandyRetryableNetworkError struct{ HTTPStatus int }
+
+func (e *radarCandyRetryableNetworkError) Error() string {
+	if e.HTTPStatus > 0 {
+		return fmt.Sprintf("HTTP %d：响应传输中断，尚未取得完整回复；未转组。", e.HTTPStatus)
+	}
+	return "未收到 HTTP 响应：代理或网络连接中断，尚未取得完整回复；未转组。"
+}
 
 // Only this marker may admit another proxy. Its creation is kept at the send
 // boundary where request/response evidence is still available.
@@ -27,7 +41,8 @@ func (*accountCandyRetryableNetworkError) Error() string {
 
 func accountCandyCanChangeProxy(err error) bool {
 	var failure *accountCandyRetryableNetworkError
-	return errors.As(err, &failure)
+	var radarFailure *radarCandyRetryableNetworkError
+	return errors.As(err, &failure) || errors.As(err, &radarFailure)
 }
 
 // doAccountCandyTLSHandshakeRetry retries only a transport's TLS handshake
@@ -79,6 +94,9 @@ func doAccountCandyTLSHandshakeRetry(
 			return nil, ctx.Err()
 		}
 		if enabled, _ := ctx.Value(accountCandyProxyRetryKey{}).(bool); enabled {
+			if radar, _ := ctx.Value(radarCandyProxyRetryKey{}).(bool); radar && isRadarCandyNetworkFailure(err) {
+				return nil, &radarCandyRetryableNetworkError{}
+			}
 			if !requestWritten.Load() && isAccountCandyConnectFailure(err) {
 				return nil, &accountCandyRetryableNetworkError{}
 			}
@@ -106,6 +124,21 @@ func doAccountCandyTLSHandshakeRetry(
 		}
 	}
 	return nil, candyProbeFailure("账号测试建立 TLS 连接超时，已停止重试；未转组。")
+}
+
+func isRadarCandyNetworkFailure(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.ErrClosedPipe) {
+		return true
+	}
+	var operation *net.OpError
+	if errors.As(err, &operation) {
+		return true
+	}
+	var network net.Error
+	return errors.As(err, &network) && (network.Timeout() || isAccountCandyConnectFailure(err))
 }
 
 func isAccountCandyConnectFailure(err error) bool {

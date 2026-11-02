@@ -115,6 +115,11 @@ func (s *AccountCandyTestService) executeRadar(parent context.Context, run *Rada
 	ctx, cancel := context.WithTimeout(parent, 6*time.Minute)
 	defer cancel()
 	started := time.Now()
+	run.proxySession = newAccountCandyProxySession(s.db)
+	// Radar retries exhaust distinct idle candidates within the existing
+	// model/run deadlines. Authorization keeps the three-attempt limit.
+	run.proxySession.limit = 0
+	defer run.proxySession.close()
 	heartDone := make(chan struct{})
 	heartStopped := make(chan struct{})
 	go func() {

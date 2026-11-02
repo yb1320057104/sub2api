@@ -72,14 +72,7 @@ WHERE a.id=$1 AND a.api_locked_until<=NOW() AND a.bills_next_query_at<=NOW()
 AND NOT (a.next_poll_at<=NOW() AND EXISTS(SELECT 1 FROM binance_recharge_orders o WHERE o.account_id=a.id AND o.status IN ('PENDING','EXPIRED') AND o.created_at>=NOW()-INTERVAL '24 hours'))
 RETURNING failure_count`, accountID, token).Scan(&failures)
 	if errors.Is(err, sql.ErrNoRows) {
-		var exists bool
-		if e := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM binance_recharge_accounts WHERE id=$1)`, accountID).Scan(&exists); e != nil {
-			return nil, e
-		}
-		if !exists {
-			return nil, infraerrors.NotFound("BINANCE_ACCOUNT_NOT_FOUND", "收款账户不存在")
-		}
-		return nil, infraerrors.TooManyRequests("BINANCE_BILLS_COOLDOWN", "正在查收充值或账单查询冷却中，请稍后重试")
+		return nil, s.binanceCooldownError(ctx, accountID, true)
 	}
 	if err != nil {
 		return nil, err
@@ -120,12 +113,13 @@ RETURNING failure_count`, accountID, token).Scan(&failures)
 		}
 		delay := time.Duration(1<<uint(failures)) * binanceRechargePollInterval
 		var limited *binancepay.RateLimitError
-		if errors.As(err, &limited) && limited.RetryAfter > delay {
+		providerLimited := errors.As(err, &limited)
+		if providerLimited && limited.RetryAfter > delay {
 			delay = limited.RetryAfter
 		}
-		_, finishErr = s.db.ExecContext(finishCtx, `UPDATE binance_recharge_accounts SET api_locked_until=to_timestamp(0),poll_token='',failure_count=$3,
+		_, finishErr = s.db.ExecContext(finishCtx, `UPDATE binance_recharge_accounts SET api_locked_until=CASE WHEN $6 THEN NOW()+make_interval(secs=>$4) ELSE to_timestamp(0) END,poll_token='',failure_count=$3,
 next_poll_at=GREATEST(next_poll_at,NOW()+make_interval(secs=>$4)),bills_next_query_at=GREATEST(bills_next_query_at,NOW()+make_interval(secs=>$4)),last_error=$5
-WHERE id=$1 AND poll_token=$2`, accountID, token, failures, delay.Seconds(), binanceRechargePollError(err))
+WHERE id=$1 AND poll_token=$2`, accountID, token, failures, delay.Seconds(), binanceRechargePollError(err), providerLimited)
 	}
 	if err != nil {
 		return nil, infraerrors.ServiceUnavailable("BINANCE_BILLS_FAILED", binanceRechargePollError(err))

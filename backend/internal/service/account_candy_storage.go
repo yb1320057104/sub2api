@@ -476,7 +476,15 @@ func accountCandySafeError(err error) string {
 	}
 	var failure *accountCandyProbeError
 	if errors.As(err, &failure) {
-		return failure.message
+		return (&accountCandyProbeError{httpStatus: failure.httpStatus, message: sanitizeCandyErrorText(failure.message)}).Error()
+	}
+	var network *radarCandyRetryableNetworkError
+	if errors.As(err, &network) {
+		return network.Error()
+	}
+	var unsent *accountCandyRetryableNetworkError
+	if errors.As(err, &unsent) {
+		return unsent.Error()
 	}
 	return "账号测试请求失败，请检查账号状态、模型与代理配置；未转组。"
 }

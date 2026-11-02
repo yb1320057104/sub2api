@@ -4,6 +4,7 @@ package service
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"net/http/httptest"
 	"net/http/httptrace"
 	"strings"
+	"sync"
 	"testing"
 	"testing/iotest"
 	"time"
@@ -172,9 +174,10 @@ func TestPKAccountCandyProxyRetryUsesDistinctTemporaryNativeRoutes(t *testing.T)
 	defer func() { _ = db.Close() }()
 	columns := []string{"id", "protocol", "host", "port", "username", "password", "status", "expires_at"}
 	// Skip the original route even if a second database ID points at it.
-	mock.ExpectQuery("SELECT id,protocol,host,port").WithArgs(int64(0)).WillReturnRows(sqlmock.NewRows(columns).AddRow(8, "http", "original.example.test", 8080, "", "", "active", nil))
-	mock.ExpectQuery("SELECT id,protocol,host,port").WithArgs(int64(8)).WillReturnRows(sqlmock.NewRows(columns).AddRow(9, "http", "backup.example.test", 8080, "", "", "active", nil))
-	mock.ExpectQuery("SELECT EXISTS\\(SELECT 1 FROM proxies").WithArgs(int64(9), "http", "backup.example.test", 8080, "", "").WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
+	mock.ExpectQuery("SELECT p.id,p.protocol,p.host,p.port.*NOT EXISTS.*a.deleted_at IS NULL").WithArgs(int64(0)).WillReturnRows(sqlmock.NewRows(columns).AddRow(8, "http", "original.example.test", 8080, "", "", "active", nil))
+	pkCandyExpectFreeCandidate(mock, 8, 9, "backup.example.test")
+	pkCandyExpectFreeCheck(mock, 9, "backup.example.test", true)
+	pkCandyExpectUnlock(mock, 9)
 	upstream := &queuedHTTPUpstream{
 		errors:    []error{&net.OpError{Op: "dial", Net: "tcp", Err: &net.DNSError{Err: "unavailable"}}},
 		responses: []*http.Response{newJSONResponse(http.StatusOK, `{"status":"completed","output":[{"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"<final_answer>21</final_answer>"}]}]}`)},
@@ -199,6 +202,299 @@ func TestPKAccountCandyProxyRetryUsesDistinctTemporaryNativeRoutes(t *testing.T)
 	}
 	require.Equal(t, int64(7), *account.ProxyID)
 	require.Same(t, originalProxy, account.Proxy)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func pkCandyExpectFreeCheck(mock sqlmock.Sqlmock, id int64, host string, free bool) {
+	mock.ExpectQuery("SELECT pg_backend_pid\\(\\),EXISTS.*NOT EXISTS.*a.deleted_at IS NULL").WithArgs(id, "http", host, 8080, "", "").WillReturnRows(sqlmock.NewRows([]string{"pid", "free"}).AddRow(9001, free))
+}
+
+func pkCandyExpectFreeCandidate(mock sqlmock.Sqlmock, after, id int64, host string) {
+	mock.ExpectQuery("SELECT p.id,p.protocol,p.host,p.port.*NOT EXISTS.*a.deleted_at IS NULL").WithArgs(after).WillReturnRows(sqlmock.NewRows([]string{"id", "protocol", "host", "port", "username", "password", "status", "expires_at"}).AddRow(id, "http", host, 8080, "", "", "active", nil))
+	mock.ExpectQuery("SELECT pg_try_advisory_lock").WithArgs(id).WillReturnRows(sqlmock.NewRows([]string{"locked", "pid"}).AddRow(true, 9001))
+	pkCandyExpectFreeCheck(mock, id, host, true)
+}
+
+func pkCandyExpectUnlock(mock sqlmock.Sqlmock, id int64) {
+	mock.ExpectQuery("SELECT pg_advisory_unlock").WithArgs(id).WillReturnRows(sqlmock.NewRows([]string{"unlocked"}).AddRow(true))
+}
+
+func pkCandyRetryTestAccount() *Account {
+	proxy := &Proxy{ID: 7, Protocol: "http", Host: "original.example.test", Port: 8080}
+	return &Account{ID: 19, Platform: PlatformOpenAI, Type: AccountTypeUpstream, Concurrency: 1, Status: StatusActive, Schedulable: true, ProxyID: &proxy.ID, Proxy: proxy, Credentials: map[string]any{"api_key": "key", "base_url": "https://upstream.example.test"}}
+}
+
+func TestPKAccountCandyProxyEgressFailureRetriesBeforeModelAndMarksUsable(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+	pkCandyExpectFreeCandidate(mock, 0, 9, "backup.example.test")
+	pkCandyExpectFreeCheck(mock, 9, "backup.example.test", true)
+	pkCandyExpectFreeCheck(mock, 9, "backup.example.test", true)
+	pkCandyExpectUnlock(mock, 9)
+	upstream := &queuedHTTPUpstream{responses: []*http.Response{newJSONResponse(http.StatusOK, `{"status":"completed","output":[{"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"<final_answer>20</final_answer>"}]}]}`)}}
+	tests := &AccountTestService{httpUpstream: upstream, cfg: &config.Config{}}
+	session := newAccountCandyProxySession(db)
+	var probed []int64
+	session.probe = func(_ context.Context, account *Account) (string, *time.Time, string) {
+		probed = append(probed, *account.ProxyID)
+		if *account.ProxyID == 7 {
+			return "", nil, "当前尝试的出口IP探测失败；未回退直连"
+		}
+		now := time.Now()
+		return "8.8.8.8", &now, ""
+	}
+	account := pkCandyRetryTestAccount()
+	text, err := runAccountCandyWithProxyRetry(context.Background(), db, tests, account, account, defaultAccountCandyConfig(), func(ctx context.Context, route *Account, attempt int) error {
+		_, _, failure := session.observe(ctx, route, attempt)
+		if failure != "" {
+			return &accountCandyRetryableNetworkError{}
+		}
+		return nil
+	}, session)
+	require.NoError(t, err)
+	require.Contains(t, text, "20") // A complete wrong answer still proves proxy connectivity.
+	require.Equal(t, []int64{7, 9}, probed)
+	require.Equal(t, []string{"http://backup.example.test:8080"}, upstream.routes)
+	require.NotNil(t, session.usable)
+	require.Equal(t, int64(9), session.usable.proxy.ID)
+	require.Equal(t, int64(7), *account.ProxyID) // Binding waits for the guarded final transaction.
+	session.close()
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestPKAccountCandyProxyUnknownReservationDropsPhysicalConnection(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+	mock.ExpectQuery("SELECT p.id,p.protocol,p.host,p.port.*NOT EXISTS.*a.deleted_at IS NULL").WithArgs(int64(0)).WillReturnRows(sqlmock.NewRows([]string{"id", "protocol", "host", "port", "username", "password", "status", "expires_at"}).AddRow(9, "http", "backup.example.test", 8080, "", "", "active", nil))
+	// PostgreSQL could already have acquired the lock when decoding the
+	// response fails. A missing reservation entry must not keep that session.
+	mock.ExpectQuery("SELECT pg_try_advisory_lock").WithArgs(int64(9)).WillReturnRows(sqlmock.NewRows([]string{"locked", "pid"}).AddRow(true, "invalid-pid"))
+	mock.ExpectClose()
+	session := newAccountCandyProxySession(db)
+	first, err := session.next(context.Background(), pkCandyRetryTestAccount(), nil)
+	require.NoError(t, err)
+	_, err = session.next(context.Background(), pkCandyRetryTestAccount(), first)
+	require.Error(t, err)
+	require.True(t, session.untrustedConnection)
+	require.Empty(t, session.reserved)
+	session.close()
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestPKAccountCandyProxySharedModelsUseOneReservationAndBudget(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+	pkCandyExpectFreeCandidate(mock, 0, 9, "backup.example.test")
+	pkCandyExpectFreeCandidate(mock, 9, 10, "third.example.test")
+	pkCandyExpectUnlock(mock, 9)
+	pkCandyExpectUnlock(mock, 10)
+	session := newAccountCandyProxySession(db)
+	account := pkCandyRetryTestAccount()
+	first, err := session.next(context.Background(), account, nil)
+	require.NoError(t, err)
+	var wg sync.WaitGroup
+	results := make(chan *accountCandyProxyAttempt, 8)
+	errors := make(chan error, 8)
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			next, err := session.next(context.Background(), account, first)
+			results <- next
+			errors <- err
+		}()
+	}
+	wg.Wait()
+	close(results)
+	close(errors)
+	for err := range errors {
+		require.NoError(t, err)
+	}
+	var second *accountCandyProxyAttempt
+	for current := range results {
+		if second == nil {
+			second = current
+		}
+		require.Same(t, second, current)
+	}
+	third, err := session.next(context.Background(), account, second)
+	require.NoError(t, err)
+	require.Equal(t, 3, third.number)
+	// A sibling already completed the second route's IP probe but was still
+	// persisting progress when another model advanced to the third route.
+	// The retired route cannot send a new model request even while still free.
+	require.True(t, accountCandyCanChangeProxy(session.checkAttempt(context.Background(), second)))
+	newest, err := session.next(context.Background(), account, second)
+	require.NoError(t, err)
+	require.Same(t, third, newest)
+	_, err = session.next(context.Background(), account, third)
+	require.ErrorContains(t, err, "3个不同出口")
+	session.close()
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestPKRadarCandyExpiredExecutionStillPersistsTerminalResult(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+	identity, err := accountCandyCanonicalIdentity([]byte(`[]`))
+	require.NoError(t, err)
+	run := &RadarRun{AccountCandyTestResult: AccountCandyTestResult{ID: 12, AccountID: 19, OriginalGroupIDs: []int64{3}, identity: identity}, Generation: "generation", leaseToken: "owner", groupRule: &RadarGroupRule{SourceGroupID: 3, PassGroupIDs: []int64{4}, FailGroupID: 5}}
+	cfg := &RadarConfig{Generation: "generation", IntervalMinutes: 60}
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT pg_advisory_xact_lock").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT enabled,interval_minutes,target_group_id,generation").WillReturnRows(sqlmock.NewRows([]string{"enabled", "interval", "target", "generation"}).AddRow(true, 60, nil, "generation"))
+	mock.ExpectQuery("SELECT value FROM settings").WillReturnRows(sqlmock.NewRows([]string{"value"}).AddRow(`[]`))
+	mock.ExpectQuery("SELECT model,effort,enabled").WillReturnRows(sqlmock.NewRows([]string{"model", "effort", "enabled"}).AddRow("gpt-6-astra", "medium", true))
+	mock.ExpectQuery("SELECT COALESCE.*FROM pk_radar_account_state.*FOR UPDATE").WillReturnRows(sqlmock.NewRows([]string{"owned"}).AddRow(true))
+	mock.ExpectQuery("SELECT verdict,status,moved_to_group_id.*FROM pk_radar_account_runs.*FOR UPDATE").WillReturnRows(sqlmock.NewRows([]string{"verdict", "status", "moved", "moved_ids", "move_error"}).AddRow("unknown", "running", nil, `[]`, ""))
+	mock.ExpectQuery("SELECT parent_account_id FROM accounts.*FOR UPDATE").WillReturnRows(sqlmock.NewRows([]string{"parent"}).AddRow(nil))
+	mock.ExpectQuery("SELECT id FROM proxies.*FOR SHARE").WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	mock.ExpectQuery("SELECT jsonb_build_array.*FROM accounts").WillReturnRows(sqlmock.NewRows([]string{"identity"}).AddRow(`[]`))
+	mock.ExpectQuery("SELECT id FROM groups.*FOR SHARE").WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(3))
+	mock.ExpectQuery("SELECT group_id FROM account_groups.*FOR UPDATE").WillReturnRows(sqlmock.NewRows([]string{"group_id"}).AddRow(3))
+	mock.ExpectExec("UPDATE pk_radar_account_model_results SET status='cancelled'").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT count\\(\\*\\),count").WillReturnRows(sqlmock.NewRows([]string{"total", "completed", "failed"}).AddRow(1, 0, 0))
+	mock.ExpectExec("UPDATE pk_radar_account_runs SET status").WithArgs(int64(12), "failed", "unknown", nil, "本轮执行失败，请查看逐模型结果", "", int64(1000), "", nil, "", "[]", "").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE pk_radar_account_state SET active_run_id=NULL").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("DELETE FROM pk_radar_account_runs").WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectCommit()
+	execution, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	svc := &AccountCandyTestService{db: db}
+	require.NoError(t, svc.finishRadar(context.Background(), execution, run, cfg, execution.Err(), 1000))
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestPKAccountCandyProxyOccupiedBeforeSendIsNeverUsed(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+	pkCandyExpectFreeCandidate(mock, 0, 9, "backup.example.test")
+	pkCandyExpectFreeCheck(mock, 9, "backup.example.test", false)
+	mock.ExpectQuery("SELECT p.id,p.protocol,p.host,p.port.*NOT EXISTS.*a.deleted_at IS NULL").WithArgs(int64(9)).WillReturnRows(sqlmock.NewRows([]string{"id", "protocol", "host", "port", "username", "password", "status", "expires_at"}))
+	pkCandyExpectUnlock(mock, 9)
+	upstream := &queuedHTTPUpstream{}
+	tests := &AccountTestService{httpUpstream: upstream, cfg: &config.Config{}}
+	account := pkCandyRetryTestAccount()
+	_, err = runAccountCandyWithProxyRetry(context.Background(), db, tests, account, account, defaultAccountCandyConfig(), func(_ context.Context, _ *Account, attempt int) error {
+		if attempt == 1 {
+			return &accountCandyRetryableNetworkError{}
+		}
+		return nil
+	})
+	require.ErrorContains(t, err, "尚未分配账号")
+	require.Empty(t, upstream.requests)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestPKAccountCandyProxyBindRequiresFreshVacancyAndPreservesManualState(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		changed bool
+		free    bool
+	}{
+		{"free proxy commits", false, true}, {"manual allocation wins", false, false}, {"manual pause wins", true, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			require.NoError(t, err)
+			defer db.Close()
+			session := newAccountCandyProxySession(db)
+			session.originalStatus, session.originalSchedulable = StatusActive, true
+			session.backendPID = 9001
+			session.conn, err = db.Conn(context.Background())
+			require.NoError(t, err)
+			defer session.conn.Close()
+			proxy := &Proxy{ID: 9, Protocol: "http", Host: "backup.example.test", Port: 8080}
+			session.usable = &accountCandyProxyAttempt{proxy: proxy, number: 2}
+			mock.ExpectBegin()
+			mock.ExpectQuery("SELECT status,schedulable FROM accounts.*FOR UPDATE").WithArgs(int64(19)).WillReturnRows(sqlmock.NewRows([]string{"status", "schedulable"}).AddRow(StatusActive, !tt.changed))
+			if !tt.changed {
+				mock.ExpectQuery("SELECT id FROM proxies.*FOR UPDATE").WithArgs(int64(9), "http", "backup.example.test", 8080, "", "").WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(9))
+				pkCandyExpectFreeCheck(mock, 9, "backup.example.test", tt.free)
+				if tt.free {
+					mock.ExpectExec("UPDATE accounts SET proxy_id=.*upstream_billing_probe").WithArgs(int64(19), int64(9)).WillReturnResult(sqlmock.NewResult(0, 1))
+					mock.ExpectExec("INSERT INTO scheduler_outbox").WithArgs(SchedulerOutboxEventAccountChanged, int64(19)).WillReturnResult(sqlmock.NewResult(1, 1))
+				}
+			}
+			mock.ExpectCommit()
+			tx, err := db.BeginTx(context.Background(), &sql.TxOptions{Isolation: sql.LevelSerializable})
+			require.NoError(t, err)
+			message, err := session.bindUsable(context.Background(), tx, 19)
+			require.NoError(t, err)
+			if tt.changed {
+				require.Contains(t, message, "调度设置已更改")
+			} else if tt.free {
+				require.Contains(t, message, "切换")
+			} else {
+				require.Contains(t, message, "已分配账号")
+			}
+			require.NoError(t, tx.Commit())
+			require.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}
+
+func TestPKRadarCandyNetworkRetryIsIsolatedFromAuthorization(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		radar    bool
+		err      error
+		response bool
+		want     bool
+	}{
+		{"radar read reset", true, &net.OpError{Op: "read", Net: "tcp", Err: io.ErrUnexpectedEOF}, false, true},
+		{"radar EOF", true, io.EOF, false, true},
+		{"radar timeout", true, context.DeadlineExceeded, false, true},
+		{"authorization read reset", false, &net.OpError{Op: "read", Net: "tcp", Err: io.ErrUnexpectedEOF}, false, false},
+		{"unknown plugin error", true, fmt.Errorf("transport failed"), false, false},
+		{"HTTP error remains final", true, io.EOF, true, false},
+		{"cancelled", true, context.Canceled, false, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.WithValue(context.Background(), accountCandyProxyRetryKey{}, true)
+			ctx = context.WithValue(ctx, radarCandyProxyRetryKey{}, tt.radar)
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://example.test", strings.NewReader("payload"))
+			require.NoError(t, err)
+			_, err = doAccountCandyTLSHandshakeRetry(req, func(r *http.Request) (*http.Response, error) {
+				httptrace.ContextClientTrace(r.Context()).WroteHeaders()
+				if tt.response {
+					return newJSONResponse(http.StatusUnauthorized, ""), tt.err
+				}
+				return nil, tt.err
+			})
+			require.Equal(t, tt.want, accountCandyCanChangeProxy(err))
+		})
+	}
+}
+
+func TestPKRadarCandyCanContinuePastThreeDistinctFreeProxies(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+	pkCandyExpectFreeCandidate(mock, 0, 9, "second.example.test")
+	pkCandyExpectFreeCandidate(mock, 9, 10, "third.example.test")
+	pkCandyExpectFreeCandidate(mock, 10, 11, "fourth.example.test")
+	for _, id := range []int64{9, 10, 11} {
+		pkCandyExpectUnlock(mock, id)
+	}
+	session := newAccountCandyProxySession(db)
+	session.limit = 0
+	var previous *accountCandyProxyAttempt
+	for i := 1; i <= 4; i++ {
+		previous, err = session.next(context.Background(), pkCandyRetryTestAccount(), previous)
+		require.NoError(t, err)
+		require.Equal(t, i, previous.number)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = session.next(ctx, pkCandyRetryTestAccount(), previous)
+	require.ErrorIs(t, err, context.Canceled)
+	session.close()
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -1112,4 +1408,101 @@ func TestAccountTestService_OpenAIChatCompletionsPathRejectsNonJSONStream(t *tes
 	require.Contains(t, err.Error(), "Invalid Chat Completions response from /v1/chat/completions")
 	require.Contains(t, recorder.Body.String(), "/v1/chat/completions")
 	require.NotContains(t, recorder.Body.String(), `"success":true`)
+}
+
+func TestPKAccountCandyHTTPStatusSurvivesSafeErrorFormatting(t *testing.T) {
+	for _, chat := range []bool{false, true} {
+		for _, status := range []int{401, 402, 429, 500, 502, 503} {
+			for _, body := range []string{
+				`{"error":{"message":"credential private-echo-value rejected","code":"account_rejected","api_key":"hidden-field"}}`,
+				`<html><body>private-echo-value raw upstream page</body></html>`,
+				`{"error":{"message":"<html>private-echo-value raw upstream page</html>"}}`,
+			} {
+				t.Run(fmt.Sprintf("chat=%t/status=%d/%d", chat, status, len(body)), func(t *testing.T) {
+					upstream := &queuedHTTPUpstream{responses: []*http.Response{newJSONResponse(status, body)}}
+					svc := &AccountTestService{httpUpstream: upstream, cfg: &config.Config{}}
+					account := &Account{ID: 91, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Concurrency: 1, Credentials: map[string]any{"api_key": "private-echo-value", "base_url": "https://upstream.example.com"}}
+					if chat {
+						account.Extra = map[string]any{openai_compat.ExtraKeyResponsesSupported: false}
+					}
+					text, err := svc.runAccountCandyProbe(context.Background(), account, account, defaultAccountCandyConfig())
+					require.Empty(t, text)
+					require.ErrorContains(t, err, fmt.Sprintf("HTTP %d", status))
+					message := accountCandySafeError(err)
+					require.Contains(t, message, fmt.Sprintf("HTTP %d", status))
+					for _, secret := range []string{"private-echo-value", "hidden-field", "<html>", "raw upstream page"} {
+						require.NotContains(t, message, secret)
+					}
+					require.Len(t, upstream.requests, 1)
+				})
+			}
+		}
+	}
+}
+
+func TestPKAccountCandyTransportFailureHasNoInventedHTTPStatus(t *testing.T) {
+	for _, chat := range []bool{false, true} {
+		upstream := &queuedHTTPUpstream{errors: []error{&net.OpError{Op: "dial", Net: "tcp", Err: fmt.Errorf("private-proxy-password")}}}
+		svc := &AccountTestService{httpUpstream: upstream, cfg: &config.Config{}}
+		account := &Account{ID: 92, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Concurrency: 1, Credentials: map[string]any{"api_key": "private-key", "base_url": "https://upstream.example.com"}}
+		if chat {
+			account.Extra = map[string]any{openai_compat.ExtraKeyResponsesSupported: false}
+		}
+		text, err := svc.runAccountCandyProbe(context.Background(), account, account, defaultAccountCandyConfig())
+		require.Empty(t, text)
+		require.ErrorContains(t, err, "未收到 HTTP 响应")
+		require.Contains(t, accountCandySafeError(err), "未收到 HTTP 响应")
+		require.NotContains(t, accountCandySafeError(err), "private-proxy-password")
+		require.NotContains(t, accountCandySafeError(err), "HTTP 500")
+	}
+}
+
+func TestPKAccountCandyHTTP200BodyFailureKeepsStatusAndRadarRetryBoundary(t *testing.T) {
+	for _, radar := range []bool{false, true} {
+		for _, network := range []bool{false, true} {
+			ctx, _ := newTestContext()
+			ctx.Set(accountCandyProbeKey, &accountCandyProbe{})
+			if radar {
+				ctx.Request = ctx.Request.WithContext(context.WithValue(ctx.Request.Context(), radarCandyProxyRetryKey{}, true))
+			}
+			response := newJSONResponse(http.StatusOK, "data: malformed JSON\n\n")
+			if network {
+				response.Body = io.NopCloser(io.MultiReader(strings.NewReader("data: {\"type\":\"response.output_text.delta\",\"delta\":\"21\"}\n\n"), iotest.ErrReader(io.ErrUnexpectedEOF)))
+			}
+			err := finishAccountCandyProbe(ctx, response, false)
+			require.ErrorContains(t, err, "HTTP 200")
+			require.Contains(t, accountCandySafeError(err), "HTTP 200")
+			require.Equal(t, radar && network, accountCandyCanChangeProxy(err))
+		}
+	}
+}
+
+func TestPKAccountCandyHTTP200CompleteJSONIsNotReplayed(t *testing.T) {
+	for _, tc := range []struct {
+		name, body    string
+		chat, failure bool
+	}{
+		{name: "responses complete answer", body: `{"status":"completed","output":[{"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"<final_answer>21</final_answer>"}]}]}`},
+		{name: "chat complete answer", chat: true, body: `{"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"<final_answer>21</final_answer>"}}]}`},
+		{name: "responses complete upstream error", body: `{"error":{"code":"account_rejected","message":"account rejected"}}`, failure: true},
+		{name: "chat complete upstream error", chat: true, body: `{"error":{"code":"account_rejected","message":"account rejected"}}`, failure: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, _ := newTestContext()
+			probe := &accountCandyProbe{}
+			ctx.Set(accountCandyProbeKey, probe)
+			ctx.Request = ctx.Request.WithContext(context.WithValue(ctx.Request.Context(), radarCandyProxyRetryKey{}, true))
+			response := newJSONResponse(http.StatusOK, "")
+			response.Body = io.NopCloser(io.MultiReader(strings.NewReader(tc.body), iotest.ErrReader(io.ErrUnexpectedEOF)))
+			err := finishAccountCandyProbe(ctx, response, tc.chat)
+			if tc.failure {
+				require.ErrorContains(t, err, "HTTP 200")
+				require.ErrorContains(t, err, "account_rejected")
+			} else {
+				require.NoError(t, err)
+				require.Contains(t, probe.text, "21")
+			}
+			require.False(t, accountCandyCanChangeProxy(err), "complete answer or upstream error must never replay")
+		})
+	}
 }

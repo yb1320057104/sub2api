@@ -23,7 +23,7 @@ export default {
     title: 'Account candy test',
     settings: 'Candy test settings',
     description: 'Ask each account the same candy question directly. The expected answer is always 21.',
-    supported: 'Available for OpenAI accounts, independently of group observation. Only accounts matching a source group rule below are tested. Enabling and saving schedules matching accounts immediately, then repeats at this interval. Scheduled tests skip inactive accounts and accounts with scheduling paused. Up to 3 accounts run concurrently. Connection failures retry within this run through temporary proxies from Native IP Management, using at most 3 egress routes without changing account bindings. Sent requests, HTTP errors, and response-body failures are not replayed.',
+    supported: 'Available for OpenAI accounts, independently of group observation. Only accounts matching a source group rule below are tested. Enabling and saving schedules matching accounts immediately, then repeats at this interval. Scheduled tests skip inactive accounts and accounts with scheduling paused. Up to 3 accounts run concurrently. Radar account tests retry egress probe and network failures through unused proxies from Native IP Management until they succeed, exhaust the free pool, time out, or are cancelled. A backup proxy is assigned to the account after its egress probe and a complete model response succeed. Completed answers are not tested again. HTTP status codes and sanitized causes are shown; explicit account or model errors are not retried blindly.',
     enabled: 'Enable scheduled account tests',
     interval: 'Test interval (minutes)',
     model: 'Test model',

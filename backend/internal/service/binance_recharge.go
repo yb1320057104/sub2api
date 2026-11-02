@@ -47,11 +47,19 @@ type BinanceRechargeAccount struct {
 	HasOrders           bool       `json:"has_orders"`
 	LastCheckedAt       *time.Time `json:"last_checked_at,omitempty"`
 	LastError           string     `json:"last_error,omitempty"`
+	CheckState          string     `json:"check_state"`
+	RetryAfterSeconds   int64      `json:"retry_after_seconds"`
+	CheckAvailableAt    *time.Time `json:"check_available_at,omitempty"`
 	CreatedAt           time.Time  `json:"created_at"`
 	UpdatedAt           time.Time  `json:"updated_at"`
 	apiKeyEncrypted     string
 	apiSecretEncrypted  string
 	proxyURLCiphertext  string
+	nextPollAt          time.Time
+	apiLockedUntil      time.Time
+	billsNextQueryAt    time.Time
+	failureCount        int
+	hasPollToken        bool
 }
 
 type BinanceRechargeAccountInput struct {
@@ -208,17 +216,20 @@ func normalizeBinanceRechargeAccountInput(input BinanceRechargeAccountInput) (Bi
 
 const binanceAccountColumns = `a.id, a.name, a.recipient_uid, a.enabled, a.order_ttl_minutes, a.credit_multiplier::text,
 a.api_key_encrypted, a.api_secret_encrypted, a.proxy_url_encrypted, a.proxy_preflight, a.last_checked_at, a.last_error, a.created_at, a.updated_at,
-EXISTS(SELECT 1 FROM binance_recharge_orders o WHERE o.account_id = a.id)`
+EXISTS(SELECT 1 FROM binance_recharge_orders o WHERE o.account_id = a.id),
+a.next_poll_at,a.api_locked_until,a.bills_next_query_at,a.failure_count,a.poll_token<>''`
 
 type binanceRowScanner interface{ Scan(...any) error }
 
 func scanBinanceRechargeAccount(row binanceRowScanner) (*BinanceRechargeAccount, error) {
 	var a BinanceRechargeAccount
 	err := row.Scan(&a.ID, &a.Name, &a.RecipientUID, &a.Enabled, &a.OrderTTLMinutes, &a.CreditMultiplier,
-		&a.apiKeyEncrypted, &a.apiSecretEncrypted, &a.proxyURLCiphertext, &a.ProxyPreflight, &a.LastCheckedAt, &a.LastError, &a.CreatedAt, &a.UpdatedAt, &a.HasOrders)
+		&a.apiKeyEncrypted, &a.apiSecretEncrypted, &a.proxyURLCiphertext, &a.ProxyPreflight, &a.LastCheckedAt, &a.LastError, &a.CreatedAt, &a.UpdatedAt, &a.HasOrders,
+		&a.nextPollAt, &a.apiLockedUntil, &a.billsNextQueryAt, &a.failureCount, &a.hasPollToken)
 	a.APIKeyConfigured = a.apiKeyEncrypted != ""
 	a.APISecretConfigured = a.apiSecretEncrypted != ""
 	a.ProxyConfigured = a.proxyURLCiphertext != ""
+	a.setCheckState(time.Now().UTC(), false)
 	return &a, err
 }
 
@@ -351,13 +362,19 @@ func (s *BinanceRechargeService) SaveAccount(ctx context.Context, id int64, inpu
 			return nil, infraerrors.BadRequest("BINANCE_PROXY_INVALID", "已保存的专属代理不支持当前预探测配置，请重新填写代理")
 		}
 	}
-	if id > 0 && (proxyCiphertext != current.proxyURLCiphertext || proxyPreflight != current.ProxyPreflight) {
+	// Ciphertexts can change even when plaintext is identical. Only an actual
+	// route/credential change may recover a failed query's backoff.
+	connectionChanged := s.binanceAccountSecretChanged(current.apiKeyEncrypted, input.APIKey) ||
+		s.binanceAccountSecretChanged(current.apiSecretEncrypted, input.APISecret) ||
+		s.binanceAccountSecretChanged(current.proxyURLCiphertext, input.ProxyURL) ||
+		(input.ClearProxy && current.proxyURLCiphertext != "") || proxyPreflight != current.ProxyPreflight
+	if id > 0 && connectionChanged {
 		var polling bool
 		if err := tx.QueryRowContext(ctx, `SELECT poll_token<>'' AND api_locked_until>NOW() FROM binance_recharge_accounts WHERE id=$1`, id).Scan(&polling); err != nil {
 			return nil, err
 		}
 		if polling {
-			return nil, infraerrors.Conflict("BINANCE_ACCOUNT_POLLING", "币安查询进行中，请查询结束后再修改专属代理")
+			return nil, infraerrors.Conflict("BINANCE_ACCOUNT_POLLING", "币安查询进行中，请查询结束后再修改代理或 API 凭据")
 		}
 	}
 	if input.Enabled && (keyEncrypted == "" || secretEncrypted == "") {
@@ -380,6 +397,15 @@ func (s *BinanceRechargeService) SaveAccount(ctx context.Context, id int64, inpu
 			return nil, infraerrors.Conflict("BINANCE_UID_EXISTS", "该收款 UID 已配置")
 		}
 		return nil, err
+	}
+	if connectionChanged && current.failureCount > 0 && !current.apiLockedUntil.After(time.Now().UTC()) && binanceRechargeRecoverableError(current.LastError) {
+		// The row remains locked by this transaction. Preserve all active leases,
+		// hard provider cooldowns, legacy 429/418 delays and unknown old errors.
+		_, err = tx.ExecContext(ctx, `UPDATE binance_recharge_accounts SET next_poll_at=NOW(),bills_next_query_at=NOW(),failure_count=0,last_error='',poll_token=''
+WHERE id=$1 AND api_locked_until<=NOW() AND failure_count>0 AND last_error=$2`, id, current.LastError)
+		if err != nil {
+			return nil, err
+		}
 	}
 	a, err := scanBinanceRechargeAccount(tx.QueryRowContext(ctx, `SELECT `+binanceAccountColumns+` FROM binance_recharge_accounts a WHERE a.id=$1`, id))
 	if err != nil {
@@ -436,10 +462,32 @@ func binanceRechargePollError(err error) string {
 	}
 	var limited *binancepay.RateLimitError
 	if errors.As(err, &limited) {
-		return "币安 API 限流，已延后查收"
+		return binanceRechargeRateLimitMessage
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return "币安查收超时，稍后自动重试"
 	}
 	return "币安查收失败，请检查 API 读取权限、收款 UID、凭据和网络"
+}
+
+// A replacement can repair an undecryptable stored value. Re-entering an
+// identical value must not bypass the scheduler's delay.
+func (s *BinanceRechargeService) binanceAccountSecretChanged(ciphertext, replacement string) bool {
+	if replacement == "" {
+		return false
+	}
+	previous, err := s.encryptor.Decrypt(ciphertext)
+	return err != nil || previous != replacement
+}
+
+func binanceRechargeRecoverableError(message string) bool {
+	switch message {
+	case "币安专属代理配置不可用，未执行查账，请检查该收款账户代理配置",
+		"币安代理节点探测失败，未执行查账，稍后自动重试",
+		"币安查收超时，稍后自动重试",
+		"币安查收失败，请检查 API 读取权限、收款 UID、凭据和网络":
+		return true
+	default:
+		return false
+	}
 }

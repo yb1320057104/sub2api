@@ -975,7 +975,7 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 			// Keep the existing redacted transport diagnostics in server logs;
 			// the candy result writer separately applies its fixed safe messages.
 			logAccountTestError(c, fmt.Sprintf("Request failed: %s", err.Error()))
-			return err
+			return accountCandyTransportFailure(err, resp)
 		}
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Request failed: %s", err.Error()))
 	}
@@ -1012,7 +1012,7 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 			return s.testOpenAIAccountConnection(c, account, modelID, prompt, mode)
 		}
 		if candy != nil {
-			return accountCandyUpstreamFailure(fmt.Sprintf("账号测试请求返回 HTTP %d", resp.StatusCode), body)
+			return accountCandyHTTPFailure(resp.StatusCode, body)
 		}
 		if resp.StatusCode == http.StatusTooManyRequests {
 			s.reconcileOpenAI429State(ctx, account, resp.Header, body)
@@ -2215,7 +2215,7 @@ func (s *AccountTestService) testOpenAIChatCompletionsConnection(
 	if err != nil {
 		if candyProbe(c) != nil {
 			logAccountTestError(c, fmt.Sprintf("Chat Completions API (/v1/chat/completions) request failed: %s", err.Error()))
-			return err
+			return accountCandyTransportFailure(err, resp)
 		}
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Chat Completions API (/v1/chat/completions) request failed: %s", err.Error()))
 	}
@@ -2224,7 +2224,7 @@ func (s *AccountTestService) testOpenAIChatCompletionsConnection(
 	if resp.StatusCode != http.StatusOK {
 		if candyProbe(c) != nil {
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, intelligenceTestErrorBodyLimit))
-			return accountCandyUpstreamFailure(fmt.Sprintf("账号测试请求返回 HTTP %d", resp.StatusCode), body)
+			return accountCandyHTTPFailure(resp.StatusCode, body)
 		}
 		body, _ := io.ReadAll(resp.Body)
 		if resp.StatusCode == http.StatusTooManyRequests {

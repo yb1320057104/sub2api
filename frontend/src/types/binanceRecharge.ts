@@ -1,4 +1,5 @@
 export type BinanceRechargeStatus = 'PENDING' | 'COMPLETED' | 'EXPIRED' | 'REVIEW'
+export type BinanceRechargeCheckState = 'ready' | 'running' | 'interval_wait' | 'retry_wait' | 'rate_limited'
 
 export interface BinanceRechargeAccountOption {
   id: number
@@ -24,6 +25,9 @@ export interface BinanceRechargeAccount extends BinanceRechargeAccountOption {
   proxy_configured: boolean
   proxy_preflight: boolean
   has_orders: boolean
+  check_state: BinanceRechargeCheckState
+  retry_after_seconds: number
+  check_available_at?: string
   last_checked_at?: string
   last_error?: string
   created_at: string

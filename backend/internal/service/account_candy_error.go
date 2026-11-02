@@ -1,8 +1,12 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
+	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
@@ -28,6 +32,71 @@ func accountCandyUpstreamFailure(prefix string, raw []byte) error {
 		return candyProbeFailure(prefix + "（上游未提供可用的结构化错误详情）；未转组。")
 	}
 	return candyProbeFailure(prefix + "：" + detail + "；未转组。")
+}
+
+func accountCandyHTTPFailure(status int, raw []byte) error {
+	reason := "上游拒绝请求"
+	switch status {
+	case http.StatusBadRequest:
+		reason = "请求参数被拒绝"
+	case http.StatusUnauthorized:
+		reason = "上游未授权，请检查账号凭据"
+	case http.StatusPaymentRequired:
+		reason = "上游要求付费，请检查余额或额度"
+	case http.StatusForbidden:
+		reason = "上游拒绝访问，请检查权限或访问限制"
+	case http.StatusNotFound:
+		reason = "上游接口或模型不存在"
+	case http.StatusProxyAuthRequired:
+		reason = "代理认证失败"
+	case http.StatusRequestTimeout, http.StatusGatewayTimeout:
+		reason = "上游请求超时"
+	case http.StatusTooManyRequests:
+		reason = "上游限流，请检查速率或额度限制"
+	default:
+		if status >= 500 {
+			reason = "上游服务异常"
+		}
+	}
+	if detail := strings.TrimSpace(accountCandyUpstreamDetail(raw, 0)); detail != "" {
+		// Exact account-secret redaction must run before length limiting: a
+		// truncated secret can no longer be matched against its saved value.
+		lower := strings.ToLower(detail)
+		if strings.Contains(lower, "<html") || strings.Contains(lower, "<!doctype") {
+			detail = "上游返回了网页错误内容"
+		}
+		reason += "；" + detail
+	}
+	return &accountCandyProbeError{httpStatus: status, message: reason + "；未转组。"}
+}
+
+// Do not expose a transport error's signed URL, proxy credentials or raw
+// response. Retry markers keep their type so the caller can enforce its policy.
+func accountCandyTransportFailure(err error, response *http.Response) error {
+	if response != nil {
+		if response.Body != nil {
+			_ = response.Body.Close()
+		}
+		return &accountCandyProbeError{httpStatus: response.StatusCode, message: "已收到上游响应，但请求传输未完成；未转组。"}
+	}
+	if accountCandyCanChangeProxy(err) {
+		return err
+	}
+	reason := "请求发送失败，请检查账号出口与网络"
+	var dns *net.DNSError
+	var operation *net.OpError
+	var network net.Error
+	switch {
+	case errors.Is(err, context.Canceled):
+		reason = "请求已取消"
+	case errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &network) && network.Timeout()):
+		reason = "连接或等待上游响应超时"
+	case errors.As(err, &dns):
+		reason = "域名解析失败"
+	case errors.As(err, &operation):
+		reason = "代理或网络连接失败"
+	}
+	return candyProbeFailure("未收到 HTTP 响应：" + reason + "；未转组。")
 }
 
 func accountCandyUpstreamDetail(raw []byte, depth int) string {
