@@ -333,7 +333,7 @@ func (h *GatewayHandler) GeminiCachedContentsCreate(c *gin.Context) {
 }
 
 // GeminiCachedContentsList GET /v1beta/cachedContents
-// 只返回当前 API Key 在当前分组下仍有效的缓存，不透传上游 list（同一账号上其他租户的缓存不可见）。
+// 只返回当前 API Key 在当前获准分组下仍有效的缓存，不透传上游 list（同一账号上其他租户的缓存不可见）。
 func (h *GatewayHandler) GeminiCachedContentsList(c *gin.Context) {
 	apiKey, _, reqLog, ok := h.geminiCachedContentsPreamble(c, "handler.gemini_v1beta.cached_contents.list")
 	if !ok {
@@ -359,7 +359,7 @@ func (h *GatewayHandler) GeminiCachedContentsList(c *gin.Context) {
 		}
 		beforeID = id
 	}
-	records, err := h.geminiCachedContentService.List(c.Request.Context(), apiKey.ID, *apiKey.GroupID, beforeID, pageSize+1)
+	records, err := h.geminiCachedContentService.ListForGroups(c.Request.Context(), apiKey.ID, middleware.APIKeyResourceGroupIDs(c, apiKey), beforeID, pageSize+1)
 	if err != nil {
 		reqLog.Error("gemini.cached_content.list_failed", zap.Error(err))
 		googleError(c, http.StatusInternalServerError, "Failed to list cached contents")

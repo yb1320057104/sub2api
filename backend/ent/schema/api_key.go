@@ -44,6 +44,9 @@ func (APIKey) Fields() []ent.Field {
 		field.Int64("group_id").
 			Optional().
 			Nillable(),
+		field.JSON("group_ids", []int64{}).
+			Optional().
+			Comment("Ordered candidate groups; NULL keeps the legacy group_id binding"),
 		field.String("status").
 			MaxLen(20).
 			Default(domain.StatusActive),

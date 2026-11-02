@@ -1449,6 +1449,7 @@ func TestPKCyberPolicyAdminEndpointsRejectOrdinaryUsers(t *testing.T) {
 		handler      gin.HandlerFunc
 	}{
 		{"ranking", http.MethodGet, h.CyberPolicyRanking},
+		{"records", http.MethodGet, h.CyberPolicyRecords},
 		{"settings", http.MethodGet, h.CyberPolicySettings},
 		{"save-settings", http.MethodPut, h.SaveCyberPolicySettings},
 		{"preview", http.MethodPost, h.PreviewCyberPolicyDeduction},

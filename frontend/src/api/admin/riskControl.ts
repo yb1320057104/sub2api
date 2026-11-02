@@ -33,6 +33,8 @@ export interface ContentModerationConfig {
   sample_rate: number
   all_groups: boolean
   group_ids: number[]
+  user_allowlist_ids?: number[]
+  user_allowlist_inherited?: boolean
   record_non_hits: boolean
   thresholds: Record<string, number>
   worker_count: number
@@ -118,6 +120,7 @@ export interface UpdateContentModerationConfig {
   sample_rate?: number
   all_groups?: boolean
   group_ids?: number[]
+  user_allowlist_ids?: number[]
   record_non_hits?: boolean
   thresholds?: Record<string, number>
   worker_count?: number

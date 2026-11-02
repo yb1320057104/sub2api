@@ -163,6 +163,11 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 			AbortWithError(c, 401, "USER_INACTIVE", "User account is not active")
 			return
 		}
+		var groupRouted bool
+		apiKey, groupRouted = routeAPIKeyRequestGroup(c, apiKey, subscriptionService, cfg)
+		if !groupRouted {
+			return
+		}
 		if abortIfAPIKeyGroupUnavailable(c, apiKey) {
 			return
 		}
@@ -200,7 +205,8 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 		isSubscriptionType := apiKey.Group != nil && apiKey.Group.IsSubscriptionType()
 
 		// 倍率自省不需要订阅数据；/v1/usage 仍保留原有订阅读取行为。
-		if isSubscriptionType && subscriptionService != nil && !billingInfoRequest {
+		deferGroupBilling := deferAPIKeyWebSocketGroupBilling(c, apiKey)
+		if isSubscriptionType && subscriptionService != nil && !billingInfoRequest && !deferGroupBilling {
 			sub, subErr := subscriptionService.GetActiveSubscription(
 				c.Request.Context(),
 				apiKey.User.ID,
@@ -241,7 +247,9 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 			}
 
 			// 订阅模式：验证订阅限额
-			if subscription != nil {
+			if deferGroupBilling {
+				// The first WebSocket frame selects and validates its actual group.
+			} else if subscription != nil {
 				needsMaintenance, validateErr := subscriptionService.ValidateAndCheckLimits(subscription, apiKey.Group)
 				if needsMaintenance {
 					refreshed, maintenanceErr := subscriptionService.EnsureWindowMaintenance(c.Request.Context(), subscription)

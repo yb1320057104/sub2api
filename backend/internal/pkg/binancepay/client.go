@@ -453,25 +453,6 @@ func (value *textID) UnmarshalJSON(raw []byte) error {
 	return nil
 }
 
-func parseProxyURL(raw string) (*url.URL, error) {
-	proxy, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil || proxy.Hostname() == "" || proxy.Opaque != "" || (proxy.Path != "" && proxy.Path != "/") || proxy.RawQuery != "" || proxy.ForceQuery || proxy.Fragment != "" {
-		return nil, errors.New("binance: invalid proxy configuration")
-	}
-	switch proxy.Scheme {
-	case "http", "https", "socks5", "socks5h":
-	default:
-		return nil, errors.New("binance: unsupported proxy scheme")
-	}
-	if port := proxy.Port(); port != "" {
-		value, err := strconv.Atoi(port)
-		if err != nil || value < 1 || value > 65535 {
-			return nil, errors.New("binance: invalid proxy port")
-		}
-	}
-	return proxy, nil
-}
-
 func retryDelay(header string, status int) time.Duration {
 	delay := 2 * time.Minute
 	if status == http.StatusTeapot {

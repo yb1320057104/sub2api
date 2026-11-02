@@ -115,7 +115,7 @@ func googleSecurityAuditError(c *gin.Context, decision *securityaudit.Decision) 
 		return
 	}
 	if decision.Legacy != nil && decision.Legacy.Blocked {
-		googleErrorWithType(c, securityAuditStatus(decision), securityAuditErrorCode(decision), "", securityAuditMessage(decision))
+		googleErrorWithType(c, securityAuditStatus(decision), securityAuditErrorCode(decision), securityAuditErrorCode(decision), securityAuditMessage(decision))
 		return
 	}
 	errType := "api_error"

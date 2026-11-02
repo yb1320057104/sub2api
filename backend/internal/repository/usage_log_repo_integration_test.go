@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
@@ -1705,13 +1706,15 @@ func configurePKCyberAutoDisable(t *testing.T, enabled bool, threshold int64, re
 	ctx := context.Background()
 	var oldEnabled, oldReset bool
 	var oldThreshold int64
-	err := integrationDB.QueryRowContext(ctx, `SELECT auto_disable_enabled,auto_disable_threshold,reset_on_manual_enable FROM cyber_policy_settings WHERE id=1`).Scan(&oldEnabled, &oldThreshold, &oldReset)
+	var oldGroups, oldUsers pq.Int64Array
+	var oldRules string
+	err := integrationDB.QueryRowContext(ctx, `SELECT auto_disable_enabled,auto_disable_threshold,reset_on_manual_enable,group_ids,user_allowlist_ids,group_rules::text FROM cyber_policy_settings WHERE id=1`).Scan(&oldEnabled, &oldThreshold, &oldReset, &oldGroups, &oldUsers, &oldRules)
 	require.NoError(t, err)
 	t.Cleanup(func() {
-		_, restoreErr := integrationDB.ExecContext(ctx, `UPDATE cyber_policy_settings SET auto_disable_enabled=$1,auto_disable_threshold=$2,reset_on_manual_enable=$3 WHERE id=1`, oldEnabled, oldThreshold, oldReset)
+		_, restoreErr := integrationDB.ExecContext(ctx, `UPDATE cyber_policy_settings SET auto_disable_enabled=$1,auto_disable_threshold=$2,reset_on_manual_enable=$3,group_ids=$4,user_allowlist_ids=$5,group_rules=$6::jsonb WHERE id=1`, oldEnabled, oldThreshold, oldReset, pq.Array(oldGroups), pq.Array(oldUsers), oldRules)
 		require.NoError(t, restoreErr)
 	})
-	_, err = integrationDB.ExecContext(ctx, `UPDATE cyber_policy_settings SET auto_disable_enabled=$1,auto_disable_threshold=$2,reset_on_manual_enable=$3 WHERE id=1`, enabled, threshold, reset)
+	_, err = integrationDB.ExecContext(ctx, `UPDATE cyber_policy_settings SET auto_disable_enabled=$1,auto_disable_threshold=$2,reset_on_manual_enable=$3,group_ids='{}',user_allowlist_ids='{}',group_rules='[]' WHERE id=1`, enabled, threshold, reset)
 	require.NoError(t, err)
 }
 
@@ -1720,12 +1723,22 @@ func pkCyberAutoDisableFixture(t *testing.T, role string) (*service.User, *servi
 	ctx := context.Background()
 	client := testEntClient(t)
 	user := mustCreateUser(t, client, &service.User{Email: "pk-cyber-auto-" + uuid.NewString() + "@example.com", Role: role, Balance: 100})
-	key := mustCreateApiKey(t, client, &service.APIKey{UserID: user.ID, Key: "sk-pk-cyber-auto-" + uuid.NewString(), Name: "cyber-auto"})
+	var groupID int64
+	require.NoError(t, integrationDB.QueryRowContext(ctx, `INSERT INTO groups(name) VALUES($1) RETURNING id`, "pk-cyber-auto-"+uuid.NewString()).Scan(&groupID))
+	_, err := integrationDB.ExecContext(ctx, `UPDATE cyber_policy_settings SET group_ids=array_append(group_ids,$1::bigint) WHERE id=1`, groupID)
+	require.NoError(t, err)
+	key := mustCreateApiKey(t, client, &service.APIKey{UserID: user.ID, Key: "sk-pk-cyber-auto-" + uuid.NewString(), Name: "cyber-auto", GroupID: &groupID})
 	account := mustCreateAccount(t, client, &service.Account{Name: "pk-cyber-auto-" + uuid.NewString()})
 	t.Cleanup(func() {
-		_, err := integrationDB.ExecContext(ctx, `DELETE FROM users WHERE id=$1`, user.ID)
+		_, err := integrationDB.ExecContext(ctx, `DELETE FROM cyber_policy_auto_charges WHERE user_id=$1`, user.ID)
+		require.NoError(t, err)
+		_, err = integrationDB.ExecContext(ctx, `DELETE FROM cyber_policy_count_events WHERE user_id=$1`, user.ID)
+		require.NoError(t, err)
+		_, err = integrationDB.ExecContext(ctx, `DELETE FROM users WHERE id=$1`, user.ID)
 		require.NoError(t, err)
 		_, err = integrationDB.ExecContext(ctx, `DELETE FROM accounts WHERE id=$1`, account.ID)
+		require.NoError(t, err)
+		_, err = integrationDB.ExecContext(ctx, `DELETE FROM groups WHERE id=$1`, groupID)
 		require.NoError(t, err)
 		_, err = integrationDB.ExecContext(ctx, `DELETE FROM auth_cache_invalidation_outbox WHERE cache_key=encode(sha256(convert_to($1,'UTF8')),'hex')`, key.Key)
 		require.NoError(t, err)
@@ -1737,7 +1750,7 @@ func pkCyberAutoDisableLog(user *service.User, key *service.APIKey, account *ser
 	return &service.UsageLog{
 		UserID: user.ID, APIKeyID: key.ID, AccountID: account.ID,
 		RequestID: uuid.NewString(), Model: "cyber-auto-fixture", RequestType: service.RequestTypeCyberBlocked,
-		CreatedAt: time.Now().UTC(),
+		CreatedAt: time.Now().UTC(), GroupID: key.GroupID,
 	}
 }
 
@@ -1958,4 +1971,49 @@ INSERT INTO usage_logs VALUES(1,4,'2026-09-01T00:00:00Z');`)
 	require.NoError(t, err)
 	require.NoError(t, tx.QueryRowContext(ctx, `SELECT trigger_count FROM cyber_policy_user_counters WHERE user_id=1`).Scan(&count))
 	require.Zero(t, count)
+}
+
+func TestPKCyberGroupCountingSnapshotsScopeAndKeepsSkippedUsage(t *testing.T) {
+	configurePKCyberAutoDisable(t, true, 3, true)
+	ctx := context.Background()
+	user, key, account, repo := pkCyberAutoDisableFixture(t, service.RoleUser)
+	selected := pkCyberAutoDisableLog(user, key, account)
+	_, err := repo.Create(ctx, selected)
+	require.NoError(t, err)
+	requirePKCyberAutoDisableState(t, user.ID, service.StatusActive, 1)
+	var status, reason, groupName string
+	var revision int64
+	require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT count_status,count_reason,group_name,settings_revision FROM cyber_policy_count_events WHERE usage_id=$1 AND usage_created_at=$2`, selected.ID, selected.CreatedAt).Scan(&status, &reason, &groupName, &revision))
+	require.Equal(t, "counted", status)
+	require.Empty(t, reason)
+	require.NotEmpty(t, groupName)
+	_, err = integrationDB.ExecContext(ctx, `UPDATE cyber_policy_settings SET group_ids='{}' WHERE id=1`)
+	require.NoError(t, err)
+	skipped := pkCyberAutoDisableLog(user, key, account)
+	require.NoError(t, repo.CreateBestEffort(ctx, skipped))
+	require.NoError(t, repo.CreateBestEffort(ctx, skipped))
+	ungrouped := pkCyberAutoDisableLog(user, key, account)
+	ungrouped.GroupID = nil
+	_, err = repo.Create(ctx, ungrouped)
+	require.NoError(t, err)
+	requirePKCyberAutoDisableState(t, user.ID, service.StatusActive, 1)
+	var skippedCount, usageCount int
+	require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM cyber_policy_count_events WHERE user_id=$1 AND count_status='skipped' AND count_reason='group_not_enabled'`, user.ID).Scan(&skippedCount))
+	require.Equal(t, 2, skippedCount)
+	require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_logs WHERE user_id=$1 AND request_type=4`, user.ID).Scan(&usageCount))
+	require.Equal(t, 3, usageCount, "scope skipping must not remove safety-policy usage or deduplication")
+	_, err = integrationDB.ExecContext(ctx, `UPDATE cyber_policy_settings SET group_ids=ARRAY[$1]::bigint[],auto_disable_threshold=1 WHERE id=1`, *key.GroupID)
+	require.NoError(t, err)
+	requirePKCyberAutoDisableState(t, user.ID, service.StatusActive, 1)
+	inserted, err := repo.Create(ctx, selected)
+	require.NoError(t, err)
+	require.False(t, inserted, "replayed usage cannot add evidence or count")
+	requirePKCyberAutoDisableState(t, user.ID, service.StatusActive, 1)
+	_, err = repo.Create(ctx, pkCyberAutoDisableLog(user, key, account))
+	require.NoError(t, err)
+	requirePKCyberAutoDisableState(t, user.ID, service.StatusDisabled, 2)
+	var oldRevision int64
+	require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT settings_revision FROM cyber_policy_count_events WHERE usage_id=$1 AND usage_created_at=$2`, selected.ID, selected.CreatedAt).Scan(&oldRevision))
+	require.Equal(t, revision, oldRevision, "configuration changes cannot rewrite old count evidence")
+	requirePKCyberAuthInvalidations(t, key.Key, 1)
 }

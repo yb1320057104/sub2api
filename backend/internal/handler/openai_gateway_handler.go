@@ -43,6 +43,7 @@ type OpenAIGatewayHandler struct {
 	errorPassthroughService    *service.ErrorPassthroughService
 	contentModerationService   *service.ContentModerationService
 	securityAuditCoordinator   *securityaudit.Coordinator
+	cyberAuditRecorder         cyberAuditBlockRecorder
 	grokMediaEligibilityProber grokMediaEligibilityProber
 	opsService                 *service.OpsService
 	concurrencyHelper          *ConcurrencyHelper
@@ -2212,10 +2213,25 @@ func refreshOpenAIWSTurnBillingAPIKey(ctx context.Context, lookup openAIWSTurnAP
 		return conn
 	}
 	latest, err := lookup.GetByKey(ctx, conn.Key)
-	if err != nil || latest == nil || latest.ID != conn.ID || latest.GroupID == nil || *latest.GroupID != *conn.GroupID {
+	if err != nil || latest == nil || latest.ID != conn.ID {
 		return conn
 	}
-	group := latest.Group
+	var group *service.Group
+	for _, id := range latest.SelectedGroupIDs() {
+		if id != *conn.GroupID {
+			continue
+		}
+		if latest.Group != nil && latest.Group.ID == id {
+			group = latest.Group
+		}
+		for _, candidate := range latest.Groups {
+			if candidate != nil && candidate.ID == id {
+				group = candidate
+				break
+			}
+		}
+		break
+	}
 	if group == nil || group.ID != conn.Group.ID ||
 		group.Platform != conn.Group.Platform ||
 		group.SubscriptionType != conn.Group.SubscriptionType {
@@ -2539,6 +2555,13 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		return
 	}
 	// 分组级模型白名单：首帧校验客户端模型，不通过则关闭连接并标记运维原因。
+	if selected, routeErr := middleware2.ResolveAPIKeyWebSocketGroup(c, firstMessage); routeErr != nil {
+		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "No eligible account or billing permission in the selected groups")
+		return
+	} else if selected != nil {
+		apiKey = selected
+		ctx = c.Request.Context()
+	}
 	// 必须在合成路由解析和上游模型映射之前执行。
 	// 与 HTTP 准入一致：帧内重复 model 键/大小写变体可能被上游按末值绑定，
 	// 全部候选值逐一校验，任一未命中即拒绝。

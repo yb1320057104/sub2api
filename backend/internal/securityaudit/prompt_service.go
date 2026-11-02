@@ -155,7 +155,21 @@ func (s *PromptService) Enqueue(_ context.Context, req Request) error {
 	return nil
 }
 
-func (s *PromptService) Evaluate(ctx context.Context, req Request) (*PromptDecision, error) {
+func (s *PromptService) Evaluate(ctx context.Context, req Request) (decision *PromptDecision, evaluationErr error) {
+	logOnly := s.isUserAllowlisted(req.UserID)
+	if logOnly {
+		defer func() {
+			if evaluationErr != nil || decision == nil || decision.Kind == DecisionUnavailable || decision.Kind == DecisionInvalid {
+				LogWarn(EventGuardFailed, mergeLogFields(requestLogFields(req), map[string]any{"status": "user_exempt_allowed", "error_code": "audit_unavailable_log_only"}))
+				decision, evaluationErr = &PromptDecision{Kind: DecisionAllow, AllowNextStage: true}, nil
+				return
+			}
+			if decision.Kind == DecisionBlock {
+				applyPromptUserExemption(decision.Result)
+				decision.Kind, decision.ErrorCode, decision.AllowNextStage = DecisionFlag, "", true
+			}
+		}()
+	}
 	if s == nil || s.config == nil || s.evaluator == nil {
 		return nil, &GuardError{Code: ErrorCodeUnavailable}
 	}
@@ -174,6 +188,11 @@ func (s *PromptService) Evaluate(ctx context.Context, req Request) (*PromptDecis
 	}
 	if cfg.EffectiveMode() != ModeBlocking || !cfg.IncludesGroup(req.GroupID) {
 		return &PromptDecision{Kind: DecisionAllow, AllowNextStage: true}, nil
+	}
+	// The version-checked admission result, rather than a stale active list,
+	// determines whether the evaluator records an effective log-only finding.
+	if logOnly && !cfg.IsUserAllowlisted(req.UserID) {
+		cfg.UserAllowlistIDs = append(append([]int64{}, cfg.UserAllowlistIDs...), req.UserID)
 	}
 	snapshot, err := ExtractBlockingPromptSnapshot(req, cfg.BlockingLatestTurnOnly)
 	if errors.Is(err, ErrNoPromptText) {

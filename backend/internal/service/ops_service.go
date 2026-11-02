@@ -489,6 +489,12 @@ func (s *OpsService) prepareErrorLogInput(ctx context.Context, entry *OpsInsertE
 	// earlier inference attempt cannot leak its status or text into top-level
 	// auth fields even if a caller supplied stale single-value context.
 	for i := len(entry.UpstreamErrors) - 1; i >= 0; i-- {
+		// A confirmed local audit rejection can follow an earlier WebSocket
+		// account/auth attempt. Keep the terminal decision's attribution; the
+		// old attempts remain in their separate sanitized evidence array.
+		if entry.ErrorType == "security_audit_block" && entry.ErrorSource == "security_audit" {
+			break
+		}
 		last := entry.UpstreamErrors[i]
 		if last == nil {
 			continue

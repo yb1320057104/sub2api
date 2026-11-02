@@ -5,6 +5,11 @@ import type { DOMWrapper, VueWrapper } from '@vue/test-utils'
 
 import RiskControlView from '../RiskControlView.vue'
 import type { ContentModerationAPIKeyStatus, ContentModerationConfig, UpdateContentModerationConfig } from '@/api/admin/riskControl'
+import { CONTENT_AUDIT_KEYWORD_TEMPLATES } from '@/utils/contentAuditKeywordTemplates'
+import UserAllowlistSelector from '@/components/admin/user/UserAllowlistSelector.vue'
+
+const userMocks = vi.hoisted(() => ({ list: vi.fn(), getById: vi.fn() }))
+vi.mock('@/api/admin/users', () => ({ default: userMocks }))
 
 const {
   getConfig,
@@ -202,6 +207,8 @@ describe('admin RiskControlView', () => {
     showError.mockReset()
     showSuccess.mockReset()
     testAPIKeys.mockReset()
+    userMocks.list.mockReset().mockResolvedValue({ items: [], total: 0 })
+    userMocks.getById.mockReset().mockRejectedValue(new Error('not found'))
 
     getConfig.mockResolvedValue(baseConfig())
     getStatus.mockResolvedValue(runtimeStatus())
@@ -218,6 +225,116 @@ describe('admin RiskControlView', () => {
       api_key_masks: [],
       api_key_statuses: [],
     }))
+  })
+
+  it('selects content audit exempt users by email or ID, preserves missing IDs, and explicitly clears the saved list', async () => {
+    const selectedUser = { id: 7, email: 'selected@example.com', username: 'Selected', status: 'disabled', deleted_at: null }
+    const searchedUser = { id: 8, email: 'search@example.com', username: 'Found', status: 'active', deleted_at: null }
+    userMocks.getById.mockImplementation(async (id: number) => {
+      if (id === 7) return selectedUser
+      if (id === 8) return searchedUser
+      throw new Error('not found')
+    })
+    userMocks.list.mockResolvedValue({ items: [selectedUser, searchedUser, { id: 9, email: 'deleted@example.com', deleted_at: '2026-01-01' }], total: 3 })
+    getConfig.mockResolvedValue({ ...baseConfig(), user_allowlist_ids: [42, 7], user_allowlist_inherited: true, group_ids: [5], blocked_keywords: ['custom keyword'] })
+    const wrapper = mount(RiskControlView, { global: { stubs: { AppLayout: AppLayoutStub, BaseDialog: BaseDialogStub, Icon: true, Select: true, Toggle: true, Pagination: true, ModelWhitelistSelector: ModelWhitelistSelectorStub, ProxySelector: true } } })
+    await flushPromises()
+    await findButtonByText(wrapper, 'admin.riskControl.openSettings').trigger('click')
+    await findButtonByText(wrapper, 'admin.riskControl.tabs.scope').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-test="allowlist-selected-42"]').text()).toContain('admin.userAllowlist.unresolved')
+    expect(wrapper.get('[data-test="allowlist-selected-7"]').text()).toContain(selectedUser.email)
+    expect(wrapper.get('[data-test="content-audit-allowlist-inherited"]').text()).toContain('admin.riskControl.userAllowlistInherited')
+    expect(updateConfig).not.toHaveBeenCalled()
+    await wrapper.get('[data-test="allowlist-search"]').setValue('search@example.com')
+    await wrapper.get('[data-test="allowlist-search-button"]').trigger('click')
+    await flushPromises()
+    expect(userMocks.list).toHaveBeenCalledWith(1, 10, { search: 'search@example.com' }, { signal: expect.any(AbortSignal) })
+    expect(wrapper.find('[data-test="allowlist-add-9"]').exists()).toBe(false)
+    expect(wrapper.get('[data-test="allowlist-add-7"]').attributes()).toHaveProperty('disabled')
+    await wrapper.get('[data-test="allowlist-add-8"]').trigger('click')
+    expect(wrapper.getComponent(UserAllowlistSelector).props('modelValue')).toEqual([7, 8, 42])
+    await wrapper.get('[data-test="allowlist-remove-42"]').trigger('click')
+    await wrapper.get('[data-test="allowlist-search"]').setValue('#8')
+    await wrapper.get('[data-test="allowlist-search-button"]').trigger('click')
+    await flushPromises()
+    expect(userMocks.getById).toHaveBeenCalledWith(8)
+    expect(updateConfig).not.toHaveBeenCalled()
+    await findButtonByText(wrapper, 'admin.riskControl.saveConfig').trigger('click')
+    await flushPromises()
+    expect(updateConfig).toHaveBeenLastCalledWith(expect.objectContaining({ user_allowlist_ids: [7, 8], group_ids: [5], blocked_keywords: ['custom keyword'], enabled: true, mode: 'pre_block' }))
+    await findButtonByText(wrapper, 'admin.riskControl.openSettings').trigger('click')
+    await findButtonByText(wrapper, 'admin.riskControl.tabs.scope').trigger('click')
+    await wrapper.get('[data-test="allowlist-clear"]').trigger('click')
+    await findButtonByText(wrapper, 'admin.riskControl.saveConfig').trigger('click')
+    await flushPromises()
+    expect(updateConfig).toHaveBeenLastCalledWith(expect.objectContaining({ user_allowlist_ids: [], group_ids: [5], blocked_keywords: ['custom keyword'] }))
+    expect(testAPIKeys).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('does not restore stale user search results after a query changes or clears', async () => {
+    let resolveOld!: (value: unknown) => void
+    userMocks.list.mockImplementationOnce(() => new Promise((resolve) => { resolveOld = resolve }))
+    const wrapper = mount(UserAllowlistSelector, { props: { modelValue: [], title: 'Users', hint: 'Independent scope' } })
+    await wrapper.get('[data-test="allowlist-search"]').setValue('old@example.com')
+    await wrapper.get('[data-test="allowlist-search-button"]').trigger('click')
+    const signal = userMocks.list.mock.calls[0][3].signal as AbortSignal
+    await wrapper.get('[data-test="allowlist-search"]').setValue('')
+    expect(signal.aborted).toBe(true)
+    resolveOld({ items: [{ id: 99, email: 'old@example.com' }], total: 1 })
+    await flushPromises()
+    expect(wrapper.find('[data-test="allowlist-add-99"]').exists()).toBe(false)
+    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('appends bilingual keyword categories and all templates without changing activation, scope or mode', async () => {
+    const duplicate = CONTENT_AUDIT_KEYWORD_TEMPLATES[0].keywords[12].toUpperCase()
+    getConfig.mockResolvedValue({ ...baseConfig(), enabled: false, mode: 'observe', keyword_blocking_mode: 'api_only', group_ids: [7], blocked_keywords: ['自定义业务词', duplicate, duplicate.toLowerCase()] })
+    const wrapper = mount(RiskControlView, { global: { stubs: { AppLayout: AppLayoutStub, BaseDialog: BaseDialogStub, Icon: true, Select: true, Toggle: true, Pagination: true, ModelWhitelistSelector: ModelWhitelistSelectorStub, ProxySelector: true } } })
+    await flushPromises()
+    await findButtonByText(wrapper, 'admin.riskControl.openSettings').trigger('click')
+    expect(wrapper.get('[data-test="audit-no-key-guide"]').text()).toContain('admin.riskControl.noKeyGuide')
+    await findButtonByText(wrapper, 'admin.riskControl.tabs.keywords').trigger('click')
+    const input = () => wrapper.get<HTMLTextAreaElement>('[data-test="blocked-keywords-input"]')
+    await wrapper.get('[data-test="keyword-template-instruction_override"]').trigger('click')
+    expect(input().element.value.split('\n')).toHaveLength(25)
+    expect(input().element.value.split('\n').slice(0, 2)).toEqual(['自定义业务词', duplicate])
+    await wrapper.get('[data-test="keyword-template-all"]').trigger('click')
+    const allText = input().element.value
+    const words = allText.split('\n')
+    expect(words).toHaveLength(217)
+    expect(new Set(words.map((word) => word.toLowerCase())).size).toBe(words.length)
+    for (const category of CONTENT_AUDIT_KEYWORD_TEMPLATES) {
+      expect(category.keywords.some((word) => /[\u4e00-\u9fff]/.test(word))).toBe(true)
+      expect(category.keywords.some((word) => /^[a-z]/i.test(word))).toBe(true)
+      expect(category.keywords.every((word) => word.length <= 200)).toBe(true)
+      expect(words.map((word) => word.toLowerCase())).toEqual(expect.arrayContaining(category.keywords.map((word) => word.toLowerCase())))
+    }
+    await wrapper.get('[data-test="keyword-template-all"]').trigger('click')
+    expect(input().element.value).toBe(allText)
+    expect(input().attributes()).toHaveProperty('disabled')
+    expect(updateConfig).not.toHaveBeenCalled()
+    expect(testAPIKeys).not.toHaveBeenCalled()
+    await findButtonByText(wrapper, 'admin.riskControl.saveConfig').trigger('click')
+    await flushPromises()
+    expect(updateConfig).toHaveBeenCalledWith(expect.objectContaining({ enabled: false, mode: 'observe', keyword_blocking_mode: 'api_only', group_ids: [7], blocked_keywords: words }))
+    wrapper.unmount()
+  })
+
+  it('leaves custom keywords intact when appending would exceed the saved keyword limit', async () => {
+    const custom = Array.from({ length: 10000 }, (_, index) => `custom phrase ${index}`)
+    getConfig.mockResolvedValue({ ...baseConfig(), blocked_keywords: custom })
+    const wrapper = mount(RiskControlView, { global: { stubs: { AppLayout: AppLayoutStub, BaseDialog: BaseDialogStub, Icon: true, Select: true, Toggle: true, Pagination: true, ModelWhitelistSelector: ModelWhitelistSelectorStub, ProxySelector: true } } })
+    await flushPromises()
+    await findButtonByText(wrapper, 'admin.riskControl.openSettings').trigger('click')
+    await findButtonByText(wrapper, 'admin.riskControl.tabs.keywords').trigger('click')
+    await wrapper.get('[data-test="keyword-template-all"]').trigger('click')
+    expect(wrapper.get<HTMLTextAreaElement>('[data-test="blocked-keywords-input"]').element.value).toBe(custom.join('\n'))
+    expect(showError).toHaveBeenCalledWith('admin.riskControl.keywordTemplatesLimit')
+    expect(updateConfig).not.toHaveBeenCalled()
+    wrapper.unmount()
   })
 
   it.each(['openai', 'typesafe'] as const)('shows the selected draft engine keys while %s remains active', async (activeEngine) => {

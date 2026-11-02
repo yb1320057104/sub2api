@@ -214,6 +214,61 @@ func TestGeminiCachedContentsListAndGet(t *testing.T) {
 	require.True(t, strings.Contains(rec.Body.String(), service.GeminiCachedContentNotFoundMessage))
 }
 
+func TestGeminiCachedContentsListForGroupsPaginationAndOwnerIsolation(t *testing.T) {
+	repo := &geminiCachedContentHandlerRepoStub{}
+	expire := time.Now().Add(time.Hour)
+	seedGeminiCachedContent(repo, "first", 7, expire)
+	seedGeminiCachedContent(repo, "second", 7, expire).GroupID = 43
+	seedGeminiCachedContent(repo, "third", 7, expire)
+	seedGeminiCachedContent(repo, "fourth", 7, expire).GroupID = 43
+	seedGeminiCachedContent(repo, "unapproved", 7, expire).GroupID = 44
+	seedGeminiCachedContent(repo, "foreign", 8, expire).GroupID = 43
+	seedGeminiCachedContent(repo, "expired", 7, time.Now().Add(-time.Minute)).GroupID = 43
+	h := newGeminiCachedContentHandlerForTest(repo)
+	apiKey := geminiCachedContentTestAPIKey(service.PlatformGemini)
+	apiKey.GroupIDs = []int64{42, 43, 44}
+	type pageResponse struct {
+		CachedContents []map[string]any `json:"cachedContents"`
+		NextPageToken  string           `json:"nextPageToken"`
+	}
+	readPage := func(token string, allowed []int64, setScope bool) pageResponse {
+		t.Helper()
+		c, rec := newGeminiCachedContentTestContext(http.MethodGet, "/v1beta/cachedContents?pageSize=2&pageToken="+token, apiKey)
+		if setScope {
+			// Authentication supplies only the groups admitted for this list.
+			c.Set("sub2api.key_resource_groups", allowed)
+		}
+		h.GeminiCachedContentsList(c)
+		require.Equal(t, http.StatusOK, rec.Code)
+		require.NotContains(t, rec.Body.String(), "unapproved")
+		require.NotContains(t, rec.Body.String(), "foreign")
+		require.NotContains(t, rec.Body.String(), "expired")
+		require.NotContains(t, rec.Body.String(), "upstream")
+		var page pageResponse
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &page))
+		return page
+	}
+	names := func(page pageResponse) []string {
+		out := make([]string, len(page.CachedContents))
+		for i, record := range page.CachedContents {
+			out[i] = record["name"].(string)
+		}
+		return out
+	}
+	first := readPage("", []int64{43, 42}, true)
+	require.Equal(t, []string{"cachedContents/fourth", "cachedContents/third"}, names(first))
+	require.Equal(t, encodeGeminiCachedContentPageToken(3), first.NextPageToken)
+	second := readPage(first.NextPageToken, []int64{43, 42}, true)
+	require.Equal(t, []string{"cachedContents/second", "cachedContents/first"}, names(second))
+	require.Empty(t, second.NextPageToken)
+	empty := readPage("", []int64{}, true)
+	require.Empty(t, empty.CachedContents, "explicit empty admitted scope must not fall back to the primary group")
+	require.Empty(t, empty.NextPageToken)
+	legacy := readPage("", nil, false)
+	require.Equal(t, []string{"cachedContents/third", "cachedContents/first"}, names(legacy))
+	require.Empty(t, legacy.NextPageToken)
+}
+
 func TestHandleGeminiCachedContentFailoverExhausted(t *testing.T) {
 	h := &GatewayHandler{}
 	apiKey := geminiCachedContentTestAPIKey(service.PlatformGemini)

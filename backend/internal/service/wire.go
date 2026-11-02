@@ -1013,6 +1013,7 @@ var ProviderSet = wire.NewSet(
 	ProvidePaymentOrderExpiryService,
 	ProvideBinanceRechargeService,
 	NewCyberPolicyService,
+	ProvideCyberPolicyBalanceWorker,
 	ProvideBalanceNotifyService,
 	ProvideChannelMonitorService,
 	ProvideChannelMonitorRunner,

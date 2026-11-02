@@ -38,9 +38,20 @@ describe('PKSecurityPolicyRanking API', () => {
   it('uses admin settings routes and preserves decimal text and auto-disable flags', async () => {
     await securityPolicyRankingAPI.getSettings()
     expect(get).toHaveBeenCalledWith('/admin/security-policy-ranking/settings')
-    const settings = { multiplier: '0.290001', auto_disable_enabled: true, auto_disable_threshold: 1000000000, reset_on_manual_enable: false }
+    const settings = { multiplier: '0.290001', auto_disable_enabled: true, auto_disable_threshold: 1000000000, reset_on_manual_enable: false, group_ids: [2, 7], user_allowlist_ids: [9], group_rules: [{ group_id: 2, multiplier: '0.000001', auto_deduct_enabled: true }, { group_id: 8, multiplier: '1000.000000', auto_deduct_enabled: false }] }
     await securityPolicyRankingAPI.saveSettings(settings)
     expect(put).toHaveBeenCalledWith('/admin/security-policy-ranking/settings', settings)
+    await securityPolicyRankingAPI.saveSettings({ ...settings, group_ids: [] })
+    expect(put).toHaveBeenLastCalledWith('/admin/security-policy-ranking/settings', { ...settings, group_ids: [] })
+    await securityPolicyRankingAPI.saveSettings({ ...settings, user_allowlist_ids: [], group_rules: [] })
+    expect(put).toHaveBeenLastCalledWith('/admin/security-policy-ranking/settings', { ...settings, user_allowlist_ids: [], group_rules: [] })
+  })
+
+  it('loads administrator trigger records with the exact date window and cancellation signal', async () => {
+    const signal = new AbortController().signal
+    const params = { ...range, page: 2, page_size: 20 }
+    await securityPolicyRankingAPI.getRecords(7, params, signal)
+    expect(get).toHaveBeenLastCalledWith('/admin/security-policy-ranking/users/7/records', { params, signal })
   })
 
   it('uses the server preview ID for deduction without sending client amounts or counts', async () => {

@@ -13,7 +13,8 @@ import (
 const ContentModerationModeCyberLogOnly = "cyber_log_only"
 const ContentModerationModeRiskControlLogOnly = "risk_control_log_only"
 
-// The historical cyber_policy_user_allowlist storage/API key also governs ordinary moderation.
+// Ordinary moderation inherits the historical setting only until its own
+// user_allowlist_ids is explicitly saved. Upstream cyber handling retains it.
 
 // ParseCyberPolicyUserAllowlist accepts positive platform user IDs separated by
 // commas or whitespace. Reject the whole list on invalid input; never accept a

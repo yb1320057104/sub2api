@@ -154,6 +154,7 @@ type ContentModerationConfig struct {
 	SampleRate           int                          `json:"sample_rate"`
 	AllGroups            bool                         `json:"all_groups"`
 	GroupIDs             []int64                      `json:"group_ids"`
+	UserAllowlistIDs     []int64                      `json:"user_allowlist_ids"` // nil preserves the historical global fallback; [] is independent.
 	RecordNonHits        bool                         `json:"record_non_hits"`
 	Thresholds           map[string]float64           `json:"thresholds"`
 	WorkerCount          int                          `json:"worker_count"`
@@ -194,6 +195,8 @@ type ContentModerationConfigView struct {
 	SampleRate                     int                                     `json:"sample_rate"`
 	AllGroups                      bool                                    `json:"all_groups"`
 	GroupIDs                       []int64                                 `json:"group_ids"`
+	UserAllowlistIDs               []int64                                 `json:"user_allowlist_ids"`
+	UserAllowlistInherited         bool                                    `json:"user_allowlist_inherited"`
 	RecordNonHits                  bool                                    `json:"record_non_hits"`
 	Thresholds                     map[string]float64                      `json:"thresholds"`
 	WorkerCount                    int                                     `json:"worker_count"`
@@ -291,6 +294,7 @@ type UpdateContentModerationConfigInput struct {
 	SampleRate                     *int                          `json:"sample_rate"`
 	AllGroups                      *bool                         `json:"all_groups"`
 	GroupIDs                       *[]int64                      `json:"group_ids"`
+	UserAllowlistIDs               *[]int64                      `json:"user_allowlist_ids"`
 	RecordNonHits                  *bool                         `json:"record_non_hits"`
 	Thresholds                     *map[string]float64           `json:"thresholds"`
 	WorkerCount                    *int                          `json:"worker_count"`
@@ -622,7 +626,7 @@ func (s *ContentModerationService) GetConfig(ctx context.Context) (*ContentModer
 	if err != nil {
 		return nil, err
 	}
-	return s.engineConfigView(cfg), nil
+	return s.configViewWithUserAllowlist(ctx, cfg)
 }
 
 func (s *ContentModerationService) UpdateConfig(ctx context.Context, input UpdateContentModerationConfigInput) (*ContentModerationConfigView, error) {
@@ -692,6 +696,20 @@ func (s *ContentModerationService) UpdateConfig(ctx context.Context, input Updat
 	if input.GroupIDs != nil {
 		cfg.GroupIDs = normalizeInt64IDs(*input.GroupIDs)
 	}
+	if input.UserAllowlistIDs != nil {
+		ids, err := NormalizeAuditUserAllowlist(*input.UserAllowlistIDs)
+		if err != nil {
+			return nil, err
+		}
+		if s.userRepo != nil {
+			for _, id := range ids {
+				if user, err := s.userRepo.GetByID(ctx, id); err != nil || user == nil || user.DeletedAt != nil {
+					return nil, infraerrors.BadRequest("AUDIT_USER_ALLOWLIST_INVALID", "豁免用户不存在或已删除，请刷新后重试")
+				}
+			}
+		}
+		cfg.UserAllowlistIDs = ids
+	}
 	if input.RecordNonHits != nil {
 		cfg.RecordNonHits = *input.RecordNonHits
 	}
@@ -736,7 +754,7 @@ func (s *ContentModerationService) UpdateConfig(ctx context.Context, input Updat
 	s.replaceRuntimeConfig(cfg, raw)
 	// 代理选择可能已变化，丢弃已解析的代理 URL 缓存，下次调用即时生效。
 	s.moderationProxyCache.Store(nil)
-	return s.engineConfigView(cfg), nil
+	return s.configViewWithUserAllowlist(ctx, cfg)
 }
 
 func (s *ContentModerationService) TestAPIKeys(ctx context.Context, input TestContentModerationAPIKeysInput) (*TestContentModerationAPIKeysResult, error) {
@@ -1607,11 +1625,15 @@ func (s *ContentModerationService) refreshRuntimeSnapshot(ctx context.Context) (
 	if err != nil {
 		return nil, fmt.Errorf("get content moderation runtime settings: %w", err)
 	}
-	allowlistedUsers, err := ParseCyberPolicyUserAllowlist(values[SettingKeyCyberPolicyUserAllowlist])
+	rawConfig := values[SettingKeyContentModerationConfig]
+	cfg, err := parseContentModerationConfig(rawConfig)
 	if err != nil {
 		return nil, err
 	}
-	rawConfig := values[SettingKeyContentModerationConfig]
+	allowlistedUsers, err := contentModerationAllowlist(cfg, values[SettingKeyCyberPolicyUserAllowlist])
+	if err != nil {
+		return nil, err
+	}
 	configDigest := sha256.Sum256([]byte(rawConfig))
 	if current := s.runtimeSnapshot.Load(); current != nil && current.configDigest == configDigest {
 		snapshot := &contentModerationRuntimeSnapshot{
@@ -1625,10 +1647,6 @@ func (s *ContentModerationService) refreshRuntimeSnapshot(ctx context.Context) (
 		s.runtimeSnapshot.Store(snapshot)
 		s.runtimeRefreshRetryAt.Store(0)
 		return snapshot, nil
-	}
-	cfg, err := parseContentModerationConfig(rawConfig)
-	if err != nil {
-		return nil, err
 	}
 	cfg = cfg.effectiveEngine(cfg.Engine)
 	snapshot := &contentModerationRuntimeSnapshot{
@@ -1664,8 +1682,12 @@ func (s *ContentModerationService) replaceRuntimeConfig(cfg *ContentModerationCo
 	if current == nil {
 		return
 	}
+	allowlistedUsers := current.allowlistedUsers
+	if cfg.UserAllowlistIDs != nil {
+		allowlistedUsers, _ = contentModerationAllowlist(cfg, "")
+	}
 	s.runtimeSnapshot.Store(&contentModerationRuntimeSnapshot{
-		allowlistedUsers:   current.allowlistedUsers,
+		allowlistedUsers:   allowlistedUsers,
 		riskControlEnabled: current.riskControlEnabled,
 		config:             config,
 		keywordMatcher:     keywordMatcher,
@@ -2180,6 +2202,9 @@ func cloneContentModerationConfig(cfg *ContentModerationConfig) *ContentModerati
 	clone.ProxyID = cloneInt64Ptr(cfg.ProxyID)
 	clone.APIKeys = append([]string(nil), cfg.APIKeys...)
 	clone.GroupIDs = append([]int64(nil), cfg.GroupIDs...)
+	if cfg.UserAllowlistIDs != nil {
+		clone.UserAllowlistIDs = append([]int64{}, cfg.UserAllowlistIDs...)
+	}
 	clone.BlockedKeywords = append([]string(nil), cfg.BlockedKeywords...)
 	clone.Thresholds = cloneFloatMap(cfg.Thresholds)
 	clone.ModelFilter = ContentModerationModelFilter{
@@ -2484,6 +2509,8 @@ func (s *ContentModerationService) configView(cfg *ContentModerationConfig) *Con
 		SampleRate:                     cfg.SampleRate,
 		AllGroups:                      cfg.AllGroups,
 		GroupIDs:                       append([]int64(nil), cfg.GroupIDs...),
+		UserAllowlistIDs:               append([]int64{}, cfg.UserAllowlistIDs...),
+		UserAllowlistInherited:         cfg.UserAllowlistIDs == nil,
 		RecordNonHits:                  cfg.RecordNonHits,
 		Thresholds:                     cloneFloatMap(cfg.Thresholds),
 		WorkerCount:                    cfg.WorkerCount,

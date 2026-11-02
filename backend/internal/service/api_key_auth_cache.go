@@ -4,16 +4,18 @@ import "time"
 
 // APIKeyAuthSnapshot API Key 认证缓存快照（仅包含认证所需字段）
 type APIKeyAuthSnapshot struct {
-	Version     int                      `json:"version"`
-	APIKeyID    int64                    `json:"api_key_id"`
-	UserID      int64                    `json:"user_id"`
-	GroupID     *int64                   `json:"group_id,omitempty"`
-	Name        string                   `json:"name"`
-	Status      string                   `json:"status"`
-	IPWhitelist []string                 `json:"ip_whitelist,omitempty"`
-	IPBlacklist []string                 `json:"ip_blacklist,omitempty"`
-	User        APIKeyAuthUserSnapshot   `json:"user"`
-	Group       *APIKeyAuthGroupSnapshot `json:"group,omitempty"`
+	Version     int                        `json:"version"`
+	APIKeyID    int64                      `json:"api_key_id"`
+	UserID      int64                      `json:"user_id"`
+	GroupID     *int64                     `json:"group_id,omitempty"`
+	GroupIDs    []int64                    `json:"group_ids"`
+	Groups      []*APIKeyAuthGroupSnapshot `json:"groups"`
+	Name        string                     `json:"name"`
+	Status      string                     `json:"status"`
+	IPWhitelist []string                   `json:"ip_whitelist,omitempty"`
+	IPBlacklist []string                   `json:"ip_blacklist,omitempty"`
+	User        APIKeyAuthUserSnapshot     `json:"user"`
+	Group       *APIKeyAuthGroupSnapshot   `json:"group,omitempty"`
 
 	// Quota fields for API Key independent quota feature
 	Quota     float64 `json:"quota"`      // Quota limit in USD (0 = unlimited)
@@ -89,6 +91,8 @@ type APIKeyAuthGroupSnapshot struct {
 	LongContextPricingEnabled       bool                          `json:"long_context_pricing_enabled"`
 	ModelPricing                    []ChannelModelPricing         `json:"model_pricing,omitempty"`
 	ClaudeCodeOnly                  bool                          `json:"claude_code_only"`
+	RequireOAuthOnly                bool                          `json:"require_oauth_only"`
+	RequirePrivacySet               bool                          `json:"require_privacy_set"`
 	FallbackGroupID                 *int64                        `json:"fallback_group_id,omitempty"`
 	FallbackGroupIDOnInvalidRequest *int64                        `json:"fallback_group_id_on_invalid_request,omitempty"`
 

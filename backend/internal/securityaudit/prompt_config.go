@@ -11,6 +11,7 @@ import (
 	"time"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	"github.com/Wei-Shaw/sub2api/internal/service"
 )
 
 const (
@@ -77,6 +78,7 @@ type storageConfig struct {
 	Scanners               []string          `json:"scanners"`
 	AllGroups              bool              `json:"all_groups"`
 	GroupIDs               []int64           `json:"group_ids"`
+	UserAllowlistIDs       []int64           `json:"user_allowlist_ids"`
 	Endpoints              []StorageEndpoint `json:"endpoints"`
 	ConfigVersion          int64             `json:"config_version"`
 	UpdatedAt              time.Time         `json:"updated_at"`
@@ -117,6 +119,7 @@ type ActiveConfig struct {
 	Scanners               []string
 	AllGroups              bool
 	GroupIDs               []int64
+	UserAllowlistIDs       []int64
 	Endpoints              []ActiveEndpoint
 	ConfigVersion          int64
 	UpdatedAt              time.Time
@@ -154,6 +157,7 @@ type PublicConfig struct {
 	Scanners                 []string         `json:"scanners"`
 	AllGroups                bool             `json:"all_groups"`
 	GroupIDs                 []int64          `json:"group_ids"`
+	UserAllowlistIDs         []int64          `json:"user_allowlist_ids"`
 	Endpoints                []PublicEndpoint `json:"endpoints"`
 	ConfigVersion            int64            `json:"config_version"`
 	UpdatedAt                time.Time        `json:"updated_at"`
@@ -189,6 +193,7 @@ type UpdateConfigRequest struct {
 	Scanners               []string         `json:"scanners"`
 	AllGroups              bool             `json:"all_groups"`
 	GroupIDs               []int64          `json:"group_ids"`
+	UserAllowlistIDs       []int64          `json:"user_allowlist_ids"`
 	Endpoints              []UpdateEndpoint `json:"endpoints"`
 }
 
@@ -207,6 +212,7 @@ func DefaultStorageConfig() storageConfig {
 		Scanners:               append([]string(nil), AllScannerIDs...),
 		AllGroups:              false,
 		GroupIDs:               []int64{},
+		UserAllowlistIDs:       []int64{},
 		Endpoints:              []StorageEndpoint{},
 		ConfigVersion:          1,
 	}
@@ -255,6 +261,9 @@ func normalizeStorageConfig(cfg *storageConfig) {
 	}
 	cfg.Scanners = canonicalScannerIDs(cfg.Scanners)
 	cfg.GroupIDs = canonicalInt64s(cfg.GroupIDs)
+	if ids, err := service.NormalizeAuditUserAllowlist(cfg.UserAllowlistIDs); err == nil {
+		cfg.UserAllowlistIDs = ids
+	}
 	// Preserve an invalid blocking-without-audit combination so validation can
 	// reject it instead of silently changing administrator intent.
 	for i := range cfg.Endpoints {
@@ -280,6 +289,9 @@ func normalizeStorageConfig(cfg *storageConfig) {
 }
 
 func validateStorageConfig(cfg storageConfig) error {
+	if _, err := service.NormalizeAuditUserAllowlist(cfg.UserAllowlistIDs); err != nil {
+		return err
+	}
 	if cfg.BlockingEnabled && !cfg.Enabled {
 		return infraerrors.BadRequest(ErrorCodeRequiresEnabled, "开启同步阻止前必须先启用提示词审计")
 	}
@@ -400,6 +412,18 @@ func (cfg ActiveConfig) IncludesGroup(groupID *int64) bool {
 	return i < len(cfg.GroupIDs) && cfg.GroupIDs[i] == *groupID
 }
 
+func (cfg ActiveConfig) IsUserAllowlisted(userID int64) bool {
+	if userID <= 0 {
+		return false
+	}
+	for _, id := range cfg.UserAllowlistIDs {
+		if id == userID {
+			return true
+		}
+	}
+	return false
+}
+
 func (cfg ActiveConfig) EnabledEndpoints() []ActiveEndpoint {
 	result := make([]ActiveEndpoint, 0, len(cfg.Endpoints))
 	for _, ep := range cfg.Endpoints {
@@ -453,7 +477,8 @@ func PublicFromStorage(cfg storageConfig, riskControlEnabled bool, invalidTokenE
 		EffectiveMode: active.EffectiveMode(), Strategy: cfg.Strategy, WorkerCount: cfg.WorkerCount,
 		QueueCapacity: cfg.QueueCapacity, Scanners: scanners, AllGroups: false,
 		GroupIDs: groupIDs, Endpoints: endpoints, ConfigVersion: cfg.ConfigVersion,
-		UpdatedAt: cfg.UpdatedAt, UpdatedBy: cfg.UpdatedBy, ChangeSummary: cfg.ChangeSummary,
+		UserAllowlistIDs: append([]int64{}, cfg.UserAllowlistIDs...),
+		UpdatedAt:        cfg.UpdatedAt, UpdatedBy: cfg.UpdatedBy, ChangeSummary: cfg.ChangeSummary,
 	}
 }
 
@@ -469,7 +494,8 @@ func ActiveFromStorage(cfg storageConfig, riskControlEnabled bool, encryptor Sec
 		StorePassEvents:        cfg.StorePassEvents, Strategy: cfg.Strategy, WorkerCount: cfg.WorkerCount,
 		QueueCapacity: cfg.QueueCapacity, Scanners: append([]string(nil), cfg.Scanners...), AllGroups: false,
 		GroupIDs: append([]int64(nil), cfg.GroupIDs...), ConfigVersion: cfg.ConfigVersion,
-		UpdatedAt: cfg.UpdatedAt, UpdatedBy: cfg.UpdatedBy, ChangeSummary: cfg.ChangeSummary,
+		UserAllowlistIDs: append([]int64{}, cfg.UserAllowlistIDs...),
+		UpdatedAt:        cfg.UpdatedAt, UpdatedBy: cfg.UpdatedBy, ChangeSummary: cfg.ChangeSummary,
 		Endpoints: make([]ActiveEndpoint, 0, len(cfg.Endpoints)),
 	}
 	for _, ep := range cfg.Endpoints {
@@ -515,15 +541,21 @@ func changeSummary(cfg storageConfig) string {
 		AllGroups              bool   `json:"all_groups"`
 		GroupCount             int    `json:"group_count"`
 		GroupHash              string `json:"group_hash"`
+		UserAllowlistCount     int    `json:"user_allowlist_count"`
+		UserAllowlistHash      string `json:"user_allowlist_hash"`
 	}{
 		Engine: normalizePromptEngine(cfg.Engine), LocalRuleCount: len(cfg.LocalRules),
 		Enabled: cfg.Enabled, BlockingEnabled: cfg.BlockingEnabled, BlockingLatestTurnOnly: cfg.BlockingLatestTurnOnly,
 		StorePassEvents: cfg.StorePassEvents, EndpointCount: len(cfg.Endpoints), ScannerCount: len(cfg.Scanners),
 		AllGroups: false, GroupCount: len(cfg.GroupIDs),
+		UserAllowlistCount: len(cfg.UserAllowlistIDs),
 	}
 	rawGroups, _ := json.Marshal(cfg.GroupIDs)
 	digest := sha256.Sum256(rawGroups)
 	summary.GroupHash = hex.EncodeToString(digest[:])
+	rawUsers, _ := json.Marshal(cfg.UserAllowlistIDs)
+	userDigest := sha256.Sum256(rawUsers)
+	summary.UserAllowlistHash = hex.EncodeToString(userDigest[:])
 	rawRules, _ := json.Marshal(cfg.LocalRules)
 	ruleDigest := sha256.Sum256(rawRules)
 	summary.LocalRuleHash = hex.EncodeToString(ruleDigest[:])

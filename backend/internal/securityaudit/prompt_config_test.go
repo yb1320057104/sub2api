@@ -548,7 +548,9 @@ func TestLocalPromptConfigRejectsInvalidPatternsWithoutDisclosure(t *testing.T) 
 	cfg.LocalRules[0].Pattern = "RULE_SECRET_CANARY"
 	summary := changeSummary(cfg)
 	require.NotContains(t, summary, "SECRET_CANARY")
-	require.Contains(t, summary, `"local_rule_count":7`)
+	var summaryFields map[string]any
+	require.NoError(t, json.Unmarshal([]byte(summary), &summaryFields))
+	require.Equal(t, float64(len(cfg.LocalRules)), summaryFields["local_rule_count"])
 	clone := cloneStorageConfig(cfg)
 	clone.LocalRules[0].Pattern = "mutated"
 	require.Equal(t, "RULE_SECRET_CANARY", cfg.LocalRules[0].Pattern)

@@ -133,6 +133,92 @@ func TestPKCyberRankingDatesPublicMaskAndSettings(t *testing.T) {
 	require.False(t, settings.ResetOnManualEnable)
 }
 
+func TestPKCyberGroupRecordsRankingAndDeductionsRemainIndependent(t *testing.T) {
+	f := newPKCyberDeductionFixture(t)
+	ctx := context.Background()
+	enabled := true
+	_, err := f.svc.SaveSettings(ctx, service.CyberPolicySettingsInput{AutoDisableEnabled: &enabled})
+	require.NoError(t, err)
+	insert := func(offset time.Duration, group *int64) *service.UsageLog {
+		t.Helper()
+		log := pkCyberAutoDisableLog(f.user, f.key, f.account)
+		log.CreatedAt = f.withinDay().Add(offset)
+		log.GroupID = group
+		_, err := f.repo.createSingle(ctx, integrationDB, log)
+		require.NoError(t, err)
+		return log
+	}
+	counted := insert(0, f.key.GroupID)
+	unknown := insert(time.Second, nil)
+	// Missing evidence is the legacy shape: never infer it from current scope.
+	_, err = integrationDB.ExecContext(ctx, `DELETE FROM cyber_policy_count_events WHERE usage_id=$1 AND usage_created_at=$2`, unknown.ID, unknown.CreatedAt)
+	require.NoError(t, err)
+	_, err = f.svc.SaveSettings(ctx, service.CyberPolicySettingsInput{GroupIDs: &[]int64{}})
+	require.NoError(t, err)
+	skipped := insert(2*time.Second, f.key.GroupID)
+	f.insert(t, f.withinDay().Add(3*time.Second), service.RequestTypeStream)
+	requirePKCyberAutoDisableState(t, f.user.ID, service.StatusActive, 1)
+
+	var originalGroupName string
+	require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT name FROM groups WHERE id=$1`, *f.key.GroupID).Scan(&originalGroupName))
+	_, err = integrationDB.ExecContext(ctx, `UPDATE groups SET name='renamed-after-insertion' WHERE id=$1`, *f.key.GroupID)
+	require.NoError(t, err)
+	_, err = f.svc.SaveSettings(ctx, service.CyberPolicySettingsInput{GroupIDs: &[]int64{*f.key.GroupID}})
+	require.NoError(t, err)
+	result, err := f.svc.Records(ctx, f.user.ID, f.window, 1, 2)
+	require.NoError(t, err)
+	require.Equal(t, int64(3), result.Total)
+	require.Equal(t, int64(2), result.Pages)
+	require.Len(t, result.Items, 2)
+	require.Equal(t, skipped.ID, result.Items[0].UsageID)
+	require.Equal(t, "skipped", result.Items[0].CountStatus)
+	require.Equal(t, "group_not_enabled", result.Items[0].CountReason)
+	require.Equal(t, originalGroupName, result.Items[0].GroupName)
+	require.False(t, *result.Items[0].ScopeMatched)
+	require.Equal(t, unknown.ID, result.Items[1].UsageID)
+	require.Equal(t, "unknown", result.Items[1].CountStatus)
+	require.Equal(t, "historical_unknown", result.Items[1].CountReason)
+	require.Nil(t, result.Items[1].ScopeMatched)
+	require.Nil(t, result.Items[1].SettingsRevision)
+	require.Nil(t, result.Items[1].EvaluatedAt)
+	second, err := f.svc.Records(ctx, f.user.ID, f.window, 2, 2)
+	require.NoError(t, err)
+	require.Len(t, second.Items, 1)
+	require.Equal(t, counted.ID, second.Items[0].UsageID)
+	require.Equal(t, "counted", second.Items[0].CountStatus)
+	require.Equal(t, originalGroupName, second.Items[0].GroupName)
+	require.Less(t, *second.Items[0].SettingsRevision, *result.Items[0].SettingsRevision)
+	require.True(t, second.Items[0].EvaluatedAt.After(second.Items[0].OccurredAt), "insertion-time evidence is distinct from the original event time")
+
+	ranking, err := f.svc.Ranking(ctx, f.window, 1, 50)
+	require.NoError(t, err)
+	require.Equal(t, int64(3), ranking.TotalTriggers)
+	require.Equal(t, int64(1), ranking.TotalCounted)
+	require.Equal(t, int64(1), ranking.TotalSkipped)
+	require.Equal(t, int64(1), ranking.TotalUnknown)
+	require.Len(t, ranking.Items, 1)
+	require.Equal(t, int64(1), ranking.Items[0].AutoDisableCount)
+	require.Equal(t, int64(3), ranking.Items[0].PendingCount)
+	public, err := f.svc.PublicRanking(ctx, f.window, 1, 50)
+	require.NoError(t, err)
+	require.Equal(t, ranking.TotalCounted, public.TotalCounted)
+	require.Equal(t, ranking.TotalSkipped, public.TotalSkipped)
+	require.Equal(t, ranking.TotalUnknown, public.TotalUnknown)
+	encoded, err := json.Marshal(public)
+	require.NoError(t, err)
+	for _, field := range []string{"user_id", "group_id", "group_name", "request_id", "usage_id", f.user.Email, originalGroupName} {
+		require.NotContains(t, string(encoded), field)
+	}
+	preview, err := f.svc.Preview(ctx, 91, f.user.ID, f.window)
+	require.NoError(t, err)
+	require.Equal(t, int64(3), preview.TriggerCount, "manual deductions include counted, skipped and historical safety events")
+	require.Equal(t, "20.10000000", preview.Amount)
+	_, err = f.svc.Deduct(ctx, 91, f.user.ID, preview.ID)
+	require.NoError(t, err)
+	f.assertAccounting(t, "80.02345678", 3, 1)
+	requirePKCyberAutoDisableState(t, f.user.ID, service.StatusActive, 1)
+}
+
 func TestPKCyberDeductionSnapshotConcurrentRetryAndNormalBilling(t *testing.T) {
 	f := newPKCyberDeductionFixture(t)
 	ctx := context.Background()

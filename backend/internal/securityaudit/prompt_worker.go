@@ -220,6 +220,9 @@ func (r *Runner) processJob(ctx context.Context, workerID int, cfg ActiveConfig,
 		return r.finishFailure(ctx, job, &GuardError{Code: ErrorCodeInvalidResponse, Cause: err})
 	}
 	aggregated.ChunkTotal = len(chunks)
+	if cfg.IsUserAllowlisted(job.Snapshot.UserID) {
+		applyPromptUserExemption(aggregated)
+	}
 	if r.metrics != nil {
 		r.metrics.Observe(decisionKindForResult(aggregated), r.clock.Now().Sub(started))
 	}

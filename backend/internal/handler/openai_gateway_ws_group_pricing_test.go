@@ -229,6 +229,22 @@ func TestRefreshOpenAIWSTurnBillingAPIKey(t *testing.T) {
 		require.InDelta(t, 3.0, conn.Group.RateMultiplier, 1e-12, "the connection snapshot is never mutated")
 	})
 
+	t.Run("selected fallback group refreshes its own price without switching groups", func(t *testing.T) {
+		latest := latestWith(nil)
+		selected := latest.Group
+		primary := &service.Group{ID: 88, Platform: service.PlatformOpenAI, RateMultiplier: 9}
+		latest.GroupID, latest.Group = &primary.ID, primary
+		latest.GroupIDs, latest.Groups = []int64{88, groupID}, []*service.Group{primary, selected}
+		lookup := wsTurnAPIKeyLookupFunc(func(context.Context, string) (*service.APIKey, error) { return latest, nil })
+		got := refreshOpenAIWSTurnBillingAPIKey(context.Background(), lookup, conn)
+		require.Same(t, selected, got.Group)
+		require.Equal(t, groupID, *got.GroupID)
+		require.InDelta(t, 0.3, got.Group.RateMultiplier, 1e-12)
+		require.Same(t, conn.User, got.User)
+		latest.GroupIDs = []int64{88}
+		require.Same(t, conn, refreshOpenAIWSTurnBillingAPIKey(context.Background(), lookup, conn), "removal cannot silently switch an established connection to a different group")
+	})
+
 	keep := map[string]wsTurnAPIKeyLookupFunc{
 		"lookup error": func(ctx context.Context, key string) (*service.APIKey, error) {
 			return nil, errors.New("boom")

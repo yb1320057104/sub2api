@@ -4,6 +4,7 @@ import { mount } from '@vue/test-utils'
 import EndpointPool from '../components/EndpointPool.vue'
 import PolicyPanel from '../components/PolicyPanel.vue'
 import LocalRulePanel from '../components/LocalRulePanel.vue'
+import UserAllowlistSelector from '@/components/admin/user/UserAllowlistSelector.vue'
 import EventWorkspace from '../components/EventWorkspace.vue'
 import EventDetailDialog from '../components/EventDetailDialog.vue'
 import FilterDeleteDialog from '../components/FilterDeleteDialog.vue'
@@ -37,7 +38,7 @@ const localDraft = (): PromptAuditDraft => ({
 describe('Prompt Audit components', () => {
   beforeEach(() => vi.restoreAllMocks())
 
-  it('requires confirmation before replacing existing local rules or instructions with templates', async () => {
+  it('requires confirmation before replacing existing local rules and preserves the separate instructions', async () => {
     const original = localDraft()
     const wrapper = mount(LocalRulePanel, { props: { draft: original }, global: { stubs: { ConfirmDialog: ConfirmStub } } })
     await wrapper.get('[data-test="local-rule-templates"]').trigger('click')
@@ -49,14 +50,27 @@ describe('Prompt Audit components', () => {
     await wrapper.get('[data-test="confirm-templates"]').trigger('click')
     const updated = wrapper.emitted('update:draft')?.at(-1)?.[0] as PromptAuditDraft
     expect(updated.local_rules).toEqual(original.default_local_rules)
-    expect(updated.audit_instructions).toBe(original.default_audit_instructions)
+    expect(updated.audit_instructions).toBe(original.audit_instructions)
     expect(updated.endpoints).toEqual(original.endpoints)
     expect(original.local_rules[0].pattern).toBe('existing pattern')
     expect(wrapper.find('[data-test="template-confirm"]').exists()).toBe(false)
 
     await wrapper.setProps({ draft: { ...original, local_rules: [], audit_instructions: 'Keep these instructions' } })
     await wrapper.get('[data-test="local-rule-templates"]').trigger('click')
-    expect(wrapper.find('[data-test="template-confirm"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="template-confirm"]').exists()).toBe(false)
+    expect((wrapper.emitted('update:draft')?.at(-1)?.[0] as PromptAuditDraft).audit_instructions).toBe('Keep these instructions')
+    wrapper.unmount()
+  })
+
+  it('connects the independent prompt user allowlist without replacing other policy fields', async () => {
+    const draft = { ...localDraft(), user_allowlist_ids: [42], group_ids: [7] }
+    const wrapper = mount(PolicyPanel, { props: { draft, groups: [] }, global: { stubs: { UserAllowlistSelector: true } } })
+    const selector = wrapper.getComponent(UserAllowlistSelector)
+    expect(selector.props('modelValue')).toEqual([42])
+    selector.vm.$emit('update:modelValue', [8, 42])
+    expect(wrapper.emitted('update:draft')?.at(-1)?.[0]).toMatchObject({ user_allowlist_ids: [8, 42], group_ids: [7], local_rules: draft.local_rules, endpoints: draft.endpoints })
+    selector.vm.$emit('update:modelValue', [])
+    expect(wrapper.emitted('update:draft')?.at(-1)?.[0]).toMatchObject({ user_allowlist_ids: [], group_ids: [7] })
     wrapper.unmount()
   })
 

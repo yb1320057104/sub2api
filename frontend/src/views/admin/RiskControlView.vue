@@ -394,6 +394,11 @@
             </button>
           </div>
 
+          <div v-if="activeSettingsTab === 'basic' || activeSettingsTab === 'keywords'" data-test="audit-no-key-guide" class="rounded-lg border border-sky-100 bg-sky-50 p-4 text-sm leading-6 text-sky-800 dark:border-sky-900 dark:bg-sky-950/30 dark:text-sky-200">
+            <p class="font-medium">{{ t('admin.riskControl.noKeyGuideTitle') }}</p>
+            <p class="mt-1">{{ t('admin.riskControl.noKeyGuide') }}</p>
+          </div>
+
           <div v-if="activeSettingsTab === 'basic'" class="space-y-5">
             <div class="grid grid-cols-1 gap-5 lg:grid-cols-2">
               <div class="flex items-center justify-between rounded-lg border border-gray-100 p-4 dark:border-dark-700">
@@ -759,6 +764,9 @@
               </div>
             </div>
 
+            <UserAllowlistSelector v-model="configForm.user_allowlist_ids" :title="t('admin.riskControl.userAllowlistTitle')" :hint="t('admin.riskControl.userAllowlistHint')" :disabled="saving" test-id="content-audit-user-allowlist" />
+            <p v-if="configForm.user_allowlist_inherited" class="text-sm text-amber-700 dark:text-amber-300" data-test="content-audit-allowlist-inherited">{{ t('admin.riskControl.userAllowlistInherited') }}</p>
+
             <div class="space-y-4 rounded-lg border border-gray-100 p-4 dark:border-dark-700">
               <div class="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
                 <div>
@@ -1015,6 +1023,21 @@
               </div>
             </div>
 
+            <section class="rounded-lg border border-gray-200 p-4 dark:border-dark-700" aria-labelledby="keyword-template-title">
+              <div class="flex flex-wrap items-center justify-between gap-3">
+                <h3 id="keyword-template-title" class="text-sm font-semibold text-gray-900 dark:text-white">{{ t('admin.riskControl.keywordTemplatesTitle', { count: allKeywordTemplates.length }) }}</h3>
+                <button type="button" class="btn btn-secondary btn-sm" data-test="keyword-template-all" @click="appendKeywordTemplates(allKeywordTemplates)">{{ t('admin.riskControl.keywordTemplatesAppendAll') }}</button>
+              </div>
+              <p class="mt-2 text-xs leading-5 text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.keywordTemplatesHint') }}</p>
+              <div class="mt-3 grid gap-2 sm:grid-cols-3">
+                <button v-for="category in CONTENT_AUDIT_KEYWORD_TEMPLATES" :key="category.id" type="button" class="rounded-lg border border-gray-200 px-3 py-2 text-left text-sm text-gray-700 transition-colors hover:border-primary-300 hover:bg-primary-50 dark:border-dark-600 dark:text-gray-200 dark:hover:bg-dark-700" :data-test="`keyword-template-${category.id}`" @click="appendKeywordTemplates(category.keywords)">
+                  <span class="block font-medium">{{ t(`admin.riskControl.keywordTemplateCategories.${category.id}`) }}</span>
+                  <span class="mt-1 block text-xs text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.keywordTemplatesAppendCategory', { count: category.keywords.length }) }}</span>
+                </button>
+              </div>
+              <p v-if="keywordTemplateFeedback" role="status" data-test="keyword-template-feedback" class="mt-3 text-xs text-primary-700 dark:text-primary-300">{{ keywordTemplateFeedback }}</p>
+            </section>
+
             <div>
               <div class="mb-2 flex items-center justify-between">
                 <label class="input-label mb-0">{{ t('admin.riskControl.blockedKeywords') }}</label>
@@ -1024,6 +1047,7 @@
               </div>
               <textarea
                 v-model="configForm.blocked_keywords_text"
+                data-test="blocked-keywords-input"
                 class="input min-h-52 resize-y font-mono text-sm"
                 :placeholder="t('admin.riskControl.blockedKeywordsPlaceholder')"
                 :disabled="configForm.keyword_blocking_mode === 'api_only'"
@@ -1143,6 +1167,7 @@ import Toggle from '@/components/common/Toggle.vue'
 import Pagination from '@/components/common/Pagination.vue'
 import ModelWhitelistSelector from '@/components/account/ModelWhitelistSelector.vue'
 import ProxySelector from '@/components/common/ProxySelector.vue'
+import UserAllowlistSelector from '@/components/admin/user/UserAllowlistSelector.vue'
 import { adminAPI } from '@/api/admin'
 import type {
   ContentModerationAPIKeyLoad,
@@ -1163,6 +1188,7 @@ import type { AdminGroup, Proxy, SelectOption } from '@/types'
 import { useAppStore } from '@/stores/app'
 import { extractApiErrorMessage } from '@/utils/apiError'
 import { formatDateTime as formatDateTimeValue } from '@/utils/format'
+import { CONTENT_AUDIT_KEYWORD_TEMPLATES, mergeContentAuditKeywords, parseContentAuditKeywords } from '@/utils/contentAuditKeywordTemplates'
 
 type SettingsTab = 'basic' | 'scope' | 'runtime' | 'response' | 'riskThresholds' | 'retention' | 'keywords'
 type WorkerSlotState = 'active' | 'idle' | 'disabled'
@@ -1194,6 +1220,8 @@ const maxModerationTestImages = 1
 const maxModerationTestImageSize = 8 * 1024 * 1024
 const maxVisibleApiKeyRows: number = 3
 const blockedKeywordMax = 10000
+const allKeywordTemplates = CONTENT_AUDIT_KEYWORD_TEMPLATES.flatMap((category) => [...category.keywords])
+const keywordTemplateFeedback = ref('')
 const riskThresholdDefaults: Record<string, number> = {
   harassment: 98,
   'harassment/threatening': 90,
@@ -1262,6 +1290,8 @@ const configForm = reactive({
   sample_rate: 100,
   all_groups: false,
   group_ids: [] as number[],
+  user_allowlist_ids: [] as number[],
+  user_allowlist_inherited: false,
   record_non_hits: false,
   worker_count: 4,
   queue_size: 32768,
@@ -1505,7 +1535,7 @@ const filteredGroups = computed(() => {
 
 const inputApiKeyCount = computed(() => parseApiKeys(configForm.api_keys_text).length)
 
-const blockedKeywordList = computed(() => parseBlockedKeywords(configForm.blocked_keywords_text))
+const blockedKeywordList = computed(() => parseContentAuditKeywords(configForm.blocked_keywords_text))
 
 const blockedKeywordCount = computed(() => blockedKeywordList.value.length)
 
@@ -1789,6 +1819,8 @@ function applyConfig(config: ContentModerationConfig) {
   configForm.sample_rate = config.sample_rate ?? 100
   configForm.all_groups = false
   configForm.group_ids = Array.isArray(config.group_ids) ? [...config.group_ids] : []
+  configForm.user_allowlist_ids = Array.isArray(config.user_allowlist_ids) ? [...config.user_allowlist_ids] : []
+  configForm.user_allowlist_inherited = config.user_allowlist_inherited ?? false
   configForm.record_non_hits = config.record_non_hits
   configForm.worker_count = config.worker_count || 4
   configForm.queue_size = config.queue_size || 32768
@@ -1882,6 +1914,7 @@ async function saveConfig() {
       sample_rate: Number(configForm.sample_rate) || 0,
       all_groups: false,
       group_ids: [...configForm.group_ids],
+      user_allowlist_ids: [...new Set(configForm.user_allowlist_ids)].sort((a, b) => a - b),
       record_non_hits: configForm.record_non_hits,
       clear_api_key: configForm.clear_api_key,
       worker_count: Number(configForm.worker_count) || 4,
@@ -2021,7 +2054,19 @@ async function clearFlaggedHashes() {
 
 function openSettings() {
   activeSettingsTab.value = 'basic'
+  keywordTemplateFeedback.value = ''
   settingsOpen.value = true
+}
+
+function appendKeywordTemplates(keywords: readonly string[]) {
+  const merged = mergeContentAuditKeywords(configForm.blocked_keywords_text, keywords)
+  if (merged.length > blockedKeywordMax) {
+    appStore.showError(t('admin.riskControl.keywordTemplatesLimit', { max: blockedKeywordMax }))
+    return
+  }
+  const added = merged.length - blockedKeywordCount.value
+  configForm.blocked_keywords_text = merged.join('\n')
+  keywordTemplateFeedback.value = t('admin.riskControl.keywordTemplatesAppended', { count: added })
 }
 
 function reloadLogsFromFirstPage() {
@@ -2405,20 +2450,6 @@ function clampPercent(value: unknown): number {
 
 function formatThresholdPercent(value: number): string {
   return `${clampPercent(value).toFixed(1)}%`
-}
-
-function parseBlockedKeywords(value: string): string[] {
-  const seen = new Set<string>()
-  const out: string[] = []
-  for (const line of value.split(/\r?\n/)) {
-    const kw = line.trim()
-    if (!kw) continue
-    const key = kw.toLowerCase()
-    if (seen.has(key)) continue
-    seen.add(key)
-    out.push(kw)
-  }
-  return out
 }
 
 function violationCountText(row: ContentModerationLog): string {

@@ -1,12 +1,131 @@
 package service
 
 import (
+	"context"
+	"encoding/json"
 	"net/http/httptest"
+	"regexp"
 	"testing"
+	"time"
 
+	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
+
+func TestCyberPolicySettingsGroupValidationAndTransaction(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		input      *[]int64
+		value      any
+		groups     []int64
+		validation string
+		missing    bool
+	}{
+		{name: "omitted preserves selection", value: nil, groups: []int64{7}},
+		{name: "empty clears selection", input: &[]int64{}, value: "{}", groups: []int64{}},
+		{name: "normalizes duplicate selection", input: &[]int64{9, 7, 9}, value: "{7,9}", groups: []int64{7, 9}},
+		{name: "zero rejected", input: &[]int64{0}, validation: "CYBER_GROUPS_INVALID"},
+		{name: "negative rejected", input: &[]int64{-1}, validation: "CYBER_GROUPS_INVALID"},
+		{name: "oversized rejected", input: func() *[]int64 { ids := make([]int64, 1001); return &ids }(), validation: "CYBER_GROUPS_INVALID"},
+		{name: "missing disabled or deleted rejected", input: &[]int64{7, 9}, value: "{7,9}", missing: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			require.NoError(t, err)
+			defer db.Close()
+			svc := NewCyberPolicyService(db, nil, nil)
+			if tc.validation == "" {
+				mock.ExpectBegin()
+				if tc.input != nil && len(*tc.input) > 0 {
+					rows := sqlmock.NewRows([]string{"id"}).AddRow(7)
+					if !tc.missing {
+						rows.AddRow(9)
+					}
+					mock.ExpectQuery(`SELECT id FROM groups .*deleted_at IS NULL AND status='active' ORDER BY id FOR SHARE`).WithArgs(tc.value).WillReturnRows(rows).RowsWillBeClosed()
+				}
+				if tc.missing {
+					mock.ExpectRollback()
+				} else {
+					array := "{}"
+					if tc.input == nil {
+						array = "{7}"
+					} else if len(tc.groups) > 0 {
+						array = "{7,9}"
+					}
+					mock.ExpectQuery(`UPDATE cyber_policy_settings SET`).WithArgs(nil, nil, nil, nil, tc.value, nil, nil).
+						WillReturnRows(sqlmock.NewRows([]string{"multiplier", "auto_disable_enabled", "auto_disable_threshold", "reset_on_manual_enable", "group_ids", "settings_revision", "user_allowlist_ids", "group_rules"}).AddRow("6.700000", true, 10, true, array, 12, "{}", "[]"))
+					mock.ExpectCommit()
+				}
+			}
+			settings, err := svc.SaveSettings(context.Background(), CyberPolicySettingsInput{GroupIDs: tc.input})
+			if tc.validation != "" || tc.missing {
+				require.ErrorContains(t, err, "CYBER_GROUPS_INVALID")
+				require.Nil(t, settings)
+			} else {
+				require.NoError(t, err)
+				require.Equal(t, tc.groups, settings.GroupIDs)
+				require.Equal(t, int64(12), settings.SettingsRevision)
+			}
+			require.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}
+
+func TestCyberPolicyRecordsKeepsHistoricalUnknownAndInsertionEvidence(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+	svc := NewCyberPolicyService(db, nil, nil)
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	require.NoError(t, err)
+	start := time.Date(2006, 2, 3, 0, 0, 0, 0, loc)
+	end := start.Add(24 * time.Hour)
+	evaluated := time.Date(2026, 11, 2, 3, 0, 0, 0, time.UTC)
+	mock.ExpectBegin()
+	mock.ExpectQuery(`SELECT EXISTS`).WithArgs(int64(7)).WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
+	mock.ExpectQuery(regexp.QuoteMeta(cyberRecordsCountQuery)).
+		WithArgs(int64(7), start, end).WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(4))
+	mock.ExpectQuery(regexp.QuoteMeta(cyberRecordsQuery)).WithArgs(int64(7), start, end, 100, 0).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at", "group_id", "group_name", "request_id", "model", "status", "reason", "scope", "revision", "evaluated_at", "source", "audit_id", "charge_status", "charge_reason", "cost", "multiplier", "charge_amount"}).
+			AddRow(3, start.Add(3*time.Hour), 9, "original skipped group", "request-c", "model", "skipped", "group_not_enabled", false, 12, evaluated, "upstream_policy", nil, "skipped", "group_not_enabled", "0.0200000000", "1.000000", "0.02000000").
+			AddRow(2, start.Add(2*time.Hour), 7, "original counted group", "request-b", "model", "counted", "", true, 11, evaluated, "upstream_policy", nil, "deducted", "", "0.0200000000", "2.000000", "0.04000000").
+			AddRow(1, start.Add(time.Hour), nil, "", "request-a", "model", "unknown", "historical_unknown", nil, nil, nil, "upstream_policy", nil, "historical_unknown", "", nil, nil, nil).
+			AddRow(0, start.Add(30*time.Minute), 7, "audit group snapshot", "request-d", "model", "counted", "", true, 11, evaluated, "content_audit", 41, "zero_cost", "", "0.0000000000", "2.000000", "0.00000000")).RowsWillBeClosed()
+	mock.ExpectCommit()
+	result, err := svc.Records(context.Background(), 7, CyberPolicyWindowInput{StartDate: "2006-02-03", EndDate: "2006-02-03", Timezone: "Asia/Shanghai"}, 0, 1000)
+	require.NoError(t, err)
+	require.Equal(t, 1, result.Page)
+	require.Equal(t, 100, result.PageSize)
+	require.Equal(t, int64(1), result.Pages)
+	require.Len(t, result.Items, 4)
+	require.Equal(t, "skipped", result.Items[0].CountStatus)
+	require.False(t, *result.Items[0].ScopeMatched)
+	require.Equal(t, "counted", result.Items[1].CountStatus)
+	require.True(t, *result.Items[1].ScopeMatched)
+	require.Equal(t, evaluated, *result.Items[1].EvaluatedAt)
+	require.NotEqual(t, result.Items[1].OccurredAt, *result.Items[1].EvaluatedAt, "evaluation uses insertion time, not the original usage date")
+	require.Equal(t, "unknown", result.Items[2].CountStatus)
+	require.Equal(t, "historical_unknown", result.Items[2].CountReason)
+	require.Nil(t, result.Items[2].GroupID)
+	require.Nil(t, result.Items[2].ScopeMatched)
+	require.Nil(t, result.Items[2].SettingsRevision)
+	require.Nil(t, result.Items[2].EvaluatedAt)
+	require.Equal(t, "deducted", result.Items[1].AutoChargeStatus)
+	require.Equal(t, "0.04000000", *result.Items[1].AutoChargeAmount)
+	require.Nil(t, result.Items[2].AutoChargeAmount)
+	require.Equal(t, "upstream_policy", result.Items[2].Source)
+	require.Equal(t, "usage:1:"+result.Items[2].OccurredAt.UTC().Format(time.RFC3339Nano), result.Items[2].RecordKey)
+	require.Nil(t, result.Items[2].AuditID)
+	require.Zero(t, result.Items[3].UsageID, "local audit blocks must never masquerade as usage rows")
+	require.Equal(t, int64(41), *result.Items[3].AuditID)
+	require.Equal(t, "audit:41", result.Items[3].RecordKey)
+	require.Equal(t, "content_audit", result.Items[3].Source)
+	encoded, err := json.Marshal(result.Items[2])
+	require.NoError(t, err)
+	require.Contains(t, string(encoded), `"scope_matched":null`)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
 
 func TestMarkAndGetOpsCyberPolicy(t *testing.T) {
 	gin.SetMode(gin.TestMode)

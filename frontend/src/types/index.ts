@@ -583,6 +583,8 @@ export interface Group {
   description: string | null
   platform: GroupPlatform
   rate_multiplier: number
+  security_audit_multiplier?: string
+  security_audit_auto_deduct_enabled?: boolean
   rpm_limit?: number // Group-level RPM cap (0 = unlimited); overrides user-level rpm_limit when set
   max_reasoning_effort?: string // Anthropic/OpenAI reasoning ceiling; empty means unlimited
   max_reasoning_effort_over_limit?: string // downgrade (default) or deny when over the ceiling
@@ -752,6 +754,7 @@ export interface ApiKey {
   key: string
   name: string
   group_id: number | null
+  group_ids?: number[]
   status: 'active' | 'inactive' | 'quota_exhausted' | 'expired'
   ip_whitelist: string[]
   ip_blacklist: string[]
@@ -764,6 +767,7 @@ export interface ApiKey {
   updated_at: string
   current_concurrency: number
   group?: Group
+  groups?: Group[]
   rate_limit_5h: number
   rate_limit_1d: number
   rate_limit_7d: number
@@ -781,6 +785,7 @@ export interface ApiKey {
 export interface CreateApiKeyRequest {
   name: string
   group_id?: number | null
+  group_ids?: number[]
   custom_key?: string // Optional custom API Key
   ip_whitelist?: string[]
   ip_blacklist?: string[]
@@ -794,6 +799,7 @@ export interface CreateApiKeyRequest {
 export interface UpdateApiKeyRequest {
   name?: string
   group_id?: number | null
+  group_ids?: number[]
   status?: 'active' | 'inactive'
   ip_whitelist?: string[]
   ip_blacklist?: string[]

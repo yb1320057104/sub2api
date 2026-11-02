@@ -18,6 +18,7 @@
         </div>
       </div>
       <p class="mt-2 text-xs text-gray-500 dark:text-dark-400">{{ t('admin.promptAudit.local.actionHint') }}</p>
+      <p class="mt-2 text-xs text-gray-500 dark:text-dark-400">{{ t('admin.promptAudit.local.templateUpdateHint') }}</p>
       <p v-if="draft.local_rules.length === 0" class="mt-4 rounded-lg bg-gray-50 p-4 text-sm text-gray-500 dark:bg-dark-900/40">{{ t('admin.promptAudit.local.empty') }}</p>
       <div class="mt-4 space-y-3">
         <article v-for="(rule, index) in draft.local_rules" :key="rule.id" class="rounded-xl border border-gray-200 p-4 dark:border-dark-700" :data-test="`local-rule-${index}`">
@@ -47,9 +48,11 @@
     <details class="mt-5 rounded-xl border border-gray-200 p-4 dark:border-dark-700">
       <summary class="cursor-pointer text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.promptAudit.local.instructions') }}</summary>
       <p class="mt-2 text-sm text-gray-500 dark:text-dark-300">{{ t('admin.promptAudit.local.instructionsHint') }}</p>
+      <button type="button" class="btn btn-secondary btn-sm mt-3" data-test="local-instruction-template" :disabled="!draft.default_audit_instructions?.trim()" @click="requestInstructions">{{ t('admin.promptAudit.local.loadInstructions') }}</button>
       <textarea :value="draft.audit_instructions" rows="10" maxlength="16000" class="input mt-3 w-full text-sm" :aria-label="t('admin.promptAudit.local.instructions')" @input="patch({ audit_instructions: ($event.target as HTMLTextAreaElement).value })" />
     </details>
     <ConfirmDialog :show="showTemplates" :title="t('admin.promptAudit.local.replaceTitle')" :message="t('admin.promptAudit.local.replaceMessage')" @confirm="applyTemplates" @cancel="showTemplates = false" />
+    <ConfirmDialog :show="showInstructions" :title="t('admin.promptAudit.local.replaceInstructionsTitle')" :message="t('admin.promptAudit.local.replaceInstructionsMessage')" @confirm="applyInstructions" @cancel="showInstructions = false" />
   </section>
 </template>
 
@@ -64,6 +67,7 @@ const props = defineProps<{ draft: PromptAuditDraft }>()
 const emit = defineEmits<{ (event: 'update:draft', value: PromptAuditDraft): void }>()
 const { t } = useI18n()
 const showTemplates = ref(false)
+const showInstructions = ref(false)
 function patch(value: Partial<PromptAuditDraft>) { emit('update:draft', { ...cloneData(props.draft), ...value }) }
 function updateRule(index: number, value: Partial<PromptLocalRule>) {
   const rules = cloneData(props.draft.local_rules)
@@ -75,11 +79,19 @@ function addRule() {
   patch({ local_rules: [...cloneData(props.draft.local_rules), { id: `rule-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, name: t('admin.promptAudit.local.newRule'), kind: 'keyword', pattern: '', category: 'jailbreak', action: 'warn', enabled: true, case_sensitive: false }] })
 }
 function requestTemplates() {
-  if (props.draft.local_rules.length || props.draft.audit_instructions.trim()) showTemplates.value = true
+  if (props.draft.local_rules.length) showTemplates.value = true
   else applyTemplates()
 }
 function applyTemplates() {
   showTemplates.value = false
-  patch({ local_rules: cloneData(props.draft.default_local_rules ?? []), audit_instructions: props.draft.default_audit_instructions ?? '' })
+  patch({ local_rules: cloneData(props.draft.default_local_rules ?? []) })
+}
+function requestInstructions() {
+  if (props.draft.audit_instructions.trim()) showInstructions.value = true
+  else applyInstructions()
+}
+function applyInstructions() {
+  showInstructions.value = false
+  patch({ audit_instructions: props.draft.default_audit_instructions ?? '' })
 }
 </script>

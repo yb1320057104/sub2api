@@ -70,6 +70,7 @@ LEFT JOIN LATERAL (
           WHERE terminal.account_id = ul.account_id
             AND (terminal.api_key_id IS NULL OR terminal.api_key_id = ul.api_key_id)
             AND terminal.status_code >= 400
+            AND NOT (terminal.error_type='security_audit_block' AND COALESCE(terminal.error_source,'')='security_audit')
             AND NOT terminal.is_count_tokens
             AND NULLIF(ul.request_id, '') IS NOT NULL
             AND (terminal.request_id = ul.request_id

@@ -141,6 +141,9 @@ func (g *GuardEvaluator) Evaluate(ctx context.Context, cfg ActiveConfig, snapsho
 		return nil, &GuardError{Code: ErrorCodeInvalidResponse, Cause: err}
 	}
 	aggregated.ChunkTotal = len(chunks)
+	if cfg.IsUserAllowlisted(snapshot.UserID) {
+		applyPromptUserExemption(aggregated)
+	}
 	kind := DecisionAllow
 	if aggregated.Action == ActionWarn {
 		kind = DecisionFlag

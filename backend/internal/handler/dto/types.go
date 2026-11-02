@@ -59,6 +59,8 @@ type APIKey struct {
 	Key         string     `json:"key"`
 	Name        string     `json:"name"`
 	GroupID     *int64     `json:"group_id"`
+	GroupIDs    []int64    `json:"group_ids"`
+	Groups      []*Group   `json:"groups"`
 	Status      string     `json:"status"`
 	IPWhitelist []string   `json:"ip_whitelist"`
 	IPBlacklist []string   `json:"ip_blacklist"`
@@ -91,13 +93,15 @@ type APIKey struct {
 }
 
 type Group struct {
-	ID             int64   `json:"id"`
-	Name           string  `json:"name"`
-	Description    string  `json:"description"`
-	Platform       string  `json:"platform"`
-	RateMultiplier float64 `json:"rate_multiplier"`
-	IsExclusive    bool    `json:"is_exclusive"`
-	Status         string  `json:"status"`
+	SecurityAuditMultiplier        string  `json:"security_audit_multiplier"`
+	SecurityAuditAutoDeductEnabled bool    `json:"security_audit_auto_deduct_enabled"`
+	ID                             int64   `json:"id"`
+	Name                           string  `json:"name"`
+	Description                    string  `json:"description"`
+	Platform                       string  `json:"platform"`
+	RateMultiplier                 float64 `json:"rate_multiplier"`
+	IsExclusive                    bool    `json:"is_exclusive"`
+	Status                         string  `json:"status"`
 
 	// I18n 名称与描述的各语言译文。只有管理端输出；用户侧接口经 Localized 把
 	// name/description 换成请求语言的版本后清空本字段。

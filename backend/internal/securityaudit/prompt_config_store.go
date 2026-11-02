@@ -15,6 +15,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/lib/pq"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -27,8 +28,9 @@ type activeConfigSnapshot struct {
 // Scope can remain trustworthy even when unrelated endpoint activation fails.
 // Its version prevents an old selection from bypassing a newer blocking policy.
 type promptAuditGroupScope struct {
-	version  int64
-	groupIDs []int64
+	version          int64
+	groupIDs         []int64
+	userAllowlistIDs []int64
 }
 
 type ConfigManager struct {
@@ -222,6 +224,20 @@ func (m *ConfigManager) IncludesGroup(groupID *int64) bool {
 	return true
 }
 
+// Use the newest independently decoded exemption list even if endpoint
+// activation fails. Never reuse an older exemption after a newer revision.
+func (m *ConfigManager) IsUserAllowlisted(userID int64) bool {
+	if m == nil || userID <= 0 {
+		return false
+	}
+	expected := m.expected.Load()
+	scope := m.expectedScope.Load()
+	if snapshot := m.snapshot.Load(); snapshot != nil && snapshot.active.ConfigVersion >= expected && (scope == nil || snapshot.active.ConfigVersion >= scope.version) {
+		return snapshot.active.IsUserAllowlisted(userID)
+	}
+	return scope != nil && scope.version >= expected && (ActiveConfig{UserAllowlistIDs: scope.userAllowlistIDs}).IsUserAllowlisted(userID)
+}
+
 func (m *ConfigManager) BlockingActivationDegraded() bool {
 	if m == nil {
 		return false
@@ -316,6 +332,29 @@ func (m *ConfigManager) Save(ctx context.Context, req UpdateConfigRequest, actor
 	if err != nil {
 		return PublicConfig{}, err
 	}
+	if req.UserAllowlistIDs != nil && len(next.UserAllowlistIDs) > 0 {
+		rows, err := tx.QueryContext(ctx, `SELECT id FROM users WHERE id=ANY($1::bigint[]) AND deleted_at IS NULL ORDER BY id FOR SHARE`, pq.Array(next.UserAllowlistIDs))
+		if err != nil {
+			return PublicConfig{}, err
+		}
+		found := 0
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				_ = rows.Close()
+				return PublicConfig{}, err
+			}
+			found++
+		}
+		readErr := rows.Err()
+		_ = rows.Close()
+		if readErr != nil {
+			return PublicConfig{}, readErr
+		}
+		if found != len(next.UserAllowlistIDs) {
+			return PublicConfig{}, infraerrors.BadRequest("AUDIT_USER_ALLOWLIST_INVALID", "豁免用户不存在或已删除，请刷新后重试")
+		}
+	}
 	next.ConfigVersion = current.ConfigVersion + 1
 	next.UpdatedAt = m.clock.Now()
 	next.UpdatedBy = actorID
@@ -384,6 +423,15 @@ func (m *ConfigManager) buildNextStorage(current storageConfig, req UpdateConfig
 	}
 	if req.LocalRules == nil {
 		next.LocalRules = append([]LocalRule{}, current.LocalRules...)
+	}
+	users := req.UserAllowlistIDs
+	if users == nil {
+		users = current.UserAllowlistIDs
+	}
+	var err error
+	next.UserAllowlistIDs, err = service.NormalizeAuditUserAllowlist(users)
+	if err != nil {
+		return storageConfig{}, err
 	}
 	for _, endpoint := range req.Endpoints {
 		baseURL, err := NormalizeBaseURL(endpoint.BaseURL)
@@ -461,10 +509,11 @@ func (m *ConfigManager) observeExpectedState(raw string, riskControlEnabled bool
 		return
 	}
 	var intent struct {
-		Enabled         bool    `json:"enabled"`
-		BlockingEnabled bool    `json:"blocking_enabled"`
-		ConfigVersion   int64   `json:"config_version"`
-		GroupIDs        []int64 `json:"group_ids"`
+		Enabled          bool    `json:"enabled"`
+		BlockingEnabled  bool    `json:"blocking_enabled"`
+		ConfigVersion    int64   `json:"config_version"`
+		GroupIDs         []int64 `json:"group_ids"`
+		UserAllowlistIDs []int64 `json:"user_allowlist_ids"`
 	}
 	if err := json.Unmarshal([]byte(raw), &intent); err != nil {
 		return
@@ -473,7 +522,11 @@ func (m *ConfigManager) observeExpectedState(raw string, riskControlEnabled bool
 		intent.ConfigVersion = 1
 	}
 	m.expected.Store(intent.ConfigVersion)
-	m.expectedScope.Store(&promptAuditGroupScope{version: intent.ConfigVersion, groupIDs: canonicalInt64s(intent.GroupIDs)})
+	users, err := service.NormalizeAuditUserAllowlist(intent.UserAllowlistIDs)
+	if err != nil {
+		users = []int64{}
+	}
+	m.expectedScope.Store(&promptAuditGroupScope{version: intent.ConfigVersion, groupIDs: canonicalInt64s(intent.GroupIDs), userAllowlistIDs: users})
 	m.expectedBlocking.Store(riskControlEnabled && intent.Enabled && intent.BlockingEnabled)
 }
 
@@ -551,6 +604,7 @@ func cloneStorageConfig(cfg storageConfig) storageConfig {
 	cfg.LocalRules = append([]LocalRule{}, cfg.LocalRules...)
 	cfg.Scanners = append([]string(nil), cfg.Scanners...)
 	cfg.GroupIDs = append([]int64(nil), cfg.GroupIDs...)
+	cfg.UserAllowlistIDs = append([]int64{}, cfg.UserAllowlistIDs...)
 	cfg.Endpoints = append([]StorageEndpoint(nil), cfg.Endpoints...)
 	return cfg
 }
@@ -560,6 +614,7 @@ func cloneActiveConfig(cfg ActiveConfig) ActiveConfig {
 	cfg.compiledRules = append([]compiledLocalRule(nil), cfg.compiledRules...)
 	cfg.Scanners = append([]string(nil), cfg.Scanners...)
 	cfg.GroupIDs = append([]int64(nil), cfg.GroupIDs...)
+	cfg.UserAllowlistIDs = append([]int64{}, cfg.UserAllowlistIDs...)
 	cfg.Endpoints = append([]ActiveEndpoint(nil), cfg.Endpoints...)
 	return cfg
 }

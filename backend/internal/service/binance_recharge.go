@@ -204,6 +204,13 @@ func normalizeBinanceRechargeAccountInput(input BinanceRechargeAccountInput) (Bi
 	if input.ClearProxy && input.ProxyURL != "" {
 		return input, infraerrors.BadRequest("BINANCE_PROXY_INVALID", "不能同时设置和清除币安专属代理")
 	}
+	if input.ProxyURL != "" {
+		normalized, err := binancepay.NormalizeProxyURL(input.ProxyURL)
+		if err != nil {
+			return input, binanceProxyInputError(err)
+		}
+		input.ProxyURL = normalized
+	}
 	if input.CreditMultiplier != nil {
 		multiplier, err := normalizeBinanceCreditMultiplier(*input.CreditMultiplier)
 		if err != nil {
@@ -336,7 +343,7 @@ func (s *BinanceRechargeService) SaveAccount(ctx context.Context, id int64, inpu
 			if errors.Is(err, binancepay.ErrProxyPreflightConfiguration) {
 				return nil, infraerrors.BadRequest("BINANCE_PROXY_PREFLIGHT_UNSUPPORTED", "开启专属代理预探测仅支持带用户名和密码的 HTTP(S) 网关；SOCKS5 或普通代理请关闭预探测")
 			}
-			return nil, infraerrors.BadRequest("BINANCE_PROXY_INVALID", "币安专属代理地址无效")
+			return nil, binanceProxyInputError(err)
 		}
 		proxyCiphertext, err = s.encryptor.Encrypt(input.ProxyURL)
 		if err != nil {

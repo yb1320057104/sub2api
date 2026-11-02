@@ -118,12 +118,14 @@ func ProvideGatewayHandler(
 	settingService *service.SettingService,
 	coordinator *securityaudit.Coordinator,
 	geminiCachedContentService *service.GeminiCachedContentService,
+	cyberPolicy *service.CyberPolicyService,
 ) *GatewayHandler {
 	h := NewGatewayHandler(gatewayService, openAIGatewayService, geminiCompatService, antigravityGatewayService,
 		userService, concurrencyService, billingCacheService, usageService, apiKeyService, usageRecordWorkerPool,
 		errorPassthroughService, contentModerationService, userMsgQueueService, cfg, settingService)
 	h.securityAuditCoordinator = coordinator
 	h.geminiCachedContentService = geminiCachedContentService
+	h.cyberAuditRecorder = cyberPolicy
 	return h
 }
 
@@ -141,6 +143,7 @@ func ProvideOpenAIGatewayHandler(
 	cfg *config.Config,
 	coordinator *securityaudit.Coordinator,
 	compositeResolver *service.CompositeRouteResolver,
+	cyberPolicy *service.CyberPolicyService,
 ) *OpenAIGatewayHandler {
 	gatewayService.SetPluginManager(pluginManager)
 	h := NewOpenAIGatewayHandler(gatewayService, concurrencyService, billingCacheService, apiKeyService,
@@ -148,6 +151,7 @@ func ProvideOpenAIGatewayHandler(
 	h.compositeResolver = compositeResolver
 	h.securityAuditCoordinator = coordinator
 	h.grokMediaEligibilityProber = grokQuotaService
+	h.cyberAuditRecorder = cyberPolicy
 	return h
 }
 
@@ -248,7 +252,7 @@ var ProviderSet = wire.NewSet(
 	// Top-level handlers
 	NewAuthHandler,
 	NewUserHandler,
-	NewAPIKeyHandler,
+	ProvideAPIKeyHandler,
 	NewUsageHandler,
 	NewRedeemHandler,
 	NewSubscriptionHandler,

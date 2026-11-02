@@ -278,6 +278,7 @@ WITH dedup AS (
       )
     )
     AND NOT current_error.is_count_tokens
+    AND NOT (current_error.error_type = 'security_audit_block' AND COALESCE(current_error.error_source, '') = 'security_audit')
     AND (COALESCE(current_error.status_code, 0) >= 400 OR current_error.error_type = 'cyber_policy')
   ORDER BY COALESCE(NULLIF(current_error.request_id, ''), 'error:' || current_error.id::text), current_error.created_at DESC, current_error.id DESC
 ), classified AS (

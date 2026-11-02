@@ -766,6 +766,52 @@ func (s *GeminiCachedContentService) List(ctx context.Context, apiKeyID, groupID
 	return s.repo.ListForOwner(ctx, apiKeyID, groupID, s.now(), beforeID, limit)
 }
 
+// ListForGroups merges the current key's caches from already-authorized groups.
+// Every group uses the same cursor, limit and expiry snapshot so the caller's
+// existing global ID cursor remains valid across group boundaries.
+func (s *GeminiCachedContentService) ListForGroups(ctx context.Context, apiKeyID int64, groupIDs []int64, beforeID int64, limit int) ([]*GeminiCachedContent, error) {
+	if limit <= 0 {
+		limit = GeminiCachedContentListDefaultPageSize
+	}
+	activeAt := s.now()
+	seenGroups := make(map[int64]bool, len(groupIDs))
+	seenRecords := make(map[int64]bool)
+	var records []*GeminiCachedContent
+	for _, groupID := range groupIDs {
+		if groupID <= 0 || seenGroups[groupID] {
+			continue
+		}
+		seenGroups[groupID] = true
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		items, err := s.repo.ListForOwner(ctx, apiKeyID, groupID, activeAt, beforeID, limit)
+		if err != nil {
+			return nil, err
+		}
+		for _, record := range items {
+			if record == nil || record.APIKeyID != apiKeyID || record.GroupID != groupID || seenRecords[record.ID] {
+				continue
+			}
+			seenRecords[record.ID] = true
+			records = append(records, record)
+		}
+	}
+	slices.SortFunc(records, func(a, b *GeminiCachedContent) int {
+		if a.ID > b.ID {
+			return -1
+		}
+		if a.ID < b.ID {
+			return 1
+		}
+		return 0
+	})
+	if len(records) > limit {
+		records = records[:limit]
+	}
+	return records, nil
+}
+
 // GeminiCachedContentMutation 是一次已登记修改意图、尚未提交的有效期修改。持有期间同一缓存的其他修改被拒绝；
 // 未提交的修改（上游结果未知、落库失败、进程退出）在租约过期后由恢复流程把上游有效期回滚到 Baseline，不计费。
 type GeminiCachedContentMutation struct {

@@ -37,6 +37,8 @@ func RegisterGatewayRoutes(
 	endpointNorm := handler.InboundEndpointMiddleware()
 	compositeTarget := compositeTargetPlatformMiddleware(compositeResolver)
 	compositeGeminiTarget := compositeGeminiTargetPlatformMiddleware(compositeResolver)
+	groupRouter := h.Gateway.APIKeyGroupRouter()
+	apiKeyAuth = middleware.APIKeyAuthMiddleware(middleware.WithAPIKeyGroupRouter(groupRouter, gin.HandlerFunc(apiKeyAuth)))
 
 	// 未分组 Key 拦截中间件（按协议格式区分错误响应）
 	requireGroupAnthropic := middleware.RequireGroupAssignment(settingService, middleware.AnthropicErrorWriter)
@@ -340,7 +342,7 @@ func RegisterGatewayRoutes(
 	gemini.Use(clientRequestID)
 	gemini.Use(opsErrorLogger)
 	gemini.Use(endpointNorm)
-	gemini.Use(middleware.APIKeyAuthWithSubscriptionGoogle(apiKeyService, subscriptionService, cfg))
+	gemini.Use(middleware.WithAPIKeyGroupRouter(groupRouter, middleware.APIKeyAuthWithSubscriptionGoogle(apiKeyService, subscriptionService, cfg)))
 	gemini.Use(groupModelAllowlist)
 	gemini.Use(compositeGeminiTarget)
 	gemini.Use(requireGroupGoogle)
@@ -513,7 +515,7 @@ func RegisterGatewayRoutes(
 	antigravityV1Beta.Use(opsErrorLogger)
 	antigravityV1Beta.Use(endpointNorm)
 	antigravityV1Beta.Use(middleware.ForcePlatform(service.PlatformAntigravity))
-	antigravityV1Beta.Use(middleware.APIKeyAuthWithSubscriptionGoogle(apiKeyService, subscriptionService, cfg))
+	antigravityV1Beta.Use(middleware.WithAPIKeyGroupRouter(groupRouter, middleware.APIKeyAuthWithSubscriptionGoogle(apiKeyService, subscriptionService, cfg)))
 	antigravityV1Beta.Use(groupModelAllowlist)
 	antigravityV1Beta.Use(requireGroupGoogle)
 	{

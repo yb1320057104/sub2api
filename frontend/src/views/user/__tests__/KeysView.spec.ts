@@ -2,9 +2,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { nextTick } from 'vue'
 
-import type { ApiKey } from '@/types'
+import type { ApiKey, Group } from '@/types'
 import { keysAPI } from '@/api'
 import KeysView from '../KeysView.vue'
+import OrderedKeyGroupSelector from '@/components/keys/OrderedKeyGroupSelector.vue'
+import KeyGroupBadge from '@/components/keys/KeyGroupBadge.vue'
 
 const {
   listKeys,
@@ -45,6 +47,7 @@ const messages: Record<string, string> = {
   'keys.created': 'Created',
   'keys.expiresAt': 'Expires',
   'keys.group': 'Group',
+  'keys.auditRate': 'Security audit multiplier {multiplier}x',
   'keys.id': 'ID',
   'keys.currentConcurrency': 'Current Concurrency',
   'keys.lastUsedAt': 'Last Used',
@@ -103,7 +106,7 @@ vi.mock('vue-i18n', async () => {
   return {
     ...actual,
     useI18n: () => ({
-      t: (key: string) => messages[key] ?? key,
+      t: (key: string, params?: Record<string, unknown>) => (messages[key] ?? key).replace(/\{(\w+)\}/g, (_, name) => String(params?.[name] ?? `{${name}}`)),
     }),
   }
 })
@@ -173,6 +176,7 @@ const DataTableStub = {
           <slot name="cell-id" :value="row.id" :row="row" />
         </div>
         <slot name="cell-name" :value="row.name" :row="row" />
+        <slot name="cell-group" :row="row" />
         <slot name="cell-actions" :row="row" />
         <div data-test="current-concurrency">
           <slot name="cell-current_concurrency" :value="row.current_concurrency" :row="row" />
@@ -571,7 +575,7 @@ describe('user KeysView column settings', () => {
       subscription_type: 'standard',
     }))
     const groupSelect = (wrapper: VueWrapper) => wrapper.findComponent('[data-tour="key-form-group"]')
-    const optionIds = (wrapper: VueWrapper) => groupSelect(wrapper).props('options').map((option: { value: number }) => option.value)
+    const optionIds = (wrapper: VueWrapper) => groupSelect(wrapper).props('groups').map((group: { id: number }) => group.id)
     const chooseProvider = (wrapper: VueWrapper, value: string) => wrapper.get(`input[name="key-provider"][value="${value}"]`).setValue()
     const openCreate = async () => {
       const wrapper = await mountView()
@@ -599,19 +603,102 @@ describe('user KeysView column settings', () => {
     it('clears the previous group on provider change and submits only the newly selected group', async () => {
       const wrapper = await openCreate()
       await wrapper.get('[data-tour="key-form-name"]').setValue('My key')
-      await groupSelect(wrapper).vm.$emit('update:modelValue', 1)
+      await groupSelect(wrapper).vm.$emit('update:modelValue', [1])
       await chooseProvider(wrapper, 'domestic')
-      expect(groupSelect(wrapper).props('modelValue')).toBeNull()
+      expect(groupSelect(wrapper).props('modelValue')).toEqual([])
       await wrapper.get('#key-form').trigger('submit')
       expect(keysAPI.create).not.toHaveBeenCalled()
       expect(showError).toHaveBeenCalledWith('keys.groupRequired')
 
-      await groupSelect(wrapper).vm.$emit('update:modelValue', 5)
+      await groupSelect(wrapper).vm.$emit('update:modelValue', [5])
       vi.mocked(keysAPI.create).mockResolvedValue({ ...createApiKey(), group_id: 5 })
       await wrapper.get('#key-form').trigger('submit')
       await flushPromises()
       expect(keysAPI.create).toHaveBeenCalledOnce()
       expect(vi.mocked(keysAPI.create).mock.calls[0].slice(0, 2)).toEqual(['My key', 5])
+      expect(vi.mocked(keysAPI.create).mock.calls[0][8]).toEqual([5])
+    })
+
+    it('creates an ordered group list and submits its first group for singular-field compatibility', async () => {
+      const wrapper = await openCreate()
+      await chooseProvider(wrapper, 'domestic')
+      await wrapper.get('[data-tour="key-form-name"]').setValue('Ordered key')
+      await wrapper.get('[data-test="key-group-option-3"]').setValue(true)
+      await wrapper.get('[data-test="key-group-option-5"]').setValue(true)
+      expect(groupSelect(wrapper).props('modelValue')).toEqual([3, 5])
+      await wrapper.get('[data-test="key-group-up-5"]').trigger('click')
+      expect(groupSelect(wrapper).props('modelValue')).toEqual([5, 3])
+      expect(keysAPI.create).not.toHaveBeenCalled()
+      vi.mocked(keysAPI.create).mockResolvedValue({ ...createApiKey(), group_id: 5, group_ids: [5, 3] })
+      await wrapper.get('#key-form').trigger('submit')
+      await flushPromises()
+      expect(vi.mocked(keysAPI.create).mock.calls[0][1]).toBe(5)
+      expect(vi.mocked(keysAPI.create).mock.calls[0][8]).toEqual([5, 3])
+      wrapper.unmount()
+    })
+
+    it('preserves legacy and missing selected groups when editing unrelated key fields', async () => {
+      const key = { ...createApiKey(), group_id: 5, group_ids: [5, 99, 3] }
+      listKeys.mockResolvedValueOnce({ items: [key], total: 1, page: 1, page_size: 20, pages: 1 })
+      updateKey.mockResolvedValue(key)
+      const wrapper = await mountView()
+      await getButtonByText(wrapper, 'common.edit').trigger('click')
+      expect(groupSelect(wrapper).props('modelValue')).toEqual([5, 99, 3])
+      expect(wrapper.get('[data-test="key-group-priority-99"]').text()).toContain('keys.selectedGroupUnavailable')
+      await wrapper.get('[data-tour="key-form-name"]').setValue('Renamed only')
+      await wrapper.get('#key-form').trigger('submit')
+      await flushPromises()
+      expect(updateKey).toHaveBeenCalledWith(1, expect.objectContaining({ name: 'Renamed only', group_id: 5, group_ids: [5, 99, 3] }))
+      wrapper.unmount()
+
+      listKeys.mockResolvedValueOnce({ items: [{ ...createApiKey(), group_id: 3 }], total: 1, page: 1, page_size: 20, pages: 1 })
+      const legacy = await mountView()
+      await getButtonByText(legacy, 'common.edit').trigger('click')
+      expect(groupSelect(legacy).props('modelValue')).toEqual([3])
+      legacy.unmount()
+    })
+
+    it('renders ordered group audit multipliers separately from normal user rates and saves inline selection only on confirmation', async () => {
+      const first = { ...availableGroups[2], rate_multiplier: 2, security_audit_multiplier: '3.500000', security_audit_auto_deduct_enabled: true }
+      const second = { ...availableGroups[4], rate_multiplier: 4 }
+      getAvailableGroups.mockResolvedValue([first, second])
+      getUserGroupRates.mockResolvedValue({ 3: 1.5 })
+      const key = { ...createApiKey(), group_id: 5, group_ids: [5, 3], group: second, groups: [first, second] }
+      listKeys.mockResolvedValue({ items: [key], total: 1, page: 1, page_size: 20, pages: 1 })
+      updateKey.mockResolvedValue(key)
+      const wrapper = await mountView()
+      const badges = wrapper.get('[data-test="key-groups-1"]').findAllComponents(KeyGroupBadge)
+      expect(badges.map((badge) => badge.props('group').id)).toEqual([5, 3])
+      expect(badges[0].text()).toContain('Security audit multiplier 1x')
+      expect(badges[0].text()).toContain('keys.auditAutoDeductOff')
+      expect(badges[1].text()).toContain('Security audit multiplier 3.500000x')
+      expect(badges[1].text()).toContain('keys.auditAutoDeductOn')
+      expect(badges[1].props('userRate')).toBe(1.5)
+      await wrapper.get('[title="keys.clickToChangeGroup"]').trigger('click')
+      const selector = wrapper.getComponent('[data-test="inline-key-group-selector"]')
+      expect(selector.props('modelValue')).toEqual([5, 3])
+      await wrapper.get('[data-test="key-group-up-3"]').trigger('click')
+      expect(updateKey).not.toHaveBeenCalled()
+      await wrapper.get('[data-test="save-inline-key-groups"]').trigger('click')
+      await flushPromises()
+      expect(updateKey).toHaveBeenCalledWith(1, { group_id: 3, group_ids: [3, 5] })
+      wrapper.unmount()
+    })
+
+    it('limits selection to 20 groups while allowing removal and priority changes', async () => {
+      const groups = Array.from({ length: 21 }, (_, index) => ({ ...availableGroups[0], id: index + 1 })) as Group[]
+      const selected = groups.slice(0, 20).map((group) => group.id)
+      const wrapper = mount(OrderedKeyGroupSelector, { props: { modelValue: selected, groups }, global: { stubs: { KeyGroupBadge: true } } })
+      expect(wrapper.get('[data-test="key-group-option-21"]').attributes()).toHaveProperty('disabled')
+      expect(wrapper.get('[data-test="key-group-up-1"]').attributes()).toHaveProperty('disabled')
+      await wrapper.get('[data-test="key-group-down-1"]').trigger('click')
+      expect(wrapper.emitted('update:modelValue')?.at(-1)?.[0]).toEqual([2, 1, ...selected.slice(2)])
+      await wrapper.get('[data-test="key-group-remove-20"]').trigger('click')
+      await wrapper.setProps({ modelValue: wrapper.emitted('update:modelValue')?.at(-1)?.[0] as number[] })
+      expect(wrapper.get('[data-test="key-group-option-21"]').attributes()).not.toHaveProperty('disabled')
+      await wrapper.get('[data-test="key-group-option-21"]').setValue(true)
+      expect(wrapper.emitted('update:modelValue')?.at(-1)?.[0]).toEqual([...selected.slice(0, 19), 21])
+      wrapper.unmount()
     })
 
     it('defaults to a provider with available groups and disables empty categories', async () => {
@@ -643,11 +730,11 @@ describe('user KeysView column settings', () => {
     it('resets provider and group when reopening create, and preserves edit options', async () => {
       const wrapper = await openCreate()
       await chooseProvider(wrapper, 'domestic')
-      await groupSelect(wrapper).vm.$emit('update:modelValue', 5)
+      await groupSelect(wrapper).vm.$emit('update:modelValue', [5])
       await wrapper.get('[data-test="close-dialog"]').trigger('click')
       await wrapper.get('[data-tour="keys-create-btn"]').trigger('click')
       expect(optionIds(wrapper)).toEqual([1])
-      expect(groupSelect(wrapper).props('modelValue')).toBeNull()
+      expect(groupSelect(wrapper).props('modelValue')).toEqual([])
       await wrapper.get('[data-test="close-dialog"]').trigger('click')
       await getButtonByText(wrapper, 'common.edit').trigger('click')
       expect(wrapper.find('[data-tour="key-form-provider"]').exists()).toBe(false)

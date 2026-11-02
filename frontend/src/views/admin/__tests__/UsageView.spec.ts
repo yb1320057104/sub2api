@@ -1,18 +1,22 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
-import { defineComponent, ref } from 'vue'
+import { defineComponent, reactive, ref } from 'vue'
 
 import UsageView from '../UsageView.vue'
 import AdminDailyUsage from '@/components/admin/usage/AdminDailyUsage.vue'
 import SecurityPolicyRankingView from '../SecurityPolicyRankingView.vue'
+import UserAllowlistSelector from '@/components/admin/user/UserAllowlistSelector.vue'
 
 const rankingMocks = vi.hoisted(() => ({
   getRanking: vi.fn(), getPublicRanking: vi.fn(), getSettings: vi.fn(),
   saveSettings: vi.fn(), preview: vi.fn(), deduct: vi.fn(),
+  getRecords: vi.fn(), getGroups: vi.fn(),
   auth: { isAdmin: true },
 }))
 vi.mock('@/api/admin/securityPolicyRanking', () => ({ securityPolicyRankingAPI: rankingMocks }))
-vi.mock('@/stores/auth', () => ({ useAuthStore: () => rankingMocks.auth }))
+const rankingAuth = reactive(rankingMocks.auth)
+vi.mock('@/stores/auth', () => ({ useAuthStore: () => rankingAuth }))
+vi.mock('@/api/admin/groups', () => ({ default: { getAllIncludingInactive: rankingMocks.getGroups } }))
 
 const { list, exportList, getStats, getSnapshotV2, getById, getModelStats, listErrorLogs, routeQuery, aoaToSheet, sheetAddAoa, saveAs, xlsxWrite } = vi.hoisted(() => {
   vi.stubGlobal('localStorage', {
@@ -51,6 +55,9 @@ const messages: Record<string, string> = {
 	'common.yes': 'Yes',
 	'common.no': 'No',
   'securityPolicyRanking.previewFormula': '{count} triggers × {multiplier} = {amount}',
+  'securityPolicyRanking.countSummary': 'counted {counted} / skipped {skipped} / unknown {unknown}',
+  'securityPolicyRanking.chargeFormula': 'Calculated {cost} × {multiplier} = {amount}',
+  'securityPolicyRanking.chargeDeducted': 'Actually deducted {amount}',
 }
 
 const formatLocalDate = (date: Date): string => {
@@ -815,11 +822,19 @@ describe('admin UsageView model audit export', () => {
 describe('PKSecurityPolicyRanking', () => {
   const mountedViews: Array<{ unmount: () => void }> = []
   let visibility: ReturnType<typeof vi.spyOn>
-  const settingsData = () => ({ multiplier: '6.700000', auto_disable_enabled: false, auto_disable_threshold: 10, reset_on_manual_enable: true })
+  const settingsData = () => ({ multiplier: '6.700000', auto_disable_enabled: false, auto_disable_threshold: 10, reset_on_manual_enable: true, group_ids: [] as number[], settings_revision: 1 })
   const rankingData = (count = 4) => ({
-    items: [{ rank: 1, user_id: 7, username: 'Example user', email: 'private@example.com', balance: '100.00000000', status: 'active', auto_disable_count: count, trigger_count: count, deducted_count: 1, pending_count: count - 1, pending_amount: '20.10000000' }],
-    total: 1, total_triggers: count, total_pending: count - 1, multiplier: '6.700000',
+    items: [{ rank: 1, user_id: 7, username: 'Example user', email: 'private@example.com', balance: '100.00000000', status: 'active', auto_disable_count: count, trigger_count: count, counted_count: 1, skipped_count: 1, unknown_count: count - 2, deducted_count: 1, pending_count: count - 1, pending_amount: '20.10000000' }],
+    total: 1, total_triggers: count, total_pending: count - 1, total_counted: 1, total_skipped: 1, total_unknown: count - 2, multiplier: '6.700000',
     start_date: '2026-10-03', end_date: '2026-10-03', timezone: 'UTC', generated_at: '2026-10-03T12:00:00Z',
+  })
+  const recordsData = () => ({
+    start_date: '2026-10-03', end_date: '2026-10-03', timezone: 'UTC', total: 3, page: 1, page_size: 20, pages: 1,
+    items: [
+      { usage_id: 101, occurred_at: '2026-10-03T12:00:00Z', group_id: 2, group_name: 'Unselected group', request_id: 'req-101', model: 'test-model', count_status: 'skipped', count_reason: 'group_not_enabled', settings_revision: 1, evaluated_at: '2026-10-03T12:00:00Z' },
+      { usage_id: 102, occurred_at: '2026-10-03T11:00:00Z', group_id: 1, group_name: 'Selected group', request_id: 'req-102', model: 'test-model', count_status: 'counted', count_reason: '', settings_revision: 1, evaluated_at: '2026-10-03T11:00:00Z' },
+      { usage_id: 103, occurred_at: '2026-10-03T10:00:00Z', group_id: null, group_name: '', request_id: '', model: '', count_status: 'unknown', count_reason: 'historical_unknown', settings_revision: null, evaluated_at: null },
+    ],
   })
   const previewData = () => ({
     id: 'frozen-preview-7', user_id: 7, username: 'Example user', email: 'private@example.com',
@@ -830,7 +845,7 @@ describe('PKSecurityPolicyRanking', () => {
   const mountRanking = () => {
     const wrapper = mount(SecurityPolicyRankingView, {
       global: { stubs: {
-        AppLayout: AppLayoutStub, DateRangePicker: true, Pagination: true,
+        AppLayout: AppLayoutStub, DateRangePicker: true, Pagination: true, UserAllowlistSelector: true,
         RouterLink: { template: '<a><slot /></a>' },
         BaseDialog: { props: ['show'], template: '<section v-if="show"><slot /><slot name="footer" /></section>' },
       } },
@@ -848,10 +863,12 @@ describe('PKSecurityPolicyRanking', () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date(2026, 9, 3, 12))
     visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
-    rankingMocks.auth.isAdmin = true
+    rankingAuth.isAdmin = true
     rankingMocks.getRanking.mockReset().mockResolvedValue({ data: rankingData() })
     rankingMocks.getPublicRanking.mockReset().mockResolvedValue({ data: { ...rankingData(), items: [{ rank: 1, display_name: 'Pub***', trigger_count: 4 }] } })
     rankingMocks.getSettings.mockReset().mockResolvedValue({ data: settingsData() })
+    rankingMocks.getGroups.mockReset().mockResolvedValue([{ id: 1, name: 'Selected group', platform: 'openai', status: 'active' }, { id: 2, name: 'Unselected group', platform: 'openai', status: 'inactive' }])
+    rankingMocks.getRecords.mockReset().mockResolvedValue({ data: recordsData() })
     rankingMocks.saveSettings.mockReset().mockImplementation(async value => ({ data: value }))
     rankingMocks.preview.mockReset().mockResolvedValue({ data: previewData() })
     rankingMocks.deduct.mockReset().mockResolvedValue({ data: { ...previewData(), status: 'completed', balance_after: '79.90000000' } })
@@ -942,7 +959,7 @@ describe('PKSecurityPolicyRanking', () => {
   })
 
   it('shows only the safe ranking to ordinary users and never calls admin APIs', async () => {
-    rankingMocks.auth.isAdmin = false
+    rankingAuth.isAdmin = false
     // Even an unexpected extra field must not become a user-visible column.
     rankingMocks.getPublicRanking.mockResolvedValue({ data: { ...rankingData(), items: [{ ...rankingData().items[0], display_name: 'Pub***' }] } })
     const wrapper = mountRanking()
@@ -958,6 +975,10 @@ describe('PKSecurityPolicyRanking', () => {
     expect(rankingMocks.preview).not.toHaveBeenCalled()
     expect(rankingMocks.deduct).not.toHaveBeenCalled()
     expect(rankingMocks.getPublicRanking).toHaveBeenCalledTimes(1)
+    expect(rankingMocks.getGroups).not.toHaveBeenCalled()
+    expect(rankingMocks.getRecords).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-testid="ranking-records-7"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="ranking-count-summary"]').exists()).toBe(false)
   })
 
   it('saves exact multiplier and automatic disable options, rejecting invalid input', async () => {
@@ -972,7 +993,232 @@ describe('PKSecurityPolicyRanking', () => {
     await wrapper.find('[data-testid="ranking-reset-on-enable"]').setValue(false)
     await wrapper.find('form').trigger('submit')
     await flushPromises()
-    expect(rankingMocks.saveSettings).toHaveBeenCalledWith({ multiplier: '0.290001', auto_disable_enabled: true, auto_disable_threshold: 1000000000, reset_on_manual_enable: false })
+    expect(rankingMocks.saveSettings).toHaveBeenCalledWith({ multiplier: '0.290001', auto_disable_enabled: true, auto_disable_threshold: 1000000000, reset_on_manual_enable: false, group_ids: [], user_allowlist_ids: [], group_rules: [], settings_revision: 1 })
+  })
+
+  it('saves only selected detection groups, clears the scope explicitly and keeps deduction totals independent', async () => {
+    const wrapper = mountRanking()
+    await flushPromises()
+    expect(wrapper.find('[data-testid="ranking-empty-scope"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="ranking-group-2"]').attributes()).toHaveProperty('disabled')
+    expect(wrapper.get('[data-testid="ranking-counts-7"]').text()).toBe('counted 1 / skipped 1 / unknown 2')
+    expect(wrapper.get('[data-testid="ranking-count-summary"]').text()).toBe('counted 1 / skipped 1 / unknown 2')
+    await wrapper.get('[data-testid="ranking-group-1"]').setValue(true)
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(rankingMocks.saveSettings).toHaveBeenLastCalledWith(expect.objectContaining({ group_ids: [1] }))
+    await wrapper.get('[data-testid="ranking-group-1"]').setValue(false)
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(rankingMocks.saveSettings).toHaveBeenLastCalledWith(expect.objectContaining({ group_ids: [] }))
+    await wrapper.get('[data-testid="ranking-deduct-7"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-testid="ranking-preview-formula"]').text()).toBe('3 triggers × 6.7 = 20.1')
+    expect(rankingMocks.preview).toHaveBeenLastCalledWith(7, expect.objectContaining({ start_date: '2026-10-03', end_date: '2026-10-03' }), expect.any(AbortSignal))
+  })
+
+  it('preserves saved inactive and missing groups until explicitly removed and can search by group ID', async () => {
+    rankingMocks.getSettings.mockResolvedValue({ data: { ...settingsData(), group_ids: [2, 99] } })
+    const wrapper = mountRanking()
+    await flushPromises()
+    expect(wrapper.get('[data-testid="ranking-group-2"]').attributes()).not.toHaveProperty('disabled')
+    expect(wrapper.get('[data-testid="ranking-missing-group-99"]').element).toHaveProperty('checked', true)
+    await wrapper.get('[data-testid="ranking-group-search"]').setValue('1')
+    expect(wrapper.find('[data-testid="ranking-group-1"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="ranking-group-2"]').exists()).toBe(false)
+    await wrapper.get('[data-testid="ranking-group-search"]').setValue('')
+    await wrapper.get('[data-testid="ranking-group-2"]').setValue(false)
+    await wrapper.get('[data-testid="ranking-missing-group-99"]').setValue(false)
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(rankingMocks.saveSettings).toHaveBeenLastCalledWith(expect.objectContaining({ group_ids: [] }))
+  })
+
+  it('preserves group rules outside detection scope and saves auto deductions independently from automatic disabling', async () => {
+    const rule = { group_id: 1, multiplier: '0.290001', auto_deduct_enabled: false }
+    rankingMocks.getSettings.mockResolvedValue({ data: { ...settingsData(), group_ids: [1], group_rules: [rule], user_allowlist_ids: [7, 9] } })
+    const wrapper = mountRanking()
+    await flushPromises()
+    expect(wrapper.get('[data-testid="ranking-group-multiplier-1"]').element).toHaveProperty('value', '0.290001')
+    expect(wrapper.findComponent(UserAllowlistSelector).props('modelValue')).toEqual([7, 9])
+    await wrapper.get('[data-testid="ranking-group-auto-deduct-1"]').setValue(true)
+    await wrapper.get('[data-testid="ranking-group-1"]').setValue(false)
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(rankingMocks.saveSettings).toHaveBeenLastCalledWith(expect.objectContaining({
+      group_ids: [], auto_disable_enabled: false, user_allowlist_ids: [7, 9],
+      group_rules: [{ ...rule, auto_deduct_enabled: true }],
+    }))
+    expect(rule.auto_deduct_enabled).toBe(false)
+    wrapper.findComponent(UserAllowlistSelector).vm.$emit('update:modelValue', [])
+    await wrapper.get('[data-testid="ranking-clear-rule-1"]').trigger('click')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(rankingMocks.saveSettings).toHaveBeenLastCalledWith(expect.objectContaining({ user_allowlist_ids: [], group_rules: [] }))
+  })
+
+  it.each(['0', '0.0000001', '1000.000001', '1e2', '-1', 'not a number'])('rejects invalid group multiplier %s even when the group is not selected', async multiplier => {
+    const wrapper = mountRanking()
+    await flushPromises()
+    await wrapper.get('[data-testid="ranking-group-multiplier-1"]').setValue(multiplier)
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(rankingMocks.saveSettings).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('securityPolicyRanking.invalidGroupMultiplier')
+  })
+
+  it('keeps exact boundary decimals and removes missing rules only on explicit action', async () => {
+    const missing = { group_id: 99, multiplier: '1000.000000', auto_deduct_enabled: true }
+    rankingMocks.getSettings.mockResolvedValue({ data: { ...settingsData(), group_rules: [missing] } })
+    const wrapper = mountRanking()
+    await flushPromises()
+    await wrapper.get('[data-testid="ranking-group-multiplier-1"]').setValue('0.000001')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(rankingMocks.saveSettings).toHaveBeenLastCalledWith(expect.objectContaining({ group_rules: [missing, { group_id: 1, multiplier: '0.000001', auto_deduct_enabled: false }] }))
+    await wrapper.get('[data-testid="ranking-remove-missing-rule-99"]').trigger('click')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(rankingMocks.saveSettings).toHaveBeenLastCalledWith(expect.objectContaining({ group_rules: [{ group_id: 1, multiplier: '0.000001', auto_deduct_enabled: false }] }))
+    expect(wrapper.find('[data-testid="ranking-remove-missing-rule-99"]').exists()).toBe(false)
+  })
+
+  it('distinguishes exact calculated amounts, actual automatic deductions, skipped exemptions and unknown history', async () => {
+    const statuses = ['deducted', 'zero_cost', 'insufficient_balance', 'skipped', 'previously_charged', 'historical_unknown', 'failed']
+    const items = statuses.map((status, index) => ({
+      ...recordsData().items[0], usage_id: 501 + index, auto_charge_status: status,
+      auto_charge_reason: status === 'skipped' ? 'user_exempt' : status === 'failed' ? 'charge_failed' : '', count_reason: status === 'skipped' ? 'user_exempt' : 'group_not_enabled',
+      actual_cost: status === 'historical_unknown' ? null : status === 'zero_cost' ? '0.00000000' : '0.12345678',
+      audit_multiplier: status === 'historical_unknown' ? null : '0.290001',
+      auto_charge_amount: status === 'historical_unknown' ? null : status === 'zero_cost' ? '0.00000000' : '0.03580259',
+    }))
+    rankingMocks.getRecords.mockResolvedValue({ data: { ...recordsData(), total: items.length, items } })
+    const wrapper = mountRanking()
+    await flushPromises()
+    await wrapper.get('[data-testid="ranking-records-7"]').trigger('click')
+    await flushPromises()
+    for (const [index, status] of statuses.entries()) {
+      const row = wrapper.get(`[data-testid="ranking-record-${501 + index}"]`)
+      expect(row.text()).toContain(`securityPolicyRanking.chargeStatuses.${status}`)
+      expect(row.get('[data-testid="ranking-record-charge-deducted"]').text()).toBe(`Actually deducted ${status === 'deducted' ? '0.03580259' : status === 'historical_unknown' ? '—' : '0'}`)
+    }
+    expect(wrapper.get('[data-testid="ranking-record-501"] [data-testid="ranking-record-charge-formula"]').text()).toBe('Calculated 0.12345678 × 0.290001 = 0.03580259')
+    expect(wrapper.get('[data-testid="ranking-record-502"] [data-testid="ranking-record-charge-formula"]').text()).toBe('Calculated 0 × 0.290001 = 0')
+    expect(wrapper.get('[data-testid="ranking-record-504"]').text()).toContain('securityPolicyRanking.recordExemptSkipped')
+    expect(wrapper.get('[data-testid="ranking-record-504"]').text()).toContain('securityPolicyRanking.chargeReasons.user_exempt')
+    expect(wrapper.get('[data-testid="ranking-record-506"] [data-testid="ranking-record-charge-formula"]').text()).toBe('Calculated — × — = —')
+    expect(wrapper.get('[data-testid="ranking-record-507"]').text()).toContain('securityPolicyRanking.chargeReasons.charge_failed')
+  })
+
+  it('renders each persisted counting decision without interpreting unknown history as skipped', async () => {
+    const wrapper = mountRanking()
+    await flushPromises()
+    await wrapper.get('[data-testid="ranking-records-7"]').trigger('click')
+    await flushPromises()
+    expect(rankingMocks.getRecords).toHaveBeenCalledWith(7, expect.objectContaining({ start_date: '2026-10-03', end_date: '2026-10-03', page: 1, page_size: 20 }), expect.any(AbortSignal))
+    expect(wrapper.get('[data-testid="ranking-record-101"]').text()).toContain('securityPolicyRanking.recordGroupSkipped')
+    expect(wrapper.get('[data-testid="ranking-record-101"]').text()).toContain('Unselected group')
+    expect(wrapper.get('[data-testid="ranking-record-102"]').text()).toContain('securityPolicyRanking.recordCounted')
+    expect(wrapper.get('[data-testid="ranking-record-103"]').text()).toContain('securityPolicyRanking.recordUnknown')
+    expect(wrapper.get('[data-testid="ranking-record-103"]').text()).not.toContain('securityPolicyRanking.recordGroupSkipped')
+    expect(wrapper.get('[data-testid="ranking-records-dialog"]').text()).toContain('securityPolicyRanking.recordEvidenceHint')
+    expect(rankingMocks.preview).not.toHaveBeenCalled()
+    expect(rankingMocks.deduct).not.toHaveBeenCalled()
+  })
+
+  it('shows separate audit sources and IDs without making audit blocks deductible', async () => {
+    const ranked = rankingData()
+    rankingMocks.getRanking.mockResolvedValue({ data: { ...ranked, total_audit_blocks: 3, total_pending: 0, items: [{ ...ranked.items[0], audit_block_count: 3, pending_count: 0, pending_amount: '0' }] } })
+    const legacy = recordsData()
+    const audits = ['content_audit', 'prompt_audit', 'combined_audit'].map((source, index) => ({
+      ...legacy.items[0], usage_id: 0, audit_id: 401 + index, record_key: `audit:${401 + index}`, source,
+      request_id: `audit-request-${index}`, occurred_at: '2026-10-03T12:00:00Z',
+    }))
+    rankingMocks.getRecords.mockResolvedValue({ data: { ...legacy, total: 4, items: [legacy.items[0], ...audits] } })
+    const wrapper = mountRanking()
+    await flushPromises()
+    expect(wrapper.get('[data-testid="ranking-audit-total"]').text()).toContain('securityPolicyRanking.auditBlockCount')
+    expect(wrapper.get('[data-testid="ranking-deduct-7"]').attributes()).toHaveProperty('disabled')
+    await wrapper.get('[data-testid="ranking-records-7"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-testid="ranking-record-101"]').text()).toContain('securityPolicyRanking.recordSources.upstream_policy')
+    expect(wrapper.get('[data-testid="ranking-record-101"]').text()).toContain('securityPolicyRanking.usageRecordId')
+    for (const audit of audits) {
+      const row = wrapper.get(`[data-testid="ranking-record-audit-${audit.audit_id}"]`)
+      expect(row.text()).toContain(`securityPolicyRanking.recordSources.${audit.source}`)
+      expect(row.text()).toContain('securityPolicyRanking.auditRecordId')
+      expect(row.text()).toContain('securityPolicyRanking.auditNotDeductible')
+      expect(row.text()).not.toContain('securityPolicyRanking.usageRecordId')
+    }
+    expect(wrapper.find('[data-testid="ranking-record-0"]').exists()).toBe(false)
+    expect(rankingMocks.preview).not.toHaveBeenCalled()
+    expect(rankingMocks.deduct).not.toHaveBeenCalled()
+  })
+
+  it('rejects record responses after closing or changing the date window', async () => {
+    const pending = deferred<{ data: ReturnType<typeof recordsData> }>()
+    rankingMocks.getRecords.mockImplementationOnce(() => pending.promise)
+    const wrapper = mountRanking()
+    await flushPromises()
+    await wrapper.get('[data-testid="ranking-records-7"]').trigger('click')
+    const signal = rankingMocks.getRecords.mock.calls[0][2] as AbortSignal
+    await wrapper.get('[data-testid="ranking-records-close"]').trigger('click')
+    expect(signal.aborted).toBe(true)
+    pending.resolve({ data: recordsData() })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="ranking-records-dialog"]').exists()).toBe(false)
+
+    const next = deferred<{ data: ReturnType<typeof recordsData> }>()
+    rankingMocks.getRecords.mockImplementationOnce(() => next.promise)
+    await wrapper.get('[data-testid="ranking-records-7"]').trigger('click')
+    const nextSignal = rankingMocks.getRecords.mock.calls[1][2] as AbortSignal
+    wrapper.findComponent({ name: 'DateRangePicker' }).vm.$emit('change', { startDate: '2026-10-01', endDate: '2026-10-02', preset: null })
+    await flushPromises()
+    expect(nextSignal.aborted).toBe(true)
+    next.resolve({ data: recordsData() })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="ranking-records-dialog"]').exists()).toBe(false)
+  })
+
+  it('switches record users and pages without allowing old responses to overwrite the active dialog', async () => {
+    rankingMocks.getRanking.mockResolvedValue({ data: { ...rankingData(), items: [rankingData().items[0], { ...rankingData().items[0], user_id: 8, username: 'Second user' }] } })
+    const first = deferred<{ data: ReturnType<typeof recordsData> }>()
+    rankingMocks.getRecords.mockImplementationOnce(() => first.promise)
+    const wrapper = mountRanking()
+    await flushPromises()
+    await wrapper.get('[data-testid="ranking-records-7"]').trigger('click')
+    const firstSignal = rankingMocks.getRecords.mock.calls[0][2] as AbortSignal
+    rankingMocks.getRecords.mockResolvedValueOnce({ data: { ...recordsData(), total: 21, pages: 2, items: [{ ...recordsData().items[0], group_name: 'Second user group' }] } })
+    await wrapper.get('[data-testid="ranking-records-8"]').trigger('click')
+    await flushPromises()
+    expect(firstSignal.aborted).toBe(true)
+    first.resolve({ data: { ...recordsData(), items: [{ ...recordsData().items[0], group_name: 'STALE RECORD GROUP' }] } })
+    await flushPromises()
+    expect(wrapper.get('[data-testid="ranking-records-dialog"]').text()).toContain('Second user group')
+    expect(wrapper.text()).not.toContain('STALE RECORD GROUP')
+    rankingMocks.getRecords.mockResolvedValueOnce({ data: { ...recordsData(), page: 2, total: 21, pages: 2, items: [{ ...recordsData().items[1], usage_id: 201 }] } })
+    wrapper.get('[data-testid="ranking-records-dialog"]').findComponent({ name: 'Pagination' }).vm.$emit('update:page', 2)
+    await flushPromises()
+    expect(rankingMocks.getRecords).toHaveBeenLastCalledWith(8, expect.objectContaining({ page: 2, page_size: 20 }), expect.any(AbortSignal))
+    expect(wrapper.find('[data-testid="ranking-record-201"]').exists()).toBe(true)
+  })
+
+  it('clears administrator record data on role changes and ignores the outstanding response', async () => {
+    const pending = deferred<{ data: ReturnType<typeof recordsData> }>()
+    rankingMocks.getRecords.mockImplementationOnce(() => pending.promise)
+    const wrapper = mountRanking()
+    await flushPromises()
+    await wrapper.get('[data-testid="ranking-records-7"]').trigger('click')
+    const signal = rankingMocks.getRecords.mock.calls[0][2] as AbortSignal
+    rankingAuth.isAdmin = false
+    await flushPromises()
+    expect(signal.aborted).toBe(true)
+    pending.resolve({ data: recordsData() })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="ranking-records-dialog"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('Unselected group')
+    expect(wrapper.find('[data-testid="ranking-settings"]').exists()).toBe(false)
+    expect(rankingMocks.getPublicRanking).toHaveBeenCalledOnce()
   })
 
   it('bounds pagination independently of global table options and keeps custom dates fixed across midnight', async () => {

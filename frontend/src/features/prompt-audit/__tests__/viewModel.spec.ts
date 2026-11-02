@@ -65,8 +65,8 @@ describe('Prompt Audit view model', () => {
   })
 
   it('normalizes legacy null collections from the public config', () => {
-    const legacy = { ...config(), group_ids: null, scanners: null, endpoints: null } as unknown as PromptAuditConfig
-    expect(configToDraft(legacy)).toMatchObject({ group_ids: [], scanners: [], endpoints: [] })
+    const legacy = { ...config(), group_ids: null, user_allowlist_ids: null, scanners: null, endpoints: null } as unknown as PromptAuditConfig
+    expect(configToDraft(legacy)).toMatchObject({ group_ids: [], user_allowlist_ids: [], scanners: [], endpoints: [] })
   })
 
   it('models all nine official input scanners', () => {

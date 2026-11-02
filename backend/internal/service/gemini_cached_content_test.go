@@ -5,8 +5,10 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -48,10 +50,117 @@ func (r *geminiCachedContentRepoStub) ListForOwner(_ context.Context, apiKeyID, 
 			out = append(out, record)
 		}
 	}
+	slices.SortFunc(out, func(a, b *GeminiCachedContent) int {
+		if a.ID > b.ID {
+			return -1
+		}
+		if a.ID < b.ID {
+			return 1
+		}
+		return 0
+	})
 	if len(out) > limit {
 		out = out[:limit]
 	}
 	return out, nil
+}
+
+type geminiCachedContentGroupListCall struct {
+	apiKeyID, groupID, beforeID int64
+	activeAt                    time.Time
+	limit                       int
+}
+
+type geminiCachedContentGroupListRepo struct {
+	*geminiCachedContentRepoStub
+	calls     []geminiCachedContentGroupListCall
+	failGroup int64
+	err       error
+	duplicate bool
+}
+
+func (r *geminiCachedContentGroupListRepo) ListForOwner(ctx context.Context, apiKeyID, groupID int64, activeAt time.Time, beforeID int64, limit int) ([]*GeminiCachedContent, error) {
+	r.calls = append(r.calls, geminiCachedContentGroupListCall{apiKeyID: apiKeyID, groupID: groupID, beforeID: beforeID, activeAt: activeAt, limit: limit})
+	if r.failGroup == groupID {
+		return nil, r.err
+	}
+	items, err := r.geminiCachedContentRepoStub.ListForOwner(ctx, apiKeyID, groupID, activeAt, beforeID, limit)
+	if r.duplicate && len(items) > 0 {
+		items = append(items, items[0])
+	}
+	return items, err
+}
+
+func TestGeminiCachedContentListForGroups(t *testing.T) {
+	now := time.Date(2026, 11, 3, 8, 0, 0, 0, time.UTC)
+	repo := &geminiCachedContentGroupListRepo{geminiCachedContentRepoStub: newGeminiCachedContentRepoStub(), duplicate: true}
+	for _, record := range []*GeminiCachedContent{
+		{ID: 31, PublicID: "group-one-new", APIKeyID: 7, GroupID: 1},
+		{ID: 21, PublicID: "group-one-middle", APIKeyID: 7, GroupID: 1},
+		{ID: 11, PublicID: "group-one-old", APIKeyID: 7, GroupID: 1},
+		{ID: 30, PublicID: "group-two-new", APIKeyID: 7, GroupID: 2},
+		{ID: 20, PublicID: "group-two-middle", APIKeyID: 7, GroupID: 2},
+		{ID: 10, PublicID: "group-two-old", APIKeyID: 7, GroupID: 2},
+		{ID: 80, PublicID: "other-owner", APIKeyID: 8, GroupID: 1},
+		{ID: 90, PublicID: "unselected-group", APIKeyID: 7, GroupID: 3},
+	} {
+		record.ExpireTime = now.Add(time.Hour)
+		repo.records[record.PublicID] = record
+	}
+	repo.records["expired"] = &GeminiCachedContent{ID: 100, APIKeyID: 7, GroupID: 2, ExpireTime: now}
+	svc := NewGeminiCachedContentService(repo, nil, nil)
+	clockReads := 0
+	svc.now = func() time.Time { clockReads++; return now }
+	ids := func(records []*GeminiCachedContent) []int64 {
+		out := make([]int64, len(records))
+		for i, record := range records {
+			out[i] = record.ID
+		}
+		return out
+	}
+
+	first, err := svc.ListForGroups(context.Background(), 7, []int64{2, 1, 2, 0, -1}, 0, 3)
+	require.NoError(t, err)
+	require.Equal(t, []int64{31, 30, 21}, ids(first))
+	require.Equal(t, 1, clockReads)
+	require.Equal(t, []geminiCachedContentGroupListCall{
+		{apiKeyID: 7, groupID: 2, beforeID: 0, activeAt: now, limit: 3},
+		{apiKeyID: 7, groupID: 1, beforeID: 0, activeAt: now, limit: 3},
+	}, repo.calls)
+	second, err := svc.ListForGroups(context.Background(), 7, []int64{2, 1}, first[len(first)-1].ID, 3)
+	require.NoError(t, err)
+	require.Equal(t, []int64{20, 11, 10}, ids(second))
+	last, err := svc.ListForGroups(context.Background(), 7, []int64{2, 1}, second[len(second)-1].ID, 3)
+	require.NoError(t, err)
+	require.Empty(t, last)
+	otherOwner, err := svc.ListForGroups(context.Background(), 8, []int64{1, 2}, 0, 3)
+	require.NoError(t, err)
+	require.Equal(t, []int64{80}, ids(otherOwner))
+}
+
+func TestGeminiCachedContentListForGroupsFailsWithoutPartialPage(t *testing.T) {
+	now := time.Now()
+	wantErr := errors.New("fixture list failure")
+	repo := &geminiCachedContentGroupListRepo{geminiCachedContentRepoStub: newGeminiCachedContentRepoStub(), failGroup: 2, err: wantErr}
+	repo.records["first"] = &GeminiCachedContent{ID: 1, APIKeyID: 7, GroupID: 1, ExpireTime: now.Add(time.Hour)}
+	svc := NewGeminiCachedContentService(repo, nil, nil)
+	svc.now = func() time.Time { return now }
+	items, err := svc.ListForGroups(context.Background(), 7, []int64{1, 2}, 0, 0)
+	require.ErrorIs(t, err, wantErr)
+	require.Nil(t, items)
+	require.Len(t, repo.calls, 2)
+	require.Equal(t, GeminiCachedContentListDefaultPageSize, repo.calls[0].limit)
+	repo.calls = nil
+	items, err = svc.ListForGroups(context.Background(), 7, nil, 0, 3)
+	require.NoError(t, err)
+	require.Empty(t, items)
+	require.Empty(t, repo.calls)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	items, err = svc.ListForGroups(ctx, 7, []int64{1, 2}, 0, 3)
+	require.ErrorIs(t, err, context.Canceled)
+	require.Nil(t, items)
+	require.Empty(t, repo.calls)
 }
 
 func (r *geminiCachedContentRepoStub) BeginMutation(context.Context, int64, time.Time, string, time.Duration) (bool, error) {

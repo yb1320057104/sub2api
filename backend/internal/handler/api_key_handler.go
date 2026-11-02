@@ -21,6 +21,7 @@ import (
 // APIKeyHandler handles API key-related requests
 type APIKeyHandler struct {
 	apiKeyService *service.APIKeyService
+	auditRules    publicGroupAuditRulesReader
 }
 
 // NewAPIKeyHandler creates a new APIKeyHandler
@@ -33,7 +34,8 @@ func NewAPIKeyHandler(apiKeyService *service.APIKeyService) *APIKeyHandler {
 // CreateAPIKeyRequest represents the create API key request payload
 type CreateAPIKeyRequest struct {
 	Name          string   `json:"name" binding:"required"`
-	GroupID       *int64   `json:"group_id"`        // nullable
+	GroupID       *int64   `json:"group_id"` // nullable
+	GroupIDs      []int64  `json:"group_ids"`
 	CustomKey     *string  `json:"custom_key"`      // 可选的自定义key
 	IPWhitelist   []string `json:"ip_whitelist"`    // IP 白名单
 	IPBlacklist   []string `json:"ip_blacklist"`    // IP 黑名单
@@ -50,6 +52,7 @@ type CreateAPIKeyRequest struct {
 type UpdateAPIKeyRequest struct {
 	Name        string    `json:"name"`
 	GroupID     *int64    `json:"group_id"`
+	GroupIDs    *[]int64  `json:"group_ids"`
 	Status      string    `json:"status" binding:"omitempty,oneof=active inactive"`
 	IPWhitelist *[]string `json:"ip_whitelist"` // IP 白名单（nil 不修改，空数组清空）
 	IPBlacklist *[]string `json:"ip_blacklist"` // IP 黑名单（nil 不修改，空数组清空）
@@ -141,8 +144,13 @@ func (h *APIKeyHandler) List(c *gin.Context) {
 	}
 
 	out := make([]dto.APIKey, 0, len(keys))
+	rules, err := h.publicAuditRules(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
 	for i := range keys {
-		out = append(out, *dto.APIKeyFromService(&keys[i]).Localized(c.GetHeader("Accept-Language")))
+		out = append(out, *decorateKeyAuditRules(dto.APIKeyFromService(&keys[i]).Localized(c.GetHeader("Accept-Language")), rules))
 	}
 	response.Paginated(c, out, result.Total, page, pageSize)
 }
@@ -174,7 +182,12 @@ func (h *APIKeyHandler) GetByID(c *gin.Context) {
 		return
 	}
 
-	response.Success(c, dto.APIKeyFromService(key).Localized(c.GetHeader("Accept-Language")))
+	rules, err := h.publicAuditRules(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, decorateKeyAuditRules(dto.APIKeyFromService(key).Localized(c.GetHeader("Accept-Language")), rules))
 }
 
 // Create handles creating a new API key
@@ -199,6 +212,7 @@ func (h *APIKeyHandler) Create(c *gin.Context) {
 	svcReq := service.CreateAPIKeyRequest{
 		Name:          req.Name,
 		GroupID:       req.GroupID,
+		GroupIDs:      req.GroupIDs,
 		CustomKey:     req.CustomKey,
 		IPWhitelist:   req.IPWhitelist,
 		IPBlacklist:   req.IPBlacklist,
@@ -218,11 +232,15 @@ func (h *APIKeyHandler) Create(c *gin.Context) {
 	}
 
 	executeUserIdempotentJSON(c, "user.api_keys.create", req, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
+		rules, err := h.publicAuditRules(ctx)
+		if err != nil {
+			return nil, err
+		}
 		key, err := h.apiKeyService.Create(ctx, subject.UserID, svcReq)
 		if err != nil {
 			return nil, err
 		}
-		return dto.APIKeyFromService(key).Localized(c.GetHeader("Accept-Language")), nil
+		return decorateKeyAuditRules(dto.APIKeyFromService(key).Localized(c.GetHeader("Accept-Language")), rules), nil
 	})
 }
 
@@ -265,6 +283,7 @@ func (h *APIKeyHandler) Update(c *gin.Context) {
 		svcReq.Name = &req.Name
 	}
 	svcReq.GroupID = req.GroupID
+	svcReq.GroupIDs = req.GroupIDs
 	if req.Status != "" {
 		svcReq.Status = &req.Status
 	}
@@ -284,13 +303,18 @@ func (h *APIKeyHandler) Update(c *gin.Context) {
 		}
 	}
 
+	rules, err := h.publicAuditRules(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
 	key, err := h.apiKeyService.Update(c.Request.Context(), keyID, subject.UserID, svcReq)
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
 
-	response.Success(c, dto.APIKeyFromService(key).Localized(c.GetHeader("Accept-Language")))
+	response.Success(c, decorateKeyAuditRules(dto.APIKeyFromService(key).Localized(c.GetHeader("Accept-Language")), rules))
 }
 
 // Delete handles deleting an API key
@@ -333,8 +357,15 @@ func (h *APIKeyHandler) GetAvailableGroups(c *gin.Context) {
 	}
 
 	out := make([]dto.Group, 0, len(groups))
+	rules, err := h.publicAuditRules(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
 	for i := range groups {
-		out = append(out, *dto.GroupFromService(&groups[i]).Localized(c.GetHeader("Accept-Language")))
+		group := dto.GroupFromService(&groups[i]).Localized(c.GetHeader("Accept-Language"))
+		decorateGroupAuditRule(group, rules)
+		out = append(out, *group)
 	}
 	response.Success(c, out)
 }

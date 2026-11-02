@@ -33,6 +33,7 @@ type APIKey struct {
 	Key         string
 	Name        string
 	GroupID     *int64
+	GroupIDs    []int64 // nil inherits GroupID; an explicit empty list is ungrouped.
 	Status      string
 	IPWhitelist []string
 	IPBlacklist []string
@@ -45,6 +46,7 @@ type APIKey struct {
 	UpdatedAt           time.Time
 	User                *User
 	Group               *Group
+	Groups              []*Group // Available hydrated candidates in configured order.
 	CurrentConcurrency  int
 
 	// Quota fields

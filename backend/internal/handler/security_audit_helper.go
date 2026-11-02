@@ -86,7 +86,7 @@ func (h *GatewayHandler) checkSecurityAudit(c *gin.Context, reqLog *zap.Logger, 
 			}
 		}
 	}
-	return runSecurityAudit(c, reqLog, h.securityAuditCoordinator, h.contentModerationService, apiKey, subject, protocol, model, body, "http")
+	return runSecurityAudit(c, reqLog, h.securityAuditCoordinator, h.contentModerationService, apiKey, subject, protocol, model, body, "http", h.cyberAuditRecorder)
 }
 
 func securityAuditGroupUnavailable() *securityaudit.Decision {
@@ -97,19 +97,25 @@ func (h *OpenAIGatewayHandler) checkSecurityAudit(c *gin.Context, reqLog *zap.Lo
 	if h == nil {
 		return nil
 	}
-	return runSecurityAudit(c, reqLog, h.securityAuditCoordinator, h.contentModerationService, apiKey, subject, protocol, model, body, "http")
+	return runSecurityAudit(c, reqLog, h.securityAuditCoordinator, h.contentModerationService, apiKey, subject, protocol, model, body, "http", h.cyberAuditRecorder)
 }
 
 func (h *OpenAIGatewayHandler) checkSecurityAuditStage(c *gin.Context, reqLog *zap.Logger, apiKey *service.APIKey, subject middleware2.AuthSubject, protocol, model string, body []byte, stage string) *securityaudit.Decision {
 	if h == nil {
 		return nil
 	}
-	return runSecurityAudit(c, reqLog, h.securityAuditCoordinator, h.contentModerationService, apiKey, subject, protocol, model, body, stage)
+	return runSecurityAudit(c, reqLog, h.securityAuditCoordinator, h.contentModerationService, apiKey, subject, protocol, model, body, stage, h.cyberAuditRecorder)
 }
 
-func runSecurityAudit(c *gin.Context, reqLog *zap.Logger, coordinator *securityaudit.Coordinator, legacy *service.ContentModerationService, apiKey *service.APIKey, subject middleware2.AuthSubject, protocol, model string, body []byte, stage string) *securityaudit.Decision {
+func runSecurityAudit(c *gin.Context, reqLog *zap.Logger, coordinator *securityaudit.Coordinator, legacy *service.ContentModerationService, apiKey *service.APIKey, subject middleware2.AuthSubject, protocol, model string, body []byte, stage string, recorders ...cyberAuditBlockRecorder) (result *securityaudit.Decision) {
 	if c == nil || c.Request == nil {
 		return nil
+	}
+	defer func() { markSecurityAuditMetricBlock(c, result, stage) }()
+	if len(recorders) > 0 && recorders[0] != nil {
+		defer func() {
+			recordSecurityAuditBlock(c, recorders[0], apiKey, subject.UserID, model, stage, result)
+		}()
 	}
 	cacheCompletion := cachesSecurityAuditCompletion(stage)
 	scope := securityAuditScope(apiKey)

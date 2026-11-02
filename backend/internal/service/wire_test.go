@@ -265,15 +265,15 @@ func pkBinanceAccountRows(proxy string, preflight bool, states ...BinanceRecharg
 
 func TestPKBinanceAccountProxySavePreflightHints(t *testing.T) {
 	for _, tc := range []struct {
-		name, savedProxy, replacement, wantReason string
-		create, savedPreflight, preflight         bool
+		name, savedProxy, replacement, wantReason, wantHint string
+		create, savedPreflight, preflight, beforeDB         bool
 	}{
 		{name: "new SOCKS preflight", create: true, replacement: "socks5://fixture-user:fixture-pass@proxy.test:1080", preflight: true, wantReason: "BINANCE_PROXY_PREFLIGHT_UNSUPPORTED"},
 		{name: "replacement SOCKS preflight", savedProxy: "http://proxy.test:3128", replacement: "socks5://fixture-user:fixture-pass@proxy.test:1080", preflight: true, wantReason: "BINANCE_PROXY_PREFLIGHT_UNSUPPORTED"},
 		{name: "enable saved SOCKS preflight", savedProxy: "socks5://fixture-user:fixture-pass@proxy.test:1080", preflight: true, wantReason: "BINANCE_PROXY_PREFLIGHT_UNSUPPORTED"},
 		{name: "enable saved HTTP without authentication", savedProxy: "http://proxy.test:3128", preflight: true, wantReason: "BINANCE_PROXY_PREFLIGHT_UNSUPPORTED"},
 		{name: "enable saved HTTP missing password", savedProxy: "http://fixture-user@proxy.test:3128", preflight: true, wantReason: "BINANCE_PROXY_PREFLIGHT_UNSUPPORTED"},
-		{name: "malformed replacement stays generic", replacement: "http://fixture-user:fixture-pass@proxy.test:99999", preflight: true, wantReason: "BINANCE_PROXY_INVALID"},
+		{name: "malformed replacement gets safe port hint before DB", replacement: "http://fixture-user:fixture-pass@proxy.test:99999", preflight: true, wantReason: "BINANCE_PROXY_INVALID", wantHint: "端口须为 1 至 65535", beforeDB: true},
 		{name: "malformed saved proxy stays generic", savedProxy: "http://fixture-user:fixture-pass@proxy.test:99999", preflight: true, wantReason: "BINANCE_PROXY_INVALID"},
 		{name: "enable without proxy", preflight: true, wantReason: "BINANCE_PROXY_REQUIRED"},
 		{name: "disable saved SOCKS preflight", savedProxy: "socks5://fixture-user:fixture-pass@proxy.test:1080", savedPreflight: true},
@@ -290,14 +290,18 @@ func TestPKBinanceAccountProxySavePreflightHints(t *testing.T) {
 				proxyCiphertext = "cipher:" + tc.savedProxy
 			}
 			id := int64(1)
-			mock.ExpectBegin()
+			if !tc.beforeDB {
+				mock.ExpectBegin()
+			}
 			if tc.create {
 				id = 0
-			} else {
+			} else if !tc.beforeDB {
 				mock.ExpectQuery(`SELECT a.id, a.name, a.recipient_uid`).WithArgs(id).WillReturnRows(pkBinanceAccountRows(proxyCiphertext, tc.savedPreflight))
 			}
 			if tc.wantReason != "" {
-				mock.ExpectRollback()
+				if !tc.beforeDB {
+					mock.ExpectRollback()
+				}
 			} else {
 				mock.ExpectQuery(`SELECT poll_token<>'' AND api_locked_until>NOW\(\)`).WithArgs(id).WillReturnRows(sqlmock.NewRows([]string{"polling"}).AddRow(false))
 				mock.ExpectExec(`UPDATE binance_recharge_accounts SET name=\$2`).WithArgs(id, "fixture", "12345", "cipher:key", "cipher:secret", proxyCiphertext, tc.preflight, true, 30, "1.000000").WillReturnResult(sqlmock.NewResult(0, 1))
@@ -309,6 +313,9 @@ func TestPKBinanceAccountProxySavePreflightHints(t *testing.T) {
 			if tc.wantReason != "" {
 				if infraerrors.Reason(err) != tc.wantReason || infraerrors.Code(err) != http.StatusBadRequest || account != nil {
 					t.Fatalf("save must reject with safe configuration hint %s: %v", tc.wantReason, err)
+				}
+				if tc.wantHint != "" && !strings.Contains(err.Error(), tc.wantHint) {
+					t.Fatal("malformed replacement did not report its safe configuration reason")
 				}
 				for _, private := range []string{"fixture-user", "fixture-pass", "proxy.test", "cipher:"} {
 					if strings.Contains(err.Error(), private) {

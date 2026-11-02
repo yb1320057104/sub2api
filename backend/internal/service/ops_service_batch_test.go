@@ -148,3 +148,26 @@ func TestOpsServiceRecordErrorPersistsExplicitAccountAuthStatusZero(t *testing.T
 func strPtr(v string) *string {
 	return &v
 }
+
+func TestOpsServiceLocalAuditBlockKeepsClassificationAfterEarlierAccountAuth(t *testing.T) {
+	var captured *OpsInsertErrorLogInput
+	repo := &opsRepoMock{InsertErrorLogFn: func(_ context.Context, input *OpsInsertErrorLogInput) (int64, error) {
+		captured = input
+		return 1, nil
+	}}
+	svc := NewOpsService(repo, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	require.NoError(t, svc.RecordError(context.Background(), &OpsInsertErrorLogInput{
+		StatusCode: 403, ErrorType: "security_audit_block", ErrorPhase: "request", ErrorOwner: "client",
+		ErrorSource: "security_audit", IsBusinessLimited: true,
+		UpstreamErrors: []*OpsUpstreamErrorEvent{{Stage: string(GatewayFailureStageAccountAuth), Message: "earlier authentication attempt"}},
+	}))
+	require.Equal(t, "security_audit_block", captured.ErrorType)
+	require.Equal(t, "security_audit", captured.ErrorSource)
+	require.Equal(t, "request", captured.ErrorPhase)
+	require.Equal(t, "client", captured.ErrorOwner)
+	require.True(t, captured.IsBusinessLimited)
+	require.Nil(t, captured.UpstreamStatusCode)
+	require.Nil(t, captured.UpstreamErrorMessage)
+	require.NotNil(t, captured.UpstreamErrorsJSON)
+	require.Contains(t, *captured.UpstreamErrorsJSON, "earlier authentication attempt")
+}

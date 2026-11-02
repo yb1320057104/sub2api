@@ -87,6 +87,8 @@ func APIKeyFromService(k *service.APIKey) *APIKey {
 		Key:                k.Key,
 		Name:               k.Name,
 		GroupID:            k.GroupID,
+		GroupIDs:           k.SelectedGroupIDs(),
+		Groups:             make([]*Group, 0, len(k.Groups)),
 		Status:             k.Status,
 		IPWhitelist:        k.IPWhitelist,
 		IPBlacklist:        k.IPBlacklist,
@@ -109,6 +111,14 @@ func APIKeyFromService(k *service.APIKey) *APIKey {
 		Window7dStart:      k.Window7dStart,
 		User:               UserFromServiceShallow(k.User),
 		Group:              GroupFromServiceShallow(k.Group),
+	}
+	for _, group := range k.Groups {
+		if group != nil {
+			out.Groups = append(out.Groups, GroupFromServiceShallow(group))
+		}
+	}
+	if len(out.Groups) == 0 && out.Group != nil && len(out.GroupIDs) == 1 && out.GroupIDs[0] == out.Group.ID {
+		out.Groups = append(out.Groups, GroupFromServiceShallow(k.Group))
 	}
 	if service.IsIntelligenceTestKey(k.Key) {
 		// Managed scheduler credentials never leave the backend, including in
@@ -184,6 +194,7 @@ func GroupFromServiceAdmin(g *service.Group) *AdminGroup {
 
 func groupFromServiceBase(g *service.Group) Group {
 	return Group{
+		SecurityAuditMultiplier:         "1.000000",
 		ID:                              g.ID,
 		Name:                            g.Name,
 		Description:                     g.Description,

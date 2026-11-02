@@ -35,6 +35,7 @@ export function configToDraft(config: PromptAuditConfig): PromptAuditDraft {
     local_rules: cloneData(config.local_rules ?? config.default_local_rules ?? []),
     all_groups: false,
     group_ids: [...(config.group_ids ?? [])],
+    user_allowlist_ids: [...(config.user_allowlist_ids ?? [])],
     scanners: [...(config.scanners ?? [])],
     endpoints: (config.endpoints ?? []).map((endpoint) => ({
       ...endpoint,
@@ -77,6 +78,7 @@ export function buildUpdateRequest(draft: PromptAuditDraft): PromptAuditUpdateRe
     scanners: [...draft.scanners],
     all_groups: false,
     group_ids: [...new Set(draft.group_ids)].sort((a, b) => a - b),
+    user_allowlist_ids: [...new Set(draft.user_allowlist_ids ?? [])].sort((a, b) => a - b),
     endpoints: draft.endpoints.map((endpoint) => ({
       id: endpoint.id.trim(),
       name: endpoint.name.trim(),

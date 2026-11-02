@@ -1,13 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises } from '@vue/test-utils'
-import { bulkUpdate } from '../keys'
+import { bulkUpdate, create } from '../keys'
 
-const { put } = vi.hoisted(() => ({ put: vi.fn() }))
-vi.mock('../client', () => ({ apiClient: { put } }))
+const { put, post } = vi.hoisted(() => ({ put: vi.fn(), post: vi.fn() }))
+vi.mock('../client', () => ({ apiClient: { put, post } }))
 
 describe('API key bulk updates', () => {
   beforeEach(() => {
     put.mockReset()
+    post.mockReset().mockResolvedValue({ data: { id: 1 } })
   })
 
   it('updates each selected key once and preserves partial failures', async () => {
@@ -59,5 +60,14 @@ describe('API key bulk updates', () => {
   it('does not send requests when no keys are selected', async () => {
     expect(await bulkUpdate([], { quota: 0 })).toEqual({ succeededIds: [], failures: [] })
     expect(put).not.toHaveBeenCalled()
+  })
+
+  it('creates ordered groups without reordering and preserves legacy singular create calls', async () => {
+    await create('Ordered', 9, undefined, undefined, undefined, undefined, undefined, undefined, [9, 2, 9])
+    expect(post).toHaveBeenLastCalledWith('/keys', { name: 'Ordered', group_id: 9, group_ids: [9, 2] })
+    await create('Legacy', 7)
+    expect(post).toHaveBeenLastCalledWith('/keys', { name: 'Legacy', group_id: 7 })
+    await create('Ungrouped', 7, undefined, undefined, undefined, undefined, undefined, undefined, [])
+    expect(post).toHaveBeenLastCalledWith('/keys', { name: 'Ungrouped', group_id: null, group_ids: [] })
   })
 })

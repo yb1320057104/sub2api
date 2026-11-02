@@ -46,7 +46,7 @@ const EventsStub = defineComponent({
   template: '<div data-test="events"><button data-test="preview" @click="$emit(\'preview-delete\')">preview</button><button data-test="change-filter" @click="$emit(\'filters-change\', { ...filters, keyword: \'changed\' })">change</button><button data-test="delete-one" @click="$emit(\'delete\', 5)">delete</button><button data-test="select-batch" @click="$emit(\'selection\', [5, 6])">select</button><button data-test="delete-batch" @click="$emit(\'batch-delete\')">batch</button></div>',
 })
 const DetailStub = defineComponent({ props: ['show', 'event', 'loading'], emits: ['close'], template: '<div data-test="detail" />' })
-const ConfirmStub = defineComponent({ props: ['show', 'title', 'message'], emits: ['confirm', 'cancel'], template: '<div v-if="show" data-test="confirm"><button data-test="confirm-action" @click="$emit(\'confirm\')">confirm</button></div>' })
+const ConfirmStub = defineComponent({ props: ['show', 'title', 'message'], emits: ['confirm', 'cancel'], template: '<div v-if="show" data-test="confirm"><button data-test="confirm-action" @click="$emit(\'confirm\')">confirm</button><button data-test="cancel-action" @click="$emit(\'cancel\')">cancel</button></div>' })
 const FilterDeleteStub = defineComponent({
   props: ['show', 'initialFilters', 'preview', 'previewing', 'deleting'],
   emits: ['close', 'preview', 'confirm', 'criteria-change'],
@@ -95,6 +95,69 @@ describe('PromptAuditView', () => {
     expect(mocks.probeEndpoint).not.toHaveBeenCalled()
     expect(mocks.showError).not.toHaveBeenCalled()
     expect(wrapper.get('[data-test="save-config"]').attributes()).toHaveProperty('disabled')
+    wrapper.unmount()
+  })
+
+  it('saves and clears the independent prompt audit user allowlist while preserving groups and rules', async () => {
+    const localConfig: PromptAuditConfig = { ...baseConfig(), engine: 'local_rules', user_allowlist_ids: [42], group_ids: [3], endpoints: [], audit_instructions: 'custom notes', local_rules: [{ id: 'one', name: 'Custom', kind: 'keyword', pattern: 'custom phrase', category: 'jailbreak', action: 'warn', enabled: true, case_sensitive: false }] }
+    mocks.getConfig.mockResolvedValue(localConfig)
+    mocks.updateConfig.mockImplementation(async (payload: PromptAuditUpdateRequest) => ({ ...localConfig, ...payload, config_version: 8 }))
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.get('[data-test="tab-config"]').trigger('click')
+    const policy = wrapper.getComponent(PolicyStub)
+    expect(policy.props('draft').user_allowlist_ids).toEqual([42])
+    policy.vm.$emit('update:draft', { ...policy.props('draft'), user_allowlist_ids: [42, 7, 7] })
+    await flushPromises()
+    expect(mocks.updateConfig).not.toHaveBeenCalled()
+    await wrapper.get('[data-test="save-config"]').trigger('click')
+    await flushPromises()
+    expect(mocks.updateConfig).toHaveBeenLastCalledWith(expect.objectContaining({ user_allowlist_ids: [7, 42], group_ids: [3], local_rules: localConfig.local_rules, audit_instructions: 'custom notes' }))
+    policy.vm.$emit('update:draft', { ...policy.props('draft'), user_allowlist_ids: [] })
+    await flushPromises()
+    await wrapper.get('[data-test="save-config"]').trigger('click')
+    await flushPromises()
+    expect(mocks.updateConfig).toHaveBeenLastCalledWith(expect.objectContaining({ user_allowlist_ids: [], group_ids: [3], local_rules: localConfig.local_rules }))
+    expect(mocks.probeEndpoint).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('loads instruction text separately with confirmation while preserving custom rules and audit settings', async () => {
+    const customRules: PromptAuditConfig['local_rules'] = [{ id: 'custom', name: 'Custom', kind: 'keyword', pattern: 'custom phrase', category: 'jailbreak', action: 'warn', enabled: false, case_sensitive: true }]
+    mocks.getConfig.mockResolvedValue({ ...baseConfig(), engine: 'remote', enabled: false, group_ids: [8], local_rules: customRules, audit_instructions: 'Custom instructions', default_audit_instructions: 'Detailed default instructions' })
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.get('[data-test="tab-config"]').trigger('click')
+    const draft = () => wrapper.getComponent(LocalRulePanel).props('draft') as PromptAuditDraft
+    await wrapper.get('[data-test="local-instruction-template"]').trigger('click')
+    expect(draft().audit_instructions).toBe('Custom instructions')
+    await wrapper.get('[data-test="cancel-action"]').trigger('click')
+    expect(draft().audit_instructions).toBe('Custom instructions')
+    await wrapper.get('[data-test="local-instruction-template"]').trigger('click')
+    await wrapper.get('[data-test="confirm-action"]').trigger('click')
+    expect(draft()).toMatchObject({ engine: 'remote', enabled: false, group_ids: [8], local_rules: customRules, audit_instructions: 'Detailed default instructions' })
+    expect(mocks.updateConfig).not.toHaveBeenCalled()
+    expect(mocks.probeEndpoint).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('loads empty instructions without confirmation and replaces rules only after confirmation', async () => {
+    const customRules: PromptAuditConfig['local_rules'] = [{ id: 'custom', name: 'Custom', kind: 'keyword', pattern: 'custom phrase', category: 'jailbreak', action: 'warn', enabled: false, case_sensitive: true }]
+    const defaultRules: PromptAuditConfig['local_rules'] = [{ ...customRules[0], id: 'template', pattern: 'default phrase' }]
+    mocks.getConfig.mockResolvedValue({ ...baseConfig(), engine: 'local_rules', enabled: false, local_rules: customRules, default_local_rules: defaultRules, audit_instructions: '', default_audit_instructions: 'Detailed default instructions' })
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.get('[data-test="tab-config"]').trigger('click')
+    const draft = () => wrapper.getComponent(LocalRulePanel).props('draft') as PromptAuditDraft
+    await wrapper.get('[data-test="local-instruction-template"]').trigger('click')
+    expect(wrapper.find('[data-test="confirm"]').exists()).toBe(false)
+    expect(draft().audit_instructions).toBe('Detailed default instructions')
+    await wrapper.get('[data-test="local-rule-templates"]').trigger('click')
+    expect(draft().local_rules).toEqual(customRules)
+    await wrapper.get('[data-test="confirm-action"]').trigger('click')
+    expect(draft()).toMatchObject({ enabled: false, local_rules: defaultRules, audit_instructions: 'Detailed default instructions' })
+    expect(mocks.updateConfig).not.toHaveBeenCalled()
+    expect(mocks.probeEndpoint).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 

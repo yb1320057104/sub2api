@@ -188,6 +188,7 @@ func registerCyberPolicyRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 	ranking.GET("", h.Admin.Usage.CyberPolicyRanking)
 	ranking.GET("/settings", h.Admin.Usage.CyberPolicySettings)
 	ranking.PUT("/settings", h.Admin.Usage.SaveCyberPolicySettings)
+	ranking.GET("/users/:id/records", h.Admin.Usage.CyberPolicyRecords)
 	ranking.POST("/users/:id/preview", h.Admin.Usage.PreviewCyberPolicyDeduction)
 	ranking.POST("/users/:id/deduct", h.Admin.Usage.DeductCyberPolicyBalance)
 }

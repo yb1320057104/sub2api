@@ -1285,6 +1285,7 @@ func OpsErrorLoggerMiddleware(ops *service.OpsService) gin.HandlerFunc {
 		}
 
 		service.SanitizeKiloBridgeClientErrorLog(c, entry)
+		applySecurityAuditOpsClassification(c, entry, parsed.Code, 0, parsed.ErrorType)
 		enqueueOpsErrorLog(ops, entry)
 	}
 }
@@ -1592,6 +1593,7 @@ func logOpsStreamErrorValue(c *gin.Context, ops *service.OpsService, wireStatus 
 	}
 
 	service.SanitizeKiloBridgeClientErrorLog(c, entry)
+	applySecurityAuditOpsClassification(c, entry, streamErr.Code, streamErr.Turn, streamErr.ErrType)
 	enqueueOpsErrorLog(ops, entry)
 }
 

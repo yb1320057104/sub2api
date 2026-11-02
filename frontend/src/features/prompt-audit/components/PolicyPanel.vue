@@ -34,6 +34,8 @@
           <p v-if="draft.group_ids.length === 0" role="status" class="mt-2 text-sm text-amber-700 dark:text-amber-300">{{ t('admin.promptAudit.policy.emptyScope') }}</p>
         </div>
 
+        <UserAllowlistSelector class="mt-5" :model-value="draft.user_allowlist_ids ?? []" :title="t('admin.promptAudit.policy.userAllowlistTitle')" :hint="t('admin.promptAudit.policy.userAllowlistHint')" test-id="prompt-audit-user-allowlist" @update:model-value="patch({ user_allowlist_ids: $event })" />
+
         <fieldset v-if="draft.engine === 'remote'" class="mt-5 border-t border-gray-100 pt-5 dark:border-dark-800">
           <legend class="text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.promptAudit.policy.scanners') }}</legend>
           <div class="mt-3 grid gap-2 sm:grid-cols-2">
@@ -66,6 +68,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
+import UserAllowlistSelector from '@/components/admin/user/UserAllowlistSelector.vue'
 import type { PromptAuditDraft, PromptAuditGroup } from '../types'
 import { cloneData, SCANNER_CATALOG } from '../viewModel'
 

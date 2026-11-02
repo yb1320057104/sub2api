@@ -61,6 +61,21 @@ func (h *UsageHandler) CyberPolicyPublicRanking(c *gin.Context) {
 	}
 }
 
+func (h *UsageHandler) CyberPolicyRecords(c *gin.Context) {
+	if _, ok := requireCyberPolicyAdmin(c); !ok {
+		return
+	}
+	id, ok := cyberPolicyUserID(c)
+	if !ok {
+		return
+	}
+	page, size := response.ParsePagination(c)
+	r, err := h.cyberPolicy.Records(c.Request.Context(), id, cyberPolicyQueryWindow(c), page, size)
+	if !response.ErrorFrom(c, err) {
+		response.Success(c, r)
+	}
+}
+
 func (h *UsageHandler) CyberPolicySettings(c *gin.Context) {
 	if _, ok := requireCyberPolicyAdmin(c); !ok {
 		return
