@@ -143,6 +143,27 @@ func (h *AccountAuthorizationHandler) Submit(c *gin.Context) {
 		response.Accepted(c, map[string]any{"batch_id": batch})
 	}
 }
+
+func (h *AccountAuthorizationHandler) SaveWorkbench(c *gin.Context) {
+	if !authorizationAdmin(c) {
+		return
+	}
+	var input service.AuthorizationSubmit
+	if !authorizationInput(c, &input) {
+		return
+	}
+	input.Accounts = ""
+	middleware.SetAuditAction(c, "authorization.workbench.update")
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+	defer cancel()
+	if authorizationError(c, h.service.SaveWorkbench(ctx, &input)) {
+		return
+	}
+	saved, err := h.service.GetConfig(ctx)
+	if !authorizationError(c, err) {
+		response.Success(c, saved)
+	}
+}
 func (h *AccountAuthorizationHandler) List(kind string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if !authorizationAdmin(c) {

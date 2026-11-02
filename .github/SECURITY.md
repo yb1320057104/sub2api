@@ -1,8 +1,8 @@
 # Security Policy
 
-> PK fork: the upstream policy below applies to shared upstream code. Report PK-specific issues privately to the maintainers of `pengkang0322/sub2api`; do not include private fork code, credentials, or user data in an upstream report. PK updates and recovery continue to use this private repository and its approved releases.
+> PK fork: the upstream policy below applies to shared upstream code. Report PK-specific issues privately to the maintainers of `yb1320057104/sub2api`; do not include private fork code, credentials, or user data in an upstream report. PK updates and recovery continue to use this private repository and its approved releases.
 >
-> PK 私版：下文上游报告渠道适用于共有的上游代码。二开问题请私下联系 `pengkang0322/sub2api` 维护者；向上游报告时不提供私版源码、凭据或用户数据。PK 更新与恢复仍以本私库及获准版本为准。
+> PK 私版：下文上游报告渠道适用于共有的上游代码。二开问题请私下联系 `yb1320057104/sub2api` 维护者；向上游报告时不提供私版源码、凭据或用户数据。PK 更新与恢复仍以本私库及获准版本为准。
 
 [English](#english) | [中文](#中文)
 

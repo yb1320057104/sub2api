@@ -2,6 +2,7 @@ import { apiClient } from '../client'
 import type { Account } from '@/types'
 
 export interface RadarModel { model: string; effort: string; enabled: boolean }
+export interface RadarGroupRule { source_group_id: number; pass_group_ids: number[]; fail_group_id: number }
 export interface RadarModelResult {
   id: number; model: string; mapped_model: string; effort: string
   status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
@@ -14,6 +15,7 @@ export interface AccountCandyConfig {
   enabled: boolean
   interval_minutes: number
   models: RadarModel[]
+  group_rules: RadarGroupRule[]
   generation: string
   target_group_id: number | null
 }
@@ -30,6 +32,7 @@ export interface AccountCandyResult {
   finished_at: string | null
   duration_ms: number | null
   moved_to_group_id: number | null
+  moved_to_group_ids?: number[]
   error_message: string
   move_error: string
   source: 'manual' | 'scheduled'
@@ -51,6 +54,11 @@ export interface AccountCandyDetails extends AccountCandyResult {
   response_text?: string
 }
 
+export function getCandyMovedGroupIDs(result?: AccountCandyResult | null): number[] {
+  if (result?.moved_to_group_ids?.length) return result.moved_to_group_ids
+  return result?.moved_to_group_id != null ? [result.moved_to_group_id] : []
+}
+
 export interface RadarObservation {
   account: Account
   run: AccountCandyResult | null
@@ -65,6 +73,9 @@ export interface RadarAccountPage {
 }
 
 export const accountCandyAPI = {
+  async models(signal?: AbortSignal) {
+    return (await apiClient.get<{ models: string[] }>('/admin/radar/account-candy/models', { signal })).data.models
+  },
   async config(signal?: AbortSignal) {
     return (await apiClient.get<AccountCandyConfig>('/admin/radar/account-candy/config', { signal })).data
   },

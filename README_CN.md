@@ -1,4 +1,4 @@
-> **PK 私有版：** 全新部署请看 [PK 中文部署指南](deploy/PK_DEPLOYMENT_CN.md)；已有服务迁移、更新、回退与恢复请看 [PK_MAINTENANCE.md](PK_MAINTENANCE.md)。本版统一使用 `pengkang0322/sub2api` 私有仓库及其 GHCR 镜像，当前发行仅支持 `linux/amd64`。下方保留原项目介绍和作者归属。
+> **PK 私有版：** 全新部署请看 [PK 中文部署指南](deploy/PK_DEPLOYMENT_CN.md)；已有服务迁移、更新、回退与恢复请看 [PK_MAINTENANCE.md](PK_MAINTENANCE.md)。本版统一使用 `yb1320057104/sub2api` 私有仓库及其 GHCR 镜像，当前发行仅支持 `linux/amd64`。下方保留原项目介绍和作者归属。
 
 项目维护必读：[项目约束](PROJECT_CONSTRAINTS.md) · [二开功能清单](PK_FEATURES.md)。合并上游必须逐项保留；新增二开必须随同一变更登记。
 
@@ -267,7 +267,7 @@ fast_mode = true
 
 ## 部署方式
 
-当前 PK 发行支持 `linux/amd64`，部署前需取得 `pengkang0322/sub2api` 私有仓库和私有 GHCR 镜像的读取授权。
+当前 PK 发行支持 `linux/amd64`，部署前需取得 `yb1320057104/sub2api` 私有仓库和私有 GHCR 镜像的读取授权。
 
 - **全新空环境部署：** 按 [PK 中文部署指南](deploy/PK_DEPLOYMENT_CN.md) 完成 Docker Compose、授权、配置和验证。
 - **已有服务迁移或恢复：** 按 [PK_MAINTENANCE.md](PK_MAINTENANCE.md) 操作，保留原数据库、应用数据和密钥。

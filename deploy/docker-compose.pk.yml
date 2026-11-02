@@ -2,7 +2,7 @@
 # database, Redis, ports and all existing environment variables.
 services:
   sub2api:
-    image: ghcr.io/pengkang0322/sub2api:${SUB2API_PK_VERSION:?Set an approved PK image version}
+    image: ghcr.io/yb1320057104/sub2api:${SUB2API_PK_VERSION:?Set an approved PK image version}
     restart: unless-stopped
     environment:
       SUB2API_DOCKER_SELF_UPDATE: "true"

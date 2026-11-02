@@ -24,7 +24,7 @@ import uuid
 
 
 ROOT = Path(__file__).resolve().parents[1]
-REPOSITORY = "pengkang0322/sub2api"
+REPOSITORY = "yb1320057104/sub2api"
 SOURCE_SUITES = (
     "backend-unit", "backend-integration", "backend-race", "backend-lint",
     "frontend", "shell", "binance-proxy", "release-helpers", "security",
@@ -433,11 +433,12 @@ print(json.dumps(value, separators=(",", ":")) if sys.argv[3] == "json" else val
         import frontend_dependencies as dependencies
         import deployment_bundle as deployment
         import browser_payload as browser
+        import repository_policy as provenance
+        repository = provenance.package_repository(manifest, allow_legacy=True)
         dependencies.verify(directory, manifest)
         deployment.verify(directory, manifest)
         browser.verify(directory, manifest)
-        for key, expected in (("repository", REPOSITORY),
-                              ("commit", commit), ("tree", tree), ("platform", "linux/amd64")):
+        for key, expected in (("commit", commit), ("tree", tree), ("platform", "linux/amd64")):
             if manifest.get(key) != expected:
                 raise RuntimeError("Artifact manifest mismatch: " + key)
         for key in ("binary_archive", "image_archive"):
@@ -453,7 +454,7 @@ print(json.dumps(value, separators=(",", ":")) if sys.argv[3] == "json" else val
             if hashlib.file_digest(archive.extractfile(members[0]), "sha256").hexdigest() != manifest["binary_sha256"]:
                 raise RuntimeError("Binary hash does not match manifest")
         image = manifest["image_tag"]
-        if image != "ghcr.io/" + REPOSITORY + ":" + manifest["version"]:
+        if image != provenance.image(repository) + ":" + manifest["version"]:
             raise RuntimeError("Artifact image tag does not match private repository/version")
         self.run(["docker", "load", "-i", str(directory / manifest["image_archive"])])
         image_id = self.run(["docker", "image", "inspect", "--format", "{{.Id}}", image]).strip()
@@ -495,7 +496,7 @@ print(json.dumps(value, separators=(",", ":")) if sys.argv[3] == "json" else val
             version()
             container("cmp", "/app/sub2api", "/app/data/bin/sub2api")
             self.artifact = {key: manifest[key] for key in
-                             ("package_id", "binary_sha256", "binary_archive_sha256",
+                             ("repository", "package_id", "binary_sha256", "binary_archive_sha256",
                               "image_archive_sha256", "image_id", "version")}
             if manifest["schema_version"] == 2:
                 self.artifact.update({key: manifest[key] for key in dependencies.BINDINGS})
@@ -579,6 +580,12 @@ def main():
         report.update(tree=tree, base_commit=commit, workspace_before=before)
         if legacy:
             report["commit"] = commit
+            # Keep an old package's recorded repository identity in new optional
+            # verification reports; never relabel its sealed manifest/evidence.
+            sys.path.insert(0, str(ROOT / "deploy/jenkins"))
+            import repository_policy as provenance
+            artifact_manifest = json.loads((args.artifact_dir / "manifest.json").read_text(encoding="utf-8"))
+            report["repository"] = provenance.package_repository(artifact_manifest, allow_legacy=True)
         ready = runner.suite("preflight", runner.preflight)
         if not legacy:
             report["preflight"] = runner.results.pop()
@@ -616,7 +623,8 @@ def main():
         report.update(finished_at=now(), suites=runner.results)
         if legacy:
             report.update(artifact=runner.artifact,
-                          publish_eligible=report["status"] == "passed" and runner.artifact is not None)
+                          publish_eligible=report["status"] == "passed" and runner.artifact is not None
+                          and report["repository"] == REPOSITORY)
         else:
             report["source_eligible"] = report["status"] == "passed"
             if report["source_eligible"]:

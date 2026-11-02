@@ -28,7 +28,7 @@ done
 image=$(cat "$bundle/image.txt")
 image_id=$(cat "$bundle/image-id.txt")
 config_id=$(cat "$bundle/image-config-id.txt")
-printf '%s\n' "$image" | grep -Eq '^ghcr\.io/pengkang0322/sub2api:[0-9][0-9A-Za-z.-]*$' || fail 'Unexpected application image.'
+printf '%s\n' "$image" | grep -Eq '^ghcr\.io/yb1320057104/sub2api:[0-9][0-9A-Za-z.-]*$' || fail 'Unexpected application image.'
 printf '%s\n' "$image_id" | grep -Eq '^sha256:[0-9a-f]{64}$' || fail 'Invalid application image identity.'
 printf '%s\n' "$config_id" | grep -Eq '^sha256:[0-9a-f]{64}$' || fail 'Invalid application config identity.'
 if [ "$mode" = install ]; then

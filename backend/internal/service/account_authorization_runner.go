@@ -378,6 +378,29 @@ func (s *AccountAuthorizationService) applyAuthorization(ctx context.Context, cf
 	}
 	credentials := s.oauth.BuildAccountCredentials(token)
 	credentials["_token_version"] = time.Now().UnixMilli()
+	if job.settings.IntelligenceGate && job.settings.IntelligenceSourceGroupID > 0 {
+		rules, ruleErr := authorizationCurrentGroupRules(txctx, tx.Client())
+		if ruleErr != nil {
+			return ruleErr
+		}
+		groups := job.settings.GroupIDs
+		if before != nil {
+			groups = before.GroupIDs
+		}
+		// Never test a source removed while this job was queued/authorizing.
+		// Other matching rules do not replace the submitted rule snapshot.
+		rule := firstRadarGroupRule(rules, []int64{job.settings.IntelligenceSourceGroupID})
+		matched := false
+		for _, id := range groups {
+			matched = matched || id == job.settings.IntelligenceSourceGroupID
+		}
+		if rule == nil || !matched {
+			job.settings.IntelligenceGate = false
+		} else {
+			job.settings.PassGroupIDs = append([]int64{}, rule.PassGroupIDs...)
+			job.settings.FailGroupIDs = []int64{rule.FailGroupID}
+		}
+	}
 	var account *Account
 	if before != nil {
 		if _, err = tx.Client().ExecContext(txctx, `SELECT id FROM accounts WHERE id=$1 AND deleted_at IS NULL FOR UPDATE`, before.ID); err != nil {
@@ -450,7 +473,13 @@ func (s *AccountAuthorizationService) applyAuthorization(ctx context.Context, cf
 		if len(name) > 100 {
 			name = name[:100]
 		}
-		account, err = s.admin.CreateAccount(txctx, &CreateAccountInput{Name: string(name), Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: credentials, Concurrency: load, LoadFactor: &load, Priority: job.settings.AccountPriority, ProxyID: proxyID, GroupIDs: job.settings.GroupIDs, SkipDefaultGroupBind: true})
+		groups := job.settings.GroupIDs
+		if job.settings.IntelligenceGate {
+			groups = []int64{}
+		} else if len(groups) == 0 {
+			return authorizationBrowserFailure("admission_failed", "未配置入库分组，请在授权工作台选择分组后重新提交")
+		}
+		account, err = s.admin.CreateAccount(txctx, &CreateAccountInput{Name: string(name), Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: credentials, Concurrency: load, LoadFactor: &load, Priority: job.settings.AccountPriority, ProxyID: proxyID, GroupIDs: groups, SkipDefaultGroupBind: true})
 		if err != nil {
 			return authorizationBrowserFailure("admission_failed", "入库被拒绝，请检查分组有效性及准入要求")
 		}
@@ -473,7 +502,10 @@ func (s *AccountAuthorizationService) applyAuthorization(ctx context.Context, cf
 		return err
 	}
 	status, stage, message := "completed", "completed", "授权成功，凭据已写入账号"
-	metadata := map[string]any{"authorization_completed": true, "account_proxy_id": account.ProxyID}
+	metadata := map[string]any{"authorization_completed": true, "account_proxy_id": account.ProxyID, "intelligence_gate": job.settings.IntelligenceGate, "pass_group_ids": job.settings.PassGroupIDs, "fail_group_ids": job.settings.FailGroupIDs}
+	if !job.settings.IntelligenceGate {
+		message = "授权成功，凭据已写入账号；本次不进行糖果测试"
+	}
 	if job.settings.IntelligenceGate {
 		status, stage, message = "running", "intelligence_pending", "授权凭据已保存，新账号立即使用最新凭据测智；"+job.intelligenceAccountDisposition()
 		if job.preserveAccount {

@@ -9,7 +9,7 @@ FROM node:24-alpine AS node-tools
 
 FROM docker:29.8.1-dind
 LABEL org.opencontainers.image.title="PK isolated source validation tools" \
-      org.opencontainers.image.source="https://github.com/pengkang0322/sub2api" \
+      org.opencontainers.image.source="https://github.com/yb1320057104/sub2api" \
       pk.purpose="source-validation-tools"
 
 RUN apk add --no-cache \

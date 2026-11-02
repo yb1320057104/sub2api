@@ -48,7 +48,7 @@ func newTestGitHubReleaseClient() *githubReleaseClient {
 	}
 }
 
-const githubReleaseTestAssetURL = "https://api.github.com/repos/pengkang0322/sub2api/releases/assets/101"
+const githubReleaseTestAssetURL = "https://api.github.com/repos/yb1320057104/sub2api/releases/assets/101"
 
 func newLocalGitHubReleaseClient(serverURL string) *githubReleaseClient {
 	client := newTestGitHubReleaseClient()
@@ -135,7 +135,7 @@ func TestGitHubReleaseClientDoesNotAuthorizeDownloads(t *testing.T) {
 
 	dest := filepath.Join(t.TempDir(), "asset")
 	require.NoError(t, client.DownloadFile(context.Background(), "https://objects.githubusercontent.com/asset", dest, 100))
-	_, err := client.FetchChecksumFile(context.Background(), "https://github.com/pengkang0322/sub2api/releases/download/v1/checksums.txt")
+	_, err := client.FetchChecksumFile(context.Background(), "https://github.com/yb1320057104/sub2api/releases/download/v1/checksums.txt")
 	require.NoError(t, err)
 	require.Len(t, headers, 2)
 	for _, header := range headers {
@@ -316,18 +316,18 @@ func (s *GitHubReleaseServiceSuite) TestFetchLatestRelease_Success() {
 		"tag_name": "v1.0.0",
 		"name": "Release 1.0.0",
 		"body": "Release notes",
-		"html_url": "https://github.com/pengkang0322/sub2api/releases/v1.0.0",
+		"html_url": "https://github.com/yb1320057104/sub2api/releases/v1.0.0",
 		"assets": [
 			{
 				"name": "app-linux-amd64.tar.gz",
-				"url": "https://api.github.com/repos/pengkang0322/sub2api/releases/assets/101",
-				"browser_download_url": "https://github.com/pengkang0322/sub2api/releases/download/v1.0.0/app-linux-amd64.tar.gz"
+				"url": "https://api.github.com/repos/yb1320057104/sub2api/releases/assets/101",
+				"browser_download_url": "https://github.com/yb1320057104/sub2api/releases/download/v1.0.0/app-linux-amd64.tar.gz"
 			}
 		]
 	}`
 
 	s.srv = newLocalTestServer(s.T(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.Equal(s.T(), "/repos/pengkang0322/sub2api/releases/latest", r.URL.Path)
+		require.Equal(s.T(), "/repos/yb1320057104/sub2api/releases/latest", r.URL.Path)
 		require.Equal(s.T(), "application/vnd.github.v3+json", r.Header.Get("Accept"))
 		require.Equal(s.T(), "Sub2API-Updater", r.Header.Get("User-Agent"))
 		w.Header().Set("Content-Type", "application/json")
@@ -343,7 +343,7 @@ func (s *GitHubReleaseServiceSuite) TestFetchLatestRelease_Success() {
 		downloadHTTPClient: &http.Client{},
 	}
 
-	release, err := s.client.FetchLatestRelease(context.Background(), "pengkang0322/sub2api")
+	release, err := s.client.FetchLatestRelease(context.Background(), "yb1320057104/sub2api")
 	require.NoError(s.T(), err)
 	require.Equal(s.T(), "v1.0.0", release.TagName)
 	require.Equal(s.T(), "Release 1.0.0", release.Name)
@@ -357,14 +357,14 @@ func (s *GitHubReleaseServiceSuite) TestFetchRecentReleases_Success() {
 		{
 			"tag_name": "v1.0.1",
 			"name": "Release 1.0.1",
-			"html_url": "https://github.com/pengkang0322/sub2api/releases/v1.0.1",
+			"html_url": "https://github.com/yb1320057104/sub2api/releases/v1.0.1",
 			"published_at": "2026-07-08T00:00:00Z",
 			"prerelease": false,
 			"assets": [
 				{
 					"name": "app-linux-amd64.tar.gz",
-					"url": "https://api.github.com/repos/pengkang0322/sub2api/releases/assets/101",
-					"browser_download_url": "https://github.com/pengkang0322/sub2api/releases/download/v1.0.1/app-linux-amd64.tar.gz"
+					"url": "https://api.github.com/repos/yb1320057104/sub2api/releases/assets/101",
+					"browser_download_url": "https://github.com/yb1320057104/sub2api/releases/download/v1.0.1/app-linux-amd64.tar.gz"
 				}
 			]
 		},
@@ -380,7 +380,7 @@ func (s *GitHubReleaseServiceSuite) TestFetchRecentReleases_Success() {
 	]`
 
 	s.srv = newLocalTestServer(s.T(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.Equal(s.T(), "/repos/pengkang0322/sub2api/releases", r.URL.Path)
+		require.Equal(s.T(), "/repos/yb1320057104/sub2api/releases", r.URL.Path)
 		require.Equal(s.T(), "15", r.URL.Query().Get("per_page"))
 		require.Equal(s.T(), "application/vnd.github.v3+json", r.Header.Get("Accept"))
 		require.Equal(s.T(), "Sub2API-Updater", r.Header.Get("User-Agent"))
@@ -396,7 +396,7 @@ func (s *GitHubReleaseServiceSuite) TestFetchRecentReleases_Success() {
 		downloadHTTPClient: &http.Client{},
 	}
 
-	releases, err := s.client.FetchRecentReleases(context.Background(), "pengkang0322/sub2api", 15)
+	releases, err := s.client.FetchRecentReleases(context.Background(), "yb1320057104/sub2api", 15)
 	require.NoError(s.T(), err)
 	require.Len(s.T(), releases, 3)
 	require.Equal(s.T(), "v1.0.1", releases[0].TagName)
@@ -565,14 +565,16 @@ func TestGitHubReleaseClientPrivateAssetDownloads(t *testing.T) {
 func TestGitHubReleaseClientPrivateAssetRejectsUntrustedURLs(t *testing.T) {
 	for _, target := range []struct{ name, url string }{
 		{"other_repository", "https://api.github.com/repos/Wei-Shaw/sub2api/releases/assets/101"},
-		{"non_asset_API", "https://api.github.com/repos/pengkang0322/sub2api/releases/latest"},
+		{"previous_repository_API", "https://api.github.com/repos/pengkang0322/sub2api/releases/assets/101"},
+		{"previous_repository_download", "https://github.com/pengkang0322/sub2api/releases/download/v1/checksums.txt"},
+		{"non_asset_API", "https://api.github.com/repos/yb1320057104/sub2api/releases/latest"},
 		{"third_party", "https://example.com/release.tar.gz"},
-		{"lookalike_host", "https://api.github.com.example.com/repos/pengkang0322/sub2api/releases/assets/101"},
-		{"API_subdomain", "https://sub.api.github.com/repos/pengkang0322/sub2api/releases/assets/101"},
-		{"insecure_API", "http://api.github.com/repos/pengkang0322/sub2api/releases/assets/101"},
+		{"lookalike_host", "https://api.github.com.example.com/repos/yb1320057104/sub2api/releases/assets/101"},
+		{"API_subdomain", "https://sub.api.github.com/repos/yb1320057104/sub2api/releases/assets/101"},
+		{"insecure_API", "http://api.github.com/repos/yb1320057104/sub2api/releases/assets/101"},
 		{"insecure_CDN", "http://release-assets.githubusercontent.com/asset"},
-		{"userinfo", "https://user@api.github.com/repos/pengkang0322/sub2api/releases/assets/101"},
-		{"alternate_port", "https://api.github.com:8443/repos/pengkang0322/sub2api/releases/assets/101"},
+		{"userinfo", "https://user@api.github.com/repos/yb1320057104/sub2api/releases/assets/101"},
+		{"alternate_port", "https://api.github.com:8443/repos/yb1320057104/sub2api/releases/assets/101"},
 	} {
 		for _, operation := range []string{"archive", "checksum"} {
 			for _, redirect := range []bool{false, true} {

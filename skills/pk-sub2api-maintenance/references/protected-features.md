@@ -4,8 +4,8 @@
 
 ## 读取方式
 
-1. 定位正在操作的可信 `pengkang0322/sub2api` 工作区，优先读取这三个文件；安装 skill 的目录不是项目根目录，不能把 `../../..` 当成当前 checkout。
-2. 浏览入口：[二开清单](https://github.com/pengkang0322/sub2api/blob/main/PK_FEATURES.md)、[项目约束](https://github.com/pengkang0322/sub2api/blob/main/PROJECT_CONSTRAINTS.md)。私库访问使用已有合法授权，不能因匿名访问失败改用作者仓库。
+1. 定位正在操作的可信 `yb1320057104/sub2api` 工作区，优先读取这三个文件；安装 skill 的目录不是项目根目录，不能把 `../../..` 当成当前 checkout。
+2. 浏览入口：[二开清单](https://github.com/yb1320057104/sub2api/blob/main/PK_FEATURES.md)、[项目约束](https://github.com/yb1320057104/sub2api/blob/main/PROJECT_CONSTRAINTS.md)。私库访问使用已有合法授权，不能因匿名访问失败改用作者仓库。
 3. 工作区缺文件时，从可信私库分支/提交获取并核实当前约束。旧备份/旧标签中没有清单不代表没有二开；不能凭本 skill 或历史清单重写代码冒称恢复完整。
 
 ## 执行要求

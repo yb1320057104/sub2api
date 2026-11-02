@@ -109,7 +109,7 @@ func (s *AccountAuthorizationService) saveAuthorizationIntelligence(ctx context.
 	return nil
 }
 
-func (s *AccountAuthorizationService) executeAuthorizationIntelligence(ctx context.Context, accountID int64, snapshot *authorizationGateSnapshot, model RadarModel) (result AuthorizationIntelligenceResult) {
+func (s *AccountAuthorizationService) executeAuthorizationIntelligence(ctx context.Context, accountID, sourceGroupID int64, snapshot *authorizationGateSnapshot, model RadarModel) (result AuthorizationIntelligenceResult) {
 	result = AuthorizationIntelligenceResult{Model: model.Model, Effort: model.Effort, Status: "failed"}
 	started := time.Now()
 	result.StartedAt = &started
@@ -133,12 +133,20 @@ func (s *AccountAuthorizationService) executeAuthorizationIntelligence(ctx conte
 		result.ErrorMessage = "账号凭据、分组或状态已变化，此模型未继续测试"
 		return result
 	}
+	if err = s.checkAuthorizationSourceRule(ctx, sourceGroupID); err != nil {
+		result.ErrorMessage = "来源分组规则已变化或暂不可用，此模型未继续测试"
+		return result
+	}
 	result.EgressMode = "direct"
 	if account.ProxyID != nil {
 		result.EgressMode = "proxy"
 	}
 	result.EgressIP, result.EgressCheckedAt, result.EgressError = probeRadarEgress(ctx, account)
 	result.MappedModel = account.GetMappedModel(model.Model)
+	if err = s.checkAuthorizationSourceRule(ctx, sourceGroupID); err != nil {
+		result.ErrorMessage = "来源分组规则已变化或暂不可用，此模型未继续测试"
+		return result
+	}
 	text, err := s.tests.runAccountCandyProbe(ctx, account, account, &AccountCandyTestConfig{Model: model.Model, Effort: model.Effort})
 	if err != nil {
 		result.ErrorMessage = redactCandyAccountError(accountCandySafeError(err), account)
@@ -176,7 +184,7 @@ func (s *AccountAuthorizationService) runAuthorizationIntelligenceModels(ctx con
 	completed := make(chan completion, len(models))
 	for i, model := range models {
 		go func(index int, current RadarModel) {
-			completed <- completion{index: index, result: s.executeAuthorizationIntelligence(probeCtx, account.ID, snapshot, current)}
+			completed <- completion{index: index, result: s.executeAuthorizationIntelligence(probeCtx, account.ID, job.settings.IntelligenceSourceGroupID, snapshot, current)}
 		}(i, model)
 	}
 	ticker := time.NewTicker(time.Second)
@@ -204,6 +212,8 @@ func (s *AccountAuthorizationService) runAuthorizationIntelligenceModels(ctx con
 		case <-ticker.C:
 			if stopErr == nil {
 				if err := progress("", ""); err != nil {
+					stop(err)
+				} else if err = s.checkAuthorizationSourceRule(ctx, job.settings.IntelligenceSourceGroupID); err != nil {
 					stop(err)
 				}
 			}

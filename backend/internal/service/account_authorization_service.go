@@ -28,32 +28,36 @@ const authorizationReauthCron = "*/10 * * * *"
 const authorizationWorkbenchSettingKey = "pk_authorization_workbench"
 
 type AuthorizationConfig struct {
-	WorkbenchAccountConcurrency int `json:"workbench_account_concurrency"`
-	WorkbenchAccountPriority    int `json:"workbench_account_priority"`
+	WorkbenchRevision                 string `json:"workbench_revision"`
+	WorkbenchAuthorizationConcurrency int    `json:"workbench_authorization_concurrency"`
+	WorkbenchAccountConcurrency       int    `json:"workbench_account_concurrency"`
+	WorkbenchAccountPriority          int    `json:"workbench_account_priority"`
 
 	AccountProxyMode    string `json:"account_proxy_mode"`
 	MaxAccountsPerProxy int    `json:"max_accounts_per_proxy"`
 
-	IntelligenceModels       []RadarModel `json:"intelligence_models"`
-	PassGroupIDs             []int64      `json:"pass_group_ids"`
-	FailGroupIDs             []int64      `json:"fail_group_ids"`
-	IntelligenceModel        string       `json:"intelligence_model"`
-	IntelligenceEffort       string       `json:"intelligence_effort"`
-	InspectionEnabled        bool         `json:"inspection_enabled"`
-	ReauthEnabled            bool         `json:"reauth_enabled"`
-	InspectionConcurrency    int          `json:"inspection_concurrency"`
-	AuthorizationConcurrency int          `json:"authorization_concurrency"`
-	AccountConcurrency       int          `json:"account_concurrency"`
-	AccountPriority          int          `json:"account_priority"`
-	GroupIDs                 []int64      `json:"group_ids"`
-	ReauthStatusCodes        []int        `json:"reauth_status_codes"`
-	Revision                 int64        `json:"revision"`
-	NextInspectionAt         *time.Time   `json:"next_inspection_at"`
-	NextReauthAt             *time.Time   `json:"next_reauth_at"`
-	InspectionCron           string       `json:"inspection_cron"`
-	ReauthCron               string       `json:"reauth_cron"`
-	BrowserAvailable         bool         `json:"browser_available"`
-	EncryptionKeyConfigured  bool         `json:"encryption_key_configured"`
+	IntelligenceModels       []RadarModel     `json:"intelligence_models"`
+	IntelligenceGate         bool             `json:"intelligence_gate"`
+	IntelligenceGroupRules   []RadarGroupRule `json:"intelligence_group_rules"`
+	PassGroupIDs             []int64          `json:"pass_group_ids"`
+	FailGroupIDs             []int64          `json:"fail_group_ids"`
+	IntelligenceModel        string           `json:"intelligence_model"`
+	IntelligenceEffort       string           `json:"intelligence_effort"`
+	InspectionEnabled        bool             `json:"inspection_enabled"`
+	ReauthEnabled            bool             `json:"reauth_enabled"`
+	InspectionConcurrency    int              `json:"inspection_concurrency"`
+	AuthorizationConcurrency int              `json:"authorization_concurrency"`
+	AccountConcurrency       int              `json:"account_concurrency"`
+	AccountPriority          int              `json:"account_priority"`
+	GroupIDs                 []int64          `json:"group_ids"`
+	ReauthStatusCodes        []int            `json:"reauth_status_codes"`
+	Revision                 int64            `json:"revision"`
+	NextInspectionAt         *time.Time       `json:"next_inspection_at"`
+	NextReauthAt             *time.Time       `json:"next_reauth_at"`
+	InspectionCron           string           `json:"inspection_cron"`
+	ReauthCron               string           `json:"reauth_cron"`
+	BrowserAvailable         bool             `json:"browser_available"`
+	EncryptionKeyConfigured  bool             `json:"encryption_key_configured"`
 }
 
 type AuthorizationSecret struct {
@@ -63,8 +67,10 @@ type AuthorizationSecret struct {
 }
 
 type AuthorizationSubmit struct {
-	AccountProxyMode    string `json:"account_proxy_mode"`
-	MaxAccountsPerProxy int    `json:"max_accounts_per_proxy"`
+	WorkbenchRevision         string `json:"workbench_revision,omitempty"`
+	IntelligenceSourceGroupID int64  `json:"intelligence_source_group_id,omitempty"`
+	AccountProxyMode          string `json:"account_proxy_mode"`
+	MaxAccountsPerProxy       int    `json:"max_accounts_per_proxy"`
 
 	IntelligenceGeneration   string       `json:"intelligence_generation,omitempty"`
 	IntelligenceModels       []RadarModel `json:"intelligence_models,omitempty"`
@@ -113,12 +119,13 @@ func NewAccountAuthorizationService(db *sql.DB, client *dbent.Client, accounts A
 // models and target consistent while settings are being saved.
 func authorizationCandyConfigTx(ctx context.Context, tx *sql.Tx) (*RadarConfig, error) {
 	cfg := &RadarConfig{Models: make([]RadarModel, 0)}
-	var modelsJSON []byte
+	var modelsJSON, rulesJSON []byte
 	err := tx.QueryRowContext(ctx, `SELECT c.enabled,c.interval_minutes,c.target_group_id,c.generation,
 		COALESCE((SELECT jsonb_agg(jsonb_build_object('model',model,'effort',effort,'enabled',enabled) ORDER BY sort_order)
-			FROM pk_radar_account_models WHERE config_id=c.id AND enabled=true),'[]'::jsonb)
+			FROM pk_radar_account_models WHERE config_id=c.id AND enabled=true),'[]'::jsonb),
+		COALESCE((SELECT value::jsonb FROM settings WHERE key=$1),'[]'::jsonb)
 		FROM pk_radar_account_config c
-		WHERE c.id=1`).Scan(&cfg.Enabled, &cfg.IntervalMinutes, &cfg.TargetGroupID, &cfg.Generation, &modelsJSON)
+		WHERE c.id=1`, radarGroupRulesSettingKey).Scan(&cfg.Enabled, &cfg.IntervalMinutes, &cfg.TargetGroupID, &cfg.Generation, &modelsJSON, &rulesJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		// Before radar initialization, expose an unconfigured destination. Never
 		// revive a stale legacy target after the current target has been cleared.
@@ -130,7 +137,7 @@ func authorizationCandyConfigTx(ctx context.Context, tx *sql.Tx) (*RadarConfig, 
 	if err = json.Unmarshal(modelsJSON, &cfg.Models); err != nil {
 		return nil, err
 	}
-	if err = validateRadarConfig(cfg); err != nil {
+	if err = json.Unmarshal(rulesJSON, &cfg.GroupRules); err != nil {
 		return nil, err
 	}
 	return cfg, nil
@@ -152,9 +159,9 @@ func (s *AccountAuthorizationService) GetConfig(ctx context.Context) (*Authoriza
 	c.PassGroupIDs, c.FailGroupIDs = []int64{}, []int64{}
 	// Workbench defaults are independent from the inspection/reauthorization
 	// configuration. Saved values override them, including an explicit priority 0.
-	workbench := AuthorizationSubmit{AccountConcurrency: 20, AccountPriority: 1, AccountProxyMode: "direct", MaxAccountsPerProxy: 3}
+	workbench := authorizationWorkbenchDefaults()
 	var saved string
-	if err = s.db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key=$1`, authorizationWorkbenchSettingKey).Scan(&saved); err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if err = s.db.QueryRowContext(ctx, `SELECT value,md5(value) FROM settings WHERE key=$1`, authorizationWorkbenchSettingKey).Scan(&saved, &c.WorkbenchRevision); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, err
 	}
 	if saved != "" {
@@ -167,6 +174,8 @@ func (s *AccountAuthorizationService) GetConfig(ctx context.Context) (*Authoriza
 		return nil, err
 	}
 	c.WorkbenchAccountConcurrency, c.WorkbenchAccountPriority = workbench.AccountConcurrency, workbench.AccountPriority
+	c.WorkbenchAuthorizationConcurrency = workbench.AuthorizationConcurrency
+	c.IntelligenceGate = workbench.IntelligenceGate
 	c.AccountProxyMode, c.MaxAccountsPerProxy = workbench.AccountProxyMode, workbench.MaxAccountsPerProxy
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
@@ -178,6 +187,7 @@ func (s *AccountAuthorizationService) GetConfig(ctx context.Context) (*Authoriza
 		return nil, err
 	}
 	c.IntelligenceModels = candy.Models
+	c.IntelligenceGroupRules = candy.GroupRules
 	if len(candy.Models) > 0 {
 		// Keep the old scalar fields for clients predating multi-model admission.
 		c.IntelligenceModel, c.IntelligenceEffort = candy.Models[0].Model, candy.Models[0].Effort
@@ -318,62 +328,34 @@ func (s *AccountAuthorizationService) Submit(ctx context.Context, input *Authori
 	if err := s.requireAuthorizationEncryption(); err != nil {
 		return "", err
 	}
-	if err := validateAuthorizationOptions(input.AuthorizationConcurrency, input.AccountConcurrency, input.AccountPriority, input.GroupIDs); err != nil {
+	settings, err := s.normalizeAuthorizationWorkbench(ctx, input)
+	if err != nil {
 		return "", err
 	}
-	if len(input.PassGroupIDs) == 0 {
-		return "", infraerrors.BadRequest("AUTHORIZATION_GATE_GROUPS", "请选择至少一个及格分组")
-	}
-	if err := validateAuthorizationOptions(input.AuthorizationConcurrency, input.AccountConcurrency, input.AccountPriority, input.PassGroupIDs); err != nil {
-		return "", err
-	}
-	if err := s.admin.ValidateAccountGroupBindings(ctx, input.PassGroupIDs); err != nil {
-		return "", err
+	if len(settings.PassGroupIDs) == 0 {
+		return "", infraerrors.BadRequest("AUTHORIZATION_GATE_GROUPS", "请选择至少一个入库分组")
 	}
 	secrets, err := parseAuthorizationAccounts(input.Accounts)
 	if err != nil {
 		return "", err
 	}
-	settings := *input
-	if err := normalizeAuthorizationProxyOptions(&settings); err != nil {
-		return "", err
-	}
-	settings.Accounts = ""
-	settings.GroupIDs = []int64{}
-	settings.IntelligenceGate = true
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return "", err
 	}
 	defer func() { _ = tx.Rollback() }()
-	candy, err := authorizationCandyConfigTx(ctx, tx)
-	if err != nil {
-		return "", err
-	}
-	if len(candy.Models) == 0 {
-		return "", infraerrors.BadRequest("AUTHORIZATION_CANDY_MODEL", "请先在糖果测试设置中启用至少一个测试模型")
-	}
-	settings.IntelligenceModels = candy.Models
-	settings.IntelligenceGeneration = candy.Generation
-	settings.IntelligenceModel, settings.IntelligenceEffort = candy.Models[0].Model, candy.Models[0].Effort
-	if candy.TargetGroupID == nil || *candy.TargetGroupID < 1 {
-		return "", infraerrors.BadRequest("AUTHORIZATION_CANDY_TARGET", "请先在糖果测试设置中配置不合格账号移入分组")
-	}
-	// The client cannot override the shared candy-test failure destination.
-	settings.FailGroupIDs = []int64{*candy.TargetGroupID}
-	if err = s.admin.ValidateAccountGroupBindings(ctx, settings.FailGroupIDs); err != nil {
-		return "", err
-	}
-	targets := append(append([]int64{}, settings.PassGroupIDs...), settings.FailGroupIDs...)
-	if err = validateAuthorizationGateGroups(ctx, tx, targets, nil); err != nil {
-		return "", err
-	}
-	raw, err := json.Marshal(settings)
-	if err != nil {
-		return "", err
-	}
 	if err = lockAuthorizationHistory(ctx, tx); err != nil {
 		return "", err
+	}
+	if err = saveAuthorizationWorkbenchTx(ctx, tx, settings); err != nil {
+		return "", err
+	}
+	candy := &RadarConfig{}
+	if settings.IntelligenceGate {
+		candy, err = authorizationCandyConfigTx(ctx, tx)
+		if err != nil {
+			return "", err
+		}
 	}
 	batch := uuid.NewString()
 	for _, secret := range secrets {
@@ -406,7 +388,33 @@ func (s *AccountAuthorizationService) Submit(ctx context.Context, input *Authori
 		if err != nil {
 			return "", err
 		}
-		result, err := tx.ExecContext(ctx, `INSERT INTO pk_authorization_jobs(batch_id,history_id,email,source,settings) VALUES($1,$2,$3,'manual',$4::jsonb||$5::jsonb) ON CONFLICT (email) WHERE status IN ('queued','running') DO NOTHING`, batch, historyID, secret.Email, string(raw), string(snapshot))
+		accountID, err := authorizationSubmissionAccount(ctx, tx, secret.Email)
+		if err != nil {
+			return "", err
+		}
+		jobSettings := settings
+		jobSettings.WorkbenchRevision = ""
+		if jobSettings.IntelligenceGate {
+			groups, groupErr := authorizationJobSourceGroups(ctx, tx, accountID, settings.GroupIDs)
+			if groupErr != nil {
+				return "", groupErr
+			}
+			configureAuthorizationGroupGate(&jobSettings, candy, groups, true)
+			if jobSettings.IntelligenceGate {
+				if _, err = authorizationIntelligenceModels(jobSettings); err != nil {
+					return "", err
+				}
+				targets := append(append([]int64{}, jobSettings.PassGroupIDs...), jobSettings.FailGroupIDs...)
+				if err = validateAuthorizationGateGroups(ctx, tx, targets, nil); err != nil {
+					return "", err
+				}
+			}
+		}
+		raw, err := json.Marshal(jobSettings)
+		if err != nil {
+			return "", err
+		}
+		result, err := tx.ExecContext(ctx, `INSERT INTO pk_authorization_jobs(batch_id,history_id,email,account_id,source,settings) VALUES($1,$2,$3,$6,'manual',$4::jsonb||$5::jsonb) ON CONFLICT (email) WHERE status IN ('queued','running') DO NOTHING`, batch, historyID, secret.Email, string(raw), string(snapshot), accountID)
 		if err != nil {
 			return "", err
 		}
@@ -417,9 +425,6 @@ func (s *AccountAuthorizationService) Submit(ctx context.Context, input *Authori
 		if n != 1 {
 			return "", infraerrors.Conflict("AUTHORIZATION_RUNNING", "本批包含正在授权的邮箱，请等待原任务结束")
 		}
-	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO settings(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=NOW()`, authorizationWorkbenchSettingKey, string(raw)); err != nil {
-		return "", err
 	}
 	if err = tx.Commit(); err != nil {
 		return "", err

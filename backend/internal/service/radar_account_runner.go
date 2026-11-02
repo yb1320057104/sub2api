@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"sync"
 	"time"
@@ -24,12 +25,16 @@ func (s *AccountCandyTestService) dispatchRadar(ctx context.Context) {
 	if s.expireRadar(ctx) != nil {
 		return
 	}
-	if !cfg.Enabled {
+	if !cfg.Enabled || len(cfg.GroupRules) == 0 {
+		return
+	}
+	rawRules, err := json.Marshal(cfg.GroupRules)
+	if err != nil {
 		return
 	}
 	// Read live account management on every scheduled dispatch. Never cache the
 	// roster: manually added accounts join the next eligible round immediately.
-	rows, err := s.db.QueryContext(ctx, `SELECT a.id FROM accounts a LEFT JOIN pk_radar_account_state st ON st.account_id=a.id WHERE a.deleted_at IS NULL AND a.platform='openai' AND a.status='active' AND a.schedulable=true AND COALESCE(a.extra->'synthetic_ui_test','false'::jsonb)<>'true'::jsonb AND(a.expires_at IS NULL OR a.expires_at>NOW() OR a.auto_pause_on_expired=false)AND(st.next_run_at IS NULL OR st.next_run_at<=NOW())AND(st.lease_until IS NULL OR st.lease_until<=NOW())AND NOT EXISTS(SELECT 1 FROM account_groups ag WHERE ag.account_id=a.id AND ag.group_id=$1)ORDER BY COALESCE(st.next_run_at,a.created_at),a.id LIMIT 1000`, cfg.TargetGroupID)
+	rows, err := s.db.QueryContext(ctx, `SELECT a.id FROM accounts a LEFT JOIN pk_radar_account_state st ON st.account_id=a.id WHERE a.deleted_at IS NULL AND a.platform='openai' AND a.status='active' AND a.schedulable=true AND COALESCE(a.extra->'synthetic_ui_test','false'::jsonb)<>'true'::jsonb AND(a.expires_at IS NULL OR a.expires_at>NOW() OR a.auto_pause_on_expired=false)AND(st.next_run_at IS NULL OR st.next_run_at<=NOW())AND(st.lease_until IS NULL OR st.lease_until<=NOW())AND EXISTS(SELECT 1 FROM account_groups ag JOIN groups g ON g.id=ag.group_id AND g.deleted_at IS NULL AND g.platform='openai' AND g.status='active' JOIN jsonb_array_elements($1::jsonb) rule ON (rule->>'source_group_id')::bigint=ag.group_id WHERE ag.account_id=a.id)ORDER BY COALESCE(st.next_run_at,a.created_at),a.id LIMIT 1000`, string(rawRules))
 	if err != nil {
 		return
 	}
@@ -197,5 +202,5 @@ func (s *AccountCandyTestService) checkRadarIdentity(ctx context.Context, run *R
 	if identity != run.identity {
 		return context.Canceled
 	}
-	return nil
+	return s.checkRadarGroupSnapshot(ctx, run)
 }

@@ -8,9 +8,9 @@ import (
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 )
 
-// Only actual workbench candy runs qualify. Group membership alone is never a
-// verdict, and scheduled reauthorization without an admission test is excluded.
-const authorizationRadarCondition = `j.account_id IS NOT NULL AND j.source='manual'
+// Only actual authorization candy runs qualify. Group membership alone is never
+// a verdict; scheduled reauthorization qualifies only with recorded test work.
+const authorizationRadarCondition = `j.account_id IS NOT NULL AND j.source IN ('manual','reauthorization')
 	AND j.settings->>'intelligence_gate'='true' AND j.settings->>'authorization_completed'='true'
 	AND (j.settings->'intelligence_passed' IN ('true'::jsonb,'false'::jsonb)
 		OR jsonb_array_length(COALESCE(NULLIF(j.settings->'intelligence_results','null'::jsonb),'[]'::jsonb))>0)`
@@ -64,7 +64,7 @@ func loadAuthorizationRadarRuns(ctx context.Context, q radarQuerier, ids []int64
 		'generation',j.settings->'intelligence_generation','passed',j.settings->'intelligence_passed','answer',j.settings->'intelligence_answer',
 		'started_at',j.settings->'intelligence_started_at','finished_at',j.settings->'intelligence_finished_at',
 		'groups',j.settings->'final_group_ids','results',` + authorizationIntelligenceResultsSQL("j.settings", details) + ")"
-	rows, err := q.QueryContext(ctx, `SELECT j.id,j.account_id,j.status,j.stage,j.message,j.created_at,j.started_at,j.finished_at,`+payload+`
+	rows, err := q.QueryContext(ctx, `SELECT j.id,j.account_id,j.source,j.status,j.stage,j.message,j.created_at,j.started_at,j.finished_at,`+payload+`
 		FROM pk_authorization_jobs j JOIN accounts a ON a.id=j.account_id AND a.deleted_at IS NULL
 		WHERE j.id IN(`+marks+`) AND `+authorizationRadarCondition, args...)
 	if err != nil {
@@ -72,12 +72,12 @@ func loadAuthorizationRadarRuns(ctx context.Context, q radarQuerier, ids []int64
 	}
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
-		r := &RadarRun{Origin: "authorization", Verdict: "unknown", ModelResults: []RadarModelResult{}, FailedModels: []RadarModelResult{}}
-		var status, stage, message string
+		r := &RadarRun{Origin: "authorization", Verdict: "unknown", ModelResults: []RadarModelResult{}, FailedModels: []RadarModelResult{}, MovedToGroupIDs: []int64{}}
+		var source, status, stage, message string
 		var created time.Time
 		var started, finished *time.Time
 		var raw []byte
-		if err = rows.Scan(&r.ID, &r.AccountID, &status, &stage, &message, &created, &started, &finished, &raw); err != nil {
+		if err = rows.Scan(&r.ID, &r.AccountID, &source, &status, &stage, &message, &created, &started, &finished, &raw); err != nil {
 			return nil, err
 		}
 		var meta authorizationRadarMetadata
@@ -85,6 +85,9 @@ func loadAuthorizationRadarRuns(ctx context.Context, q radarQuerier, ids []int64
 			return nil, err
 		}
 		r.Source, r.Status, r.StartedAt = "manual", "failed", created
+		if source == "reauthorization" {
+			r.Source = "scheduled"
+		}
 		r.OriginalGroupIDs = []int64{}
 		r.Generation, r.Passed, r.Answer = meta.Generation, meta.Passed, meta.Answer
 		if started != nil {
@@ -108,7 +111,8 @@ func loadAuthorizationRadarRuns(ctx context.Context, q radarQuerier, ids []int64
 				r.Verdict = "pass"
 			}
 		}
-		if status == "completed" && len(meta.Groups) == 1 {
+		if status == "completed" && len(meta.Groups) > 0 {
+			r.MovedToGroupIDs = append([]int64{}, meta.Groups...)
 			r.MovedToGroupID = &meta.Groups[0]
 		}
 		if len(meta.Results) == 0 && meta.Passed != nil {

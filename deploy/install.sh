@@ -3,7 +3,7 @@
 # Sub2API Installation Script
 # Sub2API 安装脚本
 # The legacy systemd installer is disabled for the private PK Docker deployment.
-# See https://github.com/pengkang0322/sub2api/blob/main/PK_MAINTENANCE.md
+# See https://github.com/yb1320057104/sub2api/blob/main/PK_MAINTENANCE.md
 # Open the private repository while signed in; anonymous curl downloads do not work.
 #
 
@@ -33,7 +33,7 @@ CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 # Configuration
-GITHUB_REPO="pengkang0322/sub2api"
+GITHUB_REPO="yb1320057104/sub2api"
 INSTALL_DIR="/opt/sub2api"
 SERVICE_NAME="sub2api"
 SERVICE_USER="sub2api"
@@ -486,10 +486,10 @@ check_dependencies() {
 private_deployment_required() {
     cat >&2 <<'EOF'
 此旧安装/升级/回退脚本不适用于“小典专属”私库 Docker 部署，已停止执行。
-请登录 pengkang0322/sub2api，按 PK_MAINTENANCE.md 操作：
-https://github.com/pengkang0322/sub2api/blob/main/PK_MAINTENANCE.md
+请登录 yb1320057104/sub2api，按 PK_MAINTENANCE.md 操作：
+https://github.com/yb1320057104/sub2api/blob/main/PK_MAINTENANCE.md
 
-部署或恢复使用 ghcr.io/pengkang0322/sub2api 的已确认 PK 版本。
+部署或恢复使用 ghcr.io/yb1320057104/sub2api 的已确认 PK 版本。
 保留现有 Compose、数据库、数据卷和密钥，再合并 deploy/docker-compose.pk.yml。
 网页更新需 UPDATE_GITHUB_TOKEN（本私库 Contents: read）；私有镜像拉取需 GHCR 登录。
 本脚本不会下载匿名私库文件、回退到官方仓库或改动现有服务。
@@ -529,18 +529,18 @@ github_api_curl() {
         esac
     done
 
-    if [ "$expect_value" = true ] || [[ "$url" != https://api.github.com/repos/pengkang0322/sub2api/* ]]; then
-        echo "github_api_curl only permits the pengkang0322/sub2api GitHub API" >&2
+    if [ "$expect_value" = true ] || [[ "$url" != https://api.github.com/repos/yb1320057104/sub2api/* ]]; then
+        echo "github_api_curl only permits the yb1320057104/sub2api GitHub API" >&2
         return 2
     fi
-    api_path="${url#https://api.github.com/repos/pengkang0322/sub2api/}"
+    api_path="${url#https://api.github.com/repos/yb1320057104/sub2api/}"
     if [[ "$api_path" != releases && "$api_path" != releases/latest && ! "$api_path" =~ ^releases/tags/v[0-9]+\.[0-9]+\.[0-9]+(-pk\.[0-9]+)?$ ]]; then
         echo "github_api_curl only permits private release metadata endpoints" >&2
         return 2
     fi
 
     if [ -z "${UPDATE_GITHUB_TOKEN:-}" ]; then
-        echo "UPDATE_GITHUB_TOKEN with Contents: read for pengkang0322/sub2api is required" >&2
+        echo "UPDATE_GITHUB_TOKEN with Contents: read for yb1320057104/sub2api is required" >&2
         return 2
     fi
 
@@ -692,7 +692,7 @@ install_service() {
     cat > /etc/systemd/system/sub2api.service << EOF
 [Unit]
 Description=Sub2API - AI API Gateway Platform
-Documentation=https://github.com/pengkang0322/sub2api/blob/main/PK_MAINTENANCE.md
+Documentation=https://github.com/yb1320057104/sub2api/blob/main/PK_MAINTENANCE.md
 After=network.target postgresql.service redis.service
 Wants=postgresql.service redis.service
 

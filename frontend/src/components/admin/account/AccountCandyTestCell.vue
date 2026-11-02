@@ -18,7 +18,7 @@
     </div>
     <div class="flex flex-wrap items-center gap-x-2 gap-y-1" :title="error ? t('accountCandy.loadFailed') : undefined">
       <span :class="statusClass">{{ statusText }}</span>
-      <span v-if="result?.moved_to_group_id != null" class="text-gray-500 dark:text-dark-400">{{ t('accountCandy.moved', { group: targetName }) }}</span>
+      <span v-if="getCandyMovedGroupIDs(result).length" class="break-words text-gray-500 dark:text-dark-400">{{ t('accountCandy.moved', { group: targetName }) }}</span>
     </div>
     <div v-if="result" class="text-[10px] text-gray-400 dark:text-dark-500" :title="formatDateTime(result.started_at)">{{ formatRelativeTime(result.started_at) }}</div>
   </div>
@@ -27,7 +27,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import type { AccountCandyResult } from '@/api/admin/accountCandy'
+import { getCandyMovedGroupIDs, type AccountCandyResult } from '@/api/admin/accountCandy'
 import { formatDateTime, formatRelativeTime } from '@/utils/format'
 
 const props = defineProps<{

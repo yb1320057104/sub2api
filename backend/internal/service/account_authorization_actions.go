@@ -107,20 +107,23 @@ func (s *AccountAuthorizationService) enqueueAuthorizationAction(ctx context.Con
 		if err = json.Unmarshal(groups, &options.GroupIDs); err != nil {
 			return nil, err
 		}
-		candy, e := authorizationCandyConfigTx(ctx, tx)
+		workbench, e := authorizationWorkbenchTx(ctx, tx)
 		if e != nil {
 			return nil, e
 		}
-		if len(candy.Models) > 0 && candy.TargetGroupID != nil && *candy.TargetGroupID > 0 {
-			options.IntelligenceGate = true
-			options.IntelligenceModels = candy.Models
-			options.IntelligenceGeneration = candy.Generation
-			options.IntelligenceModel, options.IntelligenceEffort = candy.Models[0].Model, candy.Models[0].Effort
-			options.FailGroupIDs = []int64{*candy.TargetGroupID}
-			options.PassGroupIDs, err = authorizationAccountPassGroups(ctx, tx, accountID, options.GroupIDs)
-			if err != nil {
-				return nil, err
+		options.IntelligenceGate = workbench.IntelligenceGate
+		if options.IntelligenceGate {
+			candy, e := authorizationCandyConfigTx(ctx, tx)
+			if e != nil {
+				return nil, e
 			}
+			groups, e := authorizationJobSourceGroups(ctx, tx, accountID, workbench.PassGroupIDs)
+			if e != nil {
+				return nil, e
+			}
+			configureAuthorizationGroupGate(&options, candy, groups, true)
+			// This remains the source selection if a rule is removed before execution.
+			options.GroupIDs = append([]int64{}, workbench.PassGroupIDs...)
 		}
 	} else {
 		var status, source string
@@ -205,19 +208,31 @@ func (s *AccountAuthorizationService) enqueueAuthorizationAction(ctx context.Con
 			if e != nil {
 				return nil, e
 			}
-			if candy.TargetGroupID == nil || *candy.TargetGroupID < 1 {
-				return nil, infraerrors.BadRequest("AUTHORIZATION_CANDY_TARGET", "请先在糖果测试设置中配置不合格账号移入分组")
-			}
-			options.FailGroupIDs = []int64{*candy.TargetGroupID}
-			if immediateAuthorization || reauthorizationRetry {
-				options.PassGroupIDs, err = authorizationAccountPassGroups(ctx, tx, accountID, options.PassGroupIDs)
+			if options.IntelligenceSourceGroupID > 0 {
+				configureAuthorizationGroupGate(&options, candy, []int64{options.IntelligenceSourceGroupID}, false)
 			} else {
-				options.PassGroupIDs, err = authorizationSavedPassGroups(ctx, tx, options.PassGroupIDs)
-			}
-			if err != nil {
-				return nil, err
+				// A retried legacy task adopts configured source rules while keeping
+				// its original model snapshot and requested gate choice.
+				groups, e := authorizationSavedPassGroups(ctx, tx, options.PassGroupIDs)
+				if e != nil {
+					return nil, e
+				}
+				if accountID == nil {
+					accountID, e = authorizationSubmissionAccount(ctx, tx, email)
+					if e != nil {
+						return nil, e
+					}
+				}
+				groups, e = authorizationJobSourceGroups(ctx, tx, accountID, groups)
+				if e != nil {
+					return nil, e
+				}
+				options.GroupIDs = append([]int64{}, groups...)
+				configureAuthorizationGroupGate(&options, candy, groups, false)
 			}
 		}
+	}
+	if options.IntelligenceGate {
 		if len(options.PassGroupIDs) == 0 {
 			return nil, infraerrors.BadRequest("AUTHORIZATION_GATE_GROUPS", "请在授权工作台选择并保存至少一个及格分组")
 		}
@@ -226,6 +241,13 @@ func (s *AccountAuthorizationService) enqueueAuthorizationAction(ctx context.Con
 		}
 		targets := append(append([]int64{}, options.PassGroupIDs...), options.FailGroupIDs...)
 		if err = validateAuthorizationGateGroups(ctx, tx, targets, nil); err != nil {
+			return nil, err
+		}
+	} else if accountID == nil {
+		if len(options.GroupIDs) == 0 {
+			return nil, infraerrors.BadRequest("AUTHORIZATION_GATE_GROUPS", "本任务不进行糖果测试，请先在授权工作台选择入库分组后重新提交")
+		}
+		if err = validateAuthorizationGateGroups(ctx, tx, options.GroupIDs, nil); err != nil {
 			return nil, err
 		}
 	}

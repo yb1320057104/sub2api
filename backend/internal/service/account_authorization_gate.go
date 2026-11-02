@@ -155,6 +155,9 @@ func (s *AccountAuthorizationService) runAuthorizationIntelligenceGate(ctx conte
 			return err
 		}
 	}
+	if err := s.checkAuthorizationSourceRule(ctx, job.settings.IntelligenceSourceGroupID); err != nil {
+		return err
+	}
 	account, err := s.accounts.GetByID(ctx, *job.accountID)
 	if err != nil {
 		return err
@@ -180,7 +183,7 @@ func (s *AccountAuthorizationService) runAuthorizationIntelligenceGate(ctx conte
 		return &authorizationBrowserError{stage: "intelligence_failed", message: "授权成功，但部分模型未取得完整测智结果，且没有已确认的不及格结果；" + job.intelligenceAccountDisposition() + "，请查看逐模型详情", needsInput: true}
 	}
 	passed := *passedResult
-	target := job.settings.PassGroupIDs
+	target := append([]int64{}, job.settings.PassGroupIDs...)
 	verdict := "不及格"
 	if passed {
 		verdict = "及格"
@@ -210,7 +213,23 @@ func (s *AccountAuthorizationService) runAuthorizationIntelligenceGate(ctx conte
 	if n != 1 {
 		return context.Canceled
 	}
-	if !passed {
+	if job.settings.IntelligenceSourceGroupID > 0 {
+		// New jobs always use their configured source rule. Resolve its current
+		// destination under a row lock without falling back to a global target.
+		rules, ruleErr := authorizationCurrentGroupRules(txctx, tx.Client())
+		if ruleErr != nil {
+			return ruleErr
+		}
+		rule := firstRadarGroupRule(rules, []int64{job.settings.IntelligenceSourceGroupID})
+		if rule == nil {
+			return &authorizationBrowserError{stage: "intelligence_groups_missing", message: "糖果测试来源分组规则已移除，未变更账号分组；" + job.intelligenceAccountDisposition(), needsInput: true}
+		}
+		if passed {
+			target = append([]int64{}, rule.PassGroupIDs...)
+		} else {
+			target = []int64{rule.FailGroupID}
+		}
+	} else if !passed {
 		// Resolve the current shared failure destination at the grouping step,
 		// keeping its setting locked until account groups have been committed.
 		rows, queryErr := tx.Client().QueryContext(txctx, `SELECT target_group_id FROM pk_radar_account_config WHERE id=1 FOR SHARE`)

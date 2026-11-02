@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
@@ -196,6 +197,27 @@ func (s *AccountCandyTestService) finish(ctx context.Context, result *AccountCan
 }
 
 func (s *AccountCandyTestService) moveAccount(ctx context.Context, tx *sql.Tx, result *AccountCandyTestResult, targetID int64) (*int64, string, error) {
+	moved, message, err := s.moveAccountGroups(ctx, tx, result, []int64{targetID})
+	if len(moved) == 0 {
+		return nil, message, err
+	}
+	return &moved[0], message, err
+}
+
+// Validate every destination before replacing any memberships. The caller's
+// transaction atomically records both the complete move and cache invalidation.
+func (s *AccountCandyTestService) moveAccountGroups(ctx context.Context, tx *sql.Tx, result *AccountCandyTestResult, targetIDs []int64) ([]int64, string, error) {
+	targets := slices.Clone(targetIDs)
+	if len(targets) == 0 {
+		return nil, "未配置目标分组，保留原分组。", nil
+	}
+	ordered := slices.Clone(targets)
+	slices.Sort(ordered)
+	for i, id := range ordered {
+		if id <= 0 || i > 0 && id == ordered[i-1] {
+			return nil, "目标分组无效或重复，保留原分组。", nil
+		}
+	}
 	var platform, accountType, privacy string
 	err := tx.QueryRowContext(ctx, `SELECT a.platform,a.type,COALESCE((CASE WHEN a.parent_account_id IS NULL THEN a.extra ELSE p.extra END)->>'privacy_mode','') FROM accounts a LEFT JOIN accounts p ON p.id=a.parent_account_id AND p.deleted_at IS NULL WHERE a.id=$1 AND a.deleted_at IS NULL FOR UPDATE OF a`, result.AccountID).Scan(&platform, &accountType, &privacy)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -226,38 +248,42 @@ func (s *AccountCandyTestService) moveAccount(ctx context.Context, tx *sql.Tx, r
 			return nil, "账号分组已被修改，保留当前分组。", nil
 		}
 	}
-	var targetPlatform, targetStatus string
-	var oauthOnly, privacyRequired bool
-	err = tx.QueryRowContext(ctx, `SELECT platform,status,require_oauth_only,require_privacy_set FROM groups WHERE id=$1 AND deleted_at IS NULL FOR SHARE`, targetID).Scan(&targetPlatform, &targetStatus, &oauthOnly, &privacyRequired)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, "目标分组已删除，保留原分组。", nil
-	}
-	if err != nil {
-		return nil, "", err
-	}
-	if targetPlatform != PlatformOpenAI || targetStatus != StatusActive {
-		return nil, "目标分组当前不可用，保留原分组。", nil
-	}
-	if oauthOnly && accountType != AccountTypeOAuth && accountType != AccountTypeSetupToken {
-		return nil, "目标分组仅允许 OAuth 账号，保留原分组。", nil
-	}
-	if privacyRequired && privacy != PrivacyModeTrainingOff {
-		return nil, "账号未满足目标分组的隐私要求，保留原分组。", nil
+	for _, targetID := range ordered {
+		var targetPlatform, targetStatus string
+		var oauthOnly, privacyRequired bool
+		err = tx.QueryRowContext(ctx, `SELECT platform,status,require_oauth_only,require_privacy_set FROM groups WHERE id=$1 AND deleted_at IS NULL FOR SHARE`, targetID).Scan(&targetPlatform, &targetStatus, &oauthOnly, &privacyRequired)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, "目标分组已删除，保留原分组。", nil
+		}
+		if err != nil {
+			return nil, "", err
+		}
+		if targetPlatform != PlatformOpenAI || targetStatus != StatusActive {
+			return nil, "目标分组当前不可用，保留原分组。", nil
+		}
+		if oauthOnly && accountType != AccountTypeOAuth && accountType != AccountTypeSetupToken {
+			return nil, "目标分组仅允许 OAuth 账号，保留原分组。", nil
+		}
+		if privacyRequired && privacy != PrivacyModeTrainingOff {
+			return nil, "账号未满足目标分组的隐私要求，保留原分组。", nil
+		}
 	}
 	if _, err = tx.ExecContext(ctx, `DELETE FROM account_groups WHERE account_id=$1`, result.AccountID); err != nil {
 		return nil, "", err
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO account_groups(account_id,group_id,priority) VALUES($1,$2,1)`, result.AccountID, targetID); err != nil {
-		return nil, "", err
+	for _, targetID := range targets {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO account_groups(account_id,group_id,priority) VALUES($1,$2,1)`, result.AccountID, targetID); err != nil {
+			return nil, "", err
+		}
 	}
-	payload, err := json.Marshal(map[string]any{"group_ids": append(groups, targetID)})
+	payload, err := json.Marshal(map[string]any{"group_ids": append(groups, targets...)})
 	if err != nil {
 		return nil, "", err
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO scheduler_outbox(event_type,account_id,payload) VALUES($1,$2,$3::jsonb)`, SchedulerOutboxEventAccountGroupsChanged, result.AccountID, string(payload)); err != nil {
 		return nil, "", err
 	}
-	return &targetID, "", nil
+	return targets, "", nil
 }
 
 // No credential material or digest is persisted or returned by the API.

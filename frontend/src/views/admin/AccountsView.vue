@@ -294,7 +294,7 @@
               :starting="candyStartingIDs.has(row.id)"
               :loaded="candyLoaded"
               :error="candyLoadError"
-              :target-name="candyGroupName(candyResults[row.id]?.moved_to_group_id)"
+              :target-name="getCandyMovedGroupIDs(candyResults[row.id]).map(candyGroupName).join(' / ')"
               @test="handleCandyTest(row)"
               @details="openCandyDetails(row)"
             />
@@ -558,7 +558,7 @@ import AccountCandyTestCell from '@/components/admin/account/AccountCandyTestCel
 import AccountCandyTestSettings from '@/components/admin/account/AccountCandyTestSettings.vue'
 import AccountCandyTestDetails from '@/components/admin/account/AccountCandyTestDetails.vue'
 import { supportsAccountCandyTest, useAccountCandyTests } from '@/composables/useAccountCandyTests'
-import type { AccountCandyResult } from '@/api/admin/accountCandy'
+import { getCandyMovedGroupIDs, type AccountCandyResult } from '@/api/admin/accountCandy'
 import AccountStatsModal from '@/components/admin/account/AccountStatsModal.vue'
 import ScheduledTestsPanel from '@/components/admin/account/ScheduledTestsPanel.vue'
 import type { SelectOption } from '@/components/common/Select.vue'

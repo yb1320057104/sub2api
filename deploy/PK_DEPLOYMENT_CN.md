@@ -1,8 +1,8 @@
 # PK出版部署指南
 
-本指南用于获得授权的部署者，在**全新 Linux x86_64（amd64）服务器**上安装 PK出版。源码、镜像、网页更新和恢复版本均来自 [pengkang0322/sub2api 私库](https://github.com/pengkang0322/sub2api)。程序没有绑定固定服务器 IP 或域名。
+本指南用于获得授权的部署者，在**全新 Linux x86_64（amd64）服务器**上安装 PK出版。源码、镜像、网页更新和恢复版本均来自 [yb1320057104/sub2api 私库](https://github.com/yb1320057104/sub2api)。程序没有绑定固定服务器 IP 或域名。
 
-本文以已发布的 `0.2.10-pk.7` 为例。以后安装其他版本时，先查看[私有 Releases](https://github.com/pengkang0322/sub2api/releases)的说明，再选择明确版本；当前发行物仅支持 `linux/amd64`。
+部署前先查看[私有 Releases](https://github.com/yb1320057104/sub2api/releases)的说明，选择新私库中已正式发布、完成验收的明确版本；当前发行物仅支持 `linux/amd64`。迁入 Git 历史或标签不代表对应 Release 资产和 GHCR 镜像已发布。
 
 **已有用户和数据的服务**，请使用 [PK维护、迁移与恢复流程](../PK_MAINTENANCE.md)，保留原数据库、Redis、密钥、端口和数据卷。下面的初始化步骤只用于新环境。
 
@@ -22,7 +22,7 @@ docker compose version
 
 | 用途 | 配置位置 | 权限 |
 |---|---|---|
-| 获取部署文件、恢复源码 | GitHub CLI / Git 登录 | `pengkang0322/sub2api` 仓库读取权限 |
+| 获取部署文件、恢复源码 | GitHub CLI / Git 登录 | `yb1320057104/sub2api` 仓库读取权限 |
 | 拉取 Docker 镜像 | 宿主机 `docker login ghcr.io` | token 所属账号能读取该私有包；classic PAT 含 `read:packages` |
 | 网页检查版本、下载升级包和回退包 | 应用环境 `UPDATE_GITHUB_TOKEN` | 由仓库所有者为该部署单独配置 fine-grained token，仅允许该私库，Contents 只读，Metadata 只读 |
 
@@ -34,7 +34,7 @@ docker compose version
 
 ```bash
 gh auth login --hostname github.com --git-protocol https --web
-gh repo clone pengkang0322/sub2api
+gh repo clone yb1320057104/sub2api
 cd sub2api/deploy
 
 read -rp 'GitHub 用户名（镜像 token 所属账号）: ' GHCR_USER
@@ -44,7 +44,7 @@ printf '%s' "$GHCR_READ_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password
 unset GHCR_READ_TOKEN GHCR_USER
 ```
 
-如果私库或私有包返回 404/denied，先核对账号授权；私有资源未授权时也可能返回 404。仓库所有者与登录用户可以不同，镜像地址始终为 `ghcr.io/pengkang0322/sub2api`。
+如果私库或私有包返回 404/denied，先核对账号授权；私有资源未授权时也可能返回 404。仓库所有者与登录用户可以不同，镜像地址始终为 `ghcr.io/yb1320057104/sub2api`。
 
 ## 3. 配置新环境
 
@@ -61,7 +61,7 @@ nano .env
 
 | 配置 | 设置 |
 |---|---|
-| `SUB2API_PK_VERSION` | 已验收的私库正式标签，例如 `0.2.19-pk.9`（镜像标签不带开头的 `v`；禁止使用 `latest`） |
+| `SUB2API_PK_VERSION` | 新私库已验收的正式镜像标签，格式为 `0.2.19-pk.N`，将 `N` 替换为实际已发布修订号（镜像标签不带开头的 `v`；禁止使用 `latest`） |
 | `UPDATE_GITHUB_TOKEN` | 上述私库只读 token |
 | `POSTGRES_PASSWORD` | 新的独立随机密码，替换示例值 |
 | `REDIS_PASSWORD` | 新的独立随机密码 |
@@ -76,7 +76,7 @@ nano .env
 
 每个密码/密钥分别运行一次 `openssl rand -hex 32`，将结果填入对应行。保管 `.env`，不要上传到 Git 或发送到公开日志。已有部署恢复时使用原密钥；首次初始化后，仅修改 `ADMIN_PASSWORD` 环境变量不会重置现有管理员密码。
 
-合入上游 v0.2.14 后的新版本，全新初始化时显式填写的管理员邮箱须通过登录邮箱校验，密码须为 8–72 字节（不是字符数）；留空的邮箱或密码会随机生成，可从首次启动日志中的 `Generated admin` 获取。已有用户时跳过管理员创建，不因旧环境变量不符合新校验而重建账号或修改凭据。本文旧版本示例不代表已包含这项修复，部署时以所选私有 Release 的说明为准。
+合入上游 v0.2.14 后的新版本，全新初始化时显式填写的管理员邮箱须通过登录邮箱校验，密码须为 8–72 字节（不是字符数）；留空的邮箱或密码会随机生成，可从首次启动日志中的 `Generated admin` 获取。已有用户时跳过管理员创建，不因旧环境变量不符合新校验而重建账号或修改凭据。部署时以所选私有 Release 的说明为准。
 
 同时检查模板中的数据库资源参数：示例 `POSTGRES_SHARED_BUFFERS=1GB`、`POSTGRES_MAX_CONNECTIONS=1024`、`DATABASE_MAX_OPEN_CONNS=256`，应按新服务器的内存和并发需求调整，不能将它们视为适合所有机器的最低配置。
 
@@ -107,7 +107,7 @@ curl --fail --silent --show-error http://127.0.0.1:8080/api/v1/settings/public
 ssh -L 18080:127.0.0.1:8080 你的SSH用户@你的服务器地址
 ```
 
-保持连接，再在浏览器访问 `http://127.0.0.1:18080`。用 `.env` 中的管理员账号登录，核对顶部显示 `0.2.10-pk.7 PK出版`。
+保持连接，再在浏览器访问 `http://127.0.0.1:18080`。用 `.env` 中的管理员账号登录，核对顶部显示所选的正式版本及 `PK出版` 标识。
 
 ## 5. 域名、反向代理与首次业务配置
 

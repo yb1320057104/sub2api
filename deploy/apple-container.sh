@@ -414,7 +414,7 @@ validate_env_file_security() {
 prepare_environment() {
     validate_env_file_security
 
-    APP_IMAGE="$(read_env_value APPLE_CONTAINER_SUB2API_IMAGE ghcr.io/pengkang0322/sub2api:latest)"
+    APP_IMAGE="$(read_env_value APPLE_CONTAINER_SUB2API_IMAGE ghcr.io/yb1320057104/sub2api:latest)"
     POSTGRES_IMAGE="$(read_env_value APPLE_CONTAINER_POSTGRES_IMAGE postgres:18-alpine)"
     REDIS_IMAGE="$(read_env_value APPLE_CONTAINER_REDIS_IMAGE redis:8-alpine)"
     BIND_HOST="$(read_env_value BIND_HOST 0.0.0.0)"
@@ -497,12 +497,12 @@ validate_private_app_image() {
     local configured_image
     validate_env_file_security
     configured_image="$(read_env_value APPLE_CONTAINER_SUB2API_IMAGE)"
-    if [[ -z "${configured_image}" || "${configured_image}" == "ghcr.io/pengkang0322/sub2api:latest" ]]; then
-        die "Private releases currently publish linux/amd64 only. Apple container requires an explicitly selected pengkang0322/sub2api tag or digest verified to support linux/arm64; no upstream image fallback is allowed."
+    if [[ -z "${configured_image}" || "${configured_image}" == "ghcr.io/yb1320057104/sub2api:latest" ]]; then
+        die "Private releases currently publish linux/amd64 only. Apple container requires an explicitly selected yb1320057104/sub2api tag or digest verified to support linux/arm64; no upstream image fallback is allowed."
     fi
     case "${configured_image}" in
-        ghcr.io/pengkang0322/sub2api:?*|ghcr.io/pengkang0322/sub2api@sha256:?*) ;;
-        *) die "APPLE_CONTAINER_SUB2API_IMAGE must belong to ghcr.io/pengkang0322/sub2api." ;;
+        ghcr.io/yb1320057104/sub2api:?*|ghcr.io/yb1320057104/sub2api@sha256:?*) ;;
+        *) die "APPLE_CONTAINER_SUB2API_IMAGE must belong to ghcr.io/yb1320057104/sub2api." ;;
     esac
     [[ -n "$(read_env_value UPDATE_GITHUB_TOKEN)" ]] || \
         die "UPDATE_GITHUB_TOKEN is required for private release downloads."

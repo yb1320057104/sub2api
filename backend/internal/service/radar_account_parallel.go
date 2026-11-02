@@ -33,6 +33,9 @@ func (s *AccountCandyTestService) radarModelAccounts(ctx context.Context, run *R
 	if identity != run.identity {
 		return nil, nil, context.Canceled
 	}
+	if err = s.checkRadarGroupSnapshot(ctx, run); err != nil {
+		return nil, nil, err
+	}
 	return account, credential, nil
 }
 
@@ -53,6 +56,9 @@ func (s *AccountCandyTestService) executeRadarModel(ctx context.Context, run *Ra
 	defer modelCancel()
 	m.EgressIP, m.EgressCheckedAt, m.EgressError = probeRadarEgress(modelCtx, account)
 	if result.err = s.writeRadarModel(modelCtx, run, m); result.err != nil {
+		return result
+	}
+	if result.err = s.checkRadarIdentity(modelCtx, run); result.err != nil {
 		return result
 	}
 	text, callErr := s.testService.runAccountCandyProbe(modelCtx, account, credential, &AccountCandyTestConfig{Model: m.Model, Effort: m.Effort})

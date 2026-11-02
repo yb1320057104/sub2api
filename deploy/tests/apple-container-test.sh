@@ -55,13 +55,13 @@ printf '\nAPPLE_CONTAINER_SUB2API_IMAGE=weishaw/sub2api:latest\nUPDATE_GITHUB_TO
 if upstream_output="$("${SCRIPT}" up 2>&1)"; then
     fail "up accepted an application image outside the private repository"
 fi
-[[ "${upstream_output}" == *"must belong to ghcr.io/pengkang0322/sub2api"* ]] || \
+[[ "${upstream_output}" == *"must belong to ghcr.io/yb1320057104/sub2api"* ]] || \
     fail "up did not explain the private image source requirement"
 assert_missing "${STATE_DIR}/containers/sub2api-apple"
 
 # The fake runtime models an explicitly published private arm64 image.
 # Real PK releases currently publish amd64 only and leave this setting empty.
-printf '\nAPPLE_CONTAINER_SUB2API_IMAGE=ghcr.io/pengkang0322/sub2api:fixture-arm64\nUPDATE_GITHUB_TOKEN=fixture-private-release-token\n' >>"${ENV_FILE}"
+printf '\nAPPLE_CONTAINER_SUB2API_IMAGE=ghcr.io/yb1320057104/sub2api:fixture-arm64\nUPDATE_GITHUB_TOKEN=fixture-private-release-token\n' >>"${ENV_FILE}"
 
 "${SCRIPT}" up
 assert_exists "${STATE_DIR}/containers/sub2api-apple"
@@ -89,7 +89,7 @@ fi
 assert_exists "${STATE_DIR}/running/sub2api-apple"
 assert_exists "${STATE_DIR}/running/sub2api-apple-postgres"
 assert_exists "${STATE_DIR}/running/sub2api-apple-redis"
-printf '\nAPPLE_CONTAINER_SUB2API_IMAGE=ghcr.io/pengkang0322/sub2api:fixture-arm64\n' >>"${ENV_FILE}"
+printf '\nAPPLE_CONTAINER_SUB2API_IMAGE=ghcr.io/yb1320057104/sub2api:fixture-arm64\n' >>"${ENV_FILE}"
 
 "${SCRIPT}" up --recreate
 assert_exists "${STATE_DIR}/running/sub2api-apple"

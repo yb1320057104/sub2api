@@ -54,7 +54,7 @@
                 <h3 class="text-xs font-medium text-gray-500 dark:text-dark-400">{{ t('radar.modelResults') }}</h3>
                 <div v-for="model in item.run.model_results" :key="model.id" class="flex flex-wrap items-start justify-between gap-x-2 gap-y-1 rounded-md px-2 py-1.5 text-xs" :class="model.passed === false ? 'bg-red-50/50 text-red-700 dark:bg-red-950/20 dark:text-red-300' : 'bg-gray-50 text-gray-600 dark:bg-dark-800 dark:text-dark-300'"><span class="min-w-0 break-all font-mono">{{ model.model }}</span><span class="shrink-0 font-medium">{{ model.status === 'completed' ? model.passed ? '21 ✓' : (model.answer ?? t('accountCandy.noAnswer')) + ' ✕' : t('accountCandy.' + model.status) }}</span><p v-if="model.error_message" class="basis-full whitespace-pre-wrap break-words text-amber-700 dark:text-amber-300">{{ model.error_message }}</p></div>
               </div>
-              <p v-if="item.run?.moved_to_group_id" class="text-xs text-amber-700 dark:text-amber-300">{{ t('accountCandy.moved', { group: groupName(item.run.moved_to_group_id) }) }}</p>
+              <p v-if="getCandyMovedGroupIDs(item.run).length" class="break-words text-xs text-amber-700 dark:text-amber-300">{{ t('accountCandy.moved', { group: getCandyMovedGroupIDs(item.run).map(groupName).join(' / ') }) }}</p>
               <p v-if="item.run?.move_error || item.run?.error_message" class="break-words text-xs text-amber-700 dark:text-amber-300">{{ item.run.move_error || item.run.error_message }}</p>
             </div>
             <footer class="flex items-center justify-between gap-3 border-t border-gray-100 bg-gray-50/50 px-3 py-2 dark:border-dark-700 dark:bg-dark-800/30">
@@ -112,7 +112,7 @@ import AccountHealthObservation from '@/components/admin/account/AccountHealthOb
 import RadarEmailAlerts from '@/components/admin/account/RadarEmailAlerts.vue'
 import AuthorizationSchedule from '@/components/admin/account/AuthorizationSchedule.vue'
 import AuthorizationRecords from '@/components/admin/account/AuthorizationRecords.vue'
-import { accountCandyAPI, type RadarObservation } from '@/api/admin/accountCandy'
+import { accountCandyAPI, getCandyMovedGroupIDs, type RadarObservation } from '@/api/admin/accountCandy'
 import { intelligenceTestAPI, type IntelligenceTestGroup } from '@/api/intelligenceTest'
 import { apiClient } from '@/api/client'
 import { getBatchUsage } from '@/api/admin/accounts'

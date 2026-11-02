@@ -1,6 +1,6 @@
 import { computed, onUnmounted, ref, watch, type Ref } from 'vue'
 import { useIntervalFn } from '@vueuse/core'
-import { accountCandyAPI, type AccountCandyResult } from '@/api/admin/accountCandy'
+import { accountCandyAPI, getCandyMovedGroupIDs, type AccountCandyResult } from '@/api/admin/accountCandy'
 import type { AccountListItem } from '@/types'
 
 export function supportsAccountCandyTest(account: AccountListItem): boolean {
@@ -40,9 +40,12 @@ export function useAccountCandyTests(
         latest.push(...await accountCandyAPI.latest(ids.slice(offset, offset + 200), request.signal))
       }
       if (disposed || currentGeneration !== generation) return
-      const moved = loaded.value && latest.some(result => result.moved_to_group_id != null &&
-        (results.value[result.account_id]?.id !== result.id ||
-          results.value[result.account_id]?.moved_to_group_id == null))
+      const moved = loaded.value && latest.some(result => {
+        const previous = results.value[result.account_id]
+        const targets = getCandyMovedGroupIDs(result)
+        return targets.length > 0 && (previous?.id !== result.id || previous?.origin !== result.origin ||
+          getCandyMovedGroupIDs(previous).join(',') !== targets.join(','))
+      })
       results.value = Object.fromEntries(latest.map(result => [result.account_id, result]))
       loadError.value = false
       loaded.value = true

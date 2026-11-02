@@ -3,7 +3,10 @@ package service
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -17,12 +20,21 @@ type RadarModel struct {
 	Enabled bool   `json:"enabled"`
 }
 
+const radarGroupRulesSettingKey = "pk_radar_account_group_rules"
+
+type RadarGroupRule struct {
+	SourceGroupID int64   `json:"source_group_id"`
+	PassGroupIDs  []int64 `json:"pass_group_ids"`
+	FailGroupID   int64   `json:"fail_group_id"`
+}
+
 type RadarConfig struct {
-	Enabled         bool         `json:"enabled"`
-	IntervalMinutes int          `json:"interval_minutes"`
-	TargetGroupID   *int64       `json:"target_group_id"`
-	Generation      string       `json:"generation"`
-	Models          []RadarModel `json:"models"`
+	Enabled         bool             `json:"enabled"`
+	IntervalMinutes int              `json:"interval_minutes"`
+	TargetGroupID   *int64           `json:"target_group_id"`
+	Generation      string           `json:"generation"`
+	Models          []RadarModel     `json:"models"`
+	GroupRules      []RadarGroupRule `json:"group_rules"`
 }
 
 type RadarModelResult struct {
@@ -49,6 +61,7 @@ type RadarRun struct {
 	Origin             string             `json:"origin"`
 	Generation         string             `json:"generation"`
 	Verdict            string             `json:"verdict"`
+	MovedToGroupIDs    []int64            `json:"moved_to_group_ids"`
 	ModelResults       []RadarModelResult `json:"model_results"`
 	FailedModels       []RadarModelResult `json:"failed_models"`
 	EgressIP           string             `json:"egress_ip"`
@@ -56,6 +69,7 @@ type RadarRun struct {
 	EgressCheckedAt    *time.Time         `json:"egress_checked_at"`
 	EgressError        string             `json:"egress_error"`
 	leaseToken         string
+	groupRule          *RadarGroupRule
 }
 
 // Initialize new storage atomically; legacy data is only read. Deployment must
@@ -106,6 +120,10 @@ func radarConfigTx(ctx context.Context, tx *sql.Tx) (*RadarConfig, error) {
 	if err != nil {
 		return nil, err
 	}
+	cfg.GroupRules, err = radarGroupRulesTx(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := tx.QueryContext(ctx, `SELECT model,effort,enabled FROM pk_radar_account_models WHERE config_id=1 ORDER BY sort_order`)
 	if err != nil {
 		return nil, err
@@ -119,6 +137,42 @@ func radarConfigTx(ctx context.Context, tx *sql.Tx) (*RadarConfig, error) {
 		cfg.Models = append(cfg.Models, model)
 	}
 	return cfg, rows.Err()
+}
+
+// No implicit legacy fallback: a group participates only after it is explicitly
+// configured. Settings and the radar generation are committed together.
+func radarGroupRulesTx(ctx context.Context, tx *sql.Tx) ([]RadarGroupRule, error) {
+	rules := make([]RadarGroupRule, 0)
+	var raw string
+	err := tx.QueryRowContext(ctx, `SELECT value FROM settings WHERE key=$1`, radarGroupRulesSettingKey).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return rules, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err = json.Unmarshal([]byte(raw), &rules); err != nil {
+		return nil, err
+	}
+	if rules == nil {
+		rules = make([]RadarGroupRule, 0)
+	}
+	return rules, nil
+}
+
+func firstRadarGroupRule(rules []RadarGroupRule, groupIDs []int64) *RadarGroupRule {
+	groups := make(map[int64]bool, len(groupIDs))
+	for _, id := range groupIDs {
+		groups[id] = true
+	}
+	for _, rule := range rules {
+		if groups[rule.SourceGroupID] {
+			matched := rule
+			matched.PassGroupIDs = append([]int64{}, rule.PassGroupIDs...)
+			return &matched
+		}
+	}
+	return nil
 }
 
 func (s *AccountCandyTestService) GetRadarConfig(ctx context.Context) (*RadarConfig, error) {
@@ -162,8 +216,27 @@ func validateRadarConfig(cfg *RadarConfig) error {
 	if enabled == 0 {
 		return bad("至少启用一个模型")
 	}
-	base := &AccountCandyTestConfig{Enabled: cfg.Enabled, IntervalMinutes: cfg.IntervalMinutes, TargetGroupID: cfg.TargetGroupID, Model: cfg.Models[0].Model, Effort: cfg.Models[0].Effort}
-	return validateAccountCandyConfig(base)
+	if cfg.IntervalMinutes < 1 || cfg.IntervalMinutes > 1440 {
+		return bad("测试间隔必须为1至1440分钟")
+	}
+	sources := make(map[int64]bool, len(cfg.GroupRules))
+	for _, rule := range cfg.GroupRules {
+		if rule.SourceGroupID <= 0 || len(rule.PassGroupIDs) == 0 || rule.FailGroupID <= 0 {
+			return bad("每条规则都必须选择测试来源分组、至少一个合格分组和不合格分组")
+		}
+		passGroups := make(map[int64]bool, len(rule.PassGroupIDs))
+		for _, id := range rule.PassGroupIDs {
+			if id <= 0 || passGroups[id] {
+				return bad("合格分组必须有效且不能重复")
+			}
+			passGroups[id] = true
+		}
+		if sources[rule.SourceGroupID] {
+			return bad("测试来源分组不能重复")
+		}
+		sources[rule.SourceGroupID] = true
+	}
+	return nil
 }
 
 func (s *AccountCandyTestService) UpdateRadarConfig(ctx context.Context, cfg *RadarConfig) error {
@@ -188,15 +261,40 @@ func (s *AccountCandyTestService) UpdateRadarConfig(ctx context.Context, cfg *Ra
 	if cfg.Generation == "" || current.Generation != cfg.Generation {
 		return infraerrors.Conflict("RADAR_CONFIG_CHANGED", "设置已更新，请刷新后重试")
 	}
-	if cfg.TargetGroupID != nil {
+	groupSet := make(map[int64]bool)
+	for _, rule := range cfg.GroupRules {
+		groupSet[rule.SourceGroupID], groupSet[rule.FailGroupID] = true, true
+		for _, id := range rule.PassGroupIDs {
+			groupSet[id] = true
+		}
+	}
+	groupIDs := make([]int64, 0, len(groupSet))
+	for id := range groupSet {
+		groupIDs = append(groupIDs, id)
+	}
+	sort.Slice(groupIDs, func(i, j int) bool { return groupIDs[i] < groupIDs[j] })
+	for _, id := range groupIDs {
 		var platform, status string
-		err = tx.QueryRowContext(ctx, `SELECT platform,status FROM groups WHERE id=$1 AND deleted_at IS NULL FOR SHARE`, *cfg.TargetGroupID).Scan(&platform, &status)
+		err = tx.QueryRowContext(ctx, `SELECT platform,status FROM groups WHERE id=$1 AND deleted_at IS NULL FOR SHARE`, id).Scan(&platform, &status)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
 		if errors.Is(err, sql.ErrNoRows) || platform != PlatformOpenAI || status != StatusActive {
-			return infraerrors.BadRequest("INVALID_RADAR_TARGET", "请选择有效的OpenAI分组")
+			return infraerrors.BadRequest("INVALID_RADAR_TARGET", fmt.Sprintf("分组 %d 不存在、已停用或不是OpenAI分组", id))
 		}
+	}
+	// Retain the historical global target only for jobs created by older builds.
+	// New radar and authorization tasks use explicit group rules.
+	cfg.TargetGroupID = current.TargetGroupID
+	if cfg.GroupRules == nil {
+		cfg.GroupRules = make([]RadarGroupRule, 0)
+	}
+	rawRules, err := json.Marshal(cfg.GroupRules)
+	if err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO settings(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=NOW()`, radarGroupRulesSettingKey, string(rawRules)); err != nil {
+		return err
 	}
 	cfg.Generation = uuid.NewString()
 	if _, err = tx.ExecContext(ctx, `UPDATE pk_radar_account_config SET enabled=$1,interval_minutes=$2,target_group_id=$3,generation=$4,updated_at=NOW() WHERE id=1`, cfg.Enabled, cfg.IntervalMinutes, cfg.TargetGroupID, cfg.Generation); err != nil {

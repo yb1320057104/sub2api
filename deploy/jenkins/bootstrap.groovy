@@ -40,14 +40,14 @@ new File(j.rootDir, '.pk-provisioning-token').text = apiToken.plainValue
 admin.save()
 def key = new BasicSSHUserPrivateKey(CredentialsScope.GLOBAL, 'pk-github-read', 'git',
   new BasicSSHUserPrivateKey.DirectEntryPrivateKeySource(new File('/run/bootstrap/github-read').text), '',
-  'Read-only deploy key for pengkang0322/sub2api')
+  'Read-only deploy key for yb1320057104/sub2api')
 SystemCredentialsProvider.getInstance().getCredentials().add(key)
 SystemCredentialsProvider.getInstance().save()
 def node = new DumbSlave('pk-builder', 'Isolated Sub2API build agent', '/home/jenkins/agent', '1',
   Node.Mode.EXCLUSIVE, 'pk-builder', new JNLPLauncher(), new RetentionStrategy.Always(), [])
 j.addNode(node)
 new File(j.rootDir, '.pk-agent-secret').text = j.getComputer('pk-builder').getJnlpMac()
-def scm = new GitSCM([new UserRemoteConfig('git@github.com:pengkang0322/sub2api.git', null, null, 'pk-github-read')],
+def scm = new GitSCM([new UserRemoteConfig('git@github.com:yb1320057104/sub2api.git', null, null, 'pk-github-read')],
   [new BranchSpec('*/main')], false, [], null, null, [])
 def job = j.createProject(WorkflowJob, 'sub2api-package')
 job.setDefinition(new CpsScmFlowDefinition(scm, 'Jenkinsfile'))

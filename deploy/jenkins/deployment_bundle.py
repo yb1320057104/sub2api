@@ -8,6 +8,8 @@ from pathlib import Path
 import re
 import tarfile
 
+import repository_policy as provenance
+
 PROFILE = "pk-browser-deployment-v1"
 BINDINGS = ("deployment_profile", "deployment_archive_sha256")
 FILES = {"install.sh", "README.md", "docker-compose.yml", "image.txt", "image-id.txt", "image-config-id.txt",
@@ -83,6 +85,7 @@ def checksums(data: dict) -> str:
 def create(directory: Path, data: dict, pipeline: Path) -> None:
     if not declaration(data):
         return
+    provenance.package_repository(data)
     content = {}
     for name in ("install.sh", "README.md"):
         path = pipeline / "deploy/bundle" / name
@@ -92,7 +95,7 @@ def create(directory: Path, data: dict, pipeline: Path) -> None:
     # Compose scopes names to the new target directory, avoiding collisions.
     compose = "\n".join(line for line in compose.splitlines()
                         if not re.fullmatch(r"\s+container_name:.*", line)) + "\n"
-    anchor = "    image: ghcr.io/pengkang0322/sub2api:${SUB2API_PK_VERSION:-latest}\n"
+    anchor = "    image: ghcr.io/yb1320057104/sub2api:${SUB2API_PK_VERSION:?Set an approved PK image version}\n"
     require(compose.count(anchor) == 1, "Unexpected protected deployment template")
     compose = compose.replace(anchor, anchor + "    pull_policy: never\n")
     content["docker-compose.yml"] = compose.encode("utf-8")

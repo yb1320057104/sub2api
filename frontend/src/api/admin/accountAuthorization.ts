@@ -1,4 +1,5 @@
 import { apiClient } from '../client'
+import type { RadarGroupRule } from './accountCandy'
 
 export interface AuthorizationIntelligenceModel { model: string; effort: string; enabled: boolean }
 export interface AuthorizationIntelligenceResult {
@@ -7,6 +8,8 @@ export interface AuthorizationIntelligenceResult {
 }
 
 export interface AuthorizationConfig {
+  intelligence_gate: boolean; workbench_revision: string; workbench_authorization_concurrency: number
+  intelligence_group_rules: RadarGroupRule[]
   workbench_account_concurrency?: number; workbench_account_priority?: number
  account_proxy_mode?: 'direct' | 'managed'; max_accounts_per_proxy?: number;
   intelligence_models?: AuthorizationIntelligenceModel[]
@@ -21,6 +24,7 @@ export interface AuthorizationConfig {
   encryption_key_configured: boolean
 }
 export interface AuthorizationSubmission {
+  intelligence_gate: boolean; workbench_revision: string
  account_proxy_mode?: 'direct' | 'managed'; max_accounts_per_proxy?: number;
   pass_group_ids: number[]
   accounts: string; authorization_concurrency: number
@@ -47,6 +51,7 @@ const root = '/admin/account-authorization'
 export const accountAuthorizationAPI = {
   async config(signal?: AbortSignal) { return (await apiClient.get<AuthorizationConfig>(root + '/config', { signal })).data },
   async saveConfig(value: AuthorizationConfig) { return (await apiClient.put<AuthorizationConfig>(root + '/config', value)).data },
+  async saveWorkbench(value: AuthorizationSubmission) { return (await apiClient.put<AuthorizationConfig>(root + '/workbench', value)).data },
   async submit(value: AuthorizationSubmission) { return (await apiClient.post<{ batch_id: string }>(root + '/jobs', value)).data },
   async list(kind: AuthorizationList, params: { page: number; page_size: number; search: string; status: string }, signal?: AbortSignal) {
     return (await apiClient.get<AuthorizationPage>(kind === 'accounts' ? '/admin/radar/authorization' : root + '/' + kind, { params, signal })).data

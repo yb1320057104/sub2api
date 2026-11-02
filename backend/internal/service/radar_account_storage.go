@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"slices"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/google/uuid"
@@ -64,13 +65,17 @@ func (s *AccountCandyTestService) claimRadar(ctx context.Context, id int64, sour
 	if err != nil {
 		return nil, nil, err
 	}
-	if source == "scheduled" && cfg.TargetGroupID != nil {
-		for _, g := range groups {
-			if g == *cfg.TargetGroupID {
-				return nil, nil, infraerrors.Conflict("RADAR_TARGET_GROUP", "目标组账号不自动测试")
-			}
-		}
+	eligibleGroups, err := radarEligibleAccountGroupsTx(ctx, tx, id)
+	if err != nil {
+		return nil, nil, err
 	}
+	rule := firstRadarGroupRule(cfg.GroupRules, eligibleGroups)
+	if rule == nil {
+		return nil, nil, infraerrors.BadRequest("RADAR_GROUP_NOT_CONFIGURED", "该账号所属分组未配置糖果测试规则，不执行测试")
+	}
+	// The matching rule and original group set are immutable for this run.
+	// Keep the existing failure path using its per-run target projection.
+	cfg.TargetGroupID = &rule.FailGroupID
 	if _, err = tx.ExecContext(ctx, `INSERT INTO pk_radar_account_state(account_id)VALUES($1)ON CONFLICT DO NOTHING`, id); err != nil {
 		return nil, nil, err
 	}
@@ -101,7 +106,7 @@ func (s *AccountCandyTestService) claimRadar(ctx context.Context, id int64, sour
 	if identity != snapshot {
 		return nil, nil, infraerrors.Conflict("RADAR_ACCOUNT_CHANGED", "账号连接配置已变更，请重试")
 	}
-	run := &RadarRun{Origin: "radar", Generation: cfg.Generation, Verdict: "unknown", EgressMode: "direct", ModelResults: make([]RadarModelResult, 0), FailedModels: make([]RadarModelResult, 0), leaseToken: uuid.NewString()}
+	run := &RadarRun{Origin: "radar", Generation: cfg.Generation, Verdict: "unknown", EgressMode: "direct", ModelResults: make([]RadarModelResult, 0), FailedModels: make([]RadarModelResult, 0), MovedToGroupIDs: []int64{}, leaseToken: uuid.NewString(), groupRule: rule}
 	run.AccountCandyTestResult = AccountCandyTestResult{AccountID: id, Source: source, Status: "running", OriginalGroupIDs: groups, Prompt: radarPrompt(), identity: identity, probeAccount: account, credentialAccount: credential}
 	if account.ProxyID != nil {
 		run.EgressMode = "proxy"
@@ -204,8 +209,13 @@ func (s *AccountCandyTestService) finishRadar(ctx, executionCtx context.Context,
 	}
 	var previousVerdict, previousStatus, moveFailure string
 	var moved *int64
-	err = tx.QueryRowContext(ctx, `SELECT verdict,status,moved_to_group_id,move_error FROM pk_radar_account_runs WHERE id=$1 FOR UPDATE`, run.ID).Scan(&previousVerdict, &previousStatus, &moved, &moveFailure)
+	var movedJSON []byte
+	err = tx.QueryRowContext(ctx, `SELECT verdict,status,moved_to_group_id,COALESCE(moved_to_group_ids,CASE WHEN moved_to_group_id IS NULL THEN '[]'::jsonb ELSE jsonb_build_array(moved_to_group_id) END),move_error FROM pk_radar_account_runs WHERE id=$1 FOR UPDATE`, run.ID).Scan(&previousVerdict, &previousStatus, &moved, &movedJSON, &moveFailure)
 	if err != nil {
+		return err
+	}
+	var movedIDs []int64
+	if err = json.Unmarshal(movedJSON, &movedIDs); err != nil {
 		return err
 	}
 	if previousStatus != "running" {
@@ -228,6 +238,14 @@ func (s *AccountCandyTestService) finishRadar(ctx, executionCtx context.Context,
 		failure = "账号或连接配置已更改，剩余测试已取消"
 	} else if identityErr != nil {
 		return identityErr
+	}
+	groupsMatch, err := radarGroupSnapshotMatchesTx(ctx, tx, run, moved)
+	if err != nil {
+		return err
+	}
+	if !groupsMatch {
+		status = "cancelled"
+		failure = "账号分组或来源分组状态已更改，保留当前分组"
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE pk_radar_account_model_results SET status='cancelled',error_message='本轮已结束，模型未完成',finished_at=NOW() WHERE run_id=$1 AND status IN('pending','running')`, run.ID); err != nil {
 		return err
@@ -256,7 +274,20 @@ func (s *AccountCandyTestService) finishRadar(ctx, executionCtx context.Context,
 	if previousVerdict == "fail" {
 		verdict = "fail"
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE pk_radar_account_runs SET status=$2,verdict=$3,moved_to_group_id=$4,error_message=$5,move_error=$6,finished_at=NOW(),duration_ms=$7,egress_ip=NULLIF($8,'')::inet,egress_checked_at=$9,egress_error=$10 WHERE id=$1 AND status='running'`, run.ID, status, verdict, moved, failure, moveFailure, elapsed, run.EgressIP, run.EgressCheckedAt, run.EgressError); err != nil {
+	if status == "completed" && verdict == "pass" && run.groupRule != nil {
+		movedIDs, moveFailure, err = s.moveAccountGroups(ctx, tx, &run.AccountCandyTestResult, run.groupRule.PassGroupIDs)
+		if err != nil {
+			return err
+		}
+		if len(movedIDs) > 0 {
+			moved = &movedIDs[0]
+		}
+	}
+	movedJSON, err = json.Marshal(append([]int64{}, movedIDs...))
+	if err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE pk_radar_account_runs SET status=$2,verdict=$3,moved_to_group_id=$4,error_message=$5,move_error=$6,finished_at=NOW(),duration_ms=$7,egress_ip=NULLIF($8,'')::inet,egress_checked_at=$9,egress_error=$10,moved_to_group_ids=$11::jsonb WHERE id=$1 AND status='running'`, run.ID, status, verdict, moved, failure, moveFailure, elapsed, run.EgressIP, run.EgressCheckedAt, run.EgressError, string(movedJSON)); err != nil {
 		return err
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE pk_radar_account_state SET active_run_id=NULL,lease_token=NULL,lease_until=NULL,latest_run_id=$2,verdict=$3,generation=$4,next_run_at=CASE WHEN $5 THEN NOW() ELSE NOW()+make_interval(mins=>$6)END WHERE account_id=$1 AND active_run_id=$2`, run.AccountID, run.ID, verdict, cfg.Generation, current.Generation != cfg.Generation, current.IntervalMinutes); err != nil {
@@ -266,6 +297,69 @@ func (s *AccountCandyTestService) finishRadar(ctx, executionCtx context.Context,
 		return err
 	}
 	return tx.Commit()
+}
+
+func radarEligibleAccountGroupsTx(ctx context.Context, tx *sql.Tx, accountID int64) ([]int64, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT g.id FROM account_groups ag JOIN groups g ON g.id=ag.group_id WHERE ag.account_id=$1 AND g.deleted_at IS NULL AND g.platform='openai' AND g.status='active' ORDER BY g.id FOR SHARE OF g`, accountID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	groups := make([]int64, 0)
+	for rows.Next() {
+		var id int64
+		if err = rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		groups = append(groups, id)
+	}
+	return groups, rows.Err()
+}
+
+func radarExpectedGroups(run *RadarRun, moved *int64) []int64 {
+	if moved != nil {
+		return []int64{*moved}
+	}
+	return run.OriginalGroupIDs
+}
+
+func radarGroupSnapshotMatchesTx(ctx context.Context, tx *sql.Tx, run *RadarRun, moved *int64) (bool, error) {
+	if run.groupRule == nil {
+		return false, nil
+	}
+	var sourceID int64
+	err := tx.QueryRowContext(ctx, `SELECT id FROM groups WHERE id=$1 AND deleted_at IS NULL AND platform='openai' AND status='active' FOR SHARE`, run.groupRule.SourceGroupID).Scan(&sourceID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	groups, err := accountCandyGroups(ctx, tx, run.AccountID)
+	return err == nil && slices.Equal(groups, radarExpectedGroups(run, moved)), err
+}
+
+// A run's own early failure move may finish before another parallel model
+// starts. Accept that committed destination while rejecting manual group edits.
+func (s *AccountCandyTestService) checkRadarGroupSnapshot(ctx context.Context, run *RadarRun) error {
+	if run.groupRule == nil {
+		return context.Canceled
+	}
+	var raw []byte
+	var moved *int64
+	var active bool
+	err := s.db.QueryRowContext(ctx, `SELECT COALESCE((SELECT jsonb_agg(ag.group_id ORDER BY ag.group_id) FROM account_groups ag WHERE ag.account_id=r.account_id),'[]'::jsonb),r.moved_to_group_id,EXISTS(SELECT 1 FROM groups WHERE id=$2 AND deleted_at IS NULL AND platform='openai' AND status='active') AND EXISTS(SELECT 1 FROM pk_radar_account_config WHERE id=1 AND generation=$3) FROM pk_radar_account_runs r WHERE r.id=$1`, run.ID, run.groupRule.SourceGroupID, run.Generation).Scan(&raw, &moved, &active)
+	if err != nil {
+		return err
+	}
+	var groups []int64
+	if err = json.Unmarshal(raw, &groups); err != nil {
+		return err
+	}
+	if !active || !slices.Equal(groups, radarExpectedGroups(run, moved)) {
+		return context.Canceled
+	}
+	return nil
 }
 
 func (s *AccountCandyTestService) expireRadar(ctx context.Context) error {

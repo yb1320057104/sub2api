@@ -309,9 +309,9 @@ class JenkinsValidationTest(unittest.TestCase):
                 return {'status': 'identical'}
             if path == repository_path + '/releases/tags/v9.8.7-pk.1':
                 return None
-            if path == '/users/pengkang0322/packages/container/sub2api':
+            if path == '/users/yb1320057104/packages/container/sub2api':
                 return {'visibility': 'private'}
-            if path == '/users/pengkang0322/packages/container/sub2api/versions?per_page=100&page=1':
+            if path == '/users/yb1320057104/packages/container/sub2api/versions?per_page=100&page=1':
                 return []
             if path == repository_path + '/releases' and method == 'POST':
                 self.assertIn('source validation is not required', data['body'])
@@ -418,6 +418,35 @@ class JenkinsValidationTest(unittest.TestCase):
 
     def test_sealed_source_and_runtime_reports_are_accepted_together(self):
         control.package_evidence(self.directory, self.data)
+
+    def test_previous_repository_is_verifiable_but_cannot_be_relabelled_or_published(self):
+        previous = control.provenance.LEGACY_REPOSITORY
+        self.data.update(repository=previous, schema_version=1, platform='linux/amd64',
+                         image_tag='ghcr.io/' + previous + ':' + self.data['version'],
+                         binary_archive='sub2api_' + self.data['version'] + '_linux_amd64.tar.gz',
+                         image_archive='sub2api_' + self.data['version'] + '_linux_amd64.docker.tar.gz')
+        self.source['repository'] = previous
+        self.save_source()
+        self.runtime.update(repository=previous, source_validation_sha256=self.data['source_validation_sha256'])
+        self.save_runtime()
+        control.write_json(self.directory / 'manifest.json', self.data)
+        with self.assertRaisesRegex(RuntimeError, 'Unexpected package provenance'):
+            control.manifest(self.directory)
+        restored = control.manifest(self.directory, allow_legacy=True)
+        self.assertEqual(restored['repository'], previous)
+        self.assertEqual(restored['validation_profile'], control.LEGACY_VALIDATION_PROFILE)
+        control.package_evidence(self.directory, restored)
+        with patch.object(control, 'request') as request:
+            with self.assertRaisesRegex(RuntimeError, 'Unexpected package provenance'):
+                control.release_ready(restored)
+            request.assert_not_called()
+        self.runtime['repository'] = control.REPOSITORY
+        self.save_runtime()
+        with self.assertRaisesRegex(RuntimeError, 'does not match package repository'):
+            control.package_evidence(self.directory, self.data)
+        control.write_json(self.directory / 'manifest.json', dict(self.data, repository='other/repo'))
+        with self.assertRaisesRegex(RuntimeError, 'Unexpected package provenance'):
+            control.manifest(self.directory, allow_legacy=True)
 
     def test_new_profile_accepts_only_artifact_runtime_evidence(self):
         self.use_artifact_only_profile()
@@ -950,7 +979,7 @@ class JenkinsRuntimeTest(unittest.TestCase):
     def archive(self, *, oci=True, bad_attestation=False, binary_mode=0o555, inline_attestation=False):
         self.files, self.paths = {}, {}
         binary = b'PK fixture binary; never executed'
-        self.data = {'commit': 'a' * 40, 'version': '9.8.7-pk.1',
+        self.data = {'repository': runtime.REPOSITORY, 'commit': 'a' * 40, 'version': '9.8.7-pk.1',
                      'image_tag': 'ghcr.io/' + runtime.REPOSITORY + ':9.8.7-pk.1',
                      'image_archive': 'image.tar.gz', 'binary_sha256': hashlib.sha256(binary).hexdigest()}
         layer_stream = io.BytesIO()

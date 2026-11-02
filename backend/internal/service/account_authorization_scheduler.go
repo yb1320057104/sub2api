@@ -396,59 +396,67 @@ func (s *AccountAuthorizationService) queueReauthorization(ctx context.Context, 
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	// Existing accounts recover credentials and system-error scheduling while
-	// keeping their groups, then run the delayed intelligence round. Without
-	// a usable candy configuration, credential recovery still proceeds.
-	submit := AuthorizationSubmit{AuthorizationConcurrency: cfg.AuthorizationConcurrency, AccountConcurrency: cfg.AccountConcurrency, AccountPriority: cfg.AccountPriority, GroupIDs: cfg.GroupIDs}
-	gate := false
-	if candy, candyErr := authorizationCandyConfigTx(ctx, tx); candyErr == nil && candy != nil && len(candy.Models) > 0 && candy.TargetGroupID != nil && *candy.TargetGroupID > 0 {
-		gate = true
-		submit.IntelligenceGate = true
+	if err = lockAuthorizationHistory(ctx, tx); err != nil {
+		return err
+	}
+	// The saved workbench switch applies to future automatic/one-click jobs.
+	// A group without a rule never implicitly starts an intelligence request.
+	workbench, err := authorizationWorkbenchTx(ctx, tx)
+	if err != nil {
+		return err
+	}
+	submit := AuthorizationSubmit{AuthorizationConcurrency: cfg.AuthorizationConcurrency, AccountConcurrency: cfg.AccountConcurrency, AccountPriority: cfg.AccountPriority, GroupIDs: append([]int64{}, workbench.PassGroupIDs...)}
+	candy := &RadarConfig{GroupRules: []RadarGroupRule{}}
+	if workbench.IntelligenceGate {
+		candy, err = authorizationCandyConfigTx(ctx, tx)
+		if err != nil {
+			return err
+		}
 		submit.IntelligenceModels = candy.Models
 		submit.IntelligenceGeneration = candy.Generation
-		submit.IntelligenceModel = candy.Models[0].Model
-		submit.IntelligenceEffort = candy.Models[0].Effort
-		submit.FailGroupIDs = []int64{*candy.TargetGroupID}
+		if len(candy.Models) > 0 {
+			submit.IntelligenceModel, submit.IntelligenceEffort = candy.Models[0].Model, candy.Models[0].Effort
+		}
 	}
 	settings, err := json.Marshal(submit)
 	if err != nil {
 		return err
 	}
-	if err = lockAuthorizationHistory(ctx, tx); err != nil {
-		return err
-	}
 	if err = settleAuthorizationHistoryTx(ctx, tx, ""); err != nil {
 		return err
 	}
-	// When the gate is on, the account keeps its own groups as the pass target
-	// and falls back to the saved workbench groups when it has none.
-	groupExpr := ""
-	groupFallback := "[]"
-	if gate {
-		groupExpr = `||jsonb_build_object('pass_group_ids',COALESCE((SELECT to_jsonb(array_agg(ag.group_id ORDER BY ag.group_id)) FROM account_groups ag JOIN groups g ON g.id=ag.group_id AND g.deleted_at IS NULL WHERE ag.account_id=a.id),$4::jsonb))`
-		passGroups, groupErr := authorizationSavedPassGroups(ctx, tx, cfg.GroupIDs)
-		if groupErr != nil {
-			return groupErr
-		}
-		encoded, encodeErr := json.Marshal(passGroups)
-		if encodeErr != nil {
-			return encodeErr
-		}
-		groupFallback = string(encoded)
+	// Non-nil arrays keep jsonb_array_elements safe even on fresh installations.
+	rules := candy.GroupRules
+	if rules == nil {
+		rules = []RadarGroupRule{}
+	}
+	rulesJSON, err := json.Marshal(rules)
+	if err != nil {
+		return err
 	}
 	// The source is the current account table, never the historical roster. Deleted
 	// accounts and stale credential versions cannot be resurrected by this query.
 	_, err = tx.ExecContext(ctx, `INSERT INTO pk_authorization_jobs(batch_id,history_id,email,account_id,source,settings)
- SELECT $1,h.id,`+authorizationEmailSQL+`,a.id,'reauthorization',$2::jsonb||jsonb_build_object('credential_snapshot_encrypted',h.secret_encrypted,'credential_has_twofa',h.has_twofa,'credential_history_revision',md5(h.secret_encrypted||h.source||(extract(epoch FROM h.created_at))::text))`+groupExpr+` FROM accounts a
+ SELECT $1,h.id,`+authorizationEmailSQL+`,a.id,'reauthorization',$2::jsonb||jsonb_build_object('credential_snapshot_encrypted',h.secret_encrypted,'credential_has_twofa',h.has_twofa,'credential_history_revision',md5(h.secret_encrypted||h.source||(extract(epoch FROM h.created_at))::text),
+ 'intelligence_gate',rule.value IS NOT NULL,'intelligence_source_group_id',COALESCE((rule.value->>'source_group_id')::bigint,0),
+ 'pass_group_ids',CASE WHEN rule.value IS NOT NULL THEN rule.value->'pass_group_ids' ELSE '[]'::jsonb END,
+ 'fail_group_ids',CASE WHEN rule.value IS NOT NULL THEN jsonb_build_array((rule.value->>'fail_group_id')::bigint) ELSE '[]'::jsonb END) FROM accounts a
  JOIN (`+authorizationCurrentHistorySQL+`) h ON h.email=`+authorizationEmailSQL+` AND h.has_twofa=true
  LEFT JOIN pk_authorization_state st ON st.account_id=a.id
+ LEFT JOIN LATERAL (
+   SELECT candidate.value FROM jsonb_array_elements($4::jsonb) WITH ORDINALITY candidate(value,position)
+   JOIN groups source_group ON source_group.id=(candidate.value->>'source_group_id')::bigint AND source_group.deleted_at IS NULL AND source_group.platform='openai' AND source_group.status='active'
+   WHERE (candidate.value->>'source_group_id')::bigint IN (
+     SELECT ag.group_id FROM account_groups ag JOIN groups g ON g.id=ag.group_id AND g.deleted_at IS NULL WHERE ag.account_id=a.id)
+   ORDER BY candidate.position LIMIT 1
+ ) rule ON true
  WHERE a.deleted_at IS NULL AND a.platform='openai' AND `+authorizationSupportedSQL+`
  AND NOT (COALESCE(st.status='banned' AND st.credential_version=md5(a.credentials::text),false))
  AND COALESCE((SELECT status FROM pk_authorization_jobs WHERE email=`+authorizationEmailSQL+` AND (status IN ('banned','completed') OR settings->>'authorization_completed'='true') ORDER BY id DESC LIMIT 1),'')<>'banned'
  AND `+authorizationErrorSQL+`
  AND NOT EXISTS(SELECT 1 FROM pk_authorization_jobs pending WHERE pending.email=`+authorizationEmailSQL+` AND pending.source='manual' AND pending.settings ? 'credential_snapshot_encrypted')
  AND EXISTS(SELECT 1 FROM pk_authorization_config c WHERE c.id=1 AND c.reauth_enabled AND c.revision=$3)
- ORDER BY a.id ON CONFLICT (email) WHERE status IN ('queued','running') DO NOTHING`, uuid.NewString(), string(settings), cfg.Revision, groupFallback)
+ ORDER BY a.id ON CONFLICT (email) WHERE status IN ('queued','running') DO NOTHING`, uuid.NewString(), string(settings), cfg.Revision, string(rulesJSON))
 	if err != nil {
 		return err
 	}

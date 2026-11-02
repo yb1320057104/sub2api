@@ -7,10 +7,10 @@ set -e
 main() {
     cat >&2 <<'EOF'
 此旧 Docker 初始化脚本已停用，避免覆盖“小典专属”的现有服务配置与密钥。
-请登录 pengkang0322/sub2api 并按私库维护文档准备部署或恢复：
-https://github.com/pengkang0322/sub2api/blob/main/PK_MAINTENANCE.md
+请登录 yb1320057104/sub2api 并按私库维护文档准备部署或恢复：
+https://github.com/yb1320057104/sub2api/blob/main/PK_MAINTENANCE.md
 
-使用已确认版本的 ghcr.io/pengkang0322/sub2api 私有镜像。
+使用已确认版本的 ghcr.io/yb1320057104/sub2api 私有镜像。
 保留现有 Compose、数据库、Redis、数据卷和密钥，合并 deploy/docker-compose.pk.yml。
 deploy/.env.pk.example 仅是示例；实际 UPDATE_GITHUB_TOKEN 应通过服务器私有环境配置注入。
 网页更新 token 需要本私库 Contents: read；拉取私有镜像需要先登录 ghcr.io。

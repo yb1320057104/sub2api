@@ -86,7 +86,7 @@ FROM ${ALPINE_IMAGE}
 # Labels
 LABEL maintainer="Wei-Shaw <github.com/Wei-Shaw>"
 LABEL description="Sub2API - AI API Gateway Platform"
-LABEL org.opencontainers.image.source="https://github.com/pengkang0322/sub2api"
+LABEL org.opencontainers.image.source="https://github.com/yb1320057104/sub2api"
 
 # Keep web-installed releases in the existing application data volume.
 ENV SUB2API_DOCKER_SELF_UPDATE=true

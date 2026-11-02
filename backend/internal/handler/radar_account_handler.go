@@ -31,25 +31,26 @@ func (h *AccountCandyTestHandler) SaveRadarConfig(c *gin.Context) {
 		return
 	}
 	var input struct {
-		Enabled    *bool                `json:"enabled"`
-		Interval   *int                 `json:"interval_minutes"`
-		Target     json.RawMessage      `json:"target_group_id"`
-		Generation string               `json:"generation"`
-		Models     []service.RadarModel `json:"models"`
+		Enabled    *bool                     `json:"enabled"`
+		Interval   *int                      `json:"interval_minutes"`
+		Target     json.RawMessage           `json:"target_group_id"`
+		Generation string                    `json:"generation"`
+		Models     []service.RadarModel      `json:"models"`
+		GroupRules *[]service.RadarGroupRule `json:"group_rules"`
 	}
 	if !decodeAccountCandyTestInput(c, &input, false) {
 		return
 	}
-	if input.Enabled == nil || input.Interval == nil || len(input.Target) == 0 || input.Generation == "" {
+	if input.Enabled == nil || input.Interval == nil || input.GroupRules == nil || input.Generation == "" {
 		response.BadRequest(c, "请提交完整设置并刷新配置版本")
 		return
 	}
 	var target *int64
-	if json.Unmarshal(input.Target, &target) != nil {
+	if len(input.Target) > 0 && json.Unmarshal(input.Target, &target) != nil {
 		response.BadRequest(c, "目标分组格式无效")
 		return
 	}
-	cfg := &service.RadarConfig{Enabled: *input.Enabled, IntervalMinutes: *input.Interval, TargetGroupID: target, Generation: input.Generation, Models: input.Models}
+	cfg := &service.RadarConfig{Enabled: *input.Enabled, IntervalMinutes: *input.Interval, TargetGroupID: target, Generation: input.Generation, Models: input.Models, GroupRules: *input.GroupRules}
 	middleware.SetAuditAction(c, "radar.config.update")
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 	defer cancel()

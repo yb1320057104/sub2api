@@ -2,7 +2,7 @@
 
 - 解决的问题及变更后行为：
 - 目标版本 / 无前缀版本分支（`vX.Y.Z-pk.N`）/ 复用的 PR；禁止任何分支名前缀，不同版本并行须说明用户依据：
-- [项目约束](https://github.com/pengkang0322/sub2api/blob/main/PROJECT_CONSTRAINTS.md) / [二开清单](https://github.com/pengkang0322/sub2api/blob/main/PK_FEATURES.md) 已阅读。
+- [项目约束](https://github.com/yb1320057104/sub2api/blob/main/PROJECT_CONSTRAINTS.md) / [二开清单](https://github.com/yb1320057104/sub2api/blob/main/PK_FEATURES.md) 已阅读。
 - 受影响的 PK ID：
 - 新增 ID（无新增则填写“无新增”）：
 - 清单同步内容（行为、配置/字段、入口、验证或边界）：

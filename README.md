@@ -1,4 +1,4 @@
-> **PK private edition:** For a fresh deployment, follow the [PK deployment guide (Chinese)](deploy/PK_DEPLOYMENT_CN.md). For migration, updates, rollback, and recovery, see [PK_MAINTENANCE.md](PK_MAINTENANCE.md). This edition uses the private `pengkang0322/sub2api` repository and GHCR images; current releases support `linux/amd64`. The upstream project introduction and author attribution are retained below.
+> **PK private edition:** For a fresh deployment, follow the [PK deployment guide (Chinese)](deploy/PK_DEPLOYMENT_CN.md). For migration, updates, rollback, and recovery, see [PK_MAINTENANCE.md](PK_MAINTENANCE.md). This edition uses the private `yb1320057104/sub2api` repository and GHCR images; current releases support `linux/amd64`. The upstream project introduction and author attribution are retained below.
 
 Maintenance requirements: [Project constraints](PROJECT_CONSTRAINTS.md) · [PK feature register](PK_FEATURES.md). Preserve every registered feature when merging upstream; register new customizations in the same change.
 
@@ -241,7 +241,7 @@ Nginx drops headers containing underscores by default (e.g. `session_id`), which
 
 ## Deployment
 
-Current PK releases support `linux/amd64`. Deployment requires read access to the private `pengkang0322/sub2api` repository and its private GHCR images.
+Current PK releases support `linux/amd64`. Deployment requires read access to the private `yb1320057104/sub2api` repository and its private GHCR images.
 
 - **Fresh deployment in an empty environment:** Follow the [PK deployment guide (Chinese)](deploy/PK_DEPLOYMENT_CN.md) for Docker Compose, authorization, configuration, and verification.
 - **Migration or recovery of an existing service:** Follow [PK_MAINTENANCE.md](PK_MAINTENANCE.md) and preserve the existing database, application data, and secrets.

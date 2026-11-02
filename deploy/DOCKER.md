@@ -1,6 +1,6 @@
 # Sub2API PK Private Docker Image
 
-Installation, updates, rollback, and disaster recovery use `ghcr.io/pengkang0322/sub2api` and [pengkang0322/sub2api Releases](https://github.com/pengkang0322/sub2api/releases). For a new server, follow the [PK deployment guide (中文)](PK_DEPLOYMENT_CN.md). For existing production services, follow [PK_MAINTENANCE.md](../PK_MAINTENANCE.md).
+Installation, updates, rollback, and disaster recovery use `ghcr.io/yb1320057104/sub2api` and [yb1320057104/sub2api Releases](https://github.com/yb1320057104/sub2api/releases). For a new server, follow the [PK deployment guide (中文)](PK_DEPLOYMENT_CN.md). For existing production services, follow [PK_MAINTENANCE.md](../PK_MAINTENANCE.md).
 
 ## Private Registry and Release Access
 
@@ -12,14 +12,14 @@ printf '%s' "$GHCR_READ_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password
 unset GHCR_READ_TOKEN GHCR_USER
 ```
 
-Set `UPDATE_GITHUB_TOKEN` in the protected deployment environment file. This is a separate fine-grained token limited to `pengkang0322/sub2api`, with Contents: read. It authenticates both update checks and asset downloads inside the application. It does not authenticate the host Docker client.
+Set `UPDATE_GITHUB_TOKEN` in the protected deployment environment file. This is a separate fine-grained token limited to `yb1320057104/sub2api`, with Contents: read. It authenticates both update checks and asset downloads inside the application. It does not authenticate the host Docker client.
 
 ## Docker Compose and Recovery
 
 ```yaml
 services:
   sub2api:
-    image: ghcr.io/pengkang0322/sub2api:${SUB2API_PK_VERSION:?Select an approved PK version}
+    image: ghcr.io/yb1320057104/sub2api:${SUB2API_PK_VERSION:?Select an approved PK version}
     restart: unless-stopped
     environment:
       SUB2API_DOCKER_SELF_UPDATE: "true"
@@ -72,5 +72,5 @@ Current PK releases do not publish `linux/arm64`. Apple container startup is dis
 
 ## Links
 
-- [Private repository](https://github.com/pengkang0322/sub2api)
+- [Private repository](https://github.com/yb1320057104/sub2api)
 - [PK maintenance guide](../PK_MAINTENANCE.md)

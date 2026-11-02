@@ -29,8 +29,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import frontend_dependencies as dependencies
 import deployment_bundle as deployment
 import browser_payload as browser
+import repository_policy as provenance
 
-REPOSITORY = "pengkang0322/sub2api"
+REPOSITORY = provenance.REPOSITORY
 PROFILE = "pk-artifact-v2"
 REQUIRED_CHECKS = (
     "artifact-integrity", "image-provenance", "image-loaded", "binary-identity",
@@ -162,8 +163,8 @@ class Validator:
         data = json.loads(manifest.read_text(encoding="utf-8"))
         require(isinstance(data, dict), "Invalid artifact manifest")
         self.data = data
-        require(data.get("schema_version") in (1, 2) and data.get("repository") == REPOSITORY,
-                "Unexpected package provenance")
+        repository = provenance.package_repository(data, allow_legacy=True)
+        require(data.get("schema_version") in (1, 2), "Unexpected package provenance")
         dependencies.verify(self.directory, data)
         deployment.verify(self.directory, data)
         browser.verify(self.directory, data)
@@ -175,7 +176,7 @@ class Validator:
         version = data.get("version", "")
         require(re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-pk\.[1-9][0-9]*)?(?:-pk\.candidate\.[1-9][0-9]*)?",
                              version) is not None, "Invalid package version")
-        require(data.get("image_tag") == "ghcr.io/" + REPOSITORY + ":" + version, "Unexpected private image tag")
+        require(data.get("image_tag") == provenance.image(repository) + ":" + version, "Unexpected private image tag")
         for key, suffix in (("binary_archive", ".tar.gz"), ("image_archive", ".docker.tar.gz")):
             require(data.get(key) == "sub2api_" + version + "_linux_amd64" + suffix, "Unexpected archive name")
             require(file_digest(self.directory / data[key]) == data.get(key + "_sha256"), "Archive digest mismatch: " + key)
@@ -202,7 +203,7 @@ class Validator:
 
     def config(self, config):
         labels = config.get("Labels") or {}
-        for key, expected in (("source", "https://github.com/" + REPOSITORY),
+        for key, expected in (("source", "https://github.com/" + self.data["repository"]),
                               ("version", self.data["version"]), ("revision", self.data["commit"])):
             require(labels.get("org.opencontainers.image." + key) == expected, "Image label mismatch: " + key)
         require(config.get("Entrypoint") == ["/app/docker-entrypoint.sh"], "Unexpected image entrypoint")

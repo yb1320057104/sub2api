@@ -610,9 +610,9 @@ import {
 import { useClipboard } from '@/composables/useClipboard'
 import Icon from '@/components/icons/Icon.vue'
 
-const GITHUB_REPO = 'pengkang0322/sub2api'
+const GITHUB_REPO = 'yb1320057104/sub2api'
 // Private GHCR image published by CI; image tags carry no "v" prefix.
-const DOCKER_IMAGE = 'ghcr.io/pengkang0322/sub2api'
+const DOCKER_IMAGE = 'ghcr.io/yb1320057104/sub2api'
 
 const { t } = useI18n()
 
@@ -677,7 +677,7 @@ const dockerRollbackCommand = computed(() => {
   if (!selectedRollbackVersion.value) return ''
   return [
     `# ${t('version.dockerPrivateLogin')}`,
-    'docker login ghcr.io -u pengkang0322',
+    'docker login ghcr.io -u yb1320057104',
     '',
     `# ${t('version.dockerEditCompose')}`,
     `image: ${DOCKER_IMAGE}:${selectedRollbackVersion.value}`,

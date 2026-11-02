@@ -25,9 +25,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import frontend_dependencies as dependencies
 import deployment_bundle as deployment
 import browser_payload as browser
+import repository_policy as provenance
 
-REPOSITORY = "pengkang0322/sub2api"
-IMAGE = "ghcr.io/pengkang0322/sub2api"
+REPOSITORY = provenance.REPOSITORY
+IMAGE = provenance.image(REPOSITORY)
 API = "https://api.github.com"
 TAG_PATTERN = r"v[0-9]+\.[0-9]+\.[0-9]+-pk\.[1-9][0-9]*"
 PACKAGE_PATTERN = r"[1-9][0-9]*-[0-9a-f]{12}"
@@ -193,11 +194,12 @@ def prepare() -> None:
     print(f"Packaging {commit} as {version}; no GitHub Actions build or production deployment")
 
 
-def manifest(directory: Path) -> dict:
+def manifest(directory: Path, *, allow_legacy: bool = False) -> dict:
     path = directory / "manifest.json"
     require(path.is_file() and not path.is_symlink(), "Missing regular manifest")
     data = json.loads(path.read_text(encoding="utf-8"))
-    require(data.get("schema_version") in (1, 2) and data.get("repository") == REPOSITORY, "Unexpected package provenance")
+    repository = provenance.package_repository(data, allow_legacy=allow_legacy)
+    require(data.get("schema_version") in (1, 2), "Unexpected package provenance")
     dependencies.declaration(directory, data)
     deployment.declaration(data)
     browser.declaration(data)
@@ -207,7 +209,7 @@ def manifest(directory: Path) -> dict:
     require(data.get("platform") == "linux/amd64", "Unsupported platform")
     version = data.get("version", "")
     require(bool(re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-pk\.[1-9][0-9]*)?(?:-pk\.candidate\.[1-9][0-9]*)?", version)), "Invalid package version")
-    require(data.get("image_tag") == IMAGE + ":" + version, "Unexpected package image")
+    require(data.get("image_tag") == provenance.image(repository) + ":" + version, "Unexpected package image")
     require(data.get("binary_archive") == f"sub2api_{version}_linux_amd64.tar.gz", "Unexpected binary archive name")
     require(data.get("image_archive") == f"sub2api_{version}_linux_amd64.docker.tar.gz", "Unexpected image archive name")
     profile = data.get("validation_profile")
@@ -306,9 +308,16 @@ def seal() -> None:
 def restore() -> None:
     parameters()
     directory = package_path(os.environ["PACKAGE_ID"])
-    data = manifest(directory)
+    data = manifest(directory, allow_legacy=True)
     require(data["package_id"] == os.environ["PACKAGE_ID"], "Package ID does not match directory")
     verify_artifacts(directory, data)
+    if data["repository"] != REPOSITORY:
+        # Old packages retain their original profile and all original evidence.
+        # Restoring them does not authorize publishing them into the new repo.
+        if data.get("validation_profile") in JENKINS_VALIDATION_PROFILES:
+            package_evidence(directory, data)
+        else:
+            evidence(data, directory)
     shutil.copytree(directory, "output")
     Path("output").chmod(0o750)
     for file in Path("output").iterdir():
@@ -405,7 +414,8 @@ def package_evidence(directory: Path, data: dict) -> None:
                 and check["exit_code"] == 0 for check in checks), "Jenkins runtime check failed or was skipped")
 
 
-def evidence(data: dict) -> dict:
+def evidence(data: dict, directory: Path | None = None) -> dict:
+    directory = directory or Path("output")
     root = Path(os.environ["PK_EVIDENCE_ROOT"]).resolve(strict=True)
     path = root / (data["package_id"] + ".json")
     require(path.is_file() and not path.is_symlink(), "Missing local test evidence for this package")
@@ -422,7 +432,7 @@ def evidence(data: dict) -> dict:
     for key in ("package_id", "binary_sha256", "image_archive_sha256"):
         require(proof.get("artifact", {}).get(key) == data[key], f"Runtime evidence does not match package {key}")
     if browser.declaration(data):
-        browser.verify(Path("output"), data)
+        browser.verify(directory, data)
         for key in browser.BINDINGS:
             require(proof.get("artifact", {}).get(key) == data[key], "Manual browser binding mismatch: " + key)
         require(proof.get("artifact", {}).get("browser_web_update_ready") is True,
@@ -431,7 +441,7 @@ def evidence(data: dict) -> dict:
         require(not any(key in proof.get("artifact", {}) for key in browser.BINDINGS),
                 "Manual embedded browser evidence cannot be stripped")
     if deployment.declaration(data):
-        deployment.verify(Path("output"), data)
+        deployment.verify(directory, data)
         for key in deployment.BINDINGS:
             require(proof.get("artifact", {}).get(key) == data[key], "Manual deployment binding mismatch: " + key)
         require(proof.get("artifact", {}).get("browser_runtime_ready") is True, "Bundled browser was not verified")
@@ -439,7 +449,7 @@ def evidence(data: dict) -> dict:
         require(not any(key in proof.get("artifact", {}) for key in deployment.BINDINGS),
                 "Manual deployment evidence cannot be stripped")
     if data.get("schema_version") == 2:
-        dependencies.verify(Path("output"), data)
+        dependencies.verify(directory, data)
         for key in dependencies.BINDINGS:
             require(proof.get("artifact", {}).get(key) == data[key], "Manual runtime dependency binding mismatch: " + key)
     else:
@@ -448,11 +458,13 @@ def evidence(data: dict) -> dict:
     return proof
 
 
-def release_ready(data: dict) -> None:
+def release_ready(data: dict, *, credential: str | None = None) -> None:
+    provenance.package_repository(data)
     require(data.get("build_type") == "release", "Candidate packages cannot become formal releases")
     tag = "v" + data["version"]
     require(bool(re.fullmatch(TAG_PATTERN, tag)) and data.get("source_ref") == "refs/tags/" + tag, "Package lacks a formal reviewed tag")
-    credential = token()
+    credential = token() if credential is None else credential
+    require(bool(credential), "The private-release credential is not configured")
     repo = request("/repos/" + REPOSITORY, token=credential)
     require(repo.get("private") is True and repo.get("full_name") == REPOSITORY, "Release repository must remain private")
     ref = request("/repos/" + REPOSITORY + "/git/ref/tags/" + tag, token=credential)["object"]
@@ -481,7 +493,7 @@ def ready() -> None:
 
 
 def package_registry_ready(data: dict, credential: str) -> None:
-    path = "/users/pengkang0322/packages/container/sub2api"
+    path = "/users/yb1320057104/packages/container/sub2api"
     package = request(path, token=credential)
     require(package.get("visibility") == "private", "Existing GHCR package must be private")
     page = 1
@@ -534,7 +546,7 @@ def publish() -> None:
         command("docker", "login", "ghcr.io", "--username", registry_user, "--password-stdin",
                 input_data=registry_token.encode(), capture=False, env=environment)
         command("docker", "push", data["image_tag"], capture=False, env=environment)
-        package = request("/users/pengkang0322/packages/container/sub2api", token=registry_token)
+        package = request("/users/yb1320057104/packages/container/sub2api", token=registry_token)
         require(package.get("visibility") == "private", "GHCR package privacy changed; refuse release")
         tag = "v" + data["version"]
         if data.get("validation_profile") == LEGACY_VALIDATION_PROFILE:

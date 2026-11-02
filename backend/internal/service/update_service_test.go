@@ -285,7 +285,7 @@ func TestUpdateServicePrivateRevisionUpdates(t *testing.T) {
 			info, err := svc.CheckUpdate(context.Background(), true)
 			require.NoError(t, err)
 			require.Equal(t, tt.wantUpdate, info.HasUpdate)
-			require.Equal(t, "pengkang0322/sub2api", client.latestRepo)
+			require.Equal(t, "yb1320057104/sub2api", client.latestRepo)
 		})
 	}
 }
@@ -308,12 +308,12 @@ func TestUpdateServicePrivateRevisionRollbackOrder(t *testing.T) {
 		{Version: "0.2.10-pk.2"},
 		{Version: "0.2.10-pk.1"},
 	}, versions)
-	require.Equal(t, "pengkang0322/sub2api", client.recentRepo)
+	require.Equal(t, "yb1320057104/sub2api", client.recentRepo)
 }
 
 func TestUpdateServicePrivateAssetAPIPreservesChecksumFilename(t *testing.T) {
-	const archiveURL = "https://api.github.com/repos/pengkang0322/sub2api/releases/assets/101"
-	const checksumURL = "https://api.github.com/repos/pengkang0322/sub2api/releases/assets/102"
+	const archiveURL = "https://api.github.com/repos/yb1320057104/sub2api/releases/assets/101"
+	const checksumURL = "https://api.github.com/repos/yb1320057104/sub2api/releases/assets/102"
 	archiveName := fmt.Sprintf("sub2api_0.2.10-pk.2_%s_%s.tar.gz", runtime.GOOS, runtime.GOARCH)
 	// Deliberately invalid archive: checksum validation must pass before extraction
 	// rejects it, leaving the isolated installation unchanged.
@@ -322,8 +322,8 @@ func TestUpdateServicePrivateAssetAPIPreservesChecksumFilename(t *testing.T) {
 	for _, operation := range []string{"update", "rollback"} {
 		t.Run(operation, func(t *testing.T) {
 			release := &GitHubRelease{TagName: "v0.2.10-pk.2", Assets: []GitHubAsset{
-				{Name: archiveName, APIURL: archiveURL, BrowserDownloadURL: "https://github.com/pengkang0322/sub2api/releases/download/v0.2.10-pk.2/" + archiveName},
-				{Name: "checksums.txt", APIURL: checksumURL, BrowserDownloadURL: "https://github.com/pengkang0322/sub2api/releases/download/v0.2.10-pk.2/checksums.txt"},
+				{Name: archiveName, APIURL: archiveURL, BrowserDownloadURL: "https://github.com/yb1320057104/sub2api/releases/download/v0.2.10-pk.2/" + archiveName},
+				{Name: "checksums.txt", APIURL: checksumURL, BrowserDownloadURL: "https://github.com/yb1320057104/sub2api/releases/download/v0.2.10-pk.2/checksums.txt"},
 			}}
 			downloaded, checksumRead := false, false
 			client := &updateServiceGitHubClientStub{
@@ -367,7 +367,7 @@ func TestUpdateServiceRejectsReleaseWithoutChecksum(t *testing.T) {
 		TagName: "v0.2.10-pk.2",
 		Assets: []GitHubAsset{{
 			Name:   fmt.Sprintf("sub2api_%s_%s.tar.gz", runtime.GOOS, runtime.GOARCH),
-			APIURL: "https://api.github.com/repos/pengkang0322/sub2api/releases/assets/101",
+			APIURL: "https://api.github.com/repos/yb1320057104/sub2api/releases/assets/101",
 		}},
 	}}
 	svc := NewUpdateService(&updateServiceCacheStub{}, client, "0.2.10-pk.1", "release")
@@ -375,7 +375,7 @@ func TestUpdateServiceRejectsReleaseWithoutChecksum(t *testing.T) {
 }
 
 func TestUpdateServicePrivateRepositoryCacheIsolation(t *testing.T) {
-	for _, repository := range []string{"", "Wei-Shaw/sub2api", "pengkang0322/sub2api"} {
+	for _, repository := range []string{"", "Wei-Shaw/sub2api", "pengkang0322/sub2api", "yb1320057104/sub2api"} {
 		for _, force := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/force=%v", repository, force), func(t *testing.T) {
 				cached := map[string]any{
@@ -390,7 +390,7 @@ func TestUpdateServicePrivateRepositoryCacheIsolation(t *testing.T) {
 				client := &updateServiceGitHubClientStub{latestErr: errors.New("GitHub unavailable")}
 				svc := NewUpdateService(&updateServiceCacheStub{data: string(data)}, client, "0.2.10-pk.1", "release")
 				info, err := svc.CheckUpdate(context.Background(), force)
-				if repository == "pengkang0322/sub2api" && !force {
+				if repository == "yb1320057104/sub2api" && !force {
 					require.NoError(t, err)
 					require.NotNil(t, info)
 					require.True(t, info.HasUpdate)
@@ -449,8 +449,8 @@ func TestUpdateServiceRepeatedUpdatesAndRollbacksKeepInstallPath(t *testing.T) {
 		require.NoError(t, tw.Close())
 		require.NoError(t, gz.Close())
 		name := fmt.Sprintf("sub2api_%s_%s_%s.tar.gz", version, runtime.GOOS, runtime.GOARCH)
-		archiveURL := fmt.Sprintf("https://api.github.com/repos/pengkang0322/sub2api/releases/assets/%d", assetID)
-		checksumURL := fmt.Sprintf("https://api.github.com/repos/pengkang0322/sub2api/releases/assets/%d", assetID+1)
+		archiveURL := fmt.Sprintf("https://api.github.com/repos/yb1320057104/sub2api/releases/assets/%d", assetID)
+		checksumURL := fmt.Sprintf("https://api.github.com/repos/yb1320057104/sub2api/releases/assets/%d", assetID+1)
 		files[archiveURL] = archive.Bytes()
 		files[checksumURL] = []byte(fmt.Sprintf("%x  %s\n", sha256.Sum256(archive.Bytes()), name))
 		return &GitHubRelease{TagName: "v" + version, Assets: []GitHubAsset{
@@ -594,8 +594,8 @@ func TestUpdateServiceExecutableResolutionFailurePreventsReplacement(t *testing.
 			installPath := filepath.Join(t.TempDir(), "sub2api")
 			require.NoError(t, os.WriteFile(installPath, []byte("original"), 0755))
 			assets := []GitHubAsset{
-				{Name: fmt.Sprintf("sub2api_%s_%s.tar.gz", runtime.GOOS, runtime.GOARCH), APIURL: "https://api.github.com/repos/pengkang0322/sub2api/releases/assets/101"},
-				{Name: "checksums.txt", APIURL: "https://api.github.com/repos/pengkang0322/sub2api/releases/assets/102"},
+				{Name: fmt.Sprintf("sub2api_%s_%s.tar.gz", runtime.GOOS, runtime.GOARCH), APIURL: "https://api.github.com/repos/yb1320057104/sub2api/releases/assets/101"},
+				{Name: "checksums.txt", APIURL: "https://api.github.com/repos/yb1320057104/sub2api/releases/assets/102"},
 			}
 			client := &updateServiceGitHubClientStub{
 				release:        &GitHubRelease{TagName: "v0.2.10-pk.4", Assets: assets},

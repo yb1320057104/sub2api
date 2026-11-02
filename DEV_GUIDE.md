@@ -8,7 +8,7 @@
 | 项目 | 说明 |
 |------|------|
 | **上游仓库** | Wei-Shaw/sub2api |
-| **PK 私有仓库** | pengkang0322/sub2api |
+| **PK 私有仓库** | yb1320057104/sub2api |
 | **技术栈** | Go 后端 (Ent ORM + Gin) + Vue3 前端 (pnpm) |
 | **数据库** | PostgreSQL 16 + Redis |
 | **包管理** | 后端: go modules, 前端: **pnpm**（不是 npm） |
@@ -278,7 +278,7 @@ git fetch origin --no-tags
 git branch --list
 git branch --remotes
 git ls-remote --tags origin
-gh pr list --repo pengkang0322/sub2api --state open
+gh pr list --repo yb1320057104/sub2api --state open
 git fetch upstream --no-tags
 ```
 

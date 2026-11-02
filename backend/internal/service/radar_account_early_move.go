@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 )
 
 // The failed model, verdict, group replacement and outbox commit together.
@@ -47,6 +48,13 @@ func (s *AccountCandyTestService) completeFailedRadarModel(ctx context.Context, 
 	if status != "running" || model.Status != "completed" || model.Passed == nil || *model.Passed {
 		return context.Canceled
 	}
+	groupsMatch, err := radarGroupSnapshotMatchesTx(ctx, tx, run, moved)
+	if err != nil {
+		return err
+	}
+	if !groupsMatch {
+		return context.Canceled
+	}
 	if err = writeRadarModelWith(ctx, tx, run, model); err != nil {
 		return err
 	}
@@ -56,7 +64,11 @@ func (s *AccountCandyTestService) completeFailedRadarModel(ctx context.Context, 
 			return err
 		}
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE pk_radar_account_runs SET verdict='fail',moved_to_group_id=$2,move_error=$3 WHERE id=$1 AND status='running'`, run.ID, moved, moveError); err != nil {
+	movedJSON, err := json.Marshal(radarSingleMoveTarget(moved))
+	if err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE pk_radar_account_runs SET verdict='fail',moved_to_group_id=$2,move_error=$3,moved_to_group_ids=$4::jsonb WHERE id=$1 AND status='running'`, run.ID, moved, moveError, string(movedJSON)); err != nil {
 		return err
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE pk_radar_account_state SET verdict='fail' WHERE account_id=$1 AND active_run_id=$2 AND lease_token=$3`, run.AccountID, run.ID, run.leaseToken); err != nil {

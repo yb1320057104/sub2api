@@ -16,7 +16,14 @@ type radarQuerier interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }
 
-const radarRunColumns = `r.id,r.account_id,r.source,r.status,r.generation,r.verdict,r.original_group_ids,r.moved_to_group_id,r.error_message,r.move_error,r.started_at,r.finished_at,r.duration_ms,COALESCE(host(r.egress_ip),''),r.egress_mode,r.egress_checked_at,r.egress_error`
+const radarRunColumns = `r.id,r.account_id,r.source,r.status,r.generation,r.verdict,r.original_group_ids,r.moved_to_group_id,COALESCE(r.moved_to_group_ids,CASE WHEN r.moved_to_group_id IS NULL THEN '[]'::jsonb ELSE jsonb_build_array(r.moved_to_group_id) END),r.error_message,r.move_error,r.started_at,r.finished_at,r.duration_ms,COALESCE(host(r.egress_ip),''),r.egress_mode,r.egress_checked_at,r.egress_error`
+
+func radarSingleMoveTarget(id *int64) []int64 {
+	if id == nil {
+		return []int64{}
+	}
+	return []int64{*id}
+}
 
 func radarIDArgs(ids []int64) ([]any, string) {
 	args := make([]any, len(ids))
@@ -40,12 +47,16 @@ func loadRadarRuns(ctx context.Context, q radarQuerier, ids []int64, details boo
 	}
 	for rows.Next() {
 		r := &RadarRun{Origin: "radar", ModelResults: make([]RadarModelResult, 0), FailedModels: make([]RadarModelResult, 0)}
-		var groups []byte
-		if err = rows.Scan(&r.ID, &r.AccountID, &r.Source, &r.Status, &r.Generation, &r.Verdict, &groups, &r.MovedToGroupID, &r.ErrorMessage, &r.MoveError, &r.StartedAt, &r.FinishedAt, &r.DurationMS, &r.EgressIP, &r.EgressMode, &r.EgressCheckedAt, &r.EgressError); err != nil {
+		var groups, movedGroups []byte
+		if err = rows.Scan(&r.ID, &r.AccountID, &r.Source, &r.Status, &r.Generation, &r.Verdict, &groups, &r.MovedToGroupID, &movedGroups, &r.ErrorMessage, &r.MoveError, &r.StartedAt, &r.FinishedAt, &r.DurationMS, &r.EgressIP, &r.EgressMode, &r.EgressCheckedAt, &r.EgressError); err != nil {
 			_ = rows.Close()
 			return nil, err
 		}
 		if err = json.Unmarshal(groups, &r.OriginalGroupIDs); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		if err = json.Unmarshal(movedGroups, &r.MovedToGroupIDs); err != nil {
 			_ = rows.Close()
 			return nil, err
 		}
@@ -204,7 +215,7 @@ func (s *AccountCandyTestService) ListRadarLatest(ctx context.Context, ids []int
 				r.Status = "failed"
 				r.ErrorMessage = "旧任务已失效"
 			}
-			out = append(out, RadarRun{AccountCandyTestResult: r, Origin: "legacy", Verdict: "unknown", ModelResults: []RadarModelResult{}, FailedModels: []RadarModelResult{}})
+			out = append(out, RadarRun{AccountCandyTestResult: r, Origin: "legacy", Verdict: "unknown", ModelResults: []RadarModelResult{}, FailedModels: []RadarModelResult{}, MovedToGroupIDs: radarSingleMoveTarget(r.MovedToGroupID)})
 		}
 	}
 	return out, nil
@@ -326,7 +337,7 @@ func (s *AccountCandyTestService) ListRadarAccounts(ctx context.Context, page, s
 			result.ErrorMessage = "旧任务已失效"
 		}
 		copy := result
-		legacyMap[result.AccountID] = &RadarRun{AccountCandyTestResult: copy, Origin: "legacy", Verdict: "unknown", ModelResults: []RadarModelResult{}, FailedModels: []RadarModelResult{}}
+		legacyMap[result.AccountID] = &RadarRun{AccountCandyTestResult: copy, Origin: "legacy", Verdict: "unknown", ModelResults: []RadarModelResult{}, FailedModels: []RadarModelResult{}, MovedToGroupIDs: radarSingleMoveTarget(result.MovedToGroupID)}
 	}
 	out := make([]RadarObservation, 0, len(entries))
 	now := time.Now()
@@ -360,12 +371,15 @@ func (s *AccountCandyTestService) ListRadarAccounts(ctx context.Context, page, s
 		case m.running:
 			r.ScheduleReason = "running"
 		}
-		if r.ScheduleReason == "" && cfg.TargetGroupID != nil {
-			for _, g := range a.GroupIDs {
-				if g == *cfg.TargetGroupID {
-					r.ScheduleReason = "target_group"
-					break
+		if r.ScheduleReason == "" {
+			eligibleGroups := make([]int64, 0, len(a.Groups))
+			for _, group := range a.Groups {
+				if group != nil && group.Platform == PlatformOpenAI && group.Status == StatusActive {
+					eligibleGroups = append(eligibleGroups, group.ID)
 				}
+			}
+			if firstRadarGroupRule(cfg.GroupRules, eligibleGroups) == nil {
+				r.ScheduleReason = "unconfigured"
 			}
 		}
 		if r.ScheduleReason != "" {
@@ -425,7 +439,7 @@ func (s *AccountCandyTestService) RadarHistory(ctx context.Context, id int64) ([
 			r.Status = "failed"
 			r.ErrorMessage = "旧任务已失效"
 		}
-		out = append(out, RadarRun{AccountCandyTestResult: r, Origin: "legacy", Verdict: "unknown", ModelResults: []RadarModelResult{}, FailedModels: []RadarModelResult{}})
+		out = append(out, RadarRun{AccountCandyTestResult: r, Origin: "legacy", Verdict: "unknown", ModelResults: []RadarModelResult{}, FailedModels: []RadarModelResult{}, MovedToGroupIDs: radarSingleMoveTarget(r.MovedToGroupID)})
 	}
 	if err = rows.Err(); err != nil {
 		return nil, err

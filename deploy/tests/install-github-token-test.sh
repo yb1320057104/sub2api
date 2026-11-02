@@ -24,7 +24,7 @@ run_api_curl() {
     CURL_ARGS_LOG="$1" HOME="$TEMP_DIR/home" PATH="$TEMP_DIR:$PATH" UPDATE_GITHUB_TOKEN="${2:-}" \
         GITHUB_TOKEN="github-fallback" GH_TOKEN="gh-fallback" \
         bash -c 'source <(head -n -1 "$1"); github_api_curl -s "$2"' bash \
-        "$ROOT_DIR/deploy/install.sh" "https://api.github.com/repos/pengkang0322/sub2api/releases/latest"
+        "$ROOT_DIR/deploy/install.sh" "https://api.github.com/repos/yb1320057104/sub2api/releases/latest"
 }
 
 run_api_curl "$TEMP_DIR/authenticated" "update-secret"
@@ -41,7 +41,7 @@ if grep -Eq 'update-secret|github-fallback|gh-fallback' "$TEMP_DIR/authenticated
     echo "installer exposed a token in curl environment" >&2
     exit 1
 fi
-test "$(grep -Fxc 'https://api.github.com/repos/pengkang0322/sub2api/releases/latest' "$TEMP_DIR/authenticated")" -eq 1
+test "$(grep -Fxc 'https://api.github.com/repos/yb1320057104/sub2api/releases/latest' "$TEMP_DIR/authenticated")" -eq 1
 if grep -Fq 'example.com/collect' "$TEMP_DIR/authenticated" || grep -Fq 'X-Leaked-From-Curlrc' "$TEMP_DIR/authenticated" ||
     grep -Fq 'example.com/collect' "$TEMP_DIR/authenticated.stdin" || grep -Fq 'X-Leaked-From-Curlrc' "$TEMP_DIR/authenticated.stdin"; then
     echo "installer allowed hostile curl config into authenticated invocation" >&2
@@ -72,25 +72,25 @@ assert_unsafe_invocation_rejected() {
 }
 
 assert_unsafe_invocation_rejected non-api -s \
-    "https://github.com/pengkang0322/sub2api/releases/download/v1/asset"
+    "https://github.com/yb1320057104/sub2api/releases/download/v1/asset"
 assert_unsafe_invocation_rejected mixed-host -s \
-    "https://api.github.com/repos/pengkang0322/sub2api/releases/latest" \
+    "https://api.github.com/repos/yb1320057104/sub2api/releases/latest" \
     "https://example.com/collect"
 assert_unsafe_invocation_rejected multiple-api -s \
-    "https://api.github.com/repos/pengkang0322/sub2api/releases/latest" \
-    "https://api.github.com/repos/pengkang0322/sub2api/releases"
+    "https://api.github.com/repos/yb1320057104/sub2api/releases/latest" \
+    "https://api.github.com/repos/yb1320057104/sub2api/releases"
 assert_unsafe_invocation_rejected url-option -s --url \
     "https://example.com/collect" \
-    "https://api.github.com/repos/pengkang0322/sub2api/releases/latest"
+    "https://api.github.com/repos/yb1320057104/sub2api/releases/latest"
 
 assert_unsafe_invocation_rejected official-repository -s \
     "https://api.github.com/repos/Wei-Shaw/sub2api/releases/latest"
 assert_unsafe_invocation_rejected redirect-option -s -L \
-    "https://api.github.com/repos/pengkang0322/sub2api/releases/latest"
+    "https://api.github.com/repos/yb1320057104/sub2api/releases/latest"
 assert_unsafe_invocation_rejected traversal -s \
-    "https://api.github.com/repos/pengkang0322/sub2api/../../Wei-Shaw/sub2api/releases/latest"
+    "https://api.github.com/repos/yb1320057104/sub2api/../../Wei-Shaw/sub2api/releases/latest"
 assert_unsafe_invocation_rejected arbitrary-api -s \
-    "https://api.github.com/repos/pengkang0322/sub2api/contents/.env"
+    "https://api.github.com/repos/yb1320057104/sub2api/contents/.env"
 
 # Every installer release API request must use the scoped helper.
 test "$(grep -c 'github_api_curl .*https://api.github.com/' "$ROOT_DIR/deploy/install.sh")" -eq 3
@@ -108,7 +108,7 @@ for script in install.sh docker-deploy.sh; do
     fi
     test ! -e "$TEMP_DIR/blocked-$script-curl"
     grep -Fq 'PK_MAINTENANCE.md' "$TEMP_DIR/blocked-$script-output"
-    grep -Fq 'pengkang0322/sub2api' "$TEMP_DIR/blocked-$script-output"
+    grep -Fq 'yb1320057104/sub2api' "$TEMP_DIR/blocked-$script-output"
 done
 test ! -e "$TEMP_DIR/deployment/docker-compose.yml"
 test ! -e "$TEMP_DIR/deployment/.env"

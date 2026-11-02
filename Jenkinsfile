@@ -14,17 +14,17 @@ pipeline {
         gitParameter(name: 'SOURCE_REF', type: 'PT_BRANCH_TAG', defaultValue: '',
             branchFilter: '^origin/.*$', tagFilter: 'v*-pk.*', selectedValue: 'NONE',
             sortMode: 'DESCENDING_SMART', quickFilterEnabled: true,
-            useRepository: '^git@github[.]com:pengkang0322/sub2api[.]git$',
+            useRepository: '^git@github[.]com:yb1320057104/sub2api[.]git$',
             description: 'release 请选择尚未发布的正式 vX.Y.Z-pk.N 标签（不带 origin/）；origin/ 开头的私库分支仅供 package 候选打包。publish 忽略此项。')
         string(name: 'COMMIT_SHA', defaultValue: '', description: '高级选项，通常留空。填写完整的 40 位小写提交 SHA 时，覆盖上方选择，仅打候选包。')
         string(name: 'PACKAGE_ID', defaultValue: '', description: 'release/package 留空；仅 publish 填写已封存且验收合格、尚未发布的产物 ID。')
         choice(name: 'REINSTALL_NODE_MODULES', choices: ['否', '是'], description: '是否重新安装 node_modules：默认否，按源码锁文件冻结安装；是会删除本次隔离构建的 node_modules 和 pnpm-lock.yaml，联网重新解析依赖，审计并封存实际新锁。publish 必须选否。')
     }
     environment {
-        PK_REPOSITORY = 'pengkang0322/sub2api'
+        PK_REPOSITORY = 'yb1320057104/sub2api'
         PK_PACKAGE_ROOT = '/srv/jenkins-packages/sub2api'
         PK_EVIDENCE_ROOT = '/srv/jenkins-evidence/sub2api'
-        PK_IMAGE = 'ghcr.io/pengkang0322/sub2api'
+        PK_IMAGE = 'ghcr.io/yb1320057104/sub2api'
     }
     stages {
         stage('Load reviewed pipeline') {
@@ -65,7 +65,7 @@ pipeline {
                     script {
                         def refs = '+refs/heads/*:refs/remotes/origin/* +refs/tags/*:refs/tags/*'
                         checkout([$class: 'GitSCM', branches: [[name: env.SOURCE_REF]],
-                            userRemoteConfigs: [[url: 'git@github.com:pengkang0322/sub2api.git', credentialsId: 'pk-github-read',
+                            userRemoteConfigs: [[url: 'git@github.com:yb1320057104/sub2api.git', credentialsId: 'pk-github-read',
                                 refspec: refs]],
                             extensions: [[$class: 'CloneOption', shallow: false, noTags: false, honorRefspec: true, timeout: 20]]])
                     }

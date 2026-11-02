@@ -1,5 +1,11 @@
 # PK出版：源码、发布与上游更新
 
+2026-11-02 pk.42 发布方式追加：用户确认当前没有 Jenkins，并要求采用其他构建方式继续完成生产更新源迁移。本轮沿用已使用过的本机前后端构建、服务器隔离 Docker 同制品十一项验收、私库 Release 归档发布和运维部署流程；该授权替代本轮此前“仅静态/仅 Jenkins/用户点击”的限制，不自动执行全套源码回归或真实账号/模型请求。现有 GitHub 授权无 packages scope，本轮仅发布私库 Release 的更新包和 Docker 镜像归档，服务器 docker load，不宣称 GHCR 已发布，不降低原 Jenkins 的私有包门禁。仍保留新私库、正式标签/main 归属、未占用版本、SHA256、同一二进制与完整制品证据；部署保留现有 CF/token/加密密钥，先排空并备份。构建和上线结果仅按实际执行记录填写，详见 docs/PK_REPOSITORY_MIGRATION_PK42_REVIEW.md。
+
+2026-11-02 同轮仓库迁移：现行 `origin`、源码/Release/更新来源改为私有 `yb1320057104/sub2api`，镜像改为 `ghcr.io/yb1320057104/sub2api`。旧库仅用于历史保全，旧标签/制品身份不改写。迁移涉及Jenkins可信SCM、读取与发布权限以及新私有GHCR包初始化，生产内旧程序不能仅通过修改token切换来源；须使用含新更新源的发行程序。迁移实况及剩余启用步骤见docs/PK_REPOSITORY_MIGRATION_PK42_REVIEW.md；历史运行记录中的旧库名保持原事实。
+
+2026-11-02 当前交接 v0.2.19-pk.42：账号糖果测试改为明确的来源分组规则，来源按第一条匹配，分别配置多个合格目标和单个不合格目标；升级后未配置规则的分组不测试，需要管理员在糖果设置中添加并保存。授权工作台可单独保存测智开关，关闭或来源无规则跳过；立即/定时授权读取已保存开关，已排队/重试任务保留其快照。模型下拉补齐内置与账号映射候选，仍支持自定义ID。新增雷达结果目标列表列迁移，不回填历史记录；源码功能初稿只作静态核对；后续构建验收以文首流程及实际报告为准。用户自行选择ACTION=release、SOURCE_REF=v0.2.19-pk.42，COMMIT_SHA/PACKAGE_ID留空；Jenkins既有制品验收保持。详见docs/PK_CANDY_GROUP_RULES_PK42_REVIEW.md。
+
 2026-11-02 当前交接 v0.2.19-pk.41：授权工作台蓝色“授权后的测智关卡”说明卡移到左侧账号输入框下方，仅调整模板位置。无后端、迁移、依赖或运行环境变化；仅静态核对，未构建/测试、触发Jenkins或部署。交接版本分支/main/正式标签后，用户自行选择ACTION=release、SOURCE_REF=v0.2.19-pk.41，COMMIT_SHA/PACKAGE_ID留空。
 
 2026-11-02 当前交接 v0.2.19-pk.40：三页仅保留顶部标题，保留移动端标题与原操作入口；SVG作品支持点击放大及键盘开关弹窗，控制台与公开首页共用，沿用净化/无脚本沙箱/CSP和原请求缓存。仅前端与文档变更，不需要数据库迁移或浏览器依赖更新。仅静态核对，未构建/测试、触发Jenkins或部署；按既定规则交接版本分支/main/正式标签后，用户自行选择ACTION=release、SOURCE_REF=v0.2.19-pk.40，COMMIT_SHA/PACKAGE_ID留空。详见docs/PK_INTERFACE_PREVIEW_PK40_REVIEW.md。
@@ -153,7 +159,7 @@ python -B scripts/test-local.py --bind-commit HEAD --report /path/to/local-valid
 
 ## 仓库与当前基线
 
-- 私有仓库：<https://github.com/pengkang0322/sub2api>，本地 remote 为 `origin`。
+- 私有仓库：<https://github.com/yb1320057104/sub2api>，本地 remote 为 `origin`。
 - 原作者仓库：<https://github.com/Wei-Shaw/sub2api>，本地 remote 为 `upstream`。
 - 历史已发布上游基线为 `v0.2.12`，实际提交 `5106065716e494204fc0e8db16f68f6e9d576be0`；从私库 `162a58972bee08078a43eefa761da1b245f667fa`（`v0.2.11-pk.2`）继续合并，已发布 `v0.2.12-pk.1`。逐项二开与云端证据见 [0.2.12 合并核对](docs/PK_UPSTREAM_0.2.12_REVIEW.md)。2026-10-03 新增耻辱排行榜、扣款和自动禁用，目标 `v0.2.12-pk.2`，见[该版发布核对](docs/PK_SHAME_LEADERBOARD_REVIEW.md)；实际制品以私库 Release 为准。发布不自动更新生产。
 - 2026-10-08 当前候选在唯一在途历史分支 `codex/jenkins-build` / 草稿 PR #7 合并 `v0.2.14`，固定上游 commit `0363b8cdba8cec3e2ba4b2dbd49c4481143fa55d`。规划目标为 `v0.2.14-pk.1`，未打标签、未合入 main、未正式发布。合并提交 `fc468013` 生成时仅作静态核对；后续 Jenkins #4 候选 `4-fc46801394b0` 已构建成功，十一项实际制品验收通过，证据只绑定该旧 commit。当时流程要求新 tree 的完整源码报告及 notes；该要求已由 2026-10-21 新流程替代，旧候选成功不代表当前正式版本已发布。完整来源、全部27项二开与当时待验证项见 [0.2.14 合并核对](docs/PK_UPSTREAM_0.2.14_REVIEW.md)。
@@ -240,7 +246,7 @@ New API 的 HTTP/SSE 路径在首个非空 data 帧到达时记录首字，因�
 
 版本格式为 `上游版本-pk.修订号`；当前版本完成既定合入/发行后，规划同一上游版本的下一次发行时先查私库已用标签再递增，未发布版本内的修复和重新打包不递增；页面追加 ` PK出版`，中文不进入机器版本号。已发布的 `0.2.11-pk.1` 包含 comment/ping；之后的 space 扩展和历次云端回归属于对应历史版本记录，不代表当前提交已通过。
 
-现行发布按本文“正式标签交接与 Jenkins 打包”执行。正式 Release 必须是非 prerelease，包含 `sub2api_版本_linux_amd64.tar.gz` 和 `checksums.txt`；同一二进制还必须用于 `ghcr.io/pengkang0322/sub2api:版本`。只发布镜像不能用于网页更新。新 `release` 不以源码报告为前置，仍必须通过同次制品运行时验收与发布校验；单独 `package` 成功仅得到未发布制品。
+现行发布按本文“正式标签交接与 Jenkins 打包”执行。正式 Release 必须是非 prerelease，包含 `sub2api_版本_linux_amd64.tar.gz` 和 `checksums.txt`；同一二进制还必须用于 `ghcr.io/yb1320057104/sub2api:版本`。只发布镜像不能用于网页更新。新 `release` 不以源码报告为前置，仍必须通过同次制品运行时验收与发布校验；单独 `package` 成功仅得到未发布制品。
 
 当前发布目标为生产服务器对应的 `linux/amd64`。其他架构须先扩展发布矩阵。
 
@@ -262,7 +268,7 @@ New API 的 HTTP/SSE 路径在首个非空 data 帧到达时记录首字，因�
 
 ### 私库凭据
 
-- 网页更新：`UPDATE_GITHUB_TOKEN` 使用仅允许 `pengkang0322/sub2api`、`Contents: read` 的 fine-grained token；通过服务器环境配置注入。
+- 网页更新：`UPDATE_GITHUB_TOKEN` 使用仅允许 `yb1320057104/sub2api`、`Contents: read` 的 fine-grained token；通过服务器环境配置注入。
 - Docker 拉取：登录 `ghcr.io`，使用可读取此镜像的凭据；GitHub Packages 的经典 token 需要 `read:packages`。
 - Jenkins 源码读取使用本私库只读 deploy key。正式发布使用独立发布凭据，具备本私库 Release 写入与 GHCR 包写入权限，按 Jenkins 运维说明保存；不把开发者宽权限 token 或服务器密码复制进源码/日志。没有发布凭据时仅能打包，不能称为发布完成。
 - `.env.pk` 已加入忽略列表；`deploy/.env.pk.example` 仅含空凭据示例。绝不把真实 token、数据库配置或服务器密码写入仓库。
@@ -280,7 +286,7 @@ git fetch origin --no-tags
 git branch --list
 git branch --remotes
 git ls-remote --tags origin
-gh pr list --repo pengkang0322/sub2api --state open
+gh pr list --repo yb1320057104/sub2api --state open
 git fetch upstream --no-tags
 ```
 
@@ -361,7 +367,7 @@ PK_COMPOSE_ARGS=(-f "${PK_COMPOSE_FILE:?请设置已核对的 Compose 文件绝�
 : "${PK_APP_SERVICE:?请设置已核对的应用服务名}"
 : "${TARGET_PK_VERSION:?请设置已核对的私库目标版本}"
 : "${STOP_GRACE_SECONDS:?请设置已核对的停止宽限秒数}"
-docker pull "ghcr.io/pengkang0322/sub2api:$TARGET_PK_VERSION"
+docker pull "ghcr.io/yb1320057104/sub2api:$TARGET_PK_VERSION"
 docker compose "${PK_COMPOSE_ARGS[@]}" stop --timeout "$STOP_GRACE_SECONDS" "$PK_APP_SERVICE"
 docker compose "${PK_COMPOSE_ARGS[@]}" run --rm --no-deps "$PK_APP_SERVICE" rm -f /app/data/bin/.image-seed.sha256
 docker compose "${PK_COMPOSE_ARGS[@]}" up -d --force-recreate --no-deps "$PK_APP_SERVICE"

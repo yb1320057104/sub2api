@@ -1,6 +1,6 @@
 # Sub2API Deployment Files
 
-This private edition installs, updates, and restores from `pengkang0322/sub2api` only. Follow [PK_MAINTENANCE.md](../PK_MAINTENANCE.md) for the approved production procedure; preserve the existing database, Redis, ports, secrets, and data volumes. Current private releases support `linux/amd64`.
+This private edition installs, updates, and restores from `yb1320057104/sub2api` only. Follow [PK_MAINTENANCE.md](../PK_MAINTENANCE.md) for the approved production procedure; preserve the existing database, Redis, ports, secrets, and data volumes. Current private releases support `linux/amd64`.
 
 **新服务器安装：请按 [PK版中文部署指南](PK_DEPLOYMENT_CN.md) 操作。** It covers private access, environment configuration, startup checks, reverse proxy setup, web updates, and recovery.
 
@@ -36,7 +36,7 @@ This private edition installs, updates, and restores from `pengkang0322/sub2api`
 
 ## Apple container Deployment
 
-The current PK workflow publishes only `linux/amd64`, so Apple-silicon startup is unavailable by default. The script requires an explicitly selected image from `ghcr.io/pengkang0322/sub2api` that has been verified to support `linux/arm64`; it never substitutes an upstream image. Existing stacks can still be inspected or stopped.
+The current PK workflow publishes only `linux/amd64`, so Apple-silicon startup is unavailable by default. The script requires an explicitly selected image from `ghcr.io/yb1320057104/sub2api` that has been verified to support `linux/arm64`; it never substitutes an upstream image. Existing stacks can still be inspected or stopped.
 
 See [APPLE_CONTAINER.md](./APPLE_CONTAINER.md) for configuration, upgrades, persistence, networking behavior, and limitations.
 
@@ -197,7 +197,7 @@ docker compose down -v
 | `ADMIN_EMAIL` | No | *(auto-generated)* | Admin email (login username) |
 | `ADMIN_PASSWORD` | No | *(auto-generated)* | Admin password (8-72 bytes) |
 | `TZ` | No | `Asia/Shanghai` | Timezone |
-| `UPDATE_GITHUB_TOKEN` | Yes | *(empty)* | Token with Contents: read on `pengkang0322/sub2api`, used for private release checks and asset downloads. |
+| `UPDATE_GITHUB_TOKEN` | Yes | *(empty)* | Token with Contents: read on `yb1320057104/sub2api`, used for private release checks and asset downloads. |
 | `SUB2API_PK_VERSION` | **Yes** | *(empty)* | Private GHCR tag; select the backup-compatible approved version explicitly. `latest` is not accepted by the PK compose files. |
 | `GEMINI_OAUTH_CLIENT_ID` | No | *(builtin)* | Google OAuth client ID (Gemini OAuth). Leave empty to use the built-in Gemini CLI client. |
 | `GEMINI_OAUTH_CLIENT_SECRET` | No | *(builtin)* | Google OAuth client secret (Gemini OAuth). Leave empty to use the built-in Gemini CLI client. |
@@ -333,7 +333,7 @@ GEMINI_OAUTH_CLIENT_SECRET=GOCSPX-your-client-secret
 
 The legacy binary installer is disabled for the PK private edition. Follow [PK_MAINTENANCE.md](../PK_MAINTENANCE.md) for installation, updates, and recovery; all program downloads come from the private repository.
 
-Private release artifacts are available through authenticated access to [pengkang0322/sub2api Releases](https://github.com/pengkang0322/sub2api/releases). Existing systemd installations require an explicit migration plan preserving their paths and configuration; do not replace them with a legacy template.
+Private release artifacts are available through authenticated access to [yb1320057104/sub2api Releases](https://github.com/yb1320057104/sub2api/releases). Existing systemd installations require an explicit migration plan preserving their paths and configuration; do not replace them with a legacy template.
 
 ### Service Management
 

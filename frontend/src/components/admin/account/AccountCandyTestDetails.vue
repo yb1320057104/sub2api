@@ -21,7 +21,7 @@
         <div><dt class="text-xs text-gray-500">{{ t('accountCandy.source') }}</dt><dd class="mt-1 text-gray-900 dark:text-white">{{ t(details.origin === 'authorization' ? 'radar.authorizationTest' : details.source === 'scheduled' ? 'accountCandy.scheduled' : 'accountCandy.manual') }}</dd></div>
       </dl>
       <p v-if="details.started_at_estimated" class="text-xs text-gray-500">{{ t('radar.authorizationTimeFallback') }}</p>
-      <p v-if="details.moved_to_group_id != null" class="rounded-lg bg-amber-50 p-3 text-sm text-amber-800 dark:bg-amber-950/30 dark:text-amber-300">{{ t('accountCandy.moved', { group: groupName(details.moved_to_group_id) }) }}</p>
+      <p v-if="movedGroupIDs.length" class="break-words rounded-lg bg-amber-50 p-3 text-sm text-amber-800 dark:bg-amber-950/30 dark:text-amber-300">{{ t('accountCandy.moved', { group: movedGroupIDs.map(groupName).join(' / ') }) }}</p>
       <p v-if="details.move_error" class="rounded-lg bg-red-50 p-3 text-sm text-red-700 dark:bg-red-950/30 dark:text-red-300">{{ t('accountCandy.moveFailed') }}: {{ details.move_error }}</p>
       <p v-if="error" class="text-sm text-red-600 dark:text-red-400" role="alert">{{ error }}</p>
       <section>
@@ -62,7 +62,7 @@ import { useI18n } from 'vue-i18n'
 import { useIntervalFn } from '@vueuse/core'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import Select from '@/components/common/Select.vue'
-import { accountCandyAPI, type AccountCandyDetails, type AccountCandyResult } from '@/api/admin/accountCandy'
+import { accountCandyAPI, getCandyMovedGroupIDs, type AccountCandyDetails, type AccountCandyResult } from '@/api/admin/accountCandy'
 import { extractApiErrorMessage } from '@/utils/apiError'
 import { formatDateTime } from '@/utils/format'
 
@@ -76,6 +76,7 @@ const props = defineProps<{
 const emit = defineEmits<{ close: [] }>()
 const { t } = useI18n()
 const details = ref<AccountCandyDetails | null>(null)
+const movedGroupIDs = computed(() => getCandyMovedGroupIDs(details.value))
 const loading = ref(false)
 const error = ref('')
 let controller: AbortController | null = null
