@@ -16,6 +16,7 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/binancepay"
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/zeromicro/go-zero/core/collection"
 )
 
@@ -142,6 +143,18 @@ func TestPKBinanceProxyStartupUsesLoadedConfig(t *testing.T) {
 	}
 }
 
+func TestPKBinanceProxyPreflightConfigurationKeepsTypedHint(t *testing.T) {
+	err := validateBinanceAccountProxy("socks5://fixture-user:fixture-pass@localhost:1234", true)
+	if !errors.Is(err, binancepay.ErrProxyPreflightConfiguration) {
+		t.Fatalf("SOCKS5 preflight should retain the typed configuration error: %v", err)
+	}
+	for _, raw := range []string{"http://fixture-user:fixture-pass@localhost:1234/private", "http://fixture-user:fixture-pass@localhost:99999", "http://fixture-user:fixture-pass@localhost:bad"} {
+		if err := validateBinanceAccountProxy(raw, true); !errors.Is(err, errBinanceAccountProxy) {
+			t.Fatal("malformed proxy must retain the generic safe error")
+		}
+	}
+}
+
 type pkBinanceProxyEncryptor struct{}
 
 func (pkBinanceProxyEncryptor) Encrypt(value string) (string, error) { return "cipher:" + value, nil }
@@ -243,6 +256,68 @@ func TestPKBinanceAccountProxyPreflightFailureDoesNotReachBinance(t *testing.T) 
 
 func pkBinanceAccountRows(proxy string, preflight bool) *sqlmock.Rows {
 	return sqlmock.NewRows([]string{"id", "name", "recipient_uid", "enabled", "ttl", "multiplier", "key", "secret", "proxy", "preflight", "checked", "error", "created", "updated", "has_orders"}).AddRow(1, "fixture", "12345", true, 30, "1.000000", "cipher:key", "cipher:secret", proxy, preflight, nil, "", time.Now(), time.Now(), true)
+}
+
+func TestPKBinanceAccountProxySavePreflightHints(t *testing.T) {
+	for _, tc := range []struct {
+		name, savedProxy, replacement, wantReason string
+		create, savedPreflight, preflight         bool
+	}{
+		{name: "new SOCKS preflight", create: true, replacement: "socks5://fixture-user:fixture-pass@proxy.test:1080", preflight: true, wantReason: "BINANCE_PROXY_PREFLIGHT_UNSUPPORTED"},
+		{name: "replacement SOCKS preflight", savedProxy: "http://proxy.test:3128", replacement: "socks5://fixture-user:fixture-pass@proxy.test:1080", preflight: true, wantReason: "BINANCE_PROXY_PREFLIGHT_UNSUPPORTED"},
+		{name: "enable saved SOCKS preflight", savedProxy: "socks5://fixture-user:fixture-pass@proxy.test:1080", preflight: true, wantReason: "BINANCE_PROXY_PREFLIGHT_UNSUPPORTED"},
+		{name: "enable saved HTTP without authentication", savedProxy: "http://proxy.test:3128", preflight: true, wantReason: "BINANCE_PROXY_PREFLIGHT_UNSUPPORTED"},
+		{name: "enable saved HTTP missing password", savedProxy: "http://fixture-user@proxy.test:3128", preflight: true, wantReason: "BINANCE_PROXY_PREFLIGHT_UNSUPPORTED"},
+		{name: "malformed replacement stays generic", replacement: "http://fixture-user:fixture-pass@proxy.test:99999", preflight: true, wantReason: "BINANCE_PROXY_INVALID"},
+		{name: "malformed saved proxy stays generic", savedProxy: "http://fixture-user:fixture-pass@proxy.test:99999", preflight: true, wantReason: "BINANCE_PROXY_INVALID"},
+		{name: "enable without proxy", preflight: true, wantReason: "BINANCE_PROXY_REQUIRED"},
+		{name: "disable saved SOCKS preflight", savedProxy: "socks5://fixture-user:fixture-pass@proxy.test:1080", savedPreflight: true},
+		{name: "enable authenticated gateway", savedProxy: "https://fixture-user:fixture-pass@proxy.test:3128", preflight: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = db.Close() }()
+			proxyCiphertext := ""
+			if tc.savedProxy != "" {
+				proxyCiphertext = "cipher:" + tc.savedProxy
+			}
+			id := int64(1)
+			mock.ExpectBegin()
+			if tc.create {
+				id = 0
+			} else {
+				mock.ExpectQuery(`SELECT a.id, a.name, a.recipient_uid`).WithArgs(id).WillReturnRows(pkBinanceAccountRows(proxyCiphertext, tc.savedPreflight))
+			}
+			if tc.wantReason != "" {
+				mock.ExpectRollback()
+			} else {
+				mock.ExpectQuery(`SELECT poll_token<>'' AND api_locked_until>NOW\(\)`).WithArgs(id).WillReturnRows(sqlmock.NewRows([]string{"polling"}).AddRow(false))
+				mock.ExpectExec(`UPDATE binance_recharge_accounts SET name=\$2`).WithArgs(id, "fixture", "12345", "cipher:key", "cipher:secret", proxyCiphertext, tc.preflight, true, 30, "1.000000").WillReturnResult(sqlmock.NewResult(0, 1))
+				mock.ExpectQuery(`SELECT a.id, a.name, a.recipient_uid`).WithArgs(id).WillReturnRows(pkBinanceAccountRows(proxyCiphertext, tc.preflight))
+				mock.ExpectCommit()
+			}
+			svc := NewBinanceRechargeService(db, pkBinanceProxyEncryptor{}, &pkBinanceBillsClient{}, nil, nil)
+			account, err := svc.SaveAccount(context.Background(), id, BinanceRechargeAccountInput{Name: "fixture", RecipientUID: "12345", Enabled: true, OrderTTLMinutes: 30, ProxyURL: tc.replacement, ProxyPreflight: &tc.preflight})
+			if tc.wantReason != "" {
+				if infraerrors.Reason(err) != tc.wantReason || infraerrors.Code(err) != http.StatusBadRequest || account != nil {
+					t.Fatalf("save must reject with safe configuration hint %s: %v", tc.wantReason, err)
+				}
+				for _, private := range []string{"fixture-user", "fixture-pass", "proxy.test", "cipher:"} {
+					if strings.Contains(err.Error(), private) {
+						t.Fatal("save error exposed private proxy information")
+					}
+				}
+			} else if err != nil || account == nil || account.ProxyPreflight != tc.preflight {
+				t.Fatalf("supported preflight configuration was rejected: %v", err)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
 }
 
 func TestPKBinanceAccountProxySavePreserveClearAndMask(t *testing.T) {

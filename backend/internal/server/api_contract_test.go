@@ -2143,6 +2143,10 @@ func (stubProxyRepo) ListByIDs(ctx context.Context, ids []int64) ([]service.Prox
 	return nil, errors.New("not implemented")
 }
 
+func (stubProxyRepo) UpdateProtocol(context.Context, int64, string) error {
+	panic("unexpected UpdateProtocol call")
+}
+
 func (stubProxyRepo) Update(ctx context.Context, proxy *service.Proxy) error {
 	return errors.New("not implemented")
 }

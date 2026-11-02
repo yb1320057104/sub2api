@@ -41,6 +41,10 @@ func (r *contentModerationTestProxyRepo) ListByIDs(ctx context.Context, ids []in
 	panic("not implemented")
 }
 
+func (r *contentModerationTestProxyRepo) UpdateProtocol(context.Context, int64, string) error {
+	panic("unexpected UpdateProtocol call")
+}
+
 func (r *contentModerationTestProxyRepo) Update(ctx context.Context, proxy *Proxy) error {
 	panic("not implemented")
 }

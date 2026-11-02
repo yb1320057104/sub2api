@@ -586,6 +586,7 @@ func registerProxyRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUpAuth
 		proxies.POST("/data", h.Admin.Proxy.ImportData)
 		proxies.GET("/:id", h.Admin.Proxy.GetByID)
 		proxies.POST("", h.Admin.Proxy.Create)
+		proxies.POST("/batch-protocol", h.Admin.Proxy.BatchUpdateProtocol)
 		proxies.PUT("/:id", h.Admin.Proxy.Update)
 		proxies.DELETE("/:id", h.Admin.Proxy.Delete)
 		proxies.POST("/:id/test", h.Admin.Proxy.Test)

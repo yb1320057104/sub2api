@@ -64,6 +64,24 @@
               <Icon name="shield" size="md" class="mr-2" :class="batchQualityChecking ? 'animate-pulse' : ''" />
               {{ t('admin.proxies.batchQualityCheck') }}
             </button>
+            <template v-if="selectedCount > 0">
+              <button
+                @click="openBatchProtocolSwitch('http')"
+                :disabled="batchProtocolUpdating || loading"
+                class="btn btn-secondary"
+                :title="t('admin.proxies.batchProtocolHttp')"
+              >
+                {{ t('admin.proxies.batchProtocolHttp') }}
+              </button>
+              <button
+                @click="openBatchProtocolSwitch('https')"
+                :disabled="batchProtocolUpdating || loading"
+                class="btn btn-secondary"
+                :title="t('admin.proxies.batchProtocolHttps')"
+              >
+                {{ t('admin.proxies.batchProtocolHttps') }}
+              </button>
+            </template>
             <button
               @click="openBatchDelete"
               :disabled="selectedCount === 0"
@@ -825,6 +843,23 @@
       @cancel="showBatchDeleteDialog = false"
     />
     <ConfirmDialog
+      :show="batchProtocolRequest !== null"
+      :title="t('admin.proxies.batchProtocolTitle')"
+      :message="t('admin.proxies.batchProtocolConfirm', {
+        count: batchProtocolRequest?.ids.length || 0,
+        protocol: batchProtocolRequest?.protocol.toUpperCase() || ''
+      })"
+      @confirm="confirmBatchProtocolSwitch"
+      @cancel="batchProtocolRequest = null"
+    >
+      <p class="text-sm text-gray-600 dark:text-gray-400">
+        {{ t('admin.proxies.batchProtocolCompatibility') }}
+      </p>
+      <p class="text-sm text-gray-600 dark:text-gray-400">
+        {{ t('admin.proxies.batchProtocolHttpsHint') }}
+      </p>
+    </ConfirmDialog>
+    <ConfirmDialog
       :show="showExportDataDialog"
       :title="t('admin.proxies.dataExport')"
       :message="t('admin.proxies.dataExportConfirmMessage')"
@@ -1073,6 +1108,9 @@ const testingProxyIds = ref<Set<number>>(new Set())
 const qualityCheckingProxyIds = ref<Set<number>>(new Set())
 const batchTesting = ref(false)
 const batchQualityChecking = ref(false)
+const batchProtocolUpdating = ref(false)
+const batchProtocolMaxIds = 500
+const batchProtocolRequest = ref<{ ids: number[]; protocol: 'http' | 'https' } | null>(null)
 const proxyTableRef = ref<HTMLElement | null>(null)
 const {
   selectedSet: selectedProxyIds,
@@ -1910,6 +1948,45 @@ const handleBatchQualityCheck = async () => {
     console.error('Error batch checking quality:', error)
   } finally {
     batchQualityChecking.value = false
+  }
+}
+
+const openBatchProtocolSwitch = (protocol: 'http' | 'https') => {
+  if (batchProtocolUpdating.value || loading.value || selectedCount.value === 0) return
+  if (selectedCount.value > batchProtocolMaxIds) {
+    appStore.showError(t('admin.proxies.batchProtocolLimit', { max: batchProtocolMaxIds }))
+    return
+  }
+
+  batchProtocolRequest.value = { ids: Array.from(selectedProxyIds.value), protocol }
+}
+
+const confirmBatchProtocolSwitch = async () => {
+  if (batchProtocolUpdating.value || !batchProtocolRequest.value) return
+  const { ids, protocol } = batchProtocolRequest.value
+  // Freeze the confirmed IDs and close the dialog before the asynchronous write.
+  batchProtocolRequest.value = null
+
+  batchProtocolUpdating.value = true
+  try {
+    const result = await adminAPI.proxies.batchUpdateProtocol(ids, protocol)
+    const updated = result.updated_ids?.length || 0
+    const skipped = result.skipped?.length || 0
+    if (skipped > 0) {
+      appStore.showInfo(t('admin.proxies.batchProtocolPartial', { protocol: protocol.toUpperCase(), updated, skipped }))
+    } else if (updated > 0) {
+      appStore.showSuccess(t('admin.proxies.batchProtocolDone', { protocol: protocol.toUpperCase(), updated, skipped }))
+    }
+    batchUpdate((selected) => {
+      result.updated_ids?.forEach((id) => selected.delete(id))
+      result.skipped?.forEach(({ id }) => selected.add(id))
+    })
+    await loadProxies()
+  } catch {
+    batchUpdate((selected) => ids.forEach((id) => selected.add(id)))
+    appStore.showError(t('admin.proxies.batchProtocolFailed'))
+  } finally {
+    batchProtocolUpdating.value = false
   }
 }
 

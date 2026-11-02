@@ -822,7 +822,7 @@ func TestPKBinanceProxyPreflightCancellationAndConfiguration(t *testing.T) {
 		client.CloseIdleConnections()
 	}
 	for _, proxy := range []string{"", "socks5://fixture-user:fixture-pass@localhost:1234", "socks5h://fixture-user:fixture-pass@localhost:1234", "http://localhost:1234", "https://fixture-user@localhost:1234"} {
-		if _, err := binancepay.NewClientWithOptions(binancepay.ClientOptions{ProxyURL: proxy, ProxyPreflight: true}); err == nil {
+		if _, err := binancepay.NewClientWithOptions(binancepay.ClientOptions{ProxyURL: proxy, ProxyPreflight: true}); !errors.Is(err, binancepay.ErrProxyPreflightConfiguration) {
 			t.Error("preflight requires an authenticated HTTP(S) gateway")
 		}
 	}

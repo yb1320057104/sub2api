@@ -123,6 +123,70 @@ func (r *proxyRepository) Update(ctx context.Context, proxyIn *service.Proxy) er
 	return nil
 }
 
+// UpdateProtocol deliberately avoids a read/modify/write of the full proxy.
+// Concurrent changes to credentials, host, expiry or fallback remain intact.
+func (r *proxyRepository) UpdateProtocol(ctx context.Context, id int64, protocol string) error {
+	client := r.client
+	var tx *dbent.Tx
+	if contextTx := dbent.TxFromContext(ctx); contextTx != nil {
+		client = contextTx.Client()
+	} else {
+		var err error
+		tx, err = r.client.Tx(ctx)
+		if err != nil && err != dbent.ErrTxStarted {
+			return err
+		}
+		if tx != nil {
+			defer func() { _ = tx.Rollback() }()
+			ctx = dbent.NewTxContext(ctx, tx)
+			client = tx.Client()
+		}
+	}
+
+	current, err := lockProxyProbeIdentity(ctx, client, id)
+	if err != nil {
+		return err
+	}
+	if current.protocol != protocol {
+		if _, err := client.ExecContext(ctx, `UPDATE proxies SET protocol = $1, updated_at = NOW() WHERE id = $2 AND deleted_at IS NULL`, protocol, id); err != nil {
+			return err
+		}
+		if _, err := invalidateProxyProbeSnapshots(ctx, client, id); err != nil {
+			return err
+		}
+		// Every bound account may have a cached proxy URL, even without a
+		// persisted billing probe snapshot. Refresh all of them after commit.
+		rows, err := client.QueryContext(ctx, `SELECT id FROM accounts WHERE proxy_id = $1 AND deleted_at IS NULL`, id)
+		if err != nil {
+			return err
+		}
+		var accountIDs []int64
+		for rows.Next() {
+			var accountID int64
+			if err := rows.Scan(&accountID); err != nil {
+				_ = rows.Close()
+				return err
+			}
+			accountIDs = append(accountIDs, accountID)
+		}
+		err = rows.Err()
+		closeErr := rows.Close()
+		if err != nil {
+			return err
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		if err := enqueueProxyProbeAccountChanges(ctx, client, accountIDs); err != nil {
+			return err
+		}
+	}
+	if tx != nil {
+		return tx.Commit()
+	}
+	return nil
+}
+
 type proxyProbeIdentity struct {
 	protocol string
 	host     string

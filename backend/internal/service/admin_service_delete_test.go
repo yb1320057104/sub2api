@@ -358,6 +358,10 @@ func (s *proxyRepoStub) Update(ctx context.Context, proxy *Proxy) error {
 	panic("unexpected Update call")
 }
 
+func (s *proxyRepoStub) UpdateProtocol(context.Context, int64, string) error {
+	panic("unexpected UpdateProtocol call")
+}
+
 func (s *proxyRepoStub) Delete(ctx context.Context, id int64) error {
 	s.deletedIDs = append(s.deletedIDs, id)
 	return s.deleteErr

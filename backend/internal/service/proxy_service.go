@@ -19,6 +19,7 @@ type ProxyRepository interface {
 	GetByID(ctx context.Context, id int64) (*Proxy, error)
 	ListByIDs(ctx context.Context, ids []int64) ([]Proxy, error)
 	Update(ctx context.Context, proxy *Proxy) error
+	UpdateProtocol(ctx context.Context, id int64, protocol string) error
 	Delete(ctx context.Context, id int64) error
 
 	List(ctx context.Context, params pagination.PaginationParams) ([]Proxy, *pagination.PaginationResult, error)

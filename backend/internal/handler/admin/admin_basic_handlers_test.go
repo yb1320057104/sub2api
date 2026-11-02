@@ -53,6 +53,7 @@ func setupAdminRouter() (*gin.Engine, *stubAdminService) {
 	router.PUT("/api/v1/admin/proxies/:id", proxyHandler.Update)
 	router.DELETE("/api/v1/admin/proxies/:id", proxyHandler.Delete)
 	router.POST("/api/v1/admin/proxies/batch-delete", proxyHandler.BatchDelete)
+	router.POST("/api/v1/admin/proxies/batch-protocol", proxyHandler.BatchUpdateProtocol)
 	router.POST("/api/v1/admin/proxies/:id/test", proxyHandler.Test)
 	router.POST("/api/v1/admin/proxies/:id/quality-check", proxyHandler.CheckQuality)
 	router.GET("/api/v1/admin/proxies/:id/stats", proxyHandler.GetStats)
@@ -67,6 +68,47 @@ func setupAdminRouter() (*gin.Engine, *stubAdminService) {
 	router.GET("/api/v1/admin/redeem-codes/:id/stats", redeemHandler.GetStats)
 
 	return router, adminSvc
+}
+
+func TestProxyHandlerBatchUpdateProtocolNormalizesIDsAndRejectsUnsupportedProtocol(t *testing.T) {
+	router, _ := setupAdminRouter()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/proxies/batch-protocol", bytes.NewBufferString(`{"ids":[3,3,1],"protocol":"https"}`))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Contains(t, rec.Body.String(), `"updated_ids":[1,3]`)
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/admin/proxies/batch-protocol", bytes.NewBufferString(`{"ids":[1],"protocol":"socks5"}`))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+
+	for _, body := range []string{
+		`{"ids":[],"protocol":"http"}`,
+		`{"ids":[0],"protocol":"http"}`,
+		`{"ids":[1,-2],"protocol":"http"}`,
+	} {
+		rec = httptest.NewRecorder()
+		req = httptest.NewRequest(http.MethodPost, "/api/v1/admin/proxies/batch-protocol", bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(rec, req)
+		require.Equal(t, http.StatusBadRequest, rec.Code, body)
+	}
+
+	ids := make([]int64, 501)
+	for i := range ids {
+		ids[i] = int64(i + 1)
+	}
+	body, err := json.Marshal(map[string]any{"ids": ids, "protocol": "http"})
+	require.NoError(t, err)
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/admin/proxies/batch-protocol", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
 func TestUserHandlerEndpoints(t *testing.T) {

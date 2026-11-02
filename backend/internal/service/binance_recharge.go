@@ -322,6 +322,9 @@ func (s *BinanceRechargeService) SaveAccount(ctx context.Context, id int64, inpu
 		// fail later in a background poll. The client constructor performs the
 		// complete scheme/host/port validation and never falls back to direct.
 		if err := validateBinanceAccountProxy(input.ProxyURL, proxyPreflight); err != nil {
+			if errors.Is(err, binancepay.ErrProxyPreflightConfiguration) {
+				return nil, infraerrors.BadRequest("BINANCE_PROXY_PREFLIGHT_UNSUPPORTED", "开启专属代理预探测仅支持带用户名和密码的 HTTP(S) 网关；SOCKS5 或普通代理请关闭预探测")
+			}
 			return nil, infraerrors.BadRequest("BINANCE_PROXY_INVALID", "币安专属代理地址无效")
 		}
 		proxyCiphertext, err = s.encryptor.Encrypt(input.ProxyURL)
@@ -334,7 +337,17 @@ func (s *BinanceRechargeService) SaveAccount(ctx context.Context, id int64, inpu
 	}
 	if input.ProxyURL == "" && !input.ClearProxy && proxyPreflight != current.ProxyPreflight && proxyCiphertext != "" {
 		proxyURL, decryptErr := s.encryptor.Decrypt(proxyCiphertext)
-		if decryptErr != nil || proxyURL == "" || validateBinanceAccountProxy(proxyURL, proxyPreflight) != nil {
+		proxyErr := decryptErr
+		if proxyErr == nil && proxyURL == "" {
+			proxyErr = errBinanceAccountProxy
+		}
+		if proxyErr == nil {
+			proxyErr = validateBinanceAccountProxy(proxyURL, proxyPreflight)
+		}
+		if errors.Is(proxyErr, binancepay.ErrProxyPreflightConfiguration) {
+			return nil, infraerrors.BadRequest("BINANCE_PROXY_PREFLIGHT_UNSUPPORTED", "开启专属代理预探测仅支持带用户名和密码的 HTTP(S) 网关；SOCKS5 或普通代理请关闭预探测")
+		}
+		if proxyErr != nil {
 			return nil, infraerrors.BadRequest("BINANCE_PROXY_INVALID", "已保存的专属代理不支持当前预探测配置，请重新填写代理")
 		}
 	}

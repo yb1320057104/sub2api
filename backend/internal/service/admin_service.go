@@ -125,6 +125,7 @@ type AdminService interface {
 	UpdateProxy(ctx context.Context, id int64, input *UpdateProxyInput) (*Proxy, error)
 	DeleteProxy(ctx context.Context, id int64) error
 	BatchDeleteProxies(ctx context.Context, ids []int64) (*ProxyBatchDeleteResult, error)
+	BatchUpdateProxyProtocol(ctx context.Context, ids []int64, protocol string) (*ProxyBatchProtocolResult, error)
 	GetProxyAccounts(ctx context.Context, proxyID int64) ([]ProxyAccountSummary, error)
 	CheckProxyExists(ctx context.Context, host string, port int, username, password string) (bool, error)
 	TestProxy(ctx context.Context, id int64) (*ProxyTestResult, error)
@@ -573,6 +574,24 @@ type ProxyBatchDeleteResult struct {
 }
 
 type ProxyBatchDeleteSkipped struct {
+	ID     int64  `json:"id"`
+	Reason string `json:"reason"`
+}
+
+// ProxyBatchProtocolMaxIDs limits one protocol conversion request. The limit
+// is applied after duplicate IDs are removed, so repeated selection entries
+// cannot consume the batch quota.
+const ProxyBatchProtocolMaxIDs = 500
+
+// ProxyBatchProtocolResult reports each selected proxy whose update succeeded
+// or returned an error. Failure reasons are safe for display to administrators.
+type ProxyBatchProtocolResult struct {
+	Protocol   string                      `json:"protocol"`
+	UpdatedIDs []int64                     `json:"updated_ids"`
+	Skipped    []ProxyBatchProtocolSkipped `json:"skipped"`
+}
+
+type ProxyBatchProtocolSkipped struct {
 	ID     int64  `json:"id"`
 	Reason string `json:"reason"`
 }

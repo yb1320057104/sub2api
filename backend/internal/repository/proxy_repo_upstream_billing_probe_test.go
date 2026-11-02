@@ -147,3 +147,77 @@ func TestEnqueueProxyAccountChangesChunksLargePayloads(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
+
+func TestProxyUpdateProtocolOnlyIsAtomicAndRefreshesAllBoundAccounts(t *testing.T) {
+	for _, failOutbox := range []bool{false, true} {
+		name := "commit"
+		if failOutbox {
+			name = "rollback on outbox failure"
+		}
+		t.Run(name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = db.Close() })
+			client := dbent.NewClient(dbent.Driver(entsql.OpenDB(dialect.Postgres, db)))
+			t.Cleanup(func() { _ = client.Close() })
+			mock.ExpectBegin()
+			mock.ExpectQuery(`(?s)` + regexp.QuoteMeta("SELECT protocol, host, port") + `.*` + regexp.QuoteMeta("FOR NO KEY UPDATE")).
+				WithArgs(int64(9)).
+				WillReturnRows(sqlmock.NewRows([]string{"protocol", "host", "port", "username", "password", "status"}).
+					AddRow("socks5", "concurrently-edited.example", 3128, "new-user", "new-password", service.StatusActive))
+			// Assert the UPDATE cannot write back stale credentials or other fields.
+			mock.ExpectExec("^"+regexp.QuoteMeta("UPDATE proxies SET protocol = $1, updated_at = NOW() WHERE id = $2 AND deleted_at IS NULL")+"$").
+				WithArgs("https", int64(9)).WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectQuery(`(?s)UPDATE accounts.*- 'upstream_billing_probe'.*- 'ollama_cloud_usage_snapshot'.*- 'opencode_go_usage_snapshot'.*RETURNING id`).
+				WithArgs(int64(9)).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(17)))
+			// Account 18 has no probe snapshot but still needs its cached proxy refreshed.
+			mock.ExpectQuery(regexp.QuoteMeta("SELECT id FROM accounts WHERE proxy_id = $1 AND deleted_at IS NULL")).
+				WithArgs(int64(9)).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(17)).AddRow(int64(18)))
+			outbox := mock.ExpectExec(regexp.QuoteMeta("INSERT INTO scheduler_outbox (event_type, account_id, group_id, payload)")).
+				WithArgs(service.SchedulerOutboxEventAccountBulkChanged, nil, nil, accountIDsPayloadMatcher{want: []int64{17, 18}})
+			if failOutbox {
+				outbox.WillReturnError(errors.New("outbox failed"))
+				mock.ExpectRollback()
+			} else {
+				outbox.WillReturnResult(sqlmock.NewResult(1, 1))
+				mock.ExpectCommit()
+			}
+			err = newProxyRepositoryWithSQL(client, db).UpdateProtocol(context.Background(), 9, "https")
+			if failOutbox {
+				require.EqualError(t, err, "outbox failed")
+			} else {
+				require.NoError(t, err)
+			}
+			require.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}
+
+func TestProxyUpdateProtocolNoopAndMissingProxy(t *testing.T) {
+	for _, exists := range []bool{true, false} {
+		db, mock, err := sqlmock.New()
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = db.Close() })
+		client := dbent.NewClient(dbent.Driver(entsql.OpenDB(dialect.Postgres, db)))
+		t.Cleanup(func() { _ = client.Close() })
+		mock.ExpectBegin()
+		rows := sqlmock.NewRows([]string{"protocol", "host", "port", "username", "password", "status"})
+		if exists {
+			rows.AddRow("http", "same.example", 8080, "", "", service.StatusActive)
+		}
+		mock.ExpectQuery(`(?s)` + regexp.QuoteMeta("SELECT protocol, host, port") + `.*` + regexp.QuoteMeta("FOR NO KEY UPDATE")).
+			WithArgs(int64(9)).WillReturnRows(rows)
+		if exists {
+			mock.ExpectCommit()
+		} else {
+			mock.ExpectRollback()
+		}
+		err = newProxyRepositoryWithSQL(client, db).UpdateProtocol(context.Background(), 9, "http")
+		if exists {
+			require.NoError(t, err)
+		} else {
+			require.ErrorIs(t, err, service.ErrProxyNotFound)
+		}
+		require.NoError(t, mock.ExpectationsWereMet())
+	}
+}

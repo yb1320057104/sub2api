@@ -8,6 +8,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
+	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -262,6 +263,47 @@ func (h *ProxyHandler) BatchDelete(c *gin.Context) {
 		return
 	}
 
+	response.Success(c, result)
+}
+
+// BatchUpdateProtocol changes only the URL scheme for the selected proxies.
+// POST /api/v1/admin/proxies/batch-protocol
+func (h *ProxyHandler) BatchUpdateProtocol(c *gin.Context) {
+	var req struct {
+		IDs      []int64 `json:"ids" binding:"required,min=1"`
+		Protocol string  `json:"protocol" binding:"required,oneof=http https"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	for _, id := range req.IDs {
+		if id <= 0 {
+			response.BadRequest(c, "proxy IDs must be positive")
+			return
+		}
+	}
+
+	ids := normalizeInt64IDList(req.IDs)
+	if len(ids) == 0 {
+		response.BadRequest(c, "ids must contain at least one positive proxy ID")
+		return
+	}
+	if len(ids) > service.ProxyBatchProtocolMaxIDs {
+		response.BadRequest(c, "at most 500 proxies can be updated per batch")
+		return
+	}
+
+	middleware.SetAuditAction(c, "admin.proxies.protocol.update")
+	middleware.SetAuditExtra(c, map[string]any{
+		"proxy_count": len(ids),
+		"protocol":    req.Protocol,
+	})
+	result, err := h.adminService.BatchUpdateProxyProtocol(c.Request.Context(), ids, req.Protocol)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
 	response.Success(c, result)
 }
 

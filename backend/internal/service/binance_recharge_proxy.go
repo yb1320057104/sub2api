@@ -17,6 +17,11 @@ func validateBinanceAccountProxy(proxyURL string, preflight bool) error {
 	}
 	client, err := binancepay.NewClientWithOptions(binancepay.ClientOptions{ProxyURL: proxyURL, ProxyPreflight: preflight})
 	if err != nil {
+		// Only this known configuration hint may reach callers. Keep other
+		// parser/transport details behind the generic safe error.
+		if errors.Is(err, binancepay.ErrProxyPreflightConfiguration) {
+			return binancepay.ErrProxyPreflightConfiguration
+		}
 		return errBinanceAccountProxy
 	}
 	client.CloseIdleConnections()

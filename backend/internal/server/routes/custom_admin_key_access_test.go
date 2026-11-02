@@ -96,7 +96,7 @@ func TestScopedAdminRegisteredRoutesEnforceDefaultDenyAndAccountScope(t *testing
 			keys := &scopedRouteKeys{}
 			settings := service.NewSettingService(nil, nil)
 			settings.SetScopedAdminKeyRepository(keys)
-			key, _, err := settings.CreateScopedAdminKey(context.Background(), service.ScopedAdminKeyInput{Name: "路由验收", Enabled: true, Policy: adminaccess.Policy{Rules: []adminaccess.Rule{rule}}}, 9)
+			key, _, err := settings.CreateScopedAdminKey(context.Background(), service.ScopedAdminKeyInput{Name: "路由验收", Enabled: true, Policy: adminaccess.Policy{Rules: []adminaccess.Rule{rule}, GlobalPermissions: []string{"proxies.read"}}}, 9)
 			require.NoError(t, err)
 			users := service.NewUserService(&scopedRouteUsers{}, nil, nil, nil)
 			auth := middleware.NewAdminAuthMiddleware(nil, users, settings, nil)
@@ -118,6 +118,7 @@ func TestScopedAdminRegisteredRoutesEnforceDefaultDenyAndAccountScope(t *testing
 				{"GET", "/api/v1/admin/payment/orders"},
 				{"POST", "/api/v1/admin/payment/orders/1/refund"},
 				{"PUT", "/api/v1/admin/payment/config"},
+				{"POST", "/api/v1/admin/proxies/batch-protocol"},
 			} {
 				req := httptest.NewRequest(tc.method, tc.path, nil)
 				req.Header.Set("x-api-key", key)

@@ -232,6 +232,23 @@ export async function batchDelete(ids: number[]): Promise<{
   return data
 }
 
+/**
+ * Batch switch selected proxies to HTTP or HTTPS while preserving all other
+ * proxy fields (credentials, endpoint, status, expiry and fallback settings).
+ */
+export async function batchUpdateProtocol(ids: number[], protocol: 'http' | 'https'): Promise<{
+  protocol: 'http' | 'https'
+  updated_ids: number[]
+  skipped: Array<{ id: number; reason: string }>
+}> {
+  const { data } = await apiClient.post<{
+    protocol: 'http' | 'https'
+    updated_ids: number[]
+    skipped: Array<{ id: number; reason: string }>
+  }>('/admin/proxies/batch-protocol', { ids, protocol })
+  return data
+}
+
 export async function exportData(options?: {
   ids?: number[]
   filters?: {
@@ -279,6 +296,7 @@ export const proxiesAPI = {
   getProxyAccounts,
   batchCreate,
   batchDelete,
+  batchUpdateProtocol,
   exportData,
   importData
 }

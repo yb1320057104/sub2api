@@ -2,9 +2,11 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
@@ -199,6 +201,63 @@ func (s *adminServiceImpl) BatchDeleteProxies(ctx context.Context, ids []int64) 
 			continue
 		}
 		result.DeletedIDs = append(result.DeletedIDs, id)
+	}
+
+	return result, nil
+}
+
+// BatchUpdateProxyProtocol changes only the scheme used to build a proxy URL.
+// The repository updates only protocol and updated_at under a row lock, and
+// invalidates bound account probe snapshots and scheduler entries atomically.
+// Credentials, host/port, status, expiry, fallback settings and account bindings
+// are preserved, including concurrent edits to those fields.
+func (s *adminServiceImpl) BatchUpdateProxyProtocol(ctx context.Context, ids []int64, protocol string) (*ProxyBatchProtocolResult, error) {
+	protocol = strings.ToLower(strings.TrimSpace(protocol))
+	if protocol != "http" && protocol != "https" {
+		return nil, infraerrors.BadRequest("PROXY_PROTOCOL_INVALID", "protocol must be http or https")
+	}
+
+	uniqueIDs := make([]int64, 0, len(ids))
+	seen := make(map[int64]struct{}, len(ids))
+	for _, id := range ids {
+		if id <= 0 {
+			return nil, infraerrors.BadRequest("PROXY_ID_INVALID", "proxy IDs must be positive")
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		uniqueIDs = append(uniqueIDs, id)
+	}
+	if len(uniqueIDs) == 0 {
+		return nil, infraerrors.BadRequest("PROXY_IDS_REQUIRED", "at least one proxy ID is required")
+	}
+	if len(uniqueIDs) > ProxyBatchProtocolMaxIDs {
+		return nil, infraerrors.BadRequest("PROXY_BATCH_TOO_LARGE", fmt.Sprintf("at most %d proxies can be updated per batch", ProxyBatchProtocolMaxIDs))
+	}
+
+	result := &ProxyBatchProtocolResult{
+		Protocol:   protocol,
+		UpdatedIDs: make([]int64, 0, len(uniqueIDs)),
+		Skipped:    make([]ProxyBatchProtocolSkipped, 0),
+	}
+	for _, id := range uniqueIDs {
+		if err := s.proxyRepo.UpdateProtocol(ctx, id, protocol); err != nil {
+			reason := "proxy protocol update failed"
+			if errors.Is(err, ErrProxyNotFound) {
+				reason = "proxy not found"
+			} else if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				reason = "proxy protocol update interrupted"
+			}
+			result.Skipped = append(result.Skipped, ProxyBatchProtocolSkipped{ID: id, Reason: reason})
+			continue
+		}
+		result.UpdatedIDs = append(result.UpdatedIDs, id)
+		if s.proxyLatencyCache != nil {
+			if err := s.proxyLatencyCache.DeleteProxyLatency(ctx, id); err != nil {
+				logger.LegacyPrintf("service.admin", "Warning: clear proxy latency cache after protocol change failed (proxy_id=%d)", id)
+			}
+		}
 	}
 
 	return result, nil

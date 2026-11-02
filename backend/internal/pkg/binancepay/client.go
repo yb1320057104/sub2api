@@ -66,6 +66,12 @@ type ClientOptions struct {
 	Transport      *http.Transport
 }
 
+// ErrProxyPreflightConfiguration is returned when route preflight is enabled
+// without the authenticated HTTP(S) gateway that implements the Binance
+// preflight protocol. It intentionally contains no proxy URL or credentials
+// so callers may safely surface it as a configuration hint.
+var ErrProxyPreflightConfiguration = errors.New("binance: proxy preflight requires an authenticated HTTP(S) proxy")
+
 // NewClient accepts an optional dedicated HTTP(S) or SOCKS5 proxy. An invalid
 // proxy is an error and never silently falls back to a direct connection.
 func NewClient(proxyURL string) (*Client, error) {
@@ -90,10 +96,10 @@ func NewClientWithOptions(options ClientOptions) (*Client, error) {
 	client := NewClientWithTransport(transport)
 	if options.ProxyPreflight {
 		if proxy == nil || (proxy.Scheme != "http" && proxy.Scheme != "https") || proxy.User == nil || proxy.User.Username() == "" {
-			return nil, errors.New("binance: proxy preflight requires an authenticated HTTP(S) proxy")
+			return nil, ErrProxyPreflightConfiguration
 		}
 		if password, _ := proxy.User.Password(); password == "" {
-			return nil, errors.New("binance: proxy preflight requires an authenticated HTTP(S) proxy")
+			return nil, ErrProxyPreflightConfiguration
 		}
 		// The gateway is reached directly, not through itself or a global proxy.
 		preflightTransport := transport.Clone()
