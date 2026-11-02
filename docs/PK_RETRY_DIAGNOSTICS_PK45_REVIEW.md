@@ -27,3 +27,13 @@
 私库 `yb1320057104/sub2api` 已核实私有，pk.45 分支/tag/Release 初始未占用，无在途PR，使用唯一版本分支 `v0.2.19-pk.45`。旧标签及制品不改写。
 
 沿用已授权本机构建、服务器独立 DinD 同制品十一项验收和独立空库往返验证。只发布私库 Release 的网页更新包、Docker 镜像归档及证据，不发布GHCR；同一二进制绑定commit/tree、正式tag和main历史。用户自行切换，不部署生产，不发真实模型/账号授权/币安请求，不运行全套源码回归。
+
+## 最终发行结果
+
+- 正式提交 `a4bbf9576fde92c1c89413c0bf2f94b1e1d28a7d`，tree `2554c5e4fa6dac4032abcafffb57642c092c384c`；版本分支及正式标签均绑定该提交，提交已在私库 main 历史中。后续仅补录此结果，不移动标签、不重打已发布制品。
+- Go 1.27.3 windows/amd64 本机构建 Linux/amd64，CGO关闭、embed、trimpath、release标识；程序 SHA256 `ab82eb52008807092f5eabf8947b53c3845b82d560e5dcdabd243e1579ff1992`。本轮源码、前端产物、工具和二进制证据绑定一致。
+- Package `1793623928-a4bbf9576fde`；同一程序进入网页更新包和 Docker 镜像归档。更新包 SHA256 `f07c9a278225284027c59bb9a0c10afb59015c04f396deec963513a95b8e224a`；镜像归档 SHA256 `ea957a3c3456087aeebb2a2e67765d9d9ed5fd470b930db7329c641a9f3fabb8`；镜像ID `sha256:ee89fea2bc75dd8770f2867945d830a4fce5aa26bf84e4fc33aaccb490547b65`。
+- 服务器独立 DinD 的 `pk-artifact-v2` 十一项全部 passed/exit 0，独立空库往返七项全部通过。完整迁移清单及校验值不变，无新增迁移；禁用模拟渠道的专属代理字段及整行在 pk.44→pk.45→pk.44 后保持。实际基线程序与镜像 seed 分别绑定，保留网页更新后的混合运行环境。测试容器、数据卷、内部网络和专用 daemon 清理已验证。
+- 正式私库 Release 已发布并核对为 latest、非draft、非prerelease：[v0.2.19-pk.45](https://github.com/yb1320057104/sub2api/releases/tag/v0.2.19-pk.45)。8项资产逐项核对名称、长度及GitHub SHA256，包含网页更新包、镜像归档、checksums及本轮构建、制品和回退证据。
+- 首次发布在八项资产上传后遇到GitHub TLS网络中断，保留原草稿。只读确认资产全部uploaded且摘要相符，重验私库、main/tag、制品证据及说明文本后完成原草稿发布；未重建、删除、覆盖或重传资产。只读校验采用有限网络重试，正式发布PATCH单次执行，随后latest及八项摘要再次验证成功。
+- 本轮未执行生产切换、重启或生产数据修改，未发布GHCR；由用户手动切换 pk.45。首字计时起点及统计口径保持，不运行全套源码回归或真实模型、授权、币安接口。
