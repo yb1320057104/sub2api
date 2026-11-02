@@ -16,6 +16,8 @@ import (
 
 type prefixEncryptor struct{}
 
+func promptTestGroupID(value int64) *int64 { return &value }
+
 func (prefixEncryptor) Encrypt(value string) (string, error) { return "enc:" + value, nil }
 func (prefixEncryptor) Decrypt(value string) (string, error) {
 	if !strings.HasPrefix(value, "enc:") {
@@ -185,7 +187,7 @@ func TestConfigManagerUndecryptableTokenKeepsConfigVisibleAndRecoverable(t *test
 }
 
 func TestConfigManagerUndecryptableTokenStillFailsClosedForBlockingIntent(t *testing.T) {
-	persisted := `{"enabled":true,"blocking_enabled":true,"config_version":9,"endpoints":[{"id":"g1","name":"Guard","protocol":"openai_compatible","base_url":"http://127.0.0.1:8080","model":"m","token_ciphertext":"undecryptable","timeout_ms":1000,"input_limit":1000,"enabled":true}]}`
+	persisted := `{"enabled":true,"blocking_enabled":true,"group_ids":[1],"config_version":9,"endpoints":[{"id":"g1","name":"Guard","protocol":"openai_compatible","base_url":"http://127.0.0.1:8080","model":"m","token_ciphertext":"undecryptable","timeout_ms":1000,"input_limit":1000,"enabled":true}]}`
 	manager := NewConfigManager(nil, staticSettingRepository{values: map[string]string{
 		SettingKeyPromptAuditConfig: persisted,
 		SettingKeyRiskControl:       "true",
@@ -195,6 +197,7 @@ func TestConfigManagerUndecryptableTokenStillFailsClosedForBlockingIntent(t *tes
 
 	service := &PromptService{config: manager, evaluator: NewGuardEvaluator(NewOpenAICompatibleScanner(), nil, nil)}
 	decision, err := service.Evaluate(context.Background(), Request{
+		GroupID:  promptTestGroupID(1),
 		Protocol: "openai_chat_completions",
 		Body:     []byte(`{"messages":[{"role":"user","content":"hi"}]}`),
 	})
@@ -294,7 +297,7 @@ func TestConfigManagerColdStartOnlyFailsClosedForExplicitBlockingIntent(t *testi
 
 func TestConfigManagerStaleWeakerSnapshotFailsClosedWhenBlockingExpected(t *testing.T) {
 	manager := &ConfigManager{}
-	async := ActiveConfig{RiskControlEnabled: true, Enabled: true, BlockingEnabled: false, ConfigVersion: 1}
+	async := ActiveConfig{RiskControlEnabled: true, Enabled: true, BlockingEnabled: false, ConfigVersion: 1, GroupIDs: []int64{1}}
 	manager.snapshot.Store(&activeConfigSnapshot{active: async, storage: DefaultStorageConfig(), loadedAt: fixedClock{}.Now()})
 	manager.expected.Store(2)
 	manager.expectedBlocking.Store(true)
@@ -303,7 +306,7 @@ func TestConfigManagerStaleWeakerSnapshotFailsClosedWhenBlockingExpected(t *test
 	require.Equal(t, ModeBlocking, manager.EffectiveMode())
 
 	service := &PromptService{config: manager, evaluator: NewGuardEvaluator(nil, nil, nil)}
-	decision, err := service.Evaluate(context.Background(), Request{Protocol: "openai_chat_completions", Body: []byte(`{"messages":[{"role":"user","content":"hi"}]}`)})
+	decision, err := service.Evaluate(context.Background(), Request{GroupID: promptTestGroupID(1), Protocol: "openai_chat_completions", Body: []byte(`{"messages":[{"role":"user","content":"hi"}]}`)})
 	require.Error(t, err)
 	require.Nil(t, decision)
 	var guardErr *GuardError
@@ -353,13 +356,14 @@ func TestConfigManagerStartupLoadFailureDoesNotBlockWhenBlockingNotIntended(t *t
 func TestConfigManagerStartupLoadFailureFailsClosedWhenBlockingIntended(t *testing.T) {
 	manager := NewConfigManager(nil, errorSettingRepository{}, nil, prefixEncryptor{}, testTotpKeyConfig())
 	// Simulate intent observed before a later load failure (e.g. decrypt error).
-	manager.observeExpectedState(`{"enabled":true,"blocking_enabled":true,"config_version":3}`, true)
+	manager.observeExpectedState(`{"enabled":true,"blocking_enabled":true,"config_version":3,"group_ids":[1]}`, true)
 	manager.markConfigUntrusted()
 	require.True(t, manager.BlockingActivationDegraded())
 	require.Equal(t, ModeBlocking, manager.EffectiveMode())
 
 	service := &PromptService{config: manager, evaluator: NewGuardEvaluator(nil, nil, nil)}
 	decision, err := service.Evaluate(context.Background(), Request{
+		GroupID:  promptTestGroupID(1),
 		Protocol: "openai_chat_completions",
 		Body:     []byte(`{"messages":[{"role":"user","content":"hi"}]}`),
 	})
@@ -418,7 +422,10 @@ func TestParseLegacyConfigDefaultsMissingFieldsWithoutEnablingBlocking(t *testin
 	require.Equal(t, DefaultWorkerCount, storage.WorkerCount)
 	require.Equal(t, DefaultQueueCapacity, storage.QueueCapacity)
 	require.Equal(t, AllScannerIDs, storage.Scanners)
-	require.True(t, storage.AllGroups)
+	require.False(t, storage.AllGroups)
+	require.Empty(t, storage.GroupIDs)
+	require.Equal(t, PromptEngineRemote, storage.Engine)
+	require.Equal(t, DefaultLocalRules(), storage.LocalRules)
 }
 
 func TestUpdateConfigStrictBoundsAndKnownValues(t *testing.T) {
@@ -436,7 +443,6 @@ func TestUpdateConfigStrictBoundsAndKnownValues(t *testing.T) {
 		{name: "capacity low", mutate: func(req *UpdateConfigRequest) { req.QueueCapacity = 0 }, reason: "prompt_audit_invalid_queue_capacity"},
 		{name: "capacity high", mutate: func(req *UpdateConfigRequest) { req.QueueCapacity = MaxQueueCapacity + 1 }, reason: "prompt_audit_invalid_queue_capacity"},
 		{name: "unknown scanner", mutate: func(req *UpdateConfigRequest) { req.Scanners = []string{"made_up"} }, reason: "prompt_audit_invalid_scanner"},
-		{name: "group required", mutate: func(req *UpdateConfigRequest) { req.AllGroups = false; req.GroupIDs = nil }, reason: "prompt_audit_groups_required"},
 		{name: "group positive", mutate: func(req *UpdateConfigRequest) { req.AllGroups = false; req.GroupIDs = []int64{0} }, reason: "prompt_audit_invalid_group"},
 		{name: "timeout low", mutate: func(req *UpdateConfigRequest) { req.Endpoints[0].TimeoutMS = MinTimeoutMS - 1 }, reason: "prompt_audit_invalid_timeout"},
 		{name: "timeout high", mutate: func(req *UpdateConfigRequest) { req.Endpoints[0].TimeoutMS = MaxTimeoutMS + 1 }, reason: "prompt_audit_invalid_timeout"},
@@ -455,6 +461,97 @@ func TestUpdateConfigStrictBoundsAndKnownValues(t *testing.T) {
 			require.Equal(t, tt.reason, infraerrors.Reason(err))
 		})
 	}
+}
+
+func TestLocalPromptConfigNeedsRulesButNoNodeAndPreservesExplicitEmpty(t *testing.T) {
+	manager := &ConfigManager{}
+	req := UpdateConfigRequest{Engine: PromptEngineLocalRules, Enabled: true, BlockingEnabled: true,
+		Strategy: "priority", WorkerCount: 1, QueueCapacity: 10, AllGroups: true, GroupIDs: []int64{9, 3, 9},
+		AuditInstructions: "custom instructions", LocalRules: DefaultLocalRules()}
+	cfg, err := manager.buildNextStorage(DefaultStorageConfig(), req, 7)
+	require.NoError(t, err)
+	require.Empty(t, cfg.Endpoints)
+	require.False(t, cfg.AllGroups)
+	require.Equal(t, []int64{3, 9}, cfg.GroupIDs)
+	active, err := ActiveFromStorage(cfg, true, nil)
+	require.NoError(t, err)
+	require.True(t, active.IncludesGroup(promptTestGroupID(3)))
+	require.False(t, active.IncludesGroup(promptTestGroupID(7)))
+	require.False(t, active.IncludesGroup(nil))
+	public := PublicFromStorage(cfg, true, nil)
+	require.Equal(t, DefaultLocalRules(), public.DefaultLocalRules)
+	require.Equal(t, DefaultAuditInstructions, public.DefaultAuditInstructions)
+	require.Equal(t, req.AuditInstructions, public.AuditInstructions)
+	public.LocalRules[0].Pattern = "changed"
+	require.NotEqual(t, public.LocalRules[0].Pattern, cfg.LocalRules[0].Pattern)
+
+	req.GroupIDs = nil
+	cfg, err = manager.buildNextStorage(cfg, req, 7)
+	require.NoError(t, err, "an empty selection deliberately disables audit for all groups")
+	active, err = ActiveFromStorage(cfg, true, nil)
+	require.NoError(t, err)
+	require.False(t, active.IncludesGroup(promptTestGroupID(3)))
+
+	req.Engine, req.Scanners = PromptEngineRemote, []string{"pii"}
+	_, err = manager.buildNextStorage(cfg, req, 7)
+	require.Equal(t, "prompt_audit_endpoint_required", infraerrors.Reason(err))
+	req.Engine, req.LocalRules = PromptEngineLocalRules, []LocalRule{}
+	_, err = manager.buildNextStorage(cfg, req, 7)
+	require.Equal(t, "prompt_audit_local_rules_required", infraerrors.Reason(err))
+	req.Enabled, req.BlockingEnabled, req.AuditInstructions = false, false, ""
+	cfg, err = manager.buildNextStorage(cfg, req, 7)
+	require.NoError(t, err)
+	raw, err := json.Marshal(cfg)
+	require.NoError(t, err)
+	reloaded, err := ParseStorageConfig(string(raw))
+	require.NoError(t, err)
+	require.Empty(t, reloaded.LocalRules, "deleted rules must not reappear on reload")
+	require.NotNil(t, reloaded.LocalRules)
+	require.Empty(t, reloaded.AuditInstructions, "an explicitly cleared editor must stay empty")
+
+	legacy, err := ParseStorageConfig(`{"all_groups":true}`)
+	require.NoError(t, err)
+	require.Equal(t, PromptEngineRemote, legacy.Engine)
+	require.False(t, legacy.AllGroups)
+	require.Equal(t, DefaultLocalRules(), legacy.LocalRules)
+	require.Equal(t, DefaultAuditInstructions, legacy.AuditInstructions)
+}
+
+func TestLocalPromptConfigRejectsInvalidPatternsWithoutDisclosure(t *testing.T) {
+	base := LocalRule{ID: "test", Name: "test", Kind: "regex", Pattern: "safe-pattern", Category: "jailbreak", Action: "block", Enabled: true}
+	for _, pattern := range []string{"SECRET_CANARY(?=x)", `SECRET_CANARY(a)\1`, "a*", "", strings.Repeat("中", MaxLocalPatternRunes+1)} {
+		rule := base
+		rule.Pattern = pattern
+		_, err := compileLocalRules([]LocalRule{rule})
+		require.Equal(t, "prompt_audit_local_rules_invalid", infraerrors.Reason(err))
+		require.NotContains(t, err.Error(), "SECRET_CANARY")
+	}
+	for _, mutate := range []func(*LocalRule){
+		func(r *LocalRule) { r.Name = strings.Repeat("a", 101) },
+		func(r *LocalRule) { r.Kind = "script" },
+		func(r *LocalRule) { r.Action = "allow" },
+		func(r *LocalRule) { r.Category = "unknown" },
+	} {
+		rule := base
+		mutate(&rule)
+		_, err := compileLocalRules([]LocalRule{rule})
+		require.Error(t, err)
+	}
+	_, err := compileLocalRules([]LocalRule{base, base})
+	require.Error(t, err)
+	_, err = compileLocalRules(make([]LocalRule, MaxLocalRules+1))
+	require.Error(t, err)
+	cfg := DefaultStorageConfig()
+	cfg.AuditInstructions = strings.Repeat("中", MaxAuditInstructionRunes+1)
+	require.Equal(t, "prompt_audit_instructions_invalid", infraerrors.Reason(validateStorageConfig(cfg)))
+	cfg.AuditInstructions = "INSTRUCTION_SECRET_CANARY"
+	cfg.LocalRules[0].Pattern = "RULE_SECRET_CANARY"
+	summary := changeSummary(cfg)
+	require.NotContains(t, summary, "SECRET_CANARY")
+	require.Contains(t, summary, `"local_rule_count":7`)
+	clone := cloneStorageConfig(cfg)
+	clone.LocalRules[0].Pattern = "mutated"
+	require.Equal(t, "RULE_SECRET_CANARY", cfg.LocalRules[0].Pattern)
 }
 
 // Regression coverage for issue #5732: refreshLoop reloads every 5s, so

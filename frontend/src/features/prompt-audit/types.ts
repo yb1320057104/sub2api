@@ -1,6 +1,18 @@
 export type PromptAuditMode = 'off' | 'async_audit' | 'blocking'
 export type PromptDecision = 'pass' | 'flag' | 'critical'
 export type PromptRiskLevel = 'low' | 'medium' | 'high' | 'critical'
+export type PromptAuditEngine = 'local_rules' | 'remote'
+
+export interface PromptLocalRule {
+  id: string
+  name: string
+  kind: 'keyword' | 'regex'
+  pattern: string
+  category: string
+  action: 'warn' | 'block'
+  enabled: boolean
+  case_sensitive: boolean
+}
 
 export interface PromptAuditEndpoint {
   id: string
@@ -21,6 +33,11 @@ export interface PromptAuditEndpointDraft extends PromptAuditEndpoint {
 }
 
 export interface PromptAuditConfig {
+  engine?: PromptAuditEngine
+  audit_instructions?: string
+  local_rules?: PromptLocalRule[]
+  default_local_rules?: PromptLocalRule[]
+  default_audit_instructions?: string
   enabled: boolean
   blocking_enabled: boolean
   blocking_latest_turn_only: boolean
@@ -39,11 +56,17 @@ export interface PromptAuditConfig {
   change_summary: string
 }
 
-export interface PromptAuditDraft extends Omit<PromptAuditConfig, 'endpoints'> {
+export interface PromptAuditDraft extends Omit<PromptAuditConfig, 'endpoints' | 'engine' | 'audit_instructions' | 'local_rules'> {
+  engine: PromptAuditEngine
+  audit_instructions: string
+  local_rules: PromptLocalRule[]
   endpoints: PromptAuditEndpointDraft[]
 }
 
 export interface PromptAuditUpdateRequest {
+  engine: PromptAuditEngine
+  audit_instructions: string
+  local_rules: PromptLocalRule[]
   expected_config_version: number
   enabled: boolean
   blocking_enabled: boolean

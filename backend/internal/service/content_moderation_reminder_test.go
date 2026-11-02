@@ -72,6 +72,7 @@ func TestContentModerationCheck_ReminderKeywordModes(t *testing.T) {
 					defer server.Close()
 					cfg := defaultContentModerationConfig()
 					cfg.Enabled = true
+					cfg.GroupIDs = []int64{7}
 					cfg.Mode = ContentModerationModePreBlock
 					cfg.KeywordBlockingMode = mode
 					cfg.BlockedKeywords = []string{"今晚打老虎"}
@@ -87,7 +88,7 @@ func TestContentModerationCheck_ReminderKeywordModes(t *testing.T) {
 						cache.hashes = map[string]struct{}{semantic.Hash(): {}}
 					}
 					svc := NewContentModerationService(&contentModerationTestSettingRepo{values: map[string]string{SettingKeyRiskControlEnabled: "true", SettingKeyContentModerationConfig: string(raw)}}, repo, cache, nil, nil, nil, nil, nil)
-					decision, err := svc.Check(context.Background(), ContentModerationCheckInput{Protocol: protocol, Body: body})
+					decision, err := svc.Check(context.Background(), ContentModerationCheckInput{GroupID: contentModerationTestGroupID(), Protocol: protocol, Body: body})
 					require.NoError(t, err)
 					if mode == ContentModerationKeywordModeAPIOnly {
 						require.True(t, decision.Allowed)
@@ -150,6 +151,7 @@ func TestContentModerationCheck_ReminderPolicyPreserved(t *testing.T) {
 			defer server.Close()
 			cfg := defaultContentModerationConfig()
 			cfg.Enabled = true
+			cfg.GroupIDs = []int64{7}
 			cfg.Mode = ContentModerationModePreBlock
 			cfg.BlockedKeywords = []string{"今晚打老虎"}
 			cfg.KeywordBlockingMode = ContentModerationKeywordModeKeywordAndAPI
@@ -184,7 +186,7 @@ func TestContentModerationCheck_ReminderPolicyPreserved(t *testing.T) {
 			repo := &contentModerationTestRepo{}
 			svc := NewContentModerationService(&contentModerationTestSettingRepo{values: map[string]string{SettingKeyRiskControlEnabled: "true", SettingKeyContentModerationConfig: string(raw)}}, repo, nil, nil, nil, nil, nil, nil)
 			body := reminderTestBody(t, ContentModerationProtocolAnthropicMessages, []string{"<system-reminder>今晚打老虎</system-reminder>", "safe text"})
-			decision, err := svc.Check(context.Background(), ContentModerationCheckInput{Protocol: ContentModerationProtocolAnthropicMessages, Body: body})
+			decision, err := svc.Check(context.Background(), ContentModerationCheckInput{GroupID: contentModerationTestGroupID(), Protocol: ContentModerationProtocolAnthropicMessages, Body: body})
 			require.NoError(t, err)
 			if name == "no_api_key" || name == "zero_sample" {
 				require.True(t, decision.Blocked)

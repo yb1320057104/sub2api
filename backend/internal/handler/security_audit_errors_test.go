@@ -134,6 +134,20 @@ func TestPromptGuardGeminiErrorEnvelopeGolden(t *testing.T) {
 	}
 }
 
+func TestSecurityAuditFallbackBlockAfterPingUsesSSEError(t *testing.T) {
+	c, recorder := securityAuditErrorTestContext(t)
+	c.Request.URL.Path = "/v1/messages"
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.WriteHeader(http.StatusOK)
+	c.Writer.Flush()
+	decision := promptGuardDecision(securityaudit.DecisionBlock)
+	(&GatewayHandler{}).anthropicSecurityAuditFallbackError(c, decision, true)
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Contains(t, recorder.Body.String(), `data: {"type":"error"`)
+	require.Contains(t, recorder.Body.String(), `"code":"`+securityaudit.ErrorCodeBlocked+`"`)
+	require.Contains(t, recorder.Body.String(), `"type":"permission_error"`)
+}
+
 func TestPromptGuardWebSocketCloseMappingGolden(t *testing.T) {
 	require.Equal(t, int64(4403), int64(securityAuditWSCloseStatus(promptGuardDecision(securityaudit.DecisionBlock))))
 	require.Equal(t, securityaudit.ErrorCodeBlocked, securityAuditWSCloseReason(promptGuardDecision(securityaudit.DecisionBlock)))

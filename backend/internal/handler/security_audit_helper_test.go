@@ -9,6 +9,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/securityaudit"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
@@ -23,6 +24,42 @@ func TestCachesSecurityAuditCompletionSkipsWebSocketStages(t *testing.T) {
 	require.True(t, isSecurityAuditWebSocketStage("first_turn"))
 	require.True(t, isSecurityAuditWebSocketStage("subsequent_turn"))
 	require.False(t, isSecurityAuditWebSocketStage("http"))
+}
+
+type groupScopedTurnEngine struct {
+	*turnCountingEngine
+	groupID int64
+}
+
+func (e *groupScopedTurnEngine) IncludesGroup(groupID *int64) bool {
+	return groupID != nil && *groupID == e.groupID
+}
+
+func TestRunSecurityAuditCachesOnlyTheEffectiveGroup(t *testing.T) {
+	for _, stage := range []string{"http", "subsequent_turn"} {
+		t.Run(stage, func(t *testing.T) {
+			gin.SetMode(gin.TestMode)
+			engine := &groupScopedTurnEngine{turnCountingEngine: &turnCountingEngine{mode: securityaudit.ModeBlocking}, groupID: 2}
+			coordinator := securityaudit.NewCoordinator(nil, engine)
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			c.Set(securityAuditWSTurnContextKey, 1)
+			originalID, fallbackID := int64(1), int64(2)
+			apiKey := &service.APIKey{ID: 3, GroupID: &originalID, Group: &service.Group{ID: originalID}}
+			fallback := cloneAPIKeyWithGroup(apiKey, &service.Group{ID: fallbackID})
+			body := []byte(`{"input":"same request, different serving group"}`)
+			first := runSecurityAudit(c, nil, coordinator, nil, apiKey, middleware2.AuthSubject{UserID: 7}, "openai_responses", "gpt-test", body, stage)
+			require.True(t, first.AllowNextStage)
+			require.Zero(t, engine.evaluates.Load())
+			second := runSecurityAudit(c, nil, coordinator, nil, fallback, middleware2.AuthSubject{UserID: 7}, "openai_responses", "gpt-test", body, stage)
+			require.NotNil(t, second)
+			require.True(t, second.AllowNextStage)
+			require.Equal(t, int64(1), engine.evaluates.Load())
+			runSecurityAudit(c, nil, coordinator, nil, fallback, middleware2.AuthSubject{UserID: 7}, "openai_responses", "gpt-test", body, stage)
+			require.Equal(t, int64(1), engine.evaluates.Load(), "same group retry must retain dedupe")
+			require.Equal(t, originalID, *apiKey.GroupID, "audit must not rewrite authenticated key")
+		})
+	}
 }
 
 func TestRunSecurityAuditDoesNotSkipSubsequentWebSocketTurns(t *testing.T) {

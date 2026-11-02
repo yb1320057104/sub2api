@@ -12,6 +12,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
+	"github.com/Wei-Shaw/sub2api/internal/securityaudit"
 	middleware "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
@@ -23,6 +24,43 @@ type groupScopedSchedulerCache struct {
 	*fakeSchedulerCache
 	mu       sync.Mutex
 	groupIDs []int64
+}
+
+func TestGatewaySecurityAuditUsesClaudeCodeFallbackGroup(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	primaryID, fallbackID := int64(71), int64(72)
+	primary := &service.Group{ID: primaryID, Hydrated: true, Platform: service.PlatformAnthropic, Status: service.StatusActive, ClaudeCodeOnly: true, FallbackGroupID: &fallbackID}
+	fallback := &service.Group{ID: fallbackID, Hydrated: true, Platform: service.PlatformAnthropic, Status: service.StatusActive}
+	for _, tc := range []struct {
+		name      string
+		claude    bool
+		forced    string
+		wantAudit bool
+	}{
+		{"non Claude uses selected fallback", false, "", true},
+		{"Claude remains unselected primary", true, "", false},
+		{"forced platform bypasses fallback", false, service.PlatformAnthropic, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			gatewayService := service.NewGatewayService(nil, &groupMapRepo{fakeGroupRepo: &fakeGroupRepo{}, groups: map[int64]*service.Group{primaryID: primary, fallbackID: fallback}}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+			engine := &groupScopedTurnEngine{turnCountingEngine: &turnCountingEngine{mode: securityaudit.ModeBlocking, decisions: []*securityaudit.PromptDecision{{Kind: securityaudit.DecisionBlock, AllowNextStage: false}}}, groupID: fallbackID}
+			h := &GatewayHandler{gatewayService: gatewayService, securityAuditCoordinator: securityaudit.NewCoordinator(nil, engine)}
+			ctx := service.SetClaudeCodeClient(context.Background(), tc.claude)
+			ctx = context.WithValue(ctx, ctxkey.ForcePlatform, tc.forced)
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(ctx)
+			key := &service.APIKey{ID: 73, GroupID: &primaryID, Group: primary}
+			decision := h.checkSecurityAudit(c, nil, key, middleware.AuthSubject{UserID: 74}, service.ContentModerationProtocolOpenAIChat, "claude-test", []byte(`{"messages":[{"role":"user","content":"test"}]}`))
+			require.NotNil(t, decision)
+			require.Equal(t, tc.wantAudit, !decision.AllowNextStage)
+			if tc.wantAudit {
+				require.Equal(t, int64(1), engine.evaluates.Load())
+			} else {
+				require.Zero(t, engine.evaluates.Load())
+			}
+			require.Equal(t, primaryID, *key.GroupID)
+		})
+	}
 }
 
 func (c *groupScopedSchedulerCache) GetSnapshot(_ context.Context, bucket service.SchedulerBucket) ([]*service.Account, bool, error) {

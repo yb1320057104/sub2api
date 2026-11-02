@@ -41,12 +41,13 @@ func TestCyberPolicyAllowlistCoversAllUserKeysAndRefreshes(t *testing.T) {
 func TestRecordCyberPolicyEventLogOnlyPreservesEvidenceWithoutSideEffects(t *testing.T) {
 	repo := &banCountArgsTestRepo{}
 	svc := NewContentModerationService(
-		&contentModerationTestSettingRepo{values: map[string]string{SettingKeyRiskControlEnabled: "true"}},
+		&contentModerationTestSettingRepo{values: map[string]string{SettingKeyRiskControlEnabled: "true", SettingKeyContentModerationConfig: `{"group_ids":[7]}`}},
 		repo, nil, nil, nil, nil, nil, &EmailService{},
 	)
 	// An unconfigured email service must never be invoked in log-only mode.
+	groupID := int64(7)
 	svc.RecordCyberPolicyEvent(context.Background(), CyberPolicyRecordInput{
-		LogOnly: true, UserID: 12, UserEmail: "test@example.com", Model: "gpt-5",
+		LogOnly: true, GroupID: &groupID, UserID: 12, UserEmail: "test@example.com", Model: "gpt-5",
 		UpstreamMessage: "blocked", UpstreamBody: `{"error":{"code":"cyber_policy"}}`,
 	})
 	logs := repo.snapshotLogs()

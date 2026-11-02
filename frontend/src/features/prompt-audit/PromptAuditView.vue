@@ -42,7 +42,9 @@
             <RuntimeOverview :runtime="runtime" :loading="loading.runtime" :error="loadErrors.runtime" @refresh="loadRuntime" />
 
             <template v-if="draft">
+              <LocalRulePanel :draft="draft" @update:draft="replaceDraft" />
               <EndpointPool
+                v-if="draft.engine === 'remote'"
                 :endpoints="draft.endpoints"
                 :probe-results="probeResults"
                 :probing-ids="probingIds"
@@ -153,6 +155,7 @@ import { extractApiErrorCode, extractApiErrorMessage } from '@/utils/apiError'
 import RuntimeOverview from './components/RuntimeOverview.vue'
 import EndpointPool from './components/EndpointPool.vue'
 import PolicyPanel from './components/PolicyPanel.vue'
+import LocalRulePanel from './components/LocalRulePanel.vue'
 import EventWorkspace from './components/EventWorkspace.vue'
 import EventDetailDialog from './components/EventDetailDialog.vue'
 import FilterDeleteDialog from './components/FilterDeleteDialog.vue'

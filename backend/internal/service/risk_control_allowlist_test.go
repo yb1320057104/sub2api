@@ -60,6 +60,7 @@ func TestRiskControlAllowlistAuditsWithoutLocalPenalties(t *testing.T) {
 	for _, path := range []string{"keyword", "hash", "pre_block", "observe"} {
 		t.Run(path, func(t *testing.T) {
 			cfg := defaultContentModerationConfig()
+			cfg.GroupIDs = []int64{7}
 			cfg.Enabled, cfg.AutoBanEnabled, cfg.EmailOnHit = true, true, true
 			cfg.BanThreshold = 1
 			cfg.Mode = ContentModerationModePreBlock
@@ -86,7 +87,8 @@ func TestRiskControlAllowlistAuditsWithoutLocalPenalties(t *testing.T) {
 				httpClient: server.Client(), asyncQueue: make(chan contentModerationTask, 4), keyHealth: make(map[string]*contentModerationKeyHealth),
 			}
 			decision, err := svc.Check(context.Background(), ContentModerationCheckInput{
-				UserID: 12, UserEmail: "trusted@example.com", Protocol: ContentModerationProtocolOpenAIChat,
+				GroupID: contentModerationTestGroupID(),
+				UserID:  12, UserEmail: "trusted@example.com", Protocol: ContentModerationProtocolOpenAIChat,
 				Body: []byte(`{"messages":[{"role":"user","content":"blocked prompt"}]}`),
 			})
 			require.NoError(t, err)

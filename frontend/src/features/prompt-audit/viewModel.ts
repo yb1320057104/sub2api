@@ -30,6 +30,10 @@ export function cloneData<T>(value: T): T {
 export function configToDraft(config: PromptAuditConfig): PromptAuditDraft {
   return {
     ...cloneData(config),
+    engine: !config.enabled && !config.updated_at && !(config.endpoints?.length) ? 'local_rules' : config.engine ?? 'remote',
+    audit_instructions: config.audit_instructions ?? config.default_audit_instructions ?? '',
+    local_rules: cloneData(config.local_rules ?? config.default_local_rules ?? []),
+    all_groups: false,
     group_ids: [...(config.group_ids ?? [])],
     scanners: [...(config.scanners ?? [])],
     endpoints: (config.endpoints ?? []).map((endpoint) => ({
@@ -59,6 +63,9 @@ export function createDefaultEndpoint(index = 1): PromptAuditEndpointDraft {
 
 export function buildUpdateRequest(draft: PromptAuditDraft): PromptAuditUpdateRequest {
   return {
+    engine: draft.engine,
+    audit_instructions: draft.audit_instructions,
+    local_rules: cloneData(draft.local_rules),
     expected_config_version: draft.config_version,
     enabled: draft.enabled,
     blocking_enabled: draft.enabled && draft.blocking_enabled,
@@ -68,8 +75,8 @@ export function buildUpdateRequest(draft: PromptAuditDraft): PromptAuditUpdateRe
     worker_count: Number(draft.worker_count),
     queue_capacity: Number(draft.queue_capacity),
     scanners: [...draft.scanners],
-    all_groups: draft.all_groups,
-    group_ids: draft.all_groups ? [] : [...draft.group_ids].sort((a, b) => a - b),
+    all_groups: false,
+    group_ids: [...new Set(draft.group_ids)].sort((a, b) => a - b),
     endpoints: draft.endpoints.map((endpoint) => ({
       id: endpoint.id.trim(),
       name: endpoint.name.trim(),

@@ -64,6 +64,9 @@ type StorageEndpoint struct {
 }
 
 type storageConfig struct {
+	Engine                 string            `json:"engine"`
+	AuditInstructions      string            `json:"audit_instructions"`
+	LocalRules             []LocalRule       `json:"local_rules"`
 	Enabled                bool              `json:"enabled"`
 	BlockingEnabled        bool              `json:"blocking_enabled"`
 	BlockingLatestTurnOnly bool              `json:"blocking_latest_turn_only"`
@@ -99,6 +102,10 @@ type ActiveEndpoint struct {
 }
 
 type ActiveConfig struct {
+	Engine                 string
+	AuditInstructions      string
+	LocalRules             []LocalRule
+	compiledRules          []compiledLocalRule
 	RiskControlEnabled     bool
 	Enabled                bool
 	BlockingEnabled        bool
@@ -131,22 +138,27 @@ type PublicEndpoint struct {
 }
 
 type PublicConfig struct {
-	Enabled                bool             `json:"enabled"`
-	BlockingEnabled        bool             `json:"blocking_enabled"`
-	BlockingLatestTurnOnly bool             `json:"blocking_latest_turn_only"`
-	StorePassEvents        bool             `json:"store_pass_events"`
-	EffectiveMode          Mode             `json:"effective_mode"`
-	Strategy               string           `json:"strategy"`
-	WorkerCount            int              `json:"worker_count"`
-	QueueCapacity          int              `json:"queue_capacity"`
-	Scanners               []string         `json:"scanners"`
-	AllGroups              bool             `json:"all_groups"`
-	GroupIDs               []int64          `json:"group_ids"`
-	Endpoints              []PublicEndpoint `json:"endpoints"`
-	ConfigVersion          int64            `json:"config_version"`
-	UpdatedAt              time.Time        `json:"updated_at"`
-	UpdatedBy              int64            `json:"updated_by"`
-	ChangeSummary          string           `json:"change_summary"`
+	DefaultLocalRules        []LocalRule      `json:"default_local_rules"`
+	DefaultAuditInstructions string           `json:"default_audit_instructions"`
+	Engine                   string           `json:"engine"`
+	AuditInstructions        string           `json:"audit_instructions"`
+	LocalRules               []LocalRule      `json:"local_rules"`
+	Enabled                  bool             `json:"enabled"`
+	BlockingEnabled          bool             `json:"blocking_enabled"`
+	BlockingLatestTurnOnly   bool             `json:"blocking_latest_turn_only"`
+	StorePassEvents          bool             `json:"store_pass_events"`
+	EffectiveMode            Mode             `json:"effective_mode"`
+	Strategy                 string           `json:"strategy"`
+	WorkerCount              int              `json:"worker_count"`
+	QueueCapacity            int              `json:"queue_capacity"`
+	Scanners                 []string         `json:"scanners"`
+	AllGroups                bool             `json:"all_groups"`
+	GroupIDs                 []int64          `json:"group_ids"`
+	Endpoints                []PublicEndpoint `json:"endpoints"`
+	ConfigVersion            int64            `json:"config_version"`
+	UpdatedAt                time.Time        `json:"updated_at"`
+	UpdatedBy                int64            `json:"updated_by"`
+	ChangeSummary            string           `json:"change_summary"`
 }
 
 type UpdateEndpoint struct {
@@ -163,6 +175,9 @@ type UpdateEndpoint struct {
 }
 
 type UpdateConfigRequest struct {
+	Engine                 string           `json:"engine"`
+	AuditInstructions      string           `json:"audit_instructions"`
+	LocalRules             []LocalRule      `json:"local_rules"`
 	ExpectedConfigVersion  int64            `json:"expected_config_version" binding:"required"`
 	Enabled                bool             `json:"enabled"`
 	BlockingEnabled        bool             `json:"blocking_enabled"`
@@ -179,6 +194,9 @@ type UpdateConfigRequest struct {
 
 func DefaultStorageConfig() storageConfig {
 	return storageConfig{
+		Engine:                 PromptEngineRemote,
+		AuditInstructions:      DefaultAuditInstructions,
+		LocalRules:             DefaultLocalRules(),
 		Enabled:                false,
 		BlockingEnabled:        false,
 		BlockingLatestTurnOnly: false,
@@ -187,7 +205,7 @@ func DefaultStorageConfig() storageConfig {
 		WorkerCount:            DefaultWorkerCount,
 		QueueCapacity:          DefaultQueueCapacity,
 		Scanners:               append([]string(nil), AllScannerIDs...),
-		AllGroups:              true,
+		AllGroups:              false,
 		GroupIDs:               []int64{},
 		Endpoints:              []StorageEndpoint{},
 		ConfigVersion:          1,
@@ -213,6 +231,13 @@ func normalizeStorageConfig(cfg *storageConfig) {
 	if cfg == nil {
 		return
 	}
+	cfg.Engine = normalizePromptEngine(cfg.Engine)
+	// Explicit groups are the only admission rule; an old all-groups toggle
+	// cannot silently apply auditing to unconfigured groups.
+	cfg.AllGroups = false
+	if cfg.LocalRules == nil {
+		cfg.LocalRules = DefaultLocalRules()
+	}
 	if cfg.ConfigVersion < 1 {
 		cfg.ConfigVersion = 1
 	}
@@ -225,7 +250,7 @@ func normalizeStorageConfig(cfg *storageConfig) {
 	if cfg.QueueCapacity == 0 {
 		cfg.QueueCapacity = DefaultQueueCapacity
 	}
-	if len(cfg.Scanners) == 0 {
+	if len(cfg.Scanners) == 0 && cfg.Engine != PromptEngineLocalRules {
 		cfg.Scanners = append([]string(nil), AllScannerIDs...)
 	}
 	cfg.Scanners = canonicalScannerIDs(cfg.Scanners)
@@ -267,10 +292,25 @@ func validateStorageConfig(cfg storageConfig) error {
 	if cfg.QueueCapacity < 1 || cfg.QueueCapacity > MaxQueueCapacity {
 		return infraerrors.BadRequest("prompt_audit_invalid_queue_capacity", "队列容量超出允许范围")
 	}
-	if !cfg.AllGroups && len(cfg.GroupIDs) == 0 {
-		return infraerrors.BadRequest("prompt_audit_groups_required", "指定分组模式至少需要选择一个分组")
+	if cfg.Engine != "" && cfg.Engine != PromptEngineRemote && cfg.Engine != PromptEngineLocalRules {
+		return infraerrors.BadRequest("prompt_audit_engine_invalid", "提示词审计引擎无效")
 	}
-	if len(cfg.Scanners) == 0 {
+	if len([]rune(cfg.AuditInstructions)) > MaxAuditInstructionRunes {
+		return infraerrors.BadRequest("prompt_audit_instructions_invalid", "审计说明最多 16000 字")
+	}
+	if _, err := compileLocalRules(cfg.LocalRules); err != nil {
+		return err
+	}
+	if cfg.Engine == PromptEngineLocalRules && cfg.Enabled {
+		enabledRule := false
+		for _, rule := range cfg.LocalRules {
+			enabledRule = enabledRule || rule.Enabled
+		}
+		if !enabledRule {
+			return infraerrors.BadRequest("prompt_audit_local_rules_required", "启用本地审计前至少需要启用一条规则")
+		}
+	}
+	if len(cfg.Scanners) == 0 && cfg.Engine != PromptEngineLocalRules {
 		return infraerrors.BadRequest("prompt_audit_scanners_required", "至少需要启用一个风险分类")
 	}
 	seen := make(map[string]struct{}, len(cfg.Endpoints))
@@ -299,13 +339,16 @@ func validateStorageConfig(cfg storageConfig) error {
 			enabled++
 		}
 	}
-	if cfg.Enabled && enabled == 0 {
+	if cfg.Enabled && cfg.Engine != PromptEngineLocalRules && enabled == 0 {
 		return infraerrors.BadRequest("prompt_audit_endpoint_required", "启用提示词审计前至少需要启用一个审计节点")
 	}
 	return nil
 }
 
 func validateUpdateConfigRequest(req UpdateConfigRequest) error {
+	if normalizePromptEngine(req.Engine) != PromptEngineRemote && req.Engine != PromptEngineLocalRules {
+		return infraerrors.BadRequest("prompt_audit_engine_invalid", "提示词审计引擎无效")
+	}
 	if strings.TrimSpace(req.Strategy) != "priority" {
 		return infraerrors.BadRequest("prompt_audit_invalid_strategy", "提示词审计策略仅支持 priority")
 	}
@@ -315,7 +358,7 @@ func validateUpdateConfigRequest(req UpdateConfigRequest) error {
 	if req.QueueCapacity < 1 || req.QueueCapacity > MaxQueueCapacity {
 		return infraerrors.BadRequest("prompt_audit_invalid_queue_capacity", "队列容量超出允许范围")
 	}
-	if len(req.Scanners) == 0 {
+	if len(req.Scanners) == 0 && req.Engine != PromptEngineLocalRules {
 		return infraerrors.BadRequest("prompt_audit_scanners_required", "至少需要启用一个风险分类")
 	}
 	for _, scanner := range req.Scanners {
@@ -323,14 +366,9 @@ func validateUpdateConfigRequest(req UpdateConfigRequest) error {
 			return infraerrors.BadRequest("prompt_audit_invalid_scanner", "提示词审计风险分类无效")
 		}
 	}
-	if !req.AllGroups {
-		if len(req.GroupIDs) == 0 {
-			return infraerrors.BadRequest("prompt_audit_groups_required", "指定分组模式至少需要选择一个分组")
-		}
-		for _, groupID := range req.GroupIDs {
-			if groupID <= 0 {
-				return infraerrors.BadRequest("prompt_audit_invalid_group", "提示词审计分组 ID 无效")
-			}
+	for _, groupID := range req.GroupIDs {
+		if groupID <= 0 {
+			return infraerrors.BadRequest("prompt_audit_invalid_group", "提示词审计分组 ID 无效")
 		}
 	}
 	for _, endpoint := range req.Endpoints {
@@ -355,10 +393,7 @@ func (cfg ActiveConfig) EffectiveMode() Mode {
 }
 
 func (cfg ActiveConfig) IncludesGroup(groupID *int64) bool {
-	if cfg.AllGroups {
-		return true
-	}
-	if groupID == nil {
+	if groupID == nil || *groupID <= 0 {
 		return false
 	}
 	i := sort.Search(len(cfg.GroupIDs), func(i int) bool { return cfg.GroupIDs[i] >= *groupID })
@@ -412,20 +447,27 @@ func PublicFromStorage(cfg storageConfig, riskControlEnabled bool, invalidTokenE
 	}
 	active := ActiveConfig{RiskControlEnabled: riskControlEnabled, Enabled: cfg.Enabled, BlockingEnabled: cfg.BlockingEnabled}
 	return PublicConfig{
+		DefaultLocalRules: DefaultLocalRules(), DefaultAuditInstructions: DefaultAuditInstructions,
+		Engine: normalizePromptEngine(cfg.Engine), AuditInstructions: cfg.AuditInstructions, LocalRules: append([]LocalRule{}, cfg.LocalRules...),
 		Enabled: cfg.Enabled, BlockingEnabled: cfg.BlockingEnabled, BlockingLatestTurnOnly: cfg.BlockingLatestTurnOnly, StorePassEvents: cfg.StorePassEvents,
 		EffectiveMode: active.EffectiveMode(), Strategy: cfg.Strategy, WorkerCount: cfg.WorkerCount,
-		QueueCapacity: cfg.QueueCapacity, Scanners: scanners, AllGroups: cfg.AllGroups,
+		QueueCapacity: cfg.QueueCapacity, Scanners: scanners, AllGroups: false,
 		GroupIDs: groupIDs, Endpoints: endpoints, ConfigVersion: cfg.ConfigVersion,
 		UpdatedAt: cfg.UpdatedAt, UpdatedBy: cfg.UpdatedBy, ChangeSummary: cfg.ChangeSummary,
 	}
 }
 
 func ActiveFromStorage(cfg storageConfig, riskControlEnabled bool, encryptor SecretEncryptor) (ActiveConfig, error) {
+	compiled, err := compileLocalRules(cfg.LocalRules)
+	if err != nil {
+		return ActiveConfig{}, err
+	}
 	active := ActiveConfig{
+		Engine: normalizePromptEngine(cfg.Engine), AuditInstructions: cfg.AuditInstructions, LocalRules: append([]LocalRule{}, cfg.LocalRules...), compiledRules: compiled,
 		RiskControlEnabled: riskControlEnabled, Enabled: cfg.Enabled, BlockingEnabled: cfg.BlockingEnabled,
 		BlockingLatestTurnOnly: cfg.BlockingLatestTurnOnly,
 		StorePassEvents:        cfg.StorePassEvents, Strategy: cfg.Strategy, WorkerCount: cfg.WorkerCount,
-		QueueCapacity: cfg.QueueCapacity, Scanners: append([]string(nil), cfg.Scanners...), AllGroups: cfg.AllGroups,
+		QueueCapacity: cfg.QueueCapacity, Scanners: append([]string(nil), cfg.Scanners...), AllGroups: false,
 		GroupIDs: append([]int64(nil), cfg.GroupIDs...), ConfigVersion: cfg.ConfigVersion,
 		UpdatedAt: cfg.UpdatedAt, UpdatedBy: cfg.UpdatedBy, ChangeSummary: cfg.ChangeSummary,
 		Endpoints: make([]ActiveEndpoint, 0, len(cfg.Endpoints)),
@@ -460,6 +502,10 @@ func ActiveFromStorage(cfg storageConfig, riskControlEnabled bool, encryptor Sec
 
 func changeSummary(cfg storageConfig) string {
 	summary := struct {
+		Engine                 string `json:"engine"`
+		LocalRuleCount         int    `json:"local_rule_count"`
+		LocalRuleHash          string `json:"local_rule_hash"`
+		AuditInstructionHash   string `json:"audit_instruction_hash"`
 		Enabled                bool   `json:"enabled"`
 		BlockingEnabled        bool   `json:"blocking_enabled"`
 		BlockingLatestTurnOnly bool   `json:"blocking_latest_turn_only"`
@@ -469,10 +515,20 @@ func changeSummary(cfg storageConfig) string {
 		AllGroups              bool   `json:"all_groups"`
 		GroupCount             int    `json:"group_count"`
 		GroupHash              string `json:"group_hash"`
-	}{cfg.Enabled, cfg.BlockingEnabled, cfg.BlockingLatestTurnOnly, cfg.StorePassEvents, len(cfg.Endpoints), len(cfg.Scanners), cfg.AllGroups, len(cfg.GroupIDs), ""}
+	}{
+		Engine: normalizePromptEngine(cfg.Engine), LocalRuleCount: len(cfg.LocalRules),
+		Enabled: cfg.Enabled, BlockingEnabled: cfg.BlockingEnabled, BlockingLatestTurnOnly: cfg.BlockingLatestTurnOnly,
+		StorePassEvents: cfg.StorePassEvents, EndpointCount: len(cfg.Endpoints), ScannerCount: len(cfg.Scanners),
+		AllGroups: false, GroupCount: len(cfg.GroupIDs),
+	}
 	rawGroups, _ := json.Marshal(cfg.GroupIDs)
 	digest := sha256.Sum256(rawGroups)
 	summary.GroupHash = hex.EncodeToString(digest[:])
+	rawRules, _ := json.Marshal(cfg.LocalRules)
+	ruleDigest := sha256.Sum256(rawRules)
+	summary.LocalRuleHash = hex.EncodeToString(ruleDigest[:])
+	instructionDigest := sha256.Sum256([]byte(cfg.AuditInstructions))
+	summary.AuditInstructionHash = hex.EncodeToString(instructionDigest[:])
 	raw, _ := json.Marshal(summary)
 	return string(raw)
 }

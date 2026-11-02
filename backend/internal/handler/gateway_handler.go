@@ -1028,6 +1028,17 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 							return
 						}
 						fallbackAPIKey := cloneAPIKeyWithGroup(apiKey, fallbackGroup)
+						// Audit with the same cleared platform override that the
+						// fallback scheduler will use, without changing the primary
+						// request's context if fallback admission is rejected.
+						primaryRequest := c.Request
+						c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), ctxkey.ForcePlatform, ""))
+						auditDecision := h.checkSecurityAudit(c, reqLog, fallbackAPIKey, subject, service.ContentModerationProtocolAnthropicMessages, reqModel, body)
+						c.Request = primaryRequest
+						if auditDecision != nil && !auditDecision.AllowNextStage {
+							h.anthropicSecurityAuditFallbackError(c, auditDecision, streamStarted)
+							return
+						}
 						if err := h.billingCacheService.CheckBillingEligibility(c.Request.Context(), fallbackAPIKey.User, fallbackAPIKey, fallbackGroup, nil, service.PlatformFromAPIKey(fallbackAPIKey)); err != nil {
 							status, code, message, retryAfter := billingErrorDetails(err)
 							if retryAfter > 0 {

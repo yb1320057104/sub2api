@@ -78,6 +78,21 @@ func (h *GatewayHandler) anthropicSecurityAuditError(c *gin.Context, decision *s
 	}})
 }
 
+func (h *GatewayHandler) anthropicSecurityAuditFallbackError(c *gin.Context, decision *securityaudit.Decision, streamStarted bool) {
+	if !streamStarted {
+		h.anthropicSecurityAuditError(c, decision)
+		return
+	}
+	errType := "api_error"
+	if decision != nil && decision.Kind == securityaudit.DecisionBlock {
+		errType = "permission_error"
+	}
+	if decision != nil && decision.Legacy != nil && decision.Legacy.Blocked {
+		errType = securityAuditErrorCode(decision)
+	}
+	h.handleStreamingAwareErrorWithCode(c, securityAuditStatus(decision), errType, securityAuditErrorCode(decision), securityAuditMessage(decision), true)
+}
+
 func (h *OpenAIGatewayHandler) anthropicSecurityAuditError(c *gin.Context, decision *securityaudit.Decision) {
 	if decision == nil {
 		return

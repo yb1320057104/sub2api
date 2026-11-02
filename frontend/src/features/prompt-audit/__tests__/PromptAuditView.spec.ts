@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent } from 'vue'
 import { flushPromises, mount } from '@vue/test-utils'
-import type { PromptAuditConfig, PromptAuditRuntime } from '../types'
+import type { PromptAuditConfig, PromptAuditDraft, PromptAuditRuntime, PromptAuditUpdateRequest } from '../types'
 import { SCANNER_CATALOG } from '../viewModel'
 import PromptAuditView from '../PromptAuditView.vue'
+import LocalRulePanel from '../components/LocalRulePanel.vue'
 
 const mocks = vi.hoisted(() => ({
   getConfig: vi.fn(), updateConfig: vi.fn(), probeEndpoint: vi.fn(), getRuntime: vi.fn(), listEvents: vi.fn(),
@@ -71,6 +72,56 @@ describe('PromptAuditView', () => {
     mocks.deleteEventsByFilter.mockResolvedValue({ deleted_events: 2, deleted_jobs: 2 })
     mocks.deleteEvent.mockResolvedValue({ deleted_events: 1, deleted_jobs: 1 })
     mocks.batchDeleteEvents.mockResolvedValue({ deleted_events: 2, deleted_jobs: 2 })
+  })
+
+  it('saves local auditing with selected groups without any endpoint or probe', async () => {
+    const localConfig: PromptAuditConfig = {
+      ...baseConfig(), engine: 'local_rules', enabled: false, endpoints: [], group_ids: [], all_groups: false,
+      audit_instructions: 'Local policy', local_rules: [{ id: 'one', name: 'Test rule', kind: 'keyword', pattern: 'test pattern', category: 'jailbreak', action: 'warn', enabled: true, case_sensitive: false }],
+    }
+    mocks.getConfig.mockResolvedValue(localConfig)
+    mocks.updateConfig.mockImplementation(async (payload: PromptAuditUpdateRequest) => ({ ...localConfig, ...payload, config_version: 8 }))
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.get('[data-test="tab-config"]').trigger('click')
+    expect(wrapper.find('[data-test="endpoint"]').exists()).toBe(false)
+    const policy = wrapper.getComponent(PolicyStub)
+    policy.vm.$emit('update:draft', { ...policy.props('draft'), group_ids: [3] })
+    await flushPromises()
+    await wrapper.get('[data-test="enabled-toggle"]').trigger('click')
+    await wrapper.get('[data-test="save-config"]').trigger('click')
+    await flushPromises()
+    expect(mocks.updateConfig).toHaveBeenCalledWith(expect.objectContaining({ engine: 'local_rules', enabled: true, all_groups: false, group_ids: [3], endpoints: [], local_rules: localConfig.local_rules }))
+    expect(mocks.probeEndpoint).not.toHaveBeenCalled()
+    expect(mocks.showError).not.toHaveBeenCalled()
+    expect(wrapper.get('[data-test="save-config"]').attributes()).toHaveProperty('disabled')
+    wrapper.unmount()
+  })
+
+  it('preserves unsaved and stored endpoint secrets when switching local and remote modes', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.get('[data-test="tab-config"]').trigger('click')
+    await wrapper.get('[data-test="inject-secret"]').trigger('click')
+    await wrapper.get('input[value="local_rules"]').setValue()
+    expect(wrapper.find('[data-test="endpoint"]').exists()).toBe(false)
+    const localDraft = wrapper.getComponent(LocalRulePanel).props('draft') as PromptAuditDraft
+    expect(localDraft.endpoints[0]).toMatchObject({ token: 'PROMPT_AUDIT_CANARY_SECRET_DO_NOT_PERSIST', has_token: true, clear_token: false })
+    await wrapper.get('input[value="remote"]').setValue()
+    expect(wrapper.getComponent(EndpointStub).props('endpoints')[0]).toMatchObject({ token: 'PROMPT_AUDIT_CANARY_SECRET_DO_NOT_PERSIST', has_token: true, clear_token: false })
+    expect(mocks.updateConfig).not.toHaveBeenCalled()
+    expect(mocks.probeEndpoint).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('keeps a saved disabled remote configuration remote even without endpoints', async () => {
+    mocks.getConfig.mockResolvedValue({ ...baseConfig(), engine: 'remote', enabled: false, endpoints: [] })
+    const wrapper = mountView()
+    await flushPromises()
+    expect(wrapper.getComponent(LocalRulePanel).props('draft').engine).toBe('remote')
+    expect(wrapper.find('[data-test="endpoint"]').exists()).toBe(true)
+    expect(mocks.probeEndpoint).not.toHaveBeenCalled()
+    wrapper.unmount()
   })
 
   it('starts config, runtime, groups, and events loads independently', async () => {

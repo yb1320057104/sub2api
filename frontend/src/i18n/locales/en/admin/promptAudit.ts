@@ -1,7 +1,7 @@
 export default {
   promptAudit: {
     title: 'Prompt Audit',
-    description: 'Review user input asynchronously or block it synchronously through OpenAI-compatible Qwen3Guard nodes. Full prompts are stored with events for admin review.',
+    description: 'Audit selected groups with local rules or remote Qwen3Guard nodes. Full prompts are stored with events for admin review.',
     configVersion: 'Config version v{version}',
     tabs: { config: 'Configuration', events: 'Events' },
     actions: { refresh: 'Refresh runtime', retry: 'Retry', Allow: 'Allow', Warn: 'Warn', Block: 'Block' },
@@ -50,7 +50,21 @@ export default {
       secretHint: 'Plaintext exists only in this editor and is cleared immediately after a successful save.', clearSecret: 'Explicitly clear the saved API Key', timeout: 'Total timeout (ms)', inputLimit: 'Unicode characters per chunk',
       toggleNode: 'Toggle node {name}', deleteConfirm: 'Remove “{name}” from the draft? It takes effect after saving.',
     },
+    local: {
+      title: 'Audit engine', engines: { local_rules: 'Local rules (no node required)', remote: 'Remote Qwen3Guard nodes' },
+      localHint: 'Matches keywords and regular expressions without model calls. Rules cannot understand context and may miss risks or flag safe text; adjust them for your use case.',
+      remoteHint: 'Classify input with configured Qwen3Guard nodes. Switching engines preserves both configurations.',
+      rules: 'Local audit rules', templates: 'Use recommended templates', add: 'Add rule', newRule: 'Custom rule',
+      actionHint: 'Templates cover prompt injection, unauthorized access, secret theft, illegal activity, sexual content, violence and self-harm. The last four only warn by default. Block rules reject requests only when synchronous blocking is enabled.',
+      empty: 'No rules yet. Add a rule or use the templates. Local audit requires at least one enabled rule.',
+      enabled: 'Enabled', name: 'Rule name', remove: 'Delete rule {name}', kind: 'Match type', keyword: 'Keyword', regex: 'Regular expression',
+      category: 'Risk category', action: 'Match action', warn: 'Record warning', block: 'Block', pattern: 'Match pattern', caseSensitive: 'Case sensitive',
+      instructions: 'Audit instructions / prompt template', instructionsHint: 'Editable notes describing your audit intent, available to copy. Local mode only executes the rules above. Remote Qwen3Guard uses its fixed classification protocol and does not execute these notes.',
+      replaceTitle: 'Replace with recommended templates?', replaceMessage: 'This replaces the local rules and audit instructions in your draft. Save the configuration to apply them.',
+    },
     policy: {
+      selectedOnlyHint: 'Only explicitly selected groups are audited. Unselected groups and requests without a group are skipped.',
+      emptyScope: 'No groups selected: all requests will skip prompt audit.',
       title: 'Audit policy', description: 'Configure group scope, nine input-risk categories, workers, and queue bounds.', scope: 'Scope', allGroups: 'All groups', selectedGroups: 'Selected groups',
       searchGroups: 'Search groups', noGroups: 'No matching groups', missingGroups: 'Configured IDs for groups that no longer exist', selectedCount: '{count} groups selected',
       scanners: 'Qwen3Guard input-risk categories', workerCount: 'Worker count', queueCapacity: 'Persistent queue capacity', strategy: 'Node strategy', strategyHint: 'Try nodes in configuration order and fail over when allowed.',
@@ -58,7 +72,7 @@ export default {
     saveBar: { enabled: 'Enable prompt audit', blocking: 'Synchronous blocking', blockingLatestTurnOnly: 'Only latest input and prior output', storePass: 'Store safe events', dirty: 'Unsaved changes', synced: 'Configuration synced' },
     blockingConfirm: {
       title: 'Enable synchronous blocking?',
-      message: 'Applicable requests wait for Guard before account selection, billing, or upstream access. Block, unavailable Guard, and invalid responses all prevent upstream access.',
+      message: 'Requests in selected groups wait for audit before account selection, billing, or upstream access. Block matches, unavailable audit, and invalid responses prevent upstream access. Warning rules still allow the request.',
       confirm: 'I understand; enable it',
     },
     events: {
@@ -89,8 +103,12 @@ export default {
       },
       deleteConfirmTitle: 'Delete audit events?', deleteConfirmMessage: 'This permanently deletes {count} events and eligible orphan jobs.', filterDeleteCount: 'The server snapshot matches {count} events.', snapshotMax: 'Snapshot maximum event ID', expiresAt: 'Confirmation token expires', filterDeleteWarning: 'Only events at or below the preview high-water mark are deleted. Newer events survive. Any filter change requires a new preview.', confirmFilterDelete: 'Permanently delete',
     },
-    messages: { saved: 'Prompt Audit configuration saved; plaintext API Key state was cleared.', probeSucceeded: 'The audit node is reachable.', deleted: 'Deleted {count} audit events.' },
+    messages: { saved: 'Prompt Audit configuration saved.', probeSucceeded: 'The audit node is reachable.', deleted: 'Deleted {count} audit events.' },
     errors: {
+      prompt_audit_engine_invalid: 'Select local rules or remote nodes.',
+      prompt_audit_instructions_invalid: 'Audit instructions may contain at most 16000 characters.',
+      prompt_audit_local_rules_invalid: 'Invalid local rules: at most 64 rules, 100 characters per name and 2000 per pattern. Check regex syntax, categories and actions.',
+      prompt_audit_local_rules_required: 'Enable at least one local rule before enabling local audit.',
       loadConfig: 'Unable to load Prompt Audit configuration.', loadRuntime: 'Unable to load Prompt Audit runtime.', loadGroups: 'Unable to load groups.', loadEvents: 'Unable to load audit events.', loadDetail: 'Unable to load event details.', saveConfig: 'Unable to save the configuration.', probe: 'Node probe failed.', delete: 'Unable to delete events.', previewDelete: 'Unable to create a deletion preview. Check the time range.', deleteConfirmation: 'The deletion confirmation is invalid or expired. Preview again.',
       prompt_audit_config_conflict: 'Another administrator updated this configuration. Reload the server version before deciding how to merge your draft.',
       prompt_audit_encryption_key_required: 'No fixed encryption key is configured, so audit node API Keys would be lost on restart. Set the TOTP_ENCRYPTION_KEY environment variable and restart the service first.',

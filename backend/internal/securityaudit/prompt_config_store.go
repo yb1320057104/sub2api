@@ -24,6 +24,13 @@ type activeConfigSnapshot struct {
 	loadedAt time.Time
 }
 
+// Scope can remain trustworthy even when unrelated endpoint activation fails.
+// Its version prevents an old selection from bypassing a newer blocking policy.
+type promptAuditGroupScope struct {
+	version  int64
+	groupIDs []int64
+}
+
 type ConfigManager struct {
 	db        *sql.DB
 	settings  service.SettingRepository
@@ -35,8 +42,9 @@ type ConfigManager struct {
 	// undecryptable after the next restart, so Save rejects them (issue #4887).
 	encryptionKeyConfigured bool
 
-	snapshot atomic.Pointer[activeConfigSnapshot]
-	expected atomic.Int64
+	snapshot      atomic.Pointer[activeConfigSnapshot]
+	expected      atomic.Int64
+	expectedScope atomic.Pointer[promptAuditGroupScope]
 	// expectedBlocking records the last storage intent that could be decoded,
 	// independently of whether endpoint credentials or the full config could be
 	// activated. A config version alone cannot distinguish async from blocking.
@@ -197,6 +205,23 @@ func (m *ConfigManager) Active() (ActiveConfig, bool) {
 	return cloneActiveConfig(snapshot.active), true
 }
 
+func (m *ConfigManager) IncludesGroup(groupID *int64) bool {
+	if m == nil {
+		return true
+	}
+	expected := m.expected.Load()
+	scope := m.expectedScope.Load()
+	if snapshot := m.snapshot.Load(); snapshot != nil && snapshot.active.ConfigVersion >= expected && (scope == nil || snapshot.active.ConfigVersion >= scope.version) {
+		return snapshot.active.IncludesGroup(groupID)
+	}
+	if scope != nil && scope.version >= expected {
+		return (ActiveConfig{GroupIDs: scope.groupIDs}).IncludesGroup(groupID)
+	}
+	// The latest scope is unknown. Preserve blocking fail-closed until reload
+	// succeeds rather than letting a stale scope silently exclude new groups.
+	return true
+}
+
 func (m *ConfigManager) BlockingActivationDegraded() bool {
 	if m == nil {
 		return false
@@ -216,7 +241,7 @@ func (m *ConfigManager) BlockingActivationDegraded() bool {
 	}
 	// A still-active weaker snapshot after a failed blocking activation must not
 	// keep serving allow decisions under the old off/async mode.
-	return active.EffectiveMode() != ModeBlocking
+	return active.ConfigVersion < m.expected.Load() || active.EffectiveMode() != ModeBlocking
 }
 
 func (m *ConfigManager) EffectiveMode() Mode {
@@ -349,12 +374,16 @@ func (m *ConfigManager) buildNextStorage(current storageConfig, req UpdateConfig
 		currentByID[endpoint.ID] = endpoint
 	}
 	next := storageConfig{
+		Engine: normalizePromptEngine(req.Engine), AuditInstructions: req.AuditInstructions, LocalRules: append([]LocalRule{}, req.LocalRules...),
 		Enabled: req.Enabled, BlockingEnabled: req.BlockingEnabled, BlockingLatestTurnOnly: req.BlockingLatestTurnOnly, StorePassEvents: req.StorePassEvents,
 		Strategy: strings.TrimSpace(req.Strategy), WorkerCount: req.WorkerCount,
 		QueueCapacity: req.QueueCapacity, Scanners: append([]string(nil), req.Scanners...),
-		AllGroups: req.AllGroups, GroupIDs: append([]int64(nil), req.GroupIDs...),
+		AllGroups: false, GroupIDs: append([]int64(nil), req.GroupIDs...),
 		ConfigVersion: current.ConfigVersion, UpdatedBy: actorID,
 		Endpoints: make([]StorageEndpoint, 0, len(req.Endpoints)),
+	}
+	if req.LocalRules == nil {
+		next.LocalRules = append([]LocalRule{}, current.LocalRules...)
 	}
 	for _, endpoint := range req.Endpoints {
 		baseURL, err := NormalizeBaseURL(endpoint.BaseURL)
@@ -427,13 +456,15 @@ func (m *ConfigManager) observeExpectedState(raw string, riskControlEnabled bool
 	}
 	if strings.TrimSpace(raw) == "" {
 		m.expected.Store(1)
+		m.expectedScope.Store(&promptAuditGroupScope{version: 1, groupIDs: []int64{}})
 		m.expectedBlocking.Store(false)
 		return
 	}
 	var intent struct {
-		Enabled         bool  `json:"enabled"`
-		BlockingEnabled bool  `json:"blocking_enabled"`
-		ConfigVersion   int64 `json:"config_version"`
+		Enabled         bool    `json:"enabled"`
+		BlockingEnabled bool    `json:"blocking_enabled"`
+		ConfigVersion   int64   `json:"config_version"`
+		GroupIDs        []int64 `json:"group_ids"`
 	}
 	if err := json.Unmarshal([]byte(raw), &intent); err != nil {
 		return
@@ -442,6 +473,7 @@ func (m *ConfigManager) observeExpectedState(raw string, riskControlEnabled bool
 		intent.ConfigVersion = 1
 	}
 	m.expected.Store(intent.ConfigVersion)
+	m.expectedScope.Store(&promptAuditGroupScope{version: intent.ConfigVersion, groupIDs: canonicalInt64s(intent.GroupIDs)})
 	m.expectedBlocking.Store(riskControlEnabled && intent.Enabled && intent.BlockingEnabled)
 }
 
@@ -516,6 +548,7 @@ func (m *ConfigManager) clearLoadError() bool {
 }
 
 func cloneStorageConfig(cfg storageConfig) storageConfig {
+	cfg.LocalRules = append([]LocalRule{}, cfg.LocalRules...)
 	cfg.Scanners = append([]string(nil), cfg.Scanners...)
 	cfg.GroupIDs = append([]int64(nil), cfg.GroupIDs...)
 	cfg.Endpoints = append([]StorageEndpoint(nil), cfg.Endpoints...)
@@ -523,6 +556,8 @@ func cloneStorageConfig(cfg storageConfig) storageConfig {
 }
 
 func cloneActiveConfig(cfg ActiveConfig) ActiveConfig {
+	cfg.LocalRules = append([]LocalRule{}, cfg.LocalRules...)
+	cfg.compiledRules = append([]compiledLocalRule(nil), cfg.compiledRules...)
 	cfg.Scanners = append([]string(nil), cfg.Scanners...)
 	cfg.GroupIDs = append([]int64(nil), cfg.GroupIDs...)
 	cfg.Endpoints = append([]ActiveEndpoint(nil), cfg.Endpoints...)

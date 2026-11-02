@@ -148,7 +148,7 @@ func (h *AsyncImageHandler) checkSecurityAuditBeforeSubmit(c *gin.Context, apiKe
 		model, moderationBody = parsed.Model, parsed.ModerationBody()
 	}
 	if len(moderationBody) == 0 {
-		c.Set(securityAuditCompletedContextKey, true)
+		markSecurityAuditCompleted(c, apiKey)
 		return true
 	}
 	reqLog := requestLogger(c, "handler.async_image.security_audit",

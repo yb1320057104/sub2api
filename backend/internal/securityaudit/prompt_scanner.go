@@ -44,6 +44,7 @@ func AggregateResults(results []*NormalizedResult, latency time.Duration) (*Norm
 			return nil, errors.New("prompt guard partial result is not allowed")
 		}
 		if resultSeverity(result.Decision) > resultSeverity(aggregated.Decision) {
+			aggregated.ScannerBackend = result.ScannerBackend
 			aggregated.Decision = result.Decision
 			aggregated.RiskLevel = result.RiskLevel
 			aggregated.Action = result.Action
@@ -54,6 +55,7 @@ func AggregateResults(results []*NormalizedResult, latency time.Duration) (*Norm
 			aggregated.PolicyVersion = result.PolicyVersion
 		}
 		if aggregated.GuardEndpointID == "" {
+			aggregated.ScannerBackend = result.ScannerBackend
 			aggregated.GuardEndpointID = result.GuardEndpointID
 			aggregated.ScannerVersion = result.ScannerVersion
 			aggregated.PolicyID = result.PolicyID

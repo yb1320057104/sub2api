@@ -131,6 +131,7 @@ func runtimeCacheTestConfig(t *testing.T, keywords ...string) string {
 	t.Helper()
 	cfg := defaultContentModerationConfig()
 	cfg.Enabled = true
+	cfg.GroupIDs = []int64{7}
 	cfg.Mode = ContentModerationModePreBlock
 	cfg.KeywordBlockingMode = ContentModerationKeywordModeKeywordOnly
 	cfg.BlockedKeywords = keywords
@@ -149,6 +150,7 @@ func runtimeCacheTestService(repo *contentModerationRuntimeSettingRepo, ttl time
 
 func runtimeCacheTestInput(text string) ContentModerationCheckInput {
 	return ContentModerationCheckInput{
+		GroupID:  contentModerationTestGroupID(),
 		Protocol: ContentModerationProtocolOpenAIChat,
 		Model:    "risk-cache-test",
 		Body:     []byte(`{"messages":[{"role":"user","content":"` + text + `"}]}`),

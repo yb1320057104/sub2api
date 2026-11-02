@@ -76,15 +76,81 @@ func TestPromptServiceBlockingLatestTurnOnlyUsesNarrowSnapshot(t *testing.T) {
 	}), nil, NewAtomicMetrics(), 2, 2)
 	service := &PromptService{
 		config: &fakeConfigStore{active: true, cfg: ActiveConfig{
-			RiskControlEnabled: true, Enabled: true, BlockingEnabled: true, BlockingLatestTurnOnly: true, AllGroups: true,
+			RiskControlEnabled: true, Enabled: true, BlockingEnabled: true, BlockingLatestTurnOnly: true, GroupIDs: []int64{1},
 			Scanners: AllScannerIDs, Endpoints: []ActiveEndpoint{{ID: "guard-1", Enabled: true, TimeoutMS: 1000, InputLimit: 4096}},
 		}},
 		evaluator: evaluator,
 	}
-	decision, err := service.Evaluate(context.Background(), Request{Protocol: "openai_chat_completions", Body: []byte(`{"messages":[{"role":"system","content":"system instruction"},{"role":"user","content":"older user input"},{"role":"assistant","content":"previous output"},{"role":"user","content":"latest user input"}]}`)})
+	decision, err := service.Evaluate(context.Background(), Request{GroupID: promptTestGroupID(1), Protocol: "openai_chat_completions", Body: []byte(`{"messages":[{"role":"system","content":"system instruction"},{"role":"user","content":"older user input"},{"role":"assistant","content":"previous output"},{"role":"user","content":"latest user input"}]}`)})
 	require.NoError(t, err)
 	require.Equal(t, DecisionAllow, decision.Kind)
 	require.Equal(t, []string{"latest user input", "previous output"}, seen)
+}
+
+func TestPromptServiceSelectedGroupOnlySkipsBeforeParsingOrQueueing(t *testing.T) {
+	for _, engine := range []string{PromptEngineRemote, PromptEngineLocalRules} {
+		for _, groups := range [][]int64{nil, {1}} {
+			for _, requestGroup := range []*int64{nil, promptTestGroupID(0), promptTestGroupID(2)} {
+				cfg := asyncConfig()
+				cfg.Engine, cfg.GroupIDs, cfg.AllGroups = engine, groups, true
+				store := &fakeConfigStore{active: true, cfg: cfg}
+				service := &PromptService{config: store, enqueuer: &Enqueuer{}, evaluator: NewGuardEvaluator(nil, nil, nil)}
+				req := Request{GroupID: requestGroup, Protocol: "openai_chat_completions", Body: []byte("invalid-json")}
+				require.False(t, service.IncludesGroup(requestGroup))
+				require.NoError(t, service.Enqueue(context.Background(), req), "must skip before accessing uninitialized queue")
+				store.cfg.BlockingEnabled = true
+				decision, err := service.Evaluate(context.Background(), req)
+				require.NoError(t, err)
+				require.Equal(t, DecisionAllow, decision.Kind)
+			}
+		}
+	}
+}
+
+func TestPromptServiceDegradedBlockingRespectsKnownGroupScope(t *testing.T) {
+	manager := &ConfigManager{}
+	manager.snapshot.Store(&activeConfigSnapshot{active: ActiveConfig{RiskControlEnabled: true, Enabled: true, GroupIDs: []int64{1}}})
+	manager.expectedBlocking.Store(true)
+	manager.configUntrusted.Store(true)
+	service := &PromptService{config: manager, evaluator: NewGuardEvaluator(nil, nil, nil)}
+	req := Request{GroupID: promptTestGroupID(2), Body: []byte("invalid")}
+	decision, err := service.Evaluate(context.Background(), req)
+	require.NoError(t, err)
+	require.Equal(t, DecisionAllow, decision.Kind)
+	req.GroupID = promptTestGroupID(1)
+	_, err = service.Evaluate(context.Background(), req)
+	require.Error(t, err, "in-scope degraded blocking must remain fail-closed")
+}
+
+func TestPromptServiceNewBlockingScopeCannotBeBypassedByStaleSnapshot(t *testing.T) {
+	manager := &ConfigManager{}
+	manager.snapshot.Store(&activeConfigSnapshot{active: ActiveConfig{RiskControlEnabled: true, Enabled: true, ConfigVersion: 1, GroupIDs: []int64{1}}})
+	manager.expected.Store(2)
+	manager.expectedBlocking.Store(true)
+	manager.configUntrusted.Store(true)
+	service := &PromptService{config: manager, evaluator: NewGuardEvaluator(nil, nil, nil)}
+	req := Request{GroupID: promptTestGroupID(2), Body: []byte("invalid")}
+	require.True(t, service.IncludesGroup(req.GroupID), "unknown new scope must not use old group selection")
+	_, err := service.Evaluate(context.Background(), req)
+	require.Error(t, err)
+
+	// A parsable new scope remains usable even if some other part of its
+	// configuration cannot be activated: only the selected group is blocked.
+	manager.observeExpectedState(`{"enabled":true,"blocking_enabled":true,"config_version":2,"group_ids":[2],"strategy":"invalid"}`, true)
+	manager.configUntrusted.Store(false)
+	previous := *manager.snapshot.Load()
+	previous.active.BlockingEnabled = true
+	manager.snapshot.Store(&previous)
+	require.True(t, manager.BlockingActivationDegraded(), "stale blocking snapshots also require current activation")
+	require.True(t, service.IncludesGroup(promptTestGroupID(2)))
+	require.False(t, service.IncludesGroup(promptTestGroupID(1)))
+	require.False(t, service.IncludesGroup(promptTestGroupID(3)))
+	_, err = service.Evaluate(context.Background(), req)
+	require.Error(t, err)
+	req.GroupID = promptTestGroupID(3)
+	decision, err := service.Evaluate(context.Background(), req)
+	require.NoError(t, err)
+	require.Equal(t, DecisionAllow, decision.Kind)
 }
 
 func TestPromptServiceRejectsInvalidDeleteConfirmationClaims(t *testing.T) {

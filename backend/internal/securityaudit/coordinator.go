@@ -17,6 +17,12 @@ type PromptEngine interface {
 	Evaluate(ctx context.Context, req Request) (*PromptDecision, error)
 }
 
+// Optional for existing adapters. Scoped engines can skip before the
+// coordinator copies request bodies or starts blocking/queue work.
+type GroupScopedPromptEngine interface {
+	IncludesGroup(groupID *int64) bool
+}
+
 type Coordinator struct {
 	legacy LegacyEngine
 	prompt PromptEngine
@@ -32,7 +38,9 @@ func (c *Coordinator) Check(ctx context.Context, req Request) Decision {
 	}
 	mode := ModeOff
 	if c.prompt != nil {
-		mode = c.prompt.EffectiveMode()
+		if scoped, ok := c.prompt.(GroupScopedPromptEngine); !ok || scoped.IncludesGroup(req.GroupID) {
+			mode = c.prompt.EffectiveMode()
+		}
 	}
 	switch mode {
 	case ModeAsync:

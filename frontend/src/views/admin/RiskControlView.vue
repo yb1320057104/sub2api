@@ -724,27 +724,11 @@
                 <h3 class="text-base font-semibold text-gray-900 dark:text-white">{{ t('admin.riskControl.groupScope') }}</h3>
                 <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.groupScopeHint') }}</p>
               </div>
-              <div class="inline-flex rounded-lg bg-gray-100 p-1 dark:bg-dark-700">
-                <button
-                  type="button"
-                  class="rounded-md px-3 py-1.5 text-sm font-medium transition-colors"
-                  :class="configForm.all_groups ? 'bg-white text-gray-900 shadow-sm dark:bg-dark-800 dark:text-white' : 'text-gray-500 dark:text-gray-400'"
-                  @click="configForm.all_groups = true"
-                >
-                  {{ t('admin.riskControl.allGroups') }}
-                </button>
-                <button
-                  type="button"
-                  class="rounded-md px-3 py-1.5 text-sm font-medium transition-colors"
-                  :class="!configForm.all_groups ? 'bg-white text-gray-900 shadow-sm dark:bg-dark-800 dark:text-white' : 'text-gray-500 dark:text-gray-400'"
-                  @click="configForm.all_groups = false"
-                >
-                  {{ t('admin.riskControl.selectedGroups') }}
-                </button>
-              </div>
+              <span class="text-sm font-medium text-gray-600 dark:text-gray-300">{{ t('admin.riskControl.selectedGroups') }}: {{ selectedGroupCount }}</span>
             </div>
 
-            <div v-if="!configForm.all_groups" class="space-y-4">
+            <div class="space-y-4">
+              <p v-if="configForm.group_ids.length === 0" data-test="audit-groups-empty" class="rounded-lg bg-amber-50 p-3 text-sm text-amber-700 dark:bg-amber-900/20 dark:text-amber-300">{{ t('admin.riskControl.noAuditGroups') }}</p>
               <div class="relative">
                 <Icon name="search" size="sm" class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
                 <input v-model.trim="groupSearch" type="search" class="input pl-9" :placeholder="t('admin.riskControl.searchGroups')" />
@@ -754,6 +738,8 @@
                   v-for="group in filteredGroups"
                   :key="group.id"
                   type="button"
+                  :aria-pressed="isGroupSelected(group.id)"
+                  :data-test="`audit-group-${group.id}`"
                   class="flex min-h-20 items-center justify-between rounded-lg border p-4 text-left transition-colors"
                   :class="isGroupSelected(group.id) ? 'border-primary-300 bg-primary-50 dark:border-primary-700 dark:bg-primary-900/20' : 'border-gray-100 hover:bg-gray-50 dark:border-dark-700 dark:hover:bg-dark-700/60'"
                   @click="toggleGroup(group.id)"
@@ -1274,7 +1260,7 @@ const configForm = reactive({
   timeout_ms: 3000,
   retry_count: 2,
   sample_rate: 100,
-  all_groups: true,
+  all_groups: false,
   group_ids: [] as number[],
   record_non_hits: false,
   worker_count: 4,
@@ -1626,7 +1612,7 @@ const overviewItems = computed<OverviewItem[]>(() => [
   {
     key: 'scope',
     label: t('admin.riskControl.overview.groupScope'),
-    value: configForm.all_groups ? t('admin.riskControl.allGroups') : selectedGroupCount.value,
+    value: selectedGroupCount.value,
     meta: modelFilterSummary.value,
     icon: 'users',
     iconClass: 'bg-violet-50 text-violet-600 dark:bg-violet-900/20 dark:text-violet-300',
@@ -1801,7 +1787,7 @@ function applyConfig(config: ContentModerationConfig) {
   configForm.timeout_ms = config.timeout_ms || 3000
   configForm.retry_count = config.retry_count ?? 2
   configForm.sample_rate = config.sample_rate ?? 100
-  configForm.all_groups = config.all_groups
+  configForm.all_groups = false
   configForm.group_ids = Array.isArray(config.group_ids) ? [...config.group_ids] : []
   configForm.record_non_hits = config.record_non_hits
   configForm.worker_count = config.worker_count || 4
@@ -1894,8 +1880,8 @@ async function saveConfig() {
       timeout_ms: Number(configForm.timeout_ms) || 3000,
       retry_count: Number(configForm.retry_count) || 0,
       sample_rate: Number(configForm.sample_rate) || 0,
-      all_groups: configForm.all_groups,
-      group_ids: configForm.all_groups ? [] : [...configForm.group_ids],
+      all_groups: false,
+      group_ids: [...configForm.group_ids],
       record_non_hits: configForm.record_non_hits,
       clear_api_key: configForm.clear_api_key,
       worker_count: Number(configForm.worker_count) || 4,

@@ -35,7 +35,7 @@ func newGuardEvaluator(scanner PromptScanner, repo JobRepository, metrics Metric
 }
 
 func (g *GuardEvaluator) Evaluate(ctx context.Context, cfg ActiveConfig, snapshot PromptSnapshot) (*PromptDecision, error) {
-	if g == nil || g.scanner == nil {
+	if g == nil || (g.scanner == nil && cfg.Engine != PromptEngineLocalRules) {
 		if g != nil && g.metrics != nil {
 			g.metrics.Observe(DecisionUnavailable, 0)
 		}
@@ -46,7 +46,7 @@ func (g *GuardEvaluator) Evaluate(ctx context.Context, cfg ActiveConfig, snapsho
 	baseFields := snapshotLogFields(snapshot)
 	baseFields["config_version"] = cfg.ConfigVersion
 	endpoints := cfg.EnabledEndpoints()
-	if len(endpoints) == 0 {
+	if len(endpoints) == 0 && cfg.Engine != PromptEngineLocalRules {
 		if g.metrics != nil {
 			g.metrics.Observe(DecisionUnavailable, g.clock.Now().Sub(start))
 		}
@@ -64,14 +64,25 @@ func (g *GuardEvaluator) Evaluate(ctx context.Context, cfg ActiveConfig, snapsho
 		logGuardFailure(snapshot, cfg, DecisionUnavailable, ErrorCodeUnavailable, "", g.clock.Now().Sub(start))
 		return nil, &GuardError{Code: ErrorCodeUnavailable}
 	}
-	timeout := time.Duration(endpoints[0].TimeoutMS) * time.Millisecond
+	timeout := DefaultTimeoutMS * time.Millisecond
+	if len(endpoints) > 0 && cfg.Engine != PromptEngineLocalRules {
+		timeout = time.Duration(endpoints[0].TimeoutMS) * time.Millisecond
+	}
 	if timeout <= 0 {
 		timeout = DefaultTimeoutMS * time.Millisecond
 	}
 	evalCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	inputLimit := minimumInputLimit(endpoints)
-	chunks := SplitRunes(snapshot.ScanText, inputLimit)
+	var chunks []string
+	if cfg.Engine == PromptEngineLocalRules {
+		if snapshot.ScanText != "" {
+			chunks = []string{snapshot.ScanText}
+			inputLimit = len([]rune(snapshot.ScanText))
+		}
+	} else {
+		chunks = SplitRunes(snapshot.ScanText, inputLimit)
+	}
 	if len(chunks) == 0 {
 		if g.metrics != nil {
 			g.metrics.Observe(DecisionAllow, g.clock.Now().Sub(start))
@@ -188,6 +199,9 @@ func logGuardFailure(snapshot PromptSnapshot, cfg ActiveConfig, kind DecisionKin
 }
 
 func (g *GuardEvaluator) scanChunk(ctx context.Context, cfg ActiveConfig, endpoints []ActiveEndpoint, chunk string) (*NormalizedResult, error) {
+	if cfg.Engine == PromptEngineLocalRules {
+		return scanLocalRules(ctx, cfg, chunk)
+	}
 	var lastErr error
 	for index, endpoint := range endpoints {
 		semaphore := g.nodeSemaphore(endpoint.ID)

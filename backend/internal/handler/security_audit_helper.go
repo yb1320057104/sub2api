@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/securityaudit"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -21,6 +22,23 @@ type securityAuditWSDedupeEntry struct {
 	turn     int
 	bodyHash [sha256.Size]byte
 	decision securityaudit.Decision
+	scope    securityAuditGroupScope
+}
+
+type securityAuditGroupScope struct {
+	id       int64
+	assigned bool
+}
+
+func securityAuditScope(apiKey *service.APIKey) securityAuditGroupScope {
+	if apiKey == nil || apiKey.GroupID == nil {
+		return securityAuditGroupScope{}
+	}
+	return securityAuditGroupScope{id: *apiKey.GroupID, assigned: true}
+}
+
+func markSecurityAuditCompleted(c *gin.Context, apiKey *service.APIKey) {
+	c.Set(securityAuditCompletedContextKey, securityAuditScope(apiKey))
 }
 
 // cachesSecurityAuditCompletion reports whether a successful audit may be
@@ -48,7 +66,31 @@ func (h *GatewayHandler) checkSecurityAudit(c *gin.Context, reqLog *zap.Logger, 
 	if h == nil {
 		return nil
 	}
+	// Mirror the gateway scheduler's Claude Code restriction fallback. Group
+	// scope follows the group that will actually serve this request, while the
+	// authenticated key and its billing identity remain unchanged.
+	if apiKey != nil && apiKey.Group != nil && h.gatewayService != nil && c != nil && c.Request != nil {
+		forcePlatform, _ := c.Request.Context().Value(ctxkey.ForcePlatform).(string)
+		if forcePlatform == "" && !service.IsClaudeCodeClient(c.Request.Context()) {
+			visited := make(map[int64]bool)
+			for apiKey.Group.ClaudeCodeOnly && apiKey.Group.FallbackGroupID != nil {
+				if visited[apiKey.Group.ID] {
+					return securityAuditGroupUnavailable()
+				}
+				visited[apiKey.Group.ID] = true
+				group, err := h.gatewayService.ResolveGroupByID(c.Request.Context(), *apiKey.Group.FallbackGroupID)
+				if err != nil || group == nil {
+					return securityAuditGroupUnavailable()
+				}
+				apiKey = cloneAPIKeyWithGroup(apiKey, group)
+			}
+		}
+	}
 	return runSecurityAudit(c, reqLog, h.securityAuditCoordinator, h.contentModerationService, apiKey, subject, protocol, model, body, "http")
+}
+
+func securityAuditGroupUnavailable() *securityaudit.Decision {
+	return &securityaudit.Decision{Kind: securityaudit.DecisionUnavailable, HTTPStatus: http.StatusServiceUnavailable, ErrorCode: securityaudit.ErrorCodeUnavailable, ClientMessage: "无法确认请求实际分组，请稍后重试", AllowNextStage: false}
 }
 
 func (h *OpenAIGatewayHandler) checkSecurityAudit(c *gin.Context, reqLog *zap.Logger, apiKey *service.APIKey, subject middleware2.AuthSubject, protocol, model string, body []byte) *securityaudit.Decision {
@@ -70,9 +112,12 @@ func runSecurityAudit(c *gin.Context, reqLog *zap.Logger, coordinator *securitya
 		return nil
 	}
 	cacheCompletion := cachesSecurityAuditCompletion(stage)
+	scope := securityAuditScope(apiKey)
 	if cacheCompletion {
-		if completed, exists := c.Get(securityAuditCompletedContextKey); exists && completed == true {
-			return nil
+		if completed, exists := c.Get(securityAuditCompletedContextKey); exists {
+			if cachedScope, ok := completed.(securityAuditGroupScope); ok && cachedScope == scope {
+				return nil
+			}
 		}
 	}
 	if coordinator == nil {
@@ -90,7 +135,7 @@ func runSecurityAudit(c *gin.Context, reqLog *zap.Logger, coordinator *securitya
 			decision.Kind, decision.HTTPStatus, decision.ErrorCode, decision.ClientMessage, decision.AllowNextStage = securityaudit.DecisionBlock, contentModerationStatus(legacyDecision), "content_policy_violation", legacyDecision.Message, false
 		}
 		if decision.AllowNextStage && cacheCompletion {
-			c.Set(securityAuditCompletedContextKey, true)
+			markSecurityAuditCompleted(c, apiKey)
 		}
 		return &decision
 	}
@@ -100,7 +145,7 @@ func runSecurityAudit(c *gin.Context, reqLog *zap.Logger, coordinator *securitya
 			bodyHash := sha256.Sum256(body)
 			if cached, exists := c.Get(securityAuditWSDedupeContextKey); exists {
 				if entry, ok := cached.(securityAuditWSDedupeEntry); ok &&
-					entry.stage == request.Stage && entry.turn == turnNo && entry.bodyHash == bodyHash {
+					entry.stage == request.Stage && entry.turn == turnNo && entry.bodyHash == bodyHash && entry.scope == scope {
 					decision := entry.decision
 					logSecurityAuditDone(reqLog, request, decision, true)
 					return &decision
@@ -110,7 +155,7 @@ func runSecurityAudit(c *gin.Context, reqLog *zap.Logger, coordinator *securitya
 			decision := coordinator.Check(c.Request.Context(), request)
 			if decision.Kind == securityaudit.DecisionAllow {
 				c.Set(securityAuditWSDedupeContextKey, securityAuditWSDedupeEntry{
-					stage: request.Stage, turn: turnNo, bodyHash: bodyHash, decision: decision,
+					stage: request.Stage, turn: turnNo, bodyHash: bodyHash, decision: decision, scope: scope,
 				})
 			}
 			logSecurityAuditDone(reqLog, request, decision, false)
@@ -120,7 +165,7 @@ func runSecurityAudit(c *gin.Context, reqLog *zap.Logger, coordinator *securitya
 	logSecurityAuditStart(reqLog, request, len(body), false)
 	decision := coordinator.Check(c.Request.Context(), request)
 	if decision.AllowNextStage && cacheCompletion {
-		c.Set(securityAuditCompletedContextKey, true)
+		markSecurityAuditCompleted(c, apiKey)
 	}
 	logSecurityAuditDone(reqLog, request, decision, false)
 	return &decision

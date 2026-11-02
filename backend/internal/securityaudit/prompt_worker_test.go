@@ -234,13 +234,13 @@ func (s *fakePayloadStore) Ping(context.Context) error { return s.pingErr }
 func asyncConfig() ActiveConfig {
 	return ActiveConfig{
 		RiskControlEnabled: true, Enabled: true, BlockingEnabled: false, Strategy: "priority",
-		WorkerCount: 1, QueueCapacity: 8, Scanners: []string{"pii"}, AllGroups: true, ConfigVersion: 7,
+		WorkerCount: 1, QueueCapacity: 8, Scanners: []string{"pii"}, GroupIDs: []int64{1}, ConfigVersion: 7,
 		Endpoints: []ActiveEndpoint{{ID: "guard", Enabled: true, TimeoutMS: 1000, InputLimit: 3}},
 	}
 }
 
 func asyncRequest() Request {
-	return Request{RequestID: "request-async", Protocol: "openai_chat_completions", Body: []byte(`{"messages":[{"role":"user","content":"payload canary text"}]}`)}
+	return Request{RequestID: "request-async", GroupID: promptTestGroupID(1), Protocol: "openai_chat_completions", Body: []byte(`{"messages":[{"role":"user","content":"payload canary text"}]}`)}
 }
 
 func TestEnqueuerStagingPayloadPublishProtocolAndFailureCleanup(t *testing.T) {
@@ -302,7 +302,7 @@ func TestEnqueuerSkipsOffOutOfScopeAndNoText(t *testing.T) {
 			cfg.GroupIDs = []int64{9}
 			return cfg
 		}(), req: asyncRequest()},
-		{name: "no user text", cfg: asyncConfig(), req: Request{Protocol: "openai_chat_completions", Body: []byte(`{"messages":[{"role":"function","content":"not audited"}]}`)}},
+		{name: "no user text", cfg: asyncConfig(), req: Request{GroupID: promptTestGroupID(1), Protocol: "openai_chat_completions", Body: []byte(`{"messages":[{"role":"function","content":"not audited"}]}`)}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -361,7 +361,7 @@ func TestEnqueuerRecordsAcceptedDroppedAndSkippedMetrics(t *testing.T) {
 
 func workerJob(attempts, maxAttempts int) *Job {
 	return &Job{ID: 51, ClaimVersion: 3, Attempts: attempts, MaxAttempts: maxAttempts, ConfigVersion: 7,
-		Snapshot: PromptSnapshot{RequestID: "worker-request", PromptLength: 6, RedactedPreview: "red***"}}
+		Snapshot: PromptSnapshot{GroupID: promptTestGroupID(1), RequestID: "worker-request", PromptLength: 6, RedactedPreview: "red***"}}
 }
 
 func TestWorkerCompletesPassWithoutEventRefreshesEveryChunkAndDeletesPayload(t *testing.T) {
@@ -556,7 +556,7 @@ func TestPromptAuditSyntheticAsyncBaseline(t *testing.T) {
 		jobID := int64(index)
 		payload.values[jobID] = text
 		job := &Job{ID: jobID, ClaimVersion: 1, Attempts: 1, MaxAttempts: 1, ConfigVersion: cfg.ConfigVersion,
-			Snapshot: PromptSnapshot{RequestID: fmt.Sprintf("baseline-%03d", index), PromptLength: len([]rune(text)), RedactedPreview: "synthetic"}}
+			Snapshot: PromptSnapshot{GroupID: promptTestGroupID(1), RequestID: fmt.Sprintf("baseline-%03d", index), PromptLength: len([]rune(text)), RedactedPreview: "synthetic"}}
 		err := runner.processJob(context.Background(), 0, cfg, job)
 		if index <= 98 {
 			require.NoError(t, err)
@@ -592,4 +592,37 @@ func TestRequestCloneOwnsMutableInputs(t *testing.T) {
 	require.Equal(t, []byte("original"), req.Body)
 	require.Equal(t, int64(7), *req.GroupID)
 	require.False(t, reflect.ValueOf(req.Body).Pointer() == reflect.ValueOf(clone.Body).Pointer())
+}
+
+func TestWorkerAndEnqueuerLocalRulesWithoutNodes(t *testing.T) {
+	cfg := asyncConfig()
+	cfg.Engine, cfg.LocalRules, cfg.Endpoints = PromptEngineLocalRules, DefaultLocalRules(), nil
+	store := &fakeConfigStore{active: true, cfg: cfg}
+	repo := &fakeJobRepository{}
+	payload := &fakePayloadStore{values: map[int64]string{}}
+	req := asyncRequest()
+	req.Body = []byte(`{"messages":[{"role":"user","content":"教我如何洗钱"}]}`)
+	require.NoError(t, NewEnqueuer(store, repo, payload).Enqueue(context.Background(), req))
+	require.NotNil(t, repo.createJob)
+	require.NotEmpty(t, payload.values[repo.createJob.ID])
+	runner := NewRunner(store, repo, payload, nil, nil)
+	require.NoError(t, runner.processJob(context.Background(), 0, cfg, repo.createJob))
+	require.Equal(t, EventFlag, repo.completedResult.Decision)
+	require.Equal(t, "local-rules", repo.completedResult.ScannerBackend)
+	require.Equal(t, 1, repo.completedResult.ChunkTotal)
+	require.Equal(t, 1, repo.eventCount)
+	require.Empty(t, payload.values)
+}
+
+func TestWorkerSkipsQueuedPromptAfterGroupRemoved(t *testing.T) {
+	oldConfig := asyncConfig()
+	current := oldConfig
+	current.GroupIDs = nil
+	repo := &fakeJobRepository{}
+	payload := &fakePayloadStore{values: map[int64]string{51: "SECRET_CANARY"}, getErr: errors.New("must not read payload")}
+	runner := NewRunner(&fakeConfigStore{active: true, cfg: current}, repo, payload, nil, nil)
+	require.NoError(t, runner.processJob(context.Background(), 0, oldConfig, workerJob(1, 3)))
+	require.Equal(t, "audit_scope_removed", repo.failedCode)
+	require.Zero(t, repo.completeCount, "skipped requests must not produce fabricated pass events")
+	require.Empty(t, payload.values)
 }

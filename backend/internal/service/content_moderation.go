@@ -687,9 +687,8 @@ func (s *ContentModerationService) UpdateConfig(ctx context.Context, input Updat
 	if input.ModelFilter != nil {
 		cfg.ModelFilter = *input.ModelFilter
 	}
-	if input.AllGroups != nil {
-		cfg.AllGroups = *input.AllGroups
-	}
+	// Keep the legacy field in the wire format, but audit only explicitly selected groups.
+	cfg.AllGroups = false
 	if input.GroupIDs != nil {
 		cfg.GroupIDs = normalizeInt64IDs(*input.GroupIDs)
 	}
@@ -1720,7 +1719,7 @@ func (s *ContentModerationService) validateConfig(ctx context.Context, cfg *Cont
 	if cfg.ModelFilter.Type != ContentModerationModelFilterAll && len(cfg.ModelFilter.Models) == 0 {
 		return infraerrors.BadRequest("INVALID_CONTENT_MODERATION_MODEL_FILTER", "指定或排除模型时至少需要配置 1 个模型")
 	}
-	if !cfg.AllGroups && len(cfg.GroupIDs) > 0 && s.groupRepo != nil {
+	if len(cfg.GroupIDs) > 0 && s.groupRepo != nil {
 		for _, groupID := range cfg.GroupIDs {
 			if _, err := s.groupRepo.GetByIDLite(ctx, groupID); err != nil {
 				return infraerrors.BadRequest("INVALID_CONTENT_MODERATION_GROUP", fmt.Sprintf("审计分组不存在: %d", groupID))
@@ -2144,7 +2143,7 @@ func defaultContentModerationConfig() *ContentModerationConfig {
 		Model:                defaultContentModerationModel,
 		TimeoutMS:            defaultContentModerationTimeoutMS,
 		SampleRate:           100,
-		AllGroups:            true,
+		AllGroups:            false,
 		GroupIDs:             []int64{},
 		RecordNonHits:        false,
 		Thresholds:           ContentModerationDefaultThresholds(),
@@ -2267,6 +2266,8 @@ func (cfg *ContentModerationConfig) normalize() {
 	if cfg.NonHitRetentionDays > maxContentModerationNonHitRetentionDays {
 		cfg.NonHitRetentionDays = maxContentModerationNonHitRetentionDays
 	}
+	// Legacy all_groups=true must never opt unselected groups into auditing.
+	cfg.AllGroups = false
 	cfg.GroupIDs = normalizeInt64IDs(cfg.GroupIDs)
 	cfg.Thresholds = mergeContentModerationThresholds(ContentModerationDefaultThresholds(), cfg.Thresholds)
 	cfg.BlockedKeywords = normalizeBlockedKeywords(cfg.BlockedKeywords)
@@ -2275,10 +2276,7 @@ func (cfg *ContentModerationConfig) normalize() {
 }
 
 func (cfg *ContentModerationConfig) includesGroup(groupID *int64) bool {
-	if cfg.AllGroups {
-		return true
-	}
-	if groupID == nil {
+	if cfg == nil || groupID == nil || *groupID <= 0 {
 		return false
 	}
 	for _, id := range cfg.GroupIDs {

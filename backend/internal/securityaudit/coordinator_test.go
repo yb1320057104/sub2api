@@ -30,6 +30,46 @@ type fakePromptEngine struct {
 	evaluates atomic.Int64
 }
 
+type groupScopedFakePromptEngine struct {
+	*fakePromptEngine
+	groupID int64
+}
+
+func (f *groupScopedFakePromptEngine) IncludesGroup(groupID *int64) bool {
+	return groupID != nil && *groupID == f.groupID
+}
+
+func TestCoordinatorSkipsUnselectedPromptGroupBeforeQueueOrEvaluation(t *testing.T) {
+	for _, mode := range []Mode{ModeAsync, ModeBlocking} {
+		for _, selected := range []bool{false, true} {
+			for _, legacyBlocks := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/selected=%v/legacy_blocks=%v", mode, selected, legacyBlocks), func(t *testing.T) {
+					legacy := &fakeLegacyEngine{decision: &LegacyDecision{Allowed: !legacyBlocks, Blocked: legacyBlocks, StatusCode: http.StatusForbidden, ErrorCode: "legacy_block"}}
+					prompt := &groupScopedFakePromptEngine{fakePromptEngine: &fakePromptEngine{mode: mode, decision: &PromptDecision{Kind: DecisionAllow, AllowNextStage: true}}, groupID: 2}
+					id := int64(1)
+					if selected {
+						id = 2
+					}
+					decision := NewCoordinator(legacy, prompt).Check(context.Background(), Request{GroupID: &id, Body: []byte(`{"input":"scope"}`)})
+					require.Equal(t, int64(1), legacy.calls.Load(), "prompt scope must never disable legacy auditing")
+					require.Equal(t, legacyBlocks, !decision.AllowNextStage)
+					calls := int64(0)
+					if selected {
+						calls = 1
+					}
+					if mode == ModeAsync {
+						require.Equal(t, calls, prompt.enqueues.Load())
+						require.Zero(t, prompt.evaluates.Load())
+					} else {
+						require.Equal(t, calls, prompt.evaluates.Load())
+						require.Zero(t, prompt.enqueues.Load())
+					}
+				})
+			}
+		}
+	}
+}
+
 func (f *fakePromptEngine) EffectiveMode() Mode { return f.mode }
 func (f *fakePromptEngine) Enqueue(context.Context, Request) error {
 	f.enqueues.Add(1)

@@ -38,7 +38,7 @@ func NewRunner(config ConfigStore, repo JobRepository, payload PayloadStore, sca
 }
 
 func (r *Runner) Start(ctx context.Context) error {
-	if r == nil || r.config == nil || r.repo == nil || r.payload == nil || r.scanner == nil {
+	if r == nil || r.config == nil || r.repo == nil || r.payload == nil {
 		return errors.New("prompt audit worker dependencies unavailable")
 	}
 	r.mu.Lock()
@@ -98,6 +98,10 @@ func (r *Runner) worker(ctx context.Context, workerID int) {
 				continue
 			}
 			for {
+				cfg, ok = r.config.Active()
+				if !ok || !cfg.RiskControlEnabled || !cfg.Enabled || workerID >= cfg.WorkerCount {
+					break
+				}
 				job, claimed, err := r.repo.ClaimNextJob(ctx, r.clock.Now())
 				if err != nil {
 					r.setLastError("claim_job_failed", err.Error())
@@ -135,6 +139,21 @@ func (r *Runner) processSafely(ctx context.Context, workerID int, cfg ActiveConf
 
 func (r *Runner) processJob(ctx context.Context, workerID int, cfg ActiveConfig, job *Job) error {
 	baseFields := jobLogFields(job)
+	// Re-check scope before retrieving a queued prompt: administrators may
+	// have removed this group while the job was waiting for a worker.
+	if current, ok := r.config.Active(); ok {
+		cfg = current
+	} else {
+		return r.finishFailure(ctx, job, &GuardError{Code: ErrorCodeConfigUnavailable, Retryable: true})
+	}
+	if !cfg.RiskControlEnabled || !cfg.Enabled || !cfg.IncludesGroup(job.Snapshot.GroupID) {
+		if err := r.repo.Fail(ctx, job.ID, job.ClaimVersion, "audit_scope_removed", "prompt audit skipped after scope change"); err != nil {
+			return err
+		}
+		_ = r.payload.Delete(ctx, job.ID)
+		LogInfo(EventProcessed, mergeLogFields(baseFields, map[string]any{"worker_id": workerID, "status": "skipped", "error_code": "audit_scope_removed"}))
+		return nil
+	}
 	LogInfo(EventAuditStarted, mergeLogFields(baseFields, map[string]any{"worker_id": workerID, "attempts": job.Attempts, "status": "processing"}))
 	scanText, err := r.payload.Get(ctx, job.ID)
 	if err != nil {
@@ -144,10 +163,22 @@ func (r *Runner) processJob(ctx context.Context, workerID int, cfg ActiveConfig,
 	// event is reconstructed here from the transient scan payload.
 	job.Snapshot.FullPrompt = FullPromptFromScanText(scanText)
 	endpoints := cfg.EnabledEndpoints()
-	if len(endpoints) == 0 {
+	if len(endpoints) == 0 && cfg.Engine != PromptEngineLocalRules {
 		return r.finishFailure(ctx, job, &GuardError{Code: "no_enabled_endpoint", Retryable: true})
 	}
-	chunks := SplitRunes(scanText, minimumInputLimit(endpoints))
+	if cfg.Engine != PromptEngineLocalRules && r.scanner == nil {
+		return r.finishFailure(ctx, job, &GuardError{Code: ErrorCodeUnavailable, Retryable: false})
+	}
+	inputLimit := minimumInputLimit(endpoints)
+	var chunks []string
+	if cfg.Engine == PromptEngineLocalRules {
+		if scanText != "" {
+			chunks = []string{scanText}
+			inputLimit = len([]rune(scanText))
+		}
+	} else {
+		chunks = SplitRunes(scanText, inputLimit)
+	}
 	results := make([]*NormalizedResult, 0, len(chunks))
 	started := r.clock.Now()
 	for index, chunk := range chunks {
@@ -155,13 +186,21 @@ func (r *Runner) processJob(ctx context.Context, workerID int, cfg ActiveConfig,
 			return err
 		}
 		chunkStarted := r.clock.Now()
-		LogInfo(EventChunkStarted, mergeLogFields(baseFields, map[string]any{"worker_id": workerID, "chunk_index": index + 1, "chunk_total": len(chunks), "chunk_chars": len([]rune(chunk)), "input_chars": job.Snapshot.PromptLength, "input_limit": minimumInputLimit(endpoints), "status": "started"}))
-		result, scanErr := scanWithFailover(ctx, r.scanner, cfg.Scanners, endpoints, chunk, r.metrics)
+		LogInfo(EventChunkStarted, mergeLogFields(baseFields, map[string]any{"worker_id": workerID, "chunk_index": index + 1, "chunk_total": len(chunks), "chunk_chars": len([]rune(chunk)), "input_chars": job.Snapshot.PromptLength, "input_limit": inputLimit, "status": "started"}))
+		var result *NormalizedResult
+		var scanErr error
+		if cfg.Engine == PromptEngineLocalRules {
+			scanCtx, cancel := context.WithTimeout(ctx, DefaultTimeoutMS*time.Millisecond)
+			result, scanErr = scanLocalRules(scanCtx, cfg, chunk)
+			cancel()
+		} else {
+			result, scanErr = scanWithFailover(ctx, r.scanner, cfg.Scanners, endpoints, chunk, r.metrics)
+		}
 		if scanErr != nil {
 			LogWarn(EventChunkFailed, mergeLogFields(baseFields, map[string]any{
 				"worker_id": workerID, "chunk_index": index + 1, "chunk_total": len(chunks),
 				"chunk_chars": len([]rune(chunk)), "input_chars": job.Snapshot.PromptLength,
-				"input_limit": minimumInputLimit(endpoints), "latency_ms": r.clock.Now().Sub(chunkStarted).Milliseconds(),
+				"input_limit": inputLimit, "latency_ms": r.clock.Now().Sub(chunkStarted).Milliseconds(),
 				"error_code": guardErrorCode(scanErr), "status": "failed",
 			}))
 			r.observeAsyncFailure(scanErr, r.clock.Now().Sub(started))

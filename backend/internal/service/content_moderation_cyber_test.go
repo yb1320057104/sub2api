@@ -81,6 +81,7 @@ func TestRecordCyberPolicyEvent_DisabledWhenRiskControlOff(t *testing.T) {
 	)
 
 	svc.RecordCyberPolicyEvent(context.Background(), CyberPolicyRecordInput{
+		GroupID:         contentModerationTestGroupID(),
 		UserID:          1,
 		UserEmail:       "u@x.com",
 		Model:           "gpt-5",
@@ -97,7 +98,8 @@ func TestRecordCyberPolicyEvent_WritesLogWhenEnabled(t *testing.T) {
 	repo := &contentModerationTestRepo{}
 	svc := NewContentModerationService(
 		&contentModerationTestSettingRepo{values: map[string]string{
-			SettingKeyRiskControlEnabled: "true",
+			SettingKeyRiskControlEnabled:      "true",
+			SettingKeyContentModerationConfig: `{"group_ids":[7]}`,
 		}},
 		repo,
 		nil,
@@ -109,6 +111,7 @@ func TestRecordCyberPolicyEvent_WritesLogWhenEnabled(t *testing.T) {
 	)
 
 	svc.RecordCyberPolicyEvent(context.Background(), CyberPolicyRecordInput{
+		GroupID:         contentModerationTestGroupID(),
 		UserID:          1,
 		UserEmail:       "u@x.com",
 		Model:           "gpt-5",
@@ -169,6 +172,18 @@ func TestRecordCyberPolicyEvent_RespectsContentModerationScope(t *testing.T) {
 		wantBanned bool
 	}{
 		{
+			name:    "legacy all groups with empty selection",
+			config:  `{"all_groups":true,"group_ids":[],"ban_threshold":1}`,
+			groupID: &groupID,
+			model:   "gpt-5",
+		},
+		{
+			name:    "missing scope",
+			config:  `{}`,
+			groupID: &groupID,
+			model:   "gpt-5",
+		},
+		{
 			name:     "excluded group",
 			config:   `{"all_groups":false,"group_ids":[8],"ban_threshold":1}`,
 			groupID:  &groupID,
@@ -184,7 +199,7 @@ func TestRecordCyberPolicyEvent_RespectsContentModerationScope(t *testing.T) {
 		},
 		{
 			name:     "excluded model",
-			config:   `{"all_groups":true,"model_filter":{"type":"include","models":["gpt-4o"]},"ban_threshold":1}`,
+			config:   `{"all_groups":false,"group_ids":[7],"model_filter":{"type":"include","models":["gpt-4o"]},"ban_threshold":1}`,
 			groupID:  &groupID,
 			model:    "gpt-5",
 			wantLogs: 0,
@@ -243,8 +258,9 @@ func TestRecordCyberPolicyEvent_InitialRuntimeSnapshotLoadFailureSkipsEvent(t *t
 	svc := NewContentModerationService(settingRepo, repo, nil, nil, nil, nil, nil, nil)
 
 	svc.RecordCyberPolicyEvent(context.Background(), CyberPolicyRecordInput{
-		UserID: 1,
-		Model:  "gpt-5",
+		GroupID: contentModerationTestGroupID(),
+		UserID:  1,
+		Model:   "gpt-5",
 	})
 
 	require.Empty(t, repo.snapshotCountCalls())
@@ -258,7 +274,7 @@ func TestRecordCyberPolicyEvent_RuntimeSnapshotRefreshFailureKeepsStaleScope(t *
 	repo := &banCountArgsTestRepo{}
 	settingRepo := &contentModerationRuntimeSettingRepo{values: map[string]string{
 		SettingKeyRiskControlEnabled:      "true",
-		SettingKeyContentModerationConfig: `{"all_groups":true,"model_filter":{"type":"include","models":["gpt-5"]}}`,
+		SettingKeyContentModerationConfig: `{"all_groups":false,"group_ids":[7],"model_filter":{"type":"include","models":["gpt-5"]}}`,
 	}}
 	svc := NewContentModerationService(settingRepo, repo, nil, nil, nil, nil, nil, nil)
 	svc.runtimeCacheTTL = time.Minute
@@ -273,8 +289,9 @@ func TestRecordCyberPolicyEvent_RuntimeSnapshotRefreshFailureKeepsStaleScope(t *
 	settingRepo.failMultiple(errors.New("database unavailable"))
 
 	svc.RecordCyberPolicyEvent(context.Background(), CyberPolicyRecordInput{
-		UserID: 1,
-		Model:  "gpt-5",
+		GroupID: contentModerationTestGroupID(),
+		UserID:  1,
+		Model:   "gpt-5",
 	})
 
 	require.Len(t, repo.snapshotLogs(), 1)
@@ -305,7 +322,8 @@ func TestRecordCyberPolicyEvent_CreateLogBeforeEmail(t *testing.T) {
 	repo := &cyberOrderingTestRepo{}
 	svc := NewContentModerationService(
 		&contentModerationTestSettingRepo{values: map[string]string{
-			SettingKeyRiskControlEnabled: "true",
+			SettingKeyRiskControlEnabled:      "true",
+			SettingKeyContentModerationConfig: `{"group_ids":[7]}`,
 		}},
 		repo,
 		nil,
@@ -317,6 +335,7 @@ func TestRecordCyberPolicyEvent_CreateLogBeforeEmail(t *testing.T) {
 	)
 
 	svc.RecordCyberPolicyEvent(context.Background(), CyberPolicyRecordInput{
+		GroupID:         contentModerationTestGroupID(),
 		RequestID:       "req-1",
 		UserID:          7,
 		UserEmail:       "u@example.com",
@@ -387,12 +406,13 @@ func TestRecordCyberPolicyEvent_ExcludeFromBanCount_SkipsBanJudgment(t *testing.
 	svc := NewContentModerationService(
 		&contentModerationTestSettingRepo{values: map[string]string{
 			SettingKeyRiskControlEnabled:      "true",
-			SettingKeyContentModerationConfig: `{"cyber_policy_exclude_from_ban_count":true}`,
+			SettingKeyContentModerationConfig: `{"group_ids":[7],"cyber_policy_exclude_from_ban_count":true}`,
 		}},
 		repo, nil, nil, nil, nil, nil, nil,
 	)
 
 	svc.RecordCyberPolicyEvent(context.Background(), CyberPolicyRecordInput{
+		GroupID:         contentModerationTestGroupID(),
 		UserID:          1,
 		UserEmail:       "u@x.com",
 		Model:           "gpt-5",
@@ -414,12 +434,14 @@ func TestRecordCyberPolicyEvent_DefaultCountsTowardBan(t *testing.T) {
 	repo := &banCountArgsTestRepo{}
 	svc := NewContentModerationService(
 		&contentModerationTestSettingRepo{values: map[string]string{
-			SettingKeyRiskControlEnabled: "true",
+			SettingKeyRiskControlEnabled:      "true",
+			SettingKeyContentModerationConfig: `{"group_ids":[7]}`,
 		}},
 		repo, nil, nil, nil, nil, nil, nil,
 	)
 
 	svc.RecordCyberPolicyEvent(context.Background(), CyberPolicyRecordInput{
+		GroupID:         contentModerationTestGroupID(),
 		UserID:          1,
 		UserEmail:       "u@x.com",
 		Model:           "gpt-5",

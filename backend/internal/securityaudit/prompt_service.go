@@ -107,8 +107,24 @@ func (s *PromptService) EffectiveMode() Mode {
 	return s.config.EffectiveMode()
 }
 
+// Without a trustworthy snapshot, retain the existing blocking fail-closed
+// behavior. A known out-of-scope group never consumes prompt-audit resources.
+func (s *PromptService) IncludesGroup(groupID *int64) bool {
+	if s == nil || s.config == nil {
+		return true
+	}
+	if scoped, ok := s.config.(interface{ IncludesGroup(*int64) bool }); ok {
+		return scoped.IncludesGroup(groupID)
+	}
+	cfg, ok := s.config.Active()
+	return !ok || cfg.IncludesGroup(groupID)
+}
+
 func (s *PromptService) Enqueue(_ context.Context, req Request) error {
 	if s == nil || s.enqueuer == nil || s.EffectiveMode() != ModeAsync {
+		return nil
+	}
+	if !s.IncludesGroup(req.GroupID) {
 		return nil
 	}
 	select {
@@ -142,6 +158,9 @@ func (s *PromptService) Enqueue(_ context.Context, req Request) error {
 func (s *PromptService) Evaluate(ctx context.Context, req Request) (*PromptDecision, error) {
 	if s == nil || s.config == nil || s.evaluator == nil {
 		return nil, &GuardError{Code: ErrorCodeUnavailable}
+	}
+	if !s.IncludesGroup(req.GroupID) {
+		return &PromptDecision{Kind: DecisionAllow, AllowNextStage: true}, nil
 	}
 	if s.config.BlockingActivationDegraded() {
 		return nil, &GuardError{Code: ErrorCodeUnavailable}

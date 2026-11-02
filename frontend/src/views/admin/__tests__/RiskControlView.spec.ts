@@ -88,7 +88,7 @@ const baseConfig = (): ContentModerationConfig => ({
   api_key_statuses: [],
   timeout_ms: 3000,
   sample_rate: 100,
-  all_groups: true,
+  all_groups: false,
   group_ids: [],
   record_non_hits: false,
   worker_count: 4,
@@ -334,6 +334,40 @@ describe('admin RiskControlView', () => {
     }
     if (engine === 'typesafe') expect(wrapper.text()).toContain('admin.riskControl.typeSafeThresholds')
     expect(updateConfig).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('requires explicit group selection even for legacy all-groups configuration and can clear the selection', async () => {
+    getConfig.mockResolvedValue({ ...baseConfig(), all_groups: true })
+    getGroups.mockResolvedValue([
+      { id: 7, name: 'Audit group', platform: 'openai' },
+      { id: 8, name: 'Skipped group', platform: 'openai' },
+    ])
+    const wrapper = mount(RiskControlView, { global: { stubs: {
+      AppLayout: AppLayoutStub, BaseDialog: BaseDialogStub, Icon: true, Select: true, Toggle: true,
+      Pagination: true, ModelWhitelistSelector: ModelWhitelistSelectorStub, ProxySelector: true,
+    } } })
+    await flushPromises()
+    const openScope = async () => {
+      await findButtonByText(wrapper, 'admin.riskControl.openSettings').trigger('click')
+      await findButtonByText(wrapper, 'admin.riskControl.tabs.scope').trigger('click')
+    }
+    await openScope()
+    expect(wrapper.find('[data-test="audit-groups-empty"]').exists()).toBe(true)
+    expect(wrapper.findAll('button').some((button) => button.text() === 'admin.riskControl.allGroups')).toBe(false)
+    await wrapper.get('[data-test="audit-group-7"]').trigger('click')
+    expect(wrapper.get('[data-test="audit-group-7"]').attributes('aria-pressed')).toBe('true')
+    expect(wrapper.get('[data-test="audit-group-8"]').attributes('aria-pressed')).toBe('false')
+    await findButtonByText(wrapper, 'admin.riskControl.saveConfig').trigger('click')
+    await flushPromises()
+    expect(updateConfig).toHaveBeenLastCalledWith(expect.objectContaining({ all_groups: false, group_ids: [7] }))
+    await openScope()
+    await wrapper.get('[data-test="audit-group-7"]').trigger('click')
+    expect(wrapper.find('[data-test="audit-groups-empty"]').exists()).toBe(true)
+    await findButtonByText(wrapper, 'admin.riskControl.saveConfig').trigger('click')
+    await flushPromises()
+    expect(updateConfig).toHaveBeenLastCalledWith(expect.objectContaining({ all_groups: false, group_ids: [] }))
+    expect(showError).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 

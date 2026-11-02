@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { PromptAuditConfig } from '../types'
+import type { PromptAuditConfig, PromptLocalRule } from '../types'
 import {
   buildUpdateRequest,
   configToDraft,
@@ -34,6 +34,36 @@ const config = (): PromptAuditConfig => ({
 })
 
 describe('Prompt Audit view model', () => {
+  it('uses local rules only for an unconfigured installation and preserves a saved engine choice', () => {
+    expect(configToDraft({ ...config(), enabled: false, updated_at: '', endpoints: [] }).engine).toBe('local_rules')
+    expect(configToDraft({ ...config(), engine: 'remote', enabled: false, endpoints: [] }).engine).toBe('remote')
+    expect(configToDraft({ ...config(), engine: 'remote', enabled: true, updated_at: '', endpoints: [] }).engine).toBe('remote')
+    expect(configToDraft({ ...config(), engine: 'remote', enabled: false, updated_at: '' }).engine).toBe('remote')
+    expect(configToDraft({ ...config(), engine: 'local_rules' }).engine).toBe('local_rules')
+  })
+
+  it('keeps explicit empty rules and instructions after save instead of reviving defaults', () => {
+    const defaults: PromptLocalRule[] = [{ id: 'template', name: 'Template', kind: 'keyword', pattern: 'template pattern', category: 'jailbreak', action: 'warn', enabled: true, case_sensitive: false }]
+    const cleared = configToDraft({ ...config(), local_rules: [], audit_instructions: '', default_local_rules: defaults, default_audit_instructions: 'Template instructions' })
+    expect(cleared.local_rules).toEqual([])
+    expect(cleared.audit_instructions).toBe('')
+    expect(buildUpdateRequest(cleared)).toMatchObject({ local_rules: [], audit_instructions: '' })
+    const fresh = configToDraft({ ...config(), default_local_rules: defaults, default_audit_instructions: 'Template instructions' })
+    expect(fresh.local_rules).toEqual(defaults)
+    fresh.local_rules[0].pattern = 'custom'
+    expect(defaults[0].pattern).toBe('template pattern')
+  })
+
+  it('forces explicit groups in legacy drafts and save payloads without changing stored endpoint credentials', () => {
+    const draft = configToDraft({ ...config(), all_groups: true, group_ids: [9, 2, 9] })
+    expect(draft.all_groups).toBe(false)
+    draft.all_groups = true
+    draft.engine = 'local_rules'
+    expect(buildUpdateRequest(draft)).toMatchObject({ all_groups: false, group_ids: [2, 9], endpoints: [expect.objectContaining({ token: undefined, clear_token: false })] })
+    draft.group_ids = []
+    expect(buildUpdateRequest(draft)).toMatchObject({ all_groups: false, group_ids: [] })
+  })
+
   it('normalizes legacy null collections from the public config', () => {
     const legacy = { ...config(), group_ids: null, scanners: null, endpoints: null } as unknown as PromptAuditConfig
     expect(configToDraft(legacy)).toMatchObject({ group_ids: [], scanners: [], endpoints: [] })

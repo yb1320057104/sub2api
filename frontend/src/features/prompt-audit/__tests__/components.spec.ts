@@ -3,10 +3,11 @@ import { defineComponent } from 'vue'
 import { mount } from '@vue/test-utils'
 import EndpointPool from '../components/EndpointPool.vue'
 import PolicyPanel from '../components/PolicyPanel.vue'
+import LocalRulePanel from '../components/LocalRulePanel.vue'
 import EventWorkspace from '../components/EventWorkspace.vue'
 import EventDetailDialog from '../components/EventDetailDialog.vue'
 import FilterDeleteDialog from '../components/FilterDeleteDialog.vue'
-import type { PromptAuditDraft, PromptAuditEndpointDraft, PromptAuditEvent, PromptEventFilters } from '../types'
+import type { PromptAuditDraft, PromptAuditEndpointDraft, PromptAuditEvent, PromptEventFilters, PromptLocalRule } from '../types'
 import { emptyEventFilters, resolveDeleteRangeFilters, SCANNER_CATALOG } from '../viewModel'
 
 vi.mock('vue-i18n', async () => {
@@ -16,6 +17,7 @@ vi.mock('vue-i18n', async () => {
 
 const DialogStub = defineComponent({ props: ['show', 'title'], emits: ['close'], template: '<div v-if="show" data-test="dialog"><slot /><slot name="footer" /></div>' })
 const PaginationStub = defineComponent({ props: ['total', 'page', 'pageSize'], emits: ['update:page', 'update:pageSize'], template: '<div data-test="pagination" />' })
+const ConfirmStub = defineComponent({ props: ['show', 'title', 'message'], emits: ['confirm', 'cancel'], template: '<div v-if="show" data-test="template-confirm"><button data-test="confirm-templates" @click="$emit(\'confirm\')">confirm</button><button data-test="cancel-templates" @click="$emit(\'cancel\')">cancel</button></div>' })
 
 const endpoint = (): PromptAuditEndpointDraft => ({
   id: 'guard-1', name: 'Guard One', protocol: 'openai_compatible', base_url: 'http://127.0.0.1:8000',
@@ -23,8 +25,107 @@ const endpoint = (): PromptAuditEndpointDraft => ({
   has_token: true, token_status: 'configured', token: '', clear_token: false,
 })
 
+const localRule = (): PromptLocalRule => ({ id: 'local-1', name: 'Existing rule', enabled: true, kind: 'keyword', pattern: 'existing pattern', category: 'jailbreak', action: 'warn', case_sensitive: false })
+const localDraft = (): PromptAuditDraft => ({
+  enabled: true, engine: 'local_rules', audit_instructions: 'Existing instructions', local_rules: [localRule()],
+  default_audit_instructions: 'Default instructions', default_local_rules: [{ ...localRule(), id: 'default-1', pattern: 'default pattern' }],
+  blocking_enabled: false, blocking_latest_turn_only: false, store_pass_events: false, effective_mode: 'async_audit', strategy: 'priority',
+  worker_count: 4, queue_capacity: 100, scanners: SCANNER_CATALOG.map((item) => item.id), all_groups: false, group_ids: [],
+  endpoints: [endpoint()], config_version: 1, updated_at: '', updated_by: 0, change_summary: '',
+})
+
 describe('Prompt Audit components', () => {
   beforeEach(() => vi.restoreAllMocks())
+
+  it('requires confirmation before replacing existing local rules or instructions with templates', async () => {
+    const original = localDraft()
+    const wrapper = mount(LocalRulePanel, { props: { draft: original }, global: { stubs: { ConfirmDialog: ConfirmStub } } })
+    await wrapper.get('[data-test="local-rule-templates"]').trigger('click')
+    expect(wrapper.find('[data-test="template-confirm"]').exists()).toBe(true)
+    expect(wrapper.emitted('update:draft')).toBeUndefined()
+    await wrapper.get('[data-test="cancel-templates"]').trigger('click')
+    expect(wrapper.emitted('update:draft')).toBeUndefined()
+    await wrapper.get('[data-test="local-rule-templates"]').trigger('click')
+    await wrapper.get('[data-test="confirm-templates"]').trigger('click')
+    const updated = wrapper.emitted('update:draft')?.at(-1)?.[0] as PromptAuditDraft
+    expect(updated.local_rules).toEqual(original.default_local_rules)
+    expect(updated.audit_instructions).toBe(original.default_audit_instructions)
+    expect(updated.endpoints).toEqual(original.endpoints)
+    expect(original.local_rules[0].pattern).toBe('existing pattern')
+    expect(wrapper.find('[data-test="template-confirm"]').exists()).toBe(false)
+
+    await wrapper.setProps({ draft: { ...original, local_rules: [], audit_instructions: 'Keep these instructions' } })
+    await wrapper.get('[data-test="local-rule-templates"]').trigger('click')
+    expect(wrapper.find('[data-test="template-confirm"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('loads templates into an empty draft without modifying the provided templates', async () => {
+    const original = { ...localDraft(), local_rules: [], audit_instructions: '' }
+    const wrapper = mount(LocalRulePanel, { props: { draft: original }, global: { stubs: { ConfirmDialog: ConfirmStub } } })
+    await wrapper.get('[data-test="local-rule-templates"]').trigger('click')
+    expect(wrapper.find('[data-test="template-confirm"]').exists()).toBe(false)
+    const updated = wrapper.emitted('update:draft')?.at(-1)?.[0] as PromptAuditDraft
+    expect(updated.local_rules).toEqual(original.default_local_rules)
+    updated.local_rules[0].pattern = 'changed after emit'
+    expect(original.default_local_rules![0].pattern).toBe('default pattern')
+    wrapper.unmount()
+  })
+
+  it('edits and removes local rules and preserves endpoint credentials across engine switches', async () => {
+    let draft = localDraft()
+    draft.endpoints[0].token = 'UNSAVED_LOCAL_RULE_TEST_TOKEN'
+    const wrapper = mount(LocalRulePanel, { props: { draft }, global: { stubs: { ConfirmDialog: ConfirmStub } } })
+    const applyEmitted = async () => {
+      draft = wrapper.emitted('update:draft')?.at(-1)?.[0] as PromptAuditDraft
+      await wrapper.setProps({ draft })
+    }
+    await wrapper.get('[aria-label="admin.promptAudit.local.name"]').setValue('Custom regex')
+    await applyEmitted()
+    await wrapper.get('[aria-label="admin.promptAudit.local.pattern"]').setValue('custom.*pattern')
+    await applyEmitted()
+    await wrapper.get('[data-test="local-rule-0"] select').setValue('regex')
+    await applyEmitted()
+    await wrapper.findAll('[data-test="local-rule-0"] select')[2].setValue('block')
+    await applyEmitted()
+    expect(draft.local_rules[0]).toMatchObject({ name: 'Custom regex', pattern: 'custom.*pattern', kind: 'regex', action: 'block' })
+    await wrapper.get('input[value="remote"]').setValue()
+    await applyEmitted()
+    expect(wrapper.find('[data-test="local-rule-0"]').exists()).toBe(false)
+    expect(draft.endpoints[0]).toMatchObject({ token: 'UNSAVED_LOCAL_RULE_TEST_TOKEN', has_token: true, clear_token: false })
+    await wrapper.get('input[value="local_rules"]').setValue()
+    await applyEmitted()
+    expect(draft.local_rules[0].pattern).toBe('custom.*pattern')
+    await wrapper.get('[data-test="local-rule-0"] button').trigger('click')
+    await applyEmitted()
+    expect(draft.local_rules).toEqual([])
+    expect(wrapper.text()).toContain('admin.promptAudit.local.empty')
+    await wrapper.get('[data-test="local-rule-add"]').trigger('click')
+    await applyEmitted()
+    expect(draft.local_rules).toHaveLength(1)
+    expect(draft.local_rules[0]).toMatchObject({ enabled: true, kind: 'keyword', pattern: '', action: 'warn' })
+    wrapper.unmount()
+  })
+
+  it('selects only explicit groups and explains that an empty scope skips auditing', async () => {
+    const draft = localDraft()
+    const wrapper = mount(PolicyPanel, { props: { draft, groups: [
+      { id: 1, name: 'Alpha', platform: 'openai', status: 'active' },
+      { id: 2, name: 'Beta', platform: 'openai', status: 'active' },
+    ] } })
+    expect(wrapper.text()).toContain('admin.promptAudit.policy.emptyScope')
+    expect(wrapper.findAll('input[type="radio"]')).toHaveLength(0)
+    expect(wrapper.findAll('input[type="checkbox"]')).toHaveLength(2)
+    await wrapper.findAll('input[type="checkbox"]')[1].setValue(true)
+    const updated = wrapper.emitted('update:draft')?.at(-1)?.[0] as PromptAuditDraft
+    expect(updated).toMatchObject({ all_groups: false, group_ids: [2], engine: 'local_rules' })
+    await wrapper.setProps({ draft: updated })
+    expect(wrapper.text()).not.toContain('admin.promptAudit.policy.emptyScope')
+    await wrapper.findAll('input[type="checkbox"]')[1].setValue(false)
+    const cleared = wrapper.emitted('update:draft')?.at(-1)?.[0] as PromptAuditDraft
+    expect(cleared.group_ids).toEqual([])
+    wrapper.unmount()
+  })
 
   it('edits a saved endpoint with blank-secret keep, explicit clear, replacement, and probe actions', async () => {
     const wrapper = mount(EndpointPool, {
@@ -67,6 +168,7 @@ describe('Prompt Audit components', () => {
 
   it('supports group search, stale configured groups, nine scanners, and bounded worker inputs', async () => {
     const draft: PromptAuditDraft = {
+      engine: 'remote', audit_instructions: '', local_rules: [],
       enabled: true, blocking_enabled: false, blocking_latest_turn_only: false, store_pass_events: false, effective_mode: 'async_audit', strategy: 'priority',
       worker_count: 4, queue_capacity: 100, scanners: SCANNER_CATALOG.map((item) => item.id), all_groups: false, group_ids: [1, 99],
       endpoints: [endpoint()], config_version: 1, updated_at: '', updated_by: 0, change_summary: '',

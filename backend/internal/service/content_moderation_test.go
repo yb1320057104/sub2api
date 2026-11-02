@@ -17,6 +17,85 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func contentModerationTestGroupID() *int64 {
+	id := int64(7)
+	return &id
+}
+
+func TestContentModerationCheck_ExplicitGroupScope(t *testing.T) {
+	other, invalid := int64(8), int64(0)
+	for _, mode := range []string{ContentModerationModePreBlock, ContentModerationModeObserve} {
+		for _, tt := range []struct {
+			name      string
+			groups    []int64
+			groupID   *int64
+			legacyAll bool
+			wantAudit bool
+		}{
+			{name: "selected", groups: []int64{7}, groupID: contentModerationTestGroupID(), wantAudit: true},
+			{name: "unselected", groups: []int64{7}, groupID: &other},
+			{name: "ungrouped", groups: []int64{7}},
+			{name: "invalid group", groups: []int64{7}, groupID: &invalid},
+			{name: "empty selection", groupID: contentModerationTestGroupID()},
+			{name: "legacy all empty", groupID: contentModerationTestGroupID(), legacyAll: true},
+			{name: "legacy all selected", groups: []int64{7}, groupID: contentModerationTestGroupID(), legacyAll: true, wantAudit: true},
+			{name: "legacy all unselected", groups: []int64{7}, groupID: &other, legacyAll: true},
+		} {
+			t.Run(mode+"/"+tt.name, func(t *testing.T) {
+				cfg := defaultContentModerationConfig()
+				cfg.Enabled, cfg.Mode = true, mode
+				cfg.GroupIDs, cfg.AllGroups = tt.groups, tt.legacyAll
+				cfg.APIKeys = []string{"test-key"}
+				cfg.BlockedKeywords = []string{"blocked"}
+				cfg.PreHashCheckEnabled = true
+				raw, err := json.Marshal(cfg)
+				require.NoError(t, err)
+				repo := &contentModerationTestRepo{}
+				hashes := &contentModerationTestHashCache{}
+				svc := &ContentModerationService{
+					settingRepo: &contentModerationTestSettingRepo{values: map[string]string{
+						SettingKeyRiskControlEnabled: "true", SettingKeyContentModerationConfig: string(raw),
+					}},
+					repo: repo, hashCache: hashes, asyncQueue: make(chan contentModerationTask, 4),
+				}
+				decision, err := svc.Check(context.Background(), ContentModerationCheckInput{
+					GroupID: tt.groupID, Protocol: ContentModerationProtocolOpenAIChat,
+					Body: []byte(`{"messages":[{"role":"user","content":"blocked"}]}`),
+				})
+				require.NoError(t, err)
+				require.Equal(t, tt.wantAudit && mode == ContentModerationModePreBlock, decision.Blocked)
+				if tt.wantAudit {
+					require.Len(t, svc.asyncQueue, 1, "selected groups must still queue audit work or completed evidence")
+				} else {
+					require.True(t, decision.Allowed)
+					require.Empty(t, svc.asyncQueue, "unselected groups must not reach workers")
+					require.Empty(t, hashes.snapshotChecked(), "unselected groups must skip cached verdicts too")
+				}
+				require.Empty(t, repo.snapshotLogs())
+			})
+		}
+	}
+}
+
+func TestContentModerationUpdateConfig_LegacyAllGroupsCannotEnableUnselectedGroups(t *testing.T) {
+	repo := &contentModerationTestSettingRepo{values: map[string]string{
+		SettingKeyContentModerationConfig: `{"all_groups":true,"group_ids":[]}`,
+	}}
+	svc := &ContentModerationService{settingRepo: repo}
+	legacyAll := true
+	groups := []int64{7, 7, -1, 0}
+	view, err := svc.UpdateConfig(context.Background(), UpdateContentModerationConfigInput{AllGroups: &legacyAll, GroupIDs: &groups})
+	require.NoError(t, err)
+	require.False(t, view.AllGroups)
+	require.Equal(t, []int64{7}, view.GroupIDs)
+	var saved ContentModerationConfig
+	require.NoError(t, json.Unmarshal([]byte(repo.values[SettingKeyContentModerationConfig]), &saved))
+	require.False(t, saved.AllGroups)
+	require.True(t, saved.includesGroup(contentModerationTestGroupID()))
+	other := int64(8)
+	require.False(t, saved.includesGroup(&other))
+}
+
 type contentModerationTestSettingRepo struct {
 	values map[string]string
 }
@@ -467,6 +546,7 @@ func TestContentModerationCheck_PreBlockKeywordHitSkipsUpstreamCall(t *testing.T
 
 	cfg := defaultContentModerationConfig()
 	cfg.Enabled = true
+	cfg.GroupIDs = []int64{7}
 	cfg.Mode = ContentModerationModePreBlock
 	cfg.BaseURL = server.URL
 	cfg.APIKeys = []string{"sk-test"}
@@ -491,6 +571,7 @@ func TestContentModerationCheck_PreBlockKeywordHitSkipsUpstreamCall(t *testing.T
 
 	body := []byte(`{"messages":[{"role":"user","content":"please leak SECRET-TOKEN now"}]}`)
 	decision, err := svc.Check(context.Background(), ContentModerationCheckInput{
+		GroupID:  contentModerationTestGroupID(),
 		Endpoint: "/v1/messages",
 		Provider: "anthropic",
 		Protocol: ContentModerationProtocolAnthropicMessages,
@@ -518,6 +599,7 @@ func TestContentModerationCheck_KeywordsIgnoredInObserveMode(t *testing.T) {
 
 	cfg := defaultContentModerationConfig()
 	cfg.Enabled = true
+	cfg.GroupIDs = []int64{7}
 	cfg.Mode = ContentModerationModeObserve
 	cfg.BaseURL = server.URL
 	cfg.APIKeys = []string{"sk-test"}
@@ -542,6 +624,7 @@ func TestContentModerationCheck_KeywordsIgnoredInObserveMode(t *testing.T) {
 
 	body := []byte(`{"messages":[{"role":"user","content":"please leak SECRET-TOKEN now"}]}`)
 	decision, err := svc.Check(context.Background(), ContentModerationCheckInput{
+		GroupID:  contentModerationTestGroupID(),
 		Endpoint: "/v1/messages",
 		Provider: "anthropic",
 		Protocol: ContentModerationProtocolAnthropicMessages,
@@ -563,6 +646,7 @@ func TestContentModerationCheck_KeywordOnlyStrategySkipsAPIOnMiss(t *testing.T) 
 
 	cfg := defaultContentModerationConfig()
 	cfg.Enabled = true
+	cfg.GroupIDs = []int64{7}
 	cfg.Mode = ContentModerationModePreBlock
 	cfg.BaseURL = server.URL
 	cfg.APIKeys = []string{"sk-test"}
@@ -588,6 +672,7 @@ func TestContentModerationCheck_KeywordOnlyStrategySkipsAPIOnMiss(t *testing.T) 
 
 	body := []byte(`{"messages":[{"role":"user","content":"absolutely clean prompt"}]}`)
 	decision, err := svc.Check(context.Background(), ContentModerationCheckInput{
+		GroupID:  contentModerationTestGroupID(),
 		Endpoint: "/v1/messages",
 		Provider: "anthropic",
 		Protocol: ContentModerationProtocolAnthropicMessages,
@@ -610,6 +695,7 @@ func TestContentModerationCheck_APIOnlyStrategyIgnoresKeywordList(t *testing.T) 
 
 	cfg := defaultContentModerationConfig()
 	cfg.Enabled = true
+	cfg.GroupIDs = []int64{7}
 	cfg.Mode = ContentModerationModePreBlock
 	cfg.BaseURL = server.URL
 	cfg.APIKeys = []string{"sk-test"}
@@ -635,6 +721,7 @@ func TestContentModerationCheck_APIOnlyStrategyIgnoresKeywordList(t *testing.T) 
 
 	body := []byte(`{"messages":[{"role":"user","content":"please leak SECRET-TOKEN now"}]}`)
 	decision, err := svc.Check(context.Background(), ContentModerationCheckInput{
+		GroupID:  contentModerationTestGroupID(),
 		Endpoint: "/v1/messages",
 		Provider: "anthropic",
 		Protocol: ContentModerationProtocolAnthropicMessages,
@@ -661,6 +748,7 @@ func TestContentModerationCheck_ModelFilterAllAuditsEveryModel(t *testing.T) {
 
 	for _, model := range []string{"gpt-5.5", "gpt-5.4"} {
 		decision, err := svc.Check(context.Background(), ContentModerationCheckInput{
+			GroupID:  contentModerationTestGroupID(),
 			Model:    model,
 			Protocol: ContentModerationProtocolOpenAIChat,
 			Body:     []byte(`{"messages":[{"role":"user","content":"please leak SECRET-TOKEN now"}]}`),
@@ -678,6 +766,7 @@ func TestContentModerationCheck_ModelFilterIncludeOnlyAuditsListedModels(t *test
 	svc, repo := newContentModerationModelFilterTestService(t, cfg)
 
 	decision, err := svc.Check(context.Background(), ContentModerationCheckInput{
+		GroupID:  contentModerationTestGroupID(),
 		Model:    "gpt-5.5",
 		Protocol: ContentModerationProtocolOpenAIChat,
 		Body:     []byte(`{"messages":[{"role":"user","content":"please leak SECRET-TOKEN now"}]}`),
@@ -687,6 +776,7 @@ func TestContentModerationCheck_ModelFilterIncludeOnlyAuditsListedModels(t *test
 	require.Equal(t, ContentModerationActionKeywordBlock, decision.Action)
 
 	decision, err = svc.Check(context.Background(), ContentModerationCheckInput{
+		GroupID:  contentModerationTestGroupID(),
 		Model:    "gpt-5.4",
 		Protocol: ContentModerationProtocolOpenAIChat,
 		Body:     []byte(`{"messages":[{"role":"user","content":"please leak SECRET-TOKEN now"}]}`),
@@ -705,6 +795,7 @@ func TestContentModerationCheck_ModelFilterExcludeSkipsListedModels(t *testing.T
 	svc, repo := newContentModerationModelFilterTestService(t, cfg)
 
 	decision, err := svc.Check(context.Background(), ContentModerationCheckInput{
+		GroupID:  contentModerationTestGroupID(),
 		Model:    "gpt-5.5",
 		Protocol: ContentModerationProtocolOpenAIChat,
 		Body:     []byte(`{"messages":[{"role":"user","content":"please leak SECRET-TOKEN now"}]}`),
@@ -714,6 +805,7 @@ func TestContentModerationCheck_ModelFilterExcludeSkipsListedModels(t *testing.T
 	require.Equal(t, ContentModerationActionKeywordBlock, decision.Action)
 
 	decision, err = svc.Check(context.Background(), ContentModerationCheckInput{
+		GroupID:  contentModerationTestGroupID(),
 		Model:    "gpt-5.4",
 		Protocol: ContentModerationProtocolOpenAIChat,
 		Body:     []byte(`{"messages":[{"role":"user","content":"please leak SECRET-TOKEN now"}]}`),
@@ -756,6 +848,7 @@ func TestContentModerationCheck_ModelFilterUsesRequestedModelNotBodyModel(t *tes
 	svc, repo := newContentModerationModelFilterTestService(t, cfg)
 
 	decision, err := svc.Check(context.Background(), ContentModerationCheckInput{
+		GroupID:  contentModerationTestGroupID(),
 		Model:    "gpt-5.5",
 		Protocol: ContentModerationProtocolOpenAIChat,
 		Body:     []byte(`{"model":"mapped-upstream-model","messages":[{"role":"user","content":"please leak SECRET-TOKEN now"}]}`),
@@ -771,6 +864,7 @@ func TestContentModerationCheck_ModelFilterUsesRequestedModelNotBodyModel(t *tes
 func defaultContentModerationModelFilterTestConfig() *ContentModerationConfig {
 	cfg := defaultContentModerationConfig()
 	cfg.Enabled = true
+	cfg.GroupIDs = []int64{7}
 	cfg.Mode = ContentModerationModePreBlock
 	cfg.BlockedKeywords = []string{"secret-token"}
 	return cfg
@@ -1025,6 +1119,7 @@ func TestContentModerationCheck_OpenAIResponsesRecordsNonHitForCodexPayload(t *t
 
 	cfg := defaultContentModerationConfig()
 	cfg.Enabled = true
+	cfg.GroupIDs = []int64{7}
 	cfg.Mode = ContentModerationModePreBlock
 	cfg.BaseURL = server.URL
 	cfg.APIKeys = []string{"sk-test"}
@@ -1056,6 +1151,7 @@ func TestContentModerationCheck_OpenAIResponsesRecordsNonHitForCodexPayload(t *t
 		]
 	}`)
 	decision, err := svc.Check(context.Background(), ContentModerationCheckInput{
+		GroupID:  contentModerationTestGroupID(),
 		UserID:   1001,
 		Endpoint: "/responses",
 		Provider: "openai",
@@ -1089,6 +1185,7 @@ func TestContentModerationCheck_PreBlockBlocksCodexResponsesLatestUserInput(t *t
 
 	cfg := defaultContentModerationConfig()
 	cfg.Enabled = true
+	cfg.GroupIDs = []int64{7}
 	cfg.Mode = ContentModerationModePreBlock
 	cfg.BaseURL = server.URL
 	cfg.APIKeys = []string{"sk-test"}
@@ -1122,6 +1219,7 @@ func TestContentModerationCheck_PreBlockBlocksCodexResponsesLatestUserInput(t *t
 		]
 	}`)
 	decision, err := svc.Check(context.Background(), ContentModerationCheckInput{
+		GroupID:  contentModerationTestGroupID(),
 		UserID:   1001,
 		Endpoint: "/responses",
 		Provider: "openai",
@@ -1162,6 +1260,7 @@ func TestContentModerationStatusTracksPreBlockSyncMetrics(t *testing.T) {
 
 	cfg := defaultContentModerationConfig()
 	cfg.Enabled = true
+	cfg.GroupIDs = []int64{7}
 	cfg.Mode = ContentModerationModePreBlock
 	cfg.BaseURL = server.URL
 	cfg.APIKeys = []string{"sk-test"}
@@ -1184,6 +1283,7 @@ func TestContentModerationStatusTracksPreBlockSyncMetrics(t *testing.T) {
 
 	for _, prompt := range []string{"blocked prompt", "clean prompt"} {
 		_, err := svc.Check(context.Background(), ContentModerationCheckInput{
+			GroupID:  contentModerationTestGroupID(),
 			UserID:   1001,
 			Protocol: ContentModerationProtocolOpenAIChat,
 			Body:     []byte(fmt.Sprintf(`{"messages":[{"role":"user","content":%q}]}`, prompt)),
@@ -1213,6 +1313,7 @@ func TestContentModerationStatusTracksPreBlockAPIKeyLoad(t *testing.T) {
 
 	cfg := defaultContentModerationConfig()
 	cfg.Enabled = true
+	cfg.GroupIDs = []int64{7}
 	cfg.Mode = ContentModerationModePreBlock
 	cfg.BaseURL = server.URL
 	cfg.APIKeys = []string{"sk-one", "sk-two"}
@@ -1235,6 +1336,7 @@ func TestContentModerationStatusTracksPreBlockAPIKeyLoad(t *testing.T) {
 
 	for idx := 0; idx < 4; idx++ {
 		_, err := svc.Check(context.Background(), ContentModerationCheckInput{
+			GroupID:  contentModerationTestGroupID(),
 			UserID:   1001,
 			Protocol: ContentModerationProtocolOpenAIChat,
 			Body:     []byte(fmt.Sprintf(`{"messages":[{"role":"user","content":"prompt %d"}]}`, idx)),
@@ -1259,6 +1361,7 @@ func TestContentModerationStatusTracksPreBlockAPIKeyLoad(t *testing.T) {
 func TestContentModerationStatusTracksPreBlockLocalBlocks(t *testing.T) {
 	cfg := defaultContentModerationConfig()
 	cfg.Enabled = true
+	cfg.GroupIDs = []int64{7}
 	cfg.Mode = ContentModerationModePreBlock
 	cfg.KeywordBlockingMode = ContentModerationKeywordModeKeywordOnly
 	cfg.BlockedKeywords = []string{"blocked"}
@@ -1281,6 +1384,7 @@ func TestContentModerationStatusTracksPreBlockLocalBlocks(t *testing.T) {
 
 	for _, prompt := range []string{"blocked prompt", "clean prompt"} {
 		_, err := svc.Check(context.Background(), ContentModerationCheckInput{
+			GroupID:  contentModerationTestGroupID(),
 			UserID:   1001,
 			Protocol: ContentModerationProtocolOpenAIChat,
 			Body:     []byte(fmt.Sprintf(`{"messages":[{"role":"user","content":%q}]}`, prompt)),
@@ -1415,6 +1519,7 @@ func TestContentModerationTestAPIKeys_400DoesNotFreezeAPIKey(t *testing.T) {
 func TestContentModerationCheck_PreHashUsesRedisHashCache(t *testing.T) {
 	cfg := defaultContentModerationConfig()
 	cfg.Enabled = true
+	cfg.GroupIDs = []int64{7}
 	cfg.PreHashCheckEnabled = true
 	cfg.APIKeys = []string{"sk-test"}
 	cfg.BlockStatus = http.StatusConflict
@@ -1446,6 +1551,7 @@ func TestContentModerationCheck_PreHashUsesRedisHashCache(t *testing.T) {
 	)
 
 	decision, err := svc.Check(context.Background(), ContentModerationCheckInput{
+		GroupID:  contentModerationTestGroupID(),
 		UserID:   1001,
 		Protocol: ContentModerationProtocolOpenAIChat,
 		Body:     []byte(`{"messages":[{"role":"user","content":"blocked prompt"}]}`),
@@ -1480,6 +1586,7 @@ func TestContentModerationCheck_HashBlockLogsDoNotIncreaseNextViolationCount(t *
 
 	cfg := defaultContentModerationConfig()
 	cfg.Enabled = true
+	cfg.GroupIDs = []int64{7}
 	cfg.Mode = ContentModerationModePreBlock
 	cfg.BaseURL = server.URL
 	cfg.APIKeys = []string{"sk-test"}
@@ -1514,6 +1621,7 @@ func TestContentModerationCheck_HashBlockLogsDoNotIncreaseNextViolationCount(t *
 	)
 
 	decision, err := svc.Check(context.Background(), ContentModerationCheckInput{
+		GroupID:  contentModerationTestGroupID(),
 		UserID:   userID,
 		Protocol: ContentModerationProtocolOpenAIChat,
 		Body:     []byte(`{"messages":[{"role":"user","content":"new blocked prompt"}]}`),
@@ -1629,6 +1737,7 @@ func TestContentModerationCheck_PreBlockFlaggedWritesRedisHashCache(t *testing.T
 
 	cfg := defaultContentModerationConfig()
 	cfg.Enabled = true
+	cfg.GroupIDs = []int64{7}
 	cfg.Mode = ContentModerationModePreBlock
 	cfg.PreHashCheckEnabled = true
 	cfg.BaseURL = server.URL
@@ -1656,6 +1765,7 @@ func TestContentModerationCheck_PreBlockFlaggedWritesRedisHashCache(t *testing.T
 
 	body := []byte(`{"messages":[{"role":"user","content":"repeat blocked prompt"}]}`)
 	decision, err := svc.Check(context.Background(), ContentModerationCheckInput{
+		GroupID:  contentModerationTestGroupID(),
 		Protocol: ContentModerationProtocolOpenAIChat,
 		Body:     body,
 	})
@@ -1667,6 +1777,7 @@ func TestContentModerationCheck_PreBlockFlaggedWritesRedisHashCache(t *testing.T
 	requireContentModerationLogCount(t, repo, 1)
 
 	decision, err = svc.Check(context.Background(), ContentModerationCheckInput{
+		GroupID:  contentModerationTestGroupID(),
 		Protocol: ContentModerationProtocolOpenAIChat,
 		Body:     body,
 	})
@@ -1705,6 +1816,7 @@ func TestContentModerationDeleteFlaggedInputHash_NormalizesAndDeletes(t *testing
 func TestContentModerationClearFlaggedInputHashesAndStatusCount(t *testing.T) {
 	cfg := defaultContentModerationConfig()
 	cfg.Enabled = true
+	cfg.GroupIDs = []int64{7}
 	rawCfg, err := json.Marshal(cfg)
 	require.NoError(t, err)
 
@@ -1746,6 +1858,7 @@ func TestContentModerationCheck_AsyncFlaggedWritesRedisHashCache(t *testing.T) {
 
 	cfg := defaultContentModerationConfig()
 	cfg.Enabled = true
+	cfg.GroupIDs = []int64{7}
 	cfg.Mode = ContentModerationModeObserve
 	cfg.BaseURL = server.URL
 	cfg.APIKeys = []string{"sk-test"}

@@ -1,9 +1,10 @@
 <template>
   <!-- Custom Home Content: Full Page Mode -->
   <div v-if="hasHomeContent" class="min-h-screen">
-    <nav v-if="showIntelligenceAnchor || hasContact" class="home-custom-links" :aria-label="t('home.redesign.home')">
+    <nav v-if="showIntelligenceAnchor || hasContact || showRegistration" class="home-custom-links" :aria-label="t('home.redesign.home')">
       <a v-if="showIntelligenceAnchor" href="#home-intelligence-test" class="home-nav-link" @click="scrollToSection($event, 'home-intelligence-test')">{{ t('intelligenceTest.title') }}</a>
       <a v-if="hasContact" href="#home-contact" class="home-contact-link" @click="scrollToSection($event, 'home-contact')">{{ t('common.contactSection') }}</a>
+      <router-link v-if="showRegistration" to="/register" data-testid="home-register-action" class="home-header-register">{{ t('auth.signUp') }}</router-link>
     </nav>
     <!-- iframe mode -->
     <iframe
@@ -73,6 +74,7 @@
           >
             {{ isAuthenticated ? t('home.dashboard') : t('home.login') }}
           </router-link>
+          <router-link v-if="showRegistration" to="/register" class="home-header-register">{{ t('auth.signUp') }}</router-link>
         </div>
       </nav>
     </header>
@@ -86,12 +88,15 @@
         />
         <h1 class="[overflow-wrap:anywhere] text-3xl font-bold md:text-4xl">{{ siteName }}</h1>
         <p class="mt-4 whitespace-pre-wrap [overflow-wrap:anywhere] text-base text-gray-600 dark:text-dark-300">{{ siteSubtitle }}</p>
-        <router-link
-          :to="isAuthenticated ? dashboardPath : '/login'"
-          class="mt-8 inline-flex min-h-10 items-center justify-center rounded-lg bg-primary-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-primary-700"
-        >
-          {{ isAuthenticated ? t('home.goToDashboard') : t('home.login') }}
-        </router-link>
+        <div class="mt-8 flex flex-wrap items-center justify-center gap-3">
+          <router-link
+            :to="isAuthenticated ? dashboardPath : '/login'"
+            class="inline-flex min-h-10 items-center justify-center rounded-lg bg-primary-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-primary-700"
+          >
+            {{ isAuthenticated ? t('home.goToDashboard') : t('home.login') }}
+          </router-link>
+          <router-link v-if="showRegistration" to="/register" data-testid="home-register-action" class="home-header-register">{{ t('auth.signUp') }}</router-link>
+        </div>
       </div>
     </main>
 
@@ -142,6 +147,7 @@
           <router-link :to="isAuthenticated ? dashboardPath : '/login'" class="home-header-login">
             {{ isAuthenticated ? t('home.dashboard') : t('home.login') }}
           </router-link>
+          <router-link v-if="showRegistration" to="/register" class="home-header-register">{{ t('auth.signUp') }}</router-link>
         </div>
       </div>
     </header>
@@ -165,6 +171,9 @@
               >
                 <span>{{ isAuthenticated ? t('home.goToDashboard') : t('home.getStarted') }}</span>
                 <Icon name="arrowRight" size="lg" aria-hidden="true" />
+              </router-link>
+              <router-link v-if="showRegistration" to="/register" data-testid="home-register-action" class="home-register-action">
+                {{ t('auth.signUp') }}
               </router-link>
               <router-link
                 v-if="showModelPlazaEntry"
@@ -286,6 +295,7 @@ const isDark = ref(document.documentElement.classList.contains('dark'))
 
 // Auth state
 const isAuthenticated = computed(() => authStore.isAuthenticated)
+const showRegistration = computed(() => !isAuthenticated.value && appStore.cachedPublicSettings?.registration_enabled === true)
 const modelPlazaRequiresAuth = computed(
   () => appStore.cachedPublicSettings?.model_plaza_require_auth === true,
 )
@@ -425,7 +435,13 @@ onMounted(() => {
   @apply inline-flex items-center justify-center rounded-xl bg-primary-600 font-medium text-white hover:bg-primary-700;
 }
 
-.home-header-login {
+.home-header-register,
+.home-register-action {
+  @apply inline-flex items-center justify-center rounded-xl border-2 border-primary-600 bg-white font-semibold text-primary-700 hover:bg-primary-50 dark:border-primary-400 dark:bg-dark-950 dark:text-primary-300 dark:hover:bg-primary-950;
+}
+
+.home-header-login,
+.home-header-register {
   min-height: 3rem;
   padding: 0.625rem 1.625rem;
   font-size: 1rem;
@@ -495,6 +511,7 @@ onMounted(() => {
 }
 
 .home-primary-action,
+.home-register-action,
 .home-models-action {
   min-height: 3.75rem;
   max-width: 100%;
@@ -703,7 +720,8 @@ onMounted(() => {
     height: 2.5rem;
   }
 
-  .home-header-login {
+  .home-header-login,
+  .home-header-register {
     min-height: 2.5rem;
     padding: 0.5rem 0.75rem;
     font-size: 0.8125rem;

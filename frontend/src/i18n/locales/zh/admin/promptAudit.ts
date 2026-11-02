@@ -1,7 +1,7 @@
 export default {
   promptAudit: {
     title: '提示词审计',
-    description: '通过 OpenAI 兼容 Qwen3Guard 节点异步复核或同步阻止用户输入；事件的完整提示词会入库保存，仅供管理员复核。',
+    description: '只审计选中的分组，可使用无需节点的本地规则或远端 Qwen3Guard；事件的完整提示词会入库保存，仅供管理员复核。',
     configVersion: '配置版本 v{version}',
     tabs: { config: '配置', events: '事件' },
     actions: { refresh: '刷新运行态', retry: '重试', Allow: '放行', Warn: '警告', Block: '阻止' },
@@ -50,7 +50,21 @@ export default {
       secretHint: '明文只在本次编辑内存中存在；保存成功后会立即清除。', clearSecret: '显式清除已保存的 API Key', timeout: '总超时（毫秒）', inputLimit: '单片 Unicode 字符上限',
       toggleNode: '切换节点 {name}', deleteConfirm: '从草稿中删除节点“{name}”？保存配置后生效。',
     },
+    local: {
+      title: '审计方式', engines: { local_rules: '本地规则（无需节点）', remote: '远端 Qwen3Guard 节点' },
+      localHint: '本地按关键词和正则匹配，不调用模型。规则无法理解上下文，可能漏判或误判；请按业务调整后启用。',
+      remoteHint: '使用已配置的 Qwen3Guard 节点进行分类；切换方式会保留另一种方式的配置。',
+      rules: '本地审计规则', templates: '填入推荐模板', add: '新增规则', newRule: '自定义规则',
+      actionHint: '模板覆盖提示词注入、越权、密钥窃取、违法活动、色情、暴力威胁和自残。后四类默认仅记录；仅开启“同步阻止”时，拦截规则才会阻止请求。',
+      empty: '尚无规则。可填入推荐模板或自行添加；启用本地审计至少需要一条启用规则。',
+      enabled: '启用', name: '规则名称', remove: '删除规则 {name}', kind: '匹配方式', keyword: '关键词', regex: '正则表达式',
+      category: '风险分类', action: '命中处理', warn: '记录警告', block: '拦截', pattern: '匹配内容', caseSensitive: '区分大小写',
+      instructions: '审计说明 / 提示词模板', instructionsHint: '这份文字用于记录审计意图，可编辑或复制；本地只执行上方规则，远端 Qwen3Guard 使用固定分类协议，不执行这份说明。',
+      replaceTitle: '替换为推荐模板？', replaceMessage: '将替换草稿中的本地规则和审计说明。保存配置后才会生效。',
+    },
     policy: {
+      selectedOnlyHint: '仅审计下方明确选择的分组；未选择的分组及无分组请求均跳过。',
+      emptyScope: '尚未选择分组：所有请求都会跳过提示词审计。',
       title: '审计策略', description: '配置适用分组、九类输入风险、Worker 与队列边界。', scope: '适用范围', allGroups: '全部分组', selectedGroups: '指定分组',
       searchGroups: '搜索分组', noGroups: '没有匹配分组', missingGroups: '配置中包含已删除的分组 ID', selectedCount: '已选择 {count} 个分组',
       scanners: 'Qwen3Guard 输入风险分类', workerCount: 'Worker 数量', queueCapacity: '持久队列容量', strategy: '节点策略', strategyHint: '按配置顺序优先尝试，必要时故障切换。',
@@ -58,7 +72,7 @@ export default {
     saveBar: { enabled: '启用提示词审计', blocking: '同步阻止', blockingLatestTurnOnly: '仅审最新输入和上一轮输出', storePass: '保存安全事件', dirty: '有未保存的更改', synced: '配置已同步' },
     blockingConfirm: {
       title: '开启同步阻止？',
-      message: '适用请求会在账号选择、计费和访问上游之前等待 Guard。命中 Block、Guard 不可用或响应非法时，请求都不会访问上游。',
+      message: '选中分组的请求会在账号选择、计费和访问上游之前等待审计。命中拦截规则、审计不可用或响应非法时不会访问上游；记录警告的规则仍放行。',
       confirm: '理解风险并开启',
     },
     events: {
@@ -89,8 +103,12 @@ export default {
       },
       deleteConfirmTitle: '删除审计事件？', deleteConfirmMessage: '将永久删除 {count} 条事件及符合条件的孤立任务。', filterDeleteCount: '服务端快照匹配 {count} 条事件。', snapshotMax: '快照最大事件 ID', expiresAt: '确认令牌过期时间', filterDeleteWarning: '只删除预览高水位内的事件；预览后产生的新事件会保留。筛选一旦变化，必须重新预览。', confirmFilterDelete: '确认永久删除',
     },
-    messages: { saved: '提示词审计配置已保存，明文 API Key 状态已清除。', probeSucceeded: '审计节点连接正常。', deleted: '已删除 {count} 条审计事件。' },
+    messages: { saved: '提示词审计配置已保存。', probeSucceeded: '审计节点连接正常。', deleted: '已删除 {count} 条审计事件。' },
     errors: {
+      prompt_audit_engine_invalid: '请选择本地规则或远端节点。',
+      prompt_audit_instructions_invalid: '审计说明最多 16000 字。',
+      prompt_audit_local_rules_invalid: '本地规则无效：最多 64 条，名称最多 100 字、匹配内容最多 2000 字；请检查正则、分类和处理方式。',
+      prompt_audit_local_rules_required: '启用本地审计前至少需要一条启用规则。',
       loadConfig: '无法加载提示词审计配置。', loadRuntime: '无法加载提示词审计运行态。', loadGroups: '无法加载分组列表。', loadEvents: '无法加载审计事件。', loadDetail: '无法加载事件详情。', saveConfig: '配置保存失败。', probe: '节点探测失败。', delete: '事件删除失败。', previewDelete: '无法生成删除预览，请检查时间范围。', deleteConfirmation: '删除确认无效或已过期，请重新预览。',
       prompt_audit_config_conflict: '配置已被其他管理员更新。请重新加载服务端配置，再决定如何合并本地草稿。',
       prompt_audit_encryption_key_required: '未配置固定加密密钥，审计节点 API Key 将在服务重启后失效。请先设置 TOTP_ENCRYPTION_KEY 环境变量并重启服务。',

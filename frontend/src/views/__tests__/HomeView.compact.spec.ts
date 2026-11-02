@@ -89,6 +89,26 @@ describe('HomeView compact mode', () => {
     expect(wrapper.find('[data-testid="compact-home"]').exists()).toBe(false)
   })
 
+  it.each([
+    { name: 'default', settings: {} },
+    { name: 'compact', settings: { compact_home_enabled: true } },
+    { name: 'custom HTML', settings: { home_content: '<section>Custom home</section>' } },
+    { name: 'custom iframe', settings: { home_content: 'https://example.com/home' } },
+  ])('shows registration on $name only when registration is enabled and the visitor is signed out', ({ settings }) => {
+    for (const enabled of [true, false, undefined]) {
+      for (const authenticated of [true, false]) {
+        authStore.isAuthenticated = authenticated
+        const wrapper = mountHome({ ...settings, registration_enabled: enabled })
+        const registrationLinks = wrapper.findAllComponents(RouterLinkStub).filter((link) => link.props('to') === '/register')
+        expect(registrationLinks.length > 0).toBe(enabled === true && !authenticated)
+        if (enabled === true && !authenticated) {
+          expect(wrapper.get('[data-testid="home-register-action"]').text()).toBe('auth.signUp')
+        }
+        wrapper.unmount()
+      }
+    }
+  })
+
   it('renders custom URL content ahead of compact mode', () => {
     const wrapper = mountHome({
       compact_home_enabled: true,
