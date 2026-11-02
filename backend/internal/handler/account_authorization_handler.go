@@ -42,6 +42,24 @@ func (h *AccountAuthorizationHandler) Supplement(c *gin.Context) {
 	}
 }
 
+func (h *AccountAuthorizationHandler) SupplementBatch(c *gin.Context) {
+	if !authorizationAdmin(c) {
+		return
+	}
+	var input service.AuthorizationSupplementBatch
+	if !authorizationInput(c, &input) {
+		return
+	}
+	middleware.SetAuditAction(c, "authorization.credentials.batch_supplement")
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 90*time.Second)
+	defer cancel()
+	result, err := h.service.SupplementBatch(ctx, &input)
+	input.Accounts = ""
+	if !authorizationError(c, err) {
+		response.Success(c, result)
+	}
+}
+
 func NewAccountAuthorizationHandler(s *service.AccountAuthorizationService) *AccountAuthorizationHandler {
 	return &AccountAuthorizationHandler{service: s}
 }

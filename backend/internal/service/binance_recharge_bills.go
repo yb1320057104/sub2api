@@ -56,8 +56,7 @@ func BinanceRechargeBillWindow(start, end string, now time.Time) (time.Time, tim
 // or crediting balances. The API lease and provider cooldown are shared with
 // collection, while the independent bill cooldown cannot postpone due orders.
 func (s *BinanceRechargeService) Bills(ctx context.Context, accountID int64, from, to time.Time) (*BinanceRechargeBills, error) {
-	client, ok := s.client.(binanceRechargeBillsClient)
-	if !ok || s.encryptor == nil {
+	if s.client == nil || s.encryptor == nil {
 		return nil, infraerrors.ServiceUnavailable("BINANCE_BILLS_UNAVAILABLE", "币安账单查询服务不可用")
 	}
 	if from.IsZero() || from.UnixMilli() < 0 || !to.After(from) || to.Sub(from) > 89*24*time.Hour {
@@ -94,7 +93,18 @@ RETURNING failure_count`, accountID, token).Scan(&failures)
 			secret, err = s.encryptor.Decrypt(a.apiSecretEncrypted)
 		}
 		if err == nil {
-			page, err = client.Bills(ctx, key, secret, a.RecipientUID, from, to)
+			var operation BinanceRechargeClient
+			var finish func()
+			operation, finish, err = s.accountClient(a)
+			if err == nil {
+				client, ok := operation.(binanceRechargeBillsClient)
+				if !ok {
+					err = infraerrors.ServiceUnavailable("BINANCE_BILLS_UNAVAILABLE", "币安账单查询服务不可用")
+				} else {
+					page, err = client.Bills(ctx, key, secret, a.RecipientUID, from, to)
+				}
+				finish()
+			}
 		}
 	}
 	finishCtx, finishCancel := context.WithTimeout(context.Background(), 5*time.Second)

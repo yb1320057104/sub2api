@@ -6,7 +6,10 @@
         <Select v-model="status" class="w-44" :options="filters" :aria-label="t('authorization.filter')" />
         <button class="btn btn-secondary" type="submit">{{ t('authorization.search') }}</button>
       </form>
-      <button class="btn btn-secondary" type="button" :disabled="loading" @click="load()">{{ t('authorization.refresh') }}</button>
+      <div class="flex flex-wrap items-center gap-2">
+        <button v-if="kind === 'accounts'" class="btn btn-primary" type="button" @click="batchSupplementOpen = true">{{ t('authorization.batchSupplement') }}</button>
+        <button class="btn btn-secondary" type="button" :disabled="loading" @click="load()">{{ t('authorization.refresh') }}</button>
+      </div>
     </div>
     <p v-if="error" role="alert" class="text-sm text-red-600 dark:text-red-400">{{ error }}</p>
     <div v-if="kind === 'proxies'" class="flex flex-wrap items-center gap-3 text-sm">
@@ -91,6 +94,7 @@
       <template #footer><button type="button" class="btn btn-secondary" :disabled="proxyDeleting" @click="closeProxyDelete">{{ t('common.cancel') }}</button><button type="button" class="btn btn-danger" :disabled="proxyDeleting" @click="deleteProxies">{{ t('authorization.deleteSelectedProxies') }}</button></template>
     </BaseDialog>
     <TotpStepUpDialog :controller="stepUp" />
+    <AuthorizationCredentialBatchDialog :show="batchSupplementOpen && kind === 'accounts'" @close="batchSupplementOpen = false" @saved="load()" />
   </section>
 </template>
 
@@ -101,6 +105,7 @@ import { useIntervalFn } from '@vueuse/core'
 import Select from '@/components/common/Select.vue'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import TotpStepUpDialog from '@/components/auth/TotpStepUpDialog.vue'
+import AuthorizationCredentialBatchDialog from './AuthorizationCredentialBatchDialog.vue'
 import { useStepUp, isStepUpCancelled } from '@/composables/useStepUp'
 import { accountAuthorizationAPI, type AuthorizationList, type AuthorizationRecord, type AuthorizationSecret } from '@/api/admin/accountAuthorization'
 import { formatDateTime } from '@/utils/format'
@@ -130,6 +135,7 @@ const someProxiesSelected = computed(() => !allProxiesSelected.value && rows.val
 const supplementTarget = ref<AuthorizationRecord | null>(null)
 const supplement = ref<AuthorizationSecret>({ email: '', password: '', twofa: '' })
 const supplementSaving = ref(false)
+const batchSupplementOpen = ref(false)
 const credentialMode = ref<'supplement' | 'edit'>('supplement')
 const deleteTarget = ref<AuthorizationRecord | null>(null)
 const deleteError = ref('')
@@ -256,10 +262,10 @@ async function deleteCredential() {
 }
 
 function visibility() { if (document.hidden) { clearReveal(); supplement.value.password = ''; supplement.value.twofa = '' } else void load(true) }
-watch(() => props.kind, () => { selectedProxies.value = new Set<number>(); closeProxyDelete(); request?.abort(); rows.value = []; total.value = 0; page.value = 1; status.value = 'all'; query.value = ''; draft.value = ''; deleteTarget.value = null; clearReveal(); stepUp.onCancel(); supplementTarget.value = null; supplement.value = { email: '', password: '', twofa: '' }; void load() })
+watch(() => props.kind, () => { batchSupplementOpen.value = false; selectedProxies.value = new Set<number>(); closeProxyDelete(); request?.abort(); rows.value = []; total.value = 0; page.value = 1; status.value = 'all'; query.value = ''; draft.value = ''; deleteTarget.value = null; clearReveal(); stepUp.onCancel(); supplementTarget.value = null; supplement.value = { email: '', password: '', twofa: '' }; void load() })
 watch(status, () => { selectedProxies.value = new Set<number>(); if (page.value !== 1) page.value = 1; else void load() })
 watch([page, () => props.refreshKey], () => { selectedProxies.value = new Set<number>(); void load() })
-useIntervalFn(() => { if (!document.hidden && !supplementTarget.value && !revealed.value && !deleteTarget.value && !proxyDeleteIDs.value.length) void load(true) }, 5000)
+useIntervalFn(() => { if (!document.hidden && !batchSupplementOpen.value && !supplementTarget.value && !revealed.value && !deleteTarget.value && !proxyDeleteIDs.value.length) void load(true) }, 5000)
 onMounted(() => { document.addEventListener('visibilitychange', visibility); void load() })
 onUnmounted(() => { disposed = true; request?.abort(); document.removeEventListener('visibilitychange', visibility); clearReveal(); supplement.value = { email: '', password: '', twofa: '' }; stepUp.onCancel() })
 </script>

@@ -520,6 +520,15 @@ export default {
       bulkSchedulableDisabled: 'Successfully disabled scheduling for {count} account(s)',
       bulkSchedulablePartial: 'Scheduling updated partially: {success} succeeded, {failed} failed',
       bulkSchedulableResultUnknown: 'Bulk scheduling result incomplete. Please retry or refresh.',
+      resetCreditsBatch: {
+        title: 'Check reset credits in bulk',
+        hint: 'Query remaining reset credits for selected OpenAI / Claude OAuth accounts, with up to 3 accounts at once. Other account types are skipped. No reset credits are consumed.',
+        progress: '{done}/{total} processed · {success} succeeded · {failed} failed · {skipped} skipped',
+        account: 'Account', remaining: 'Remaining credits', result: 'Query result', available: '({count} available now)',
+        pending: 'Pending', querying: 'Querying…', success: 'Succeeded', failed: 'Failed', skipped: 'Skipped', cancelled: 'Stopped',
+        unsupported: 'Only OpenAI / Claude OAuth accounts are supported', notFound: 'Account not found or deleted', queryFailed: 'Could not query reset credits',
+        cacheWarning: 'The latest credits were read, but some display caches could not be saved.', stop: 'Stop and close'
+      },
       bulkActions: {
         selected: '{count} account(s) selected',
         selectedAll: 'All {count} account(s) selected',

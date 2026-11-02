@@ -187,6 +187,7 @@
           @delete="handleBulkDelete"
           @reset-status="handleBulkResetStatus"
           @refresh-token="handleBulkRefreshToken"
+          @query-reset-credits="handleBulkQueryResetCredits"
           @probe-upstream-billing="handleBulkProbeUpstreamBilling"
           @edit-selected="openBulkEditSelected"
           @edit-filtered="openBulkEditFiltered"
@@ -358,8 +359,10 @@
               :batched-usage-error="usageBatchErrorByAccountId[String(row.id)] ?? null"
               :batched-usage-loading="usageBatchLoadingByAccountId[String(row.id)] === true"
               :request-batched-usage="isDesktopViewport ? queueBatchedUsage : null"
+              :reset-credit-query="resetCreditQueries[row.id]"
               @account-updated="handleAccountUpdated"
               @usage-loaded="handleAccountUsageLoaded(row.id, $event)"
+              @reset-credit-query-invalidated="delete resetCreditQueries[row.id]"
             />
           </template>
           <template #cell-proxy="{ row }">
@@ -494,6 +497,7 @@
     <EditAccountModal :show="showEdit" :account="edAcc" :proxies="proxies" :groups="groups" @close="showEdit = false" @updated="handleAccountUpdated" />
     <ReAuthAccountModal :show="showReAuth" :account="reAuthAcc" @close="closeReAuthModal" @reauthorized="handleAccountUpdated" />
     <AccountTestModal :show="showTest" :account="testingAcc" @close="closeTestModal" />
+    <AccountResetCreditBatchDialog :show="showResetCreditBatch" :account-ids="resetCreditBatchIDs" @close="showResetCreditBatch = false" @results="applyResetCreditBatchResults" />
     <AccountCandyTestSettings :show="showCandySettings" @close="showCandySettings = false" @saved="refreshCandyResults" />
     <AccountCandyTestDetails :show="candyDetailsResult !== null" :account-name="candyDetailsAccountName" :result="candyDetailsResult" :groups="groups" @close="candyDetailsResult = null" />
     <AccountStatsModal :show="showStats" :account="statsAcc" @close="closeStatsModal" />
@@ -550,6 +554,8 @@ import { CreateAccountModal, EditAccountModal, BulkEditAccountModal, SyncFromCrs
 import AccountTableActions from '@/components/admin/account/AccountTableActions.vue'
 import AccountTableFilters from '@/components/admin/account/AccountTableFilters.vue'
 import AccountBulkActionsBar from '@/components/admin/account/AccountBulkActionsBar.vue'
+import AccountResetCreditBatchDialog from '@/components/admin/account/AccountResetCreditBatchDialog.vue'
+import type { ResetCreditBatchResult } from '@/api/admin/accounts'
 import AccountActionMenu from '@/components/admin/account/AccountActionMenu.vue'
 import ImportDataModal from '@/components/admin/account/ImportDataModal.vue'
 import ReAuthAccountModal from '@/components/admin/account/ReAuthAccountModal.vue'
@@ -652,6 +658,9 @@ const showDeleteDialog = ref(false)
 const showCreateShadowDialog = ref(false)
 const showReAuth = ref(false)
 const showTest = ref(false)
+const showResetCreditBatch = ref(false)
+const resetCreditBatchIDs = ref<number[]>([])
+const resetCreditQueries = ref<Record<number, ResetCreditBatchResult>>({})
 const showCandySettings = ref(false)
 const candyDetailsResult = ref<AccountCandyResult | null>(null)
 const candyDetailsAccountName = ref('')
@@ -1259,6 +1268,7 @@ const load = async (options: AccountLoadOptions = {}) => {
 }
 
 const reload = async () => {
+  resetCreditQueries.value = {}
   syncAccountListDerivedParams()
   hasPendingListSync.value = false
   resetAutoRefreshCache()
@@ -1503,6 +1513,7 @@ const isAnyModalOpen = computed(() => {
     showDeleteDialog.value ||
     showReAuth.value ||
     showTest.value ||
+    showResetCreditBatch.value ||
     showCandySettings.value ||
     candyDetailsResult.value !== null ||
     showStats.value ||
@@ -1555,6 +1566,7 @@ const mergeAccountsIncrementally = (nextRows: Account[]) => {
       changed = true
       return nextRow
     }
+    if (currentRow.updated_at !== nextRow.updated_at) delete resetCreditQueries.value[nextRow.id]
     if (shouldReplaceAutoRefreshRow(currentRow, nextRow)) {
       changed = true
       syncAccountRefs(nextRow)
@@ -2051,6 +2063,16 @@ const handleBulkRefreshToken = async () => {
     appStore.showError(String(error))
   }
 }
+const handleBulkQueryResetCredits = () => {
+  if (!selIds.value.length) return
+  resetCreditBatchIDs.value = [...new Set(selIds.value)]
+  showResetCreditBatch.value = true
+}
+const applyResetCreditBatchResults = (results: ResetCreditBatchResult[]) => {
+  const next = { ...resetCreditQueries.value }
+  for (const result of results) if (result.status === 'success') next[result.account_id] = result
+  resetCreditQueries.value = next
+}
 const handleBulkProbeUpstreamBilling = async () => {
   const accountIDs = [...selIds.value]
   if (accountIDs.length === 0) {
@@ -2392,6 +2414,7 @@ const handleProbeUpstreamBilling = async (account: Account) => {
   }
 }
 const handleAccountUpdated = (updatedAccount: Account) => {
+  delete resetCreditQueries.value[updatedAccount.id]
   patchAccountInList(updatedAccount)
   enterAutoRefreshSilentWindow()
 }

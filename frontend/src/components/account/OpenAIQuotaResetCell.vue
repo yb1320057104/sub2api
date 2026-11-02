@@ -188,6 +188,7 @@ import {
   refreshOpenAIQuota,
   resetOpenAIQuota,
   type OpenAIQuotaUsage,
+  type OpenAIQuotaRefreshResult,
   type OpenAIQuotaResetResult
 } from '@/api/admin/accounts'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
@@ -195,10 +196,12 @@ import OpenAIReferralCell from '@/components/account/OpenAIReferralCell.vue'
 
 const props = defineProps<{
   account: Account
+  queriedQuota?: OpenAIQuotaRefreshResult
 }>()
 
 const emit = defineEmits<{
   'account-updated': [account: Account]
+  'query-invalidated': []
 }>()
 
 const { t } = useI18n()
@@ -434,6 +437,7 @@ const toggleResetCreditDetails = () => {
 
 const handleQuery = async () => {
   if (loading.value || resetting.value) return
+  emit('query-invalidated')
   const accountID = props.account.id
   loading.value = true
   creditsCacheWarning.value = false
@@ -480,6 +484,7 @@ const confirmReset = async () => {
     return
   }
   resetting.value = true
+  emit('query-invalidated')
   const accountID = props.account.id
   creditsCacheWarning.value = false
   error.value = null
@@ -546,4 +551,17 @@ watch(
     }
   }
 )
+
+watch(() => props.queriedQuota, result => {
+  if (!result || resetting.value || loading.value) return
+  const latest = Math.max(data.value?.fetched_at ?? 0, cachedData.value?.fetched_at ?? 0)
+  if (result.fetched_at < latest) return
+  updateCredits(result)
+  data.value = result
+  if (result.cache_persisted) cachedData.value = result
+  creditsCacheWarning.value = result.credits_cache_persisted === false
+  error.value = null
+  resetMessage.value = null
+  resetWarning.value = result.cache_persisted ? null : t('admin.accounts.openaiQuotaReset.refreshCachePersistFailed')
+}, { immediate: true })
 </script>

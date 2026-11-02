@@ -640,6 +640,15 @@ export default {
       bulkSchedulableDisabled: '成功停止 {count} 个账号的调度',
       bulkSchedulablePartial: '部分调度更新成功：成功 {success} 个，失败 {failed} 个',
       bulkSchedulableResultUnknown: '批量调度结果不完整，请稍后重试或刷新列表',
+      resetCreditsBatch: {
+        title: '批量检测重置次数',
+        hint: '查询所选 OpenAI / Claude OAuth 账号的剩余重置次数，最多同时查询 3 个账号。其他类型会跳过，此操作不会消耗重置次数。',
+        progress: '已处理 {done}/{total} · 成功 {success} · 失败 {failed} · 跳过 {skipped}',
+        account: '账号', remaining: '剩余次数', result: '检测结果', available: '（当前可用 {count}）',
+        pending: '等待查询', querying: '查询中…', success: '查询成功', failed: '查询失败', skipped: '已跳过', cancelled: '已停止',
+        unsupported: '仅支持 OpenAI / Claude OAuth 账号', notFound: '账号不存在或已删除', queryFailed: '未能查询重置次数',
+        cacheWarning: '已读取最新次数，但部分显示缓存未保存。', stop: '停止并关闭'
+      },
       bulkActions: {
         selected: '已选择 {count} 个账号',
         selectedAll: '已选择全部 {count} 个账号',

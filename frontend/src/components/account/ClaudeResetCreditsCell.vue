@@ -128,9 +128,9 @@ import {
 } from '@/api/admin/claudeResetCredits'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 
-const props = defineProps<{ account: Account }>()
+const props = defineProps<{ account: Account; queriedCredits?: ClaudeResetCredits }>()
 // Fired after a redemption attempt so the parent can refresh the usage row.
-const emit = defineEmits<{ redeemed: [outcome: ClaudeResetOutcome] }>()
+const emit = defineEmits<{ redeemed: [outcome: ClaudeResetOutcome]; 'query-invalidated': [] }>()
 const { t } = useI18n()
 const status = ref<ClaudeResetCredits | null>(null)
 const loading = ref(false)
@@ -155,6 +155,14 @@ watch(() => [props.account.id, props.account.platform, props.account.type], () =
   redeemFeedback.value = null
   pendingKey = null
 })
+
+watch(() => props.queriedCredits, result => {
+  if (!result || redeeming.value || loading.value) return
+  if (status.value && new Date(result.fetched_at).getTime() < new Date(status.value.fetched_at).getTime()) return
+  status.value = result
+  error.value = false
+  redeemFeedback.value = null
+}, { immediate: true })
 
 // 与 OpenAIQuotaResetCell 的到期时间格式保持一致
 const formatTime = (value: string, style: 'short' | 'full'): string => {
@@ -291,6 +299,7 @@ function errorText(e: unknown): string {
 async function confirmRedeem() {
   showRedeemConfirm.value = false
   if (redeeming.value || loading.value || !canRedeem.value) return
+  emit('query-invalidated')
   const accountID = props.account.id
   const current = generation
   pendingKey ??= newOperationKey(accountID)
@@ -317,6 +326,7 @@ async function confirmRedeem() {
 
 async function refresh() {
   if (loading.value || redeeming.value) return
+  emit('query-invalidated')
   const current = ++generation
   loading.value = true
   error.value = false

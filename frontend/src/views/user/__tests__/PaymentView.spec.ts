@@ -1054,7 +1054,8 @@ describe('Binance UID top-up page', () => {
     const wrapper = await mountBinance()
     await wrapper.get('form').trigger('submit')
     await flushPromises()
-    await wrapper.get('#binance-account').setValue('8')
+    wrapper.getComponent('#binance-account').vm.$emit('update:modelValue', 8)
+    await flushPromises()
     expect(wrapper.get('[data-testid="binance-account-rate"]').text()).toBe('1 USDT = 1 USD')
     expect(wrapper.get('[data-testid="binance-order-rate"]').text()).toBe('Order rate: 1 USDT = 6.7 USD')
     expect(wrapper.get('[data-testid="binance-system-amount"]').text()).toBe('67.08267800 USD')
@@ -1136,6 +1137,7 @@ describe('Binance UID top-up page', () => {
       credit_multiplier: '6.700000',
       has_orders: true, api_key_configured: true, api_secret_configured: true,
       api_key: 'should-never-be-read', api_secret: 'should-never-be-read',
+      proxy_configured: true, proxy_preflight: true, proxy_url: 'http://must-not-copy:secret@proxy.test:3128',
     }] })
     const wrapper = await mountAdminAccounts()
     for (const label of ['accounts', 'orders', 'totals', 'dailyUsage.title', 'liveBills.title']) {
@@ -1144,6 +1146,8 @@ describe('Binance UID top-up page', () => {
     await wrapper.findAll('button').find(button => button.text() === 'common.edit')!.trigger('click')
     expect((wrapper.get('#binance-api-key').element as HTMLInputElement).value).toBe('')
     expect((wrapper.get('#binance-api-secret').element as HTMLInputElement).value).toBe('')
+    expect((wrapper.get('#binance-proxy').element as HTMLInputElement).value).toBe('')
+    expect((wrapper.get('#binance-proxy-preflight').element as HTMLInputElement).checked).toBe(true)
     expect(wrapper.get('#binance-uid').attributes('disabled')).toBeDefined()
     expect((wrapper.get('#binance-multiplier').element as HTMLInputElement).value).toBe('6.7')
     await wrapper.get('#binance-account-form').trigger('submit')
@@ -1151,6 +1155,34 @@ describe('Binance UID top-up page', () => {
     expect(binanceHarness.updateAccount).toHaveBeenCalledWith(7, {
       name: 'Receiving account', recipient_uid: '123456', enabled: true, order_ttl_minutes: 15, credit_multiplier: '6.7',
     })
+  })
+
+  it('replaces a dedicated Binance proxy without reading it back and explicitly clears it', async () => {
+    binanceHarness.getAccounts.mockResolvedValue({ data: [{
+      id: 7, name: 'Receiving account', recipient_uid: '123456', enabled: true, order_ttl_minutes: 15,
+      credit_multiplier: '1.000000', has_orders: true, api_key_configured: true, api_secret_configured: true,
+      proxy_configured: true, proxy_preflight: false,
+    }] })
+    const wrapper = await mountAdminAccounts()
+    await wrapper.findAll('button').find(button => button.text() === 'common.edit')!.trigger('click')
+    await wrapper.get('#binance-proxy').setValue('http://fixture-user:fixture-password@proxy.test:3128')
+    await wrapper.get('#binance-proxy-preflight').setValue(true)
+    await wrapper.get('#binance-account-form').trigger('submit')
+    await flushPromises()
+    expect(binanceHarness.updateAccount).toHaveBeenLastCalledWith(7, expect.objectContaining({
+      proxy_url: 'http://fixture-user:fixture-password@proxy.test:3128', proxy_preflight: true,
+    }))
+    await wrapper.findAll('button').find(button => button.text() === 'common.edit')!.trigger('click')
+    expect((wrapper.get('#binance-proxy').element as HTMLInputElement).value).toBe('')
+    await wrapper.get('#binance-proxy').setValue('http://must-clear:password@proxy.test:3128')
+    await wrapper.get('#binance-clear-proxy').setValue(true)
+    expect((wrapper.get('#binance-proxy').element as HTMLInputElement).value).toBe('')
+    await wrapper.get('#binance-account-form').trigger('submit')
+    await flushPromises()
+    const saved = binanceHarness.updateAccount.mock.calls.at(-1)![1]
+    expect(saved.clear_proxy).toBe(true)
+    expect(saved).not.toHaveProperty('proxy_url')
+    expect(saved).not.toHaveProperty('proxy_preflight')
   })
 
   it('defaults new accounts to rate one and sends an explicitly configured decimal multiplier', async () => {

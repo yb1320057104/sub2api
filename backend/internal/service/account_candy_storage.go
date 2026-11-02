@@ -99,6 +99,13 @@ func (s *AccountCandyTestService) claim(ctx context.Context, accountID int64, so
 	if source == "scheduled" && !due {
 		return nil, nil, infraerrors.Conflict("ACCOUNT_CANDY_NOT_DUE", "账号尚未到测试时间")
 	}
+	available, err := accountCandyCapacityAvailable(ctx, tx)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !available {
+		return nil, nil, infraerrors.Conflict("ACCOUNT_CANDY_BUSY", "已有3个账号正在测试，请稍后再试")
+	}
 	if oldID.Valid {
 		if _, err = tx.ExecContext(ctx, `UPDATE pk_account_candy_results SET status='failed',error_message='上次测试未正常结束，租约已到期。',finished_at=NOW() WHERE id=$1 AND status='running'`, oldID.Int64); err != nil {
 			return nil, nil, err

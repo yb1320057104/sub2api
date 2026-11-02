@@ -31,6 +31,11 @@ export interface AuthorizationSubmission {
   account_concurrency: number; account_priority: number; group_ids: number[]
 }
 export interface AuthorizationSecret { email: string; password: string; twofa: string }
+export interface AuthorizationSupplementResult {
+  line: number; email?: string; account_id?: number
+  status: 'saved' | 'invalid_format' | 'invalid_email' | 'invalid_password' | 'invalid_twofa' | 'duplicate_email' | 'not_found' | 'ambiguous_email' | 'unsupported_account' | 'account_changed' | 'failed' | 'cancelled' | 'interrupted'
+}
+export interface AuthorizationSupplementBatchResult { items: AuthorizationSupplementResult[]; saved: number; cancelled: boolean }
 export type AuthorizationList = 'jobs' | 'history' | 'proxies' | 'accounts'
 export interface AuthorizationRecord {
   retry_of_job_id?: number; immediate_authorization?: boolean
@@ -66,5 +71,8 @@ export const accountAuthorizationAPI = {
   async reveal(id: number) { return (await apiClient.post<AuthorizationSecret>(root + '/history/' + id + '/reveal')).data },
   async updateCredential(id: number, value: { password: string; twofa: string; revision: string }) { await apiClient.put(root + '/history/' + id, value) },
   async deleteCredential(id: number, revision: string) { await apiClient.delete(root + '/history/' + id, { params: { revision } }) },
-  async supplement(id: number, value: AuthorizationSecret) { await apiClient.post(root + '/accounts/' + id + '/credentials', value) }
+  async supplement(id: number, value: AuthorizationSecret) { await apiClient.post(root + '/accounts/' + id + '/credentials', value) },
+  async supplementBatch(accounts: string, signal?: AbortSignal) {
+    return (await apiClient.post<AuthorizationSupplementBatchResult>(root + '/accounts/credentials/batch', { accounts }, { signal, timeout: 100000 })).data
+  }
 }

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"net"
 	"net/http"
@@ -13,6 +14,21 @@ import (
 )
 
 const accountCandyTLSHandshakeAttempts = 3
+
+type accountCandyProxyRetryKey struct{}
+
+// Only this marker may admit another proxy. Its creation is kept at the send
+// boundary where request/response evidence is still available.
+type accountCandyRetryableNetworkError struct{}
+
+func (*accountCandyRetryableNetworkError) Error() string {
+	return "账号测试连接失败，尚未发送请求；未转组。"
+}
+
+func accountCandyCanChangeProxy(err error) bool {
+	var failure *accountCandyRetryableNetworkError
+	return errors.As(err, &failure)
+}
 
 // doAccountCandyTLSHandshakeRetry retries only a transport's TLS handshake
 // timeout before any HTTP request was written. It never retries an HTTP
@@ -62,6 +78,12 @@ func doAccountCandyTLSHandshakeRetry(
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
+		if enabled, _ := ctx.Value(accountCandyProxyRetryKey{}).(bool); enabled {
+			if !requestWritten.Load() && isAccountCandyConnectFailure(err) {
+				return nil, &accountCandyRetryableNetworkError{}
+			}
+			return nil, err
+		}
 		if requestWritten.Load() || !isAccountCandyTLSHandshakeTimeout(err) {
 			return nil, err
 		}
@@ -84,6 +106,24 @@ func doAccountCandyTLSHandshakeRetry(
 		}
 	}
 	return nil, candyProbeFailure("账号测试建立 TLS 连接超时，已停止重试；未转组。")
+}
+
+func isAccountCandyConnectFailure(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return false
+	}
+	if isAccountCandyTLSHandshakeTimeout(err) {
+		return true
+	}
+	var dns *net.DNSError
+	if errors.As(err, &dns) {
+		return true
+	}
+	var operation *net.OpError
+	// Dial/HTTP CONNECT/SOCKS CONNECT failure proves no application request reached the
+	// target even for transports that do not implement httptrace. Read/write
+	// failures do not carry that guarantee and are never replayed here.
+	return errors.As(err, &operation) && (operation.Op == "dial" || operation.Op == "proxyconnect" || operation.Op == "socks connect")
 }
 
 func isAccountCandyTLSHandshakeTimeout(err error) bool {

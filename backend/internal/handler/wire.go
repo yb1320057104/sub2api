@@ -51,6 +51,7 @@ func ProvideAdminHandlers(
 	ollamaCloudUsage *service.OllamaCloudUsageService,
 	opencodeGoUsage *service.OpenCodeGoUsageService,
 	claudeResetCredits *service.ClaudeResetCreditService,
+	openAIQuotaService *service.OpenAIQuotaService,
 	cyberPolicy *service.CyberPolicyService,
 ) *AdminHandlers {
 	usageHandler.SetCyberPolicyService(cyberPolicy)
@@ -58,6 +59,7 @@ func ProvideAdminHandlers(
 	accountHandler.SetOllamaCloudUsageService(ollamaCloudUsage)
 	accountHandler.SetOpenCodeGoUsageService(opencodeGoUsage)
 	accountHandler.SetClaudeResetCreditService(claudeResetCredits)
+	accountHandler.SetResetCreditQuotaService(openAIQuotaService)
 	return &AdminHandlers{
 		Dashboard:              dashboardHandler,
 		User:                   userHandler,

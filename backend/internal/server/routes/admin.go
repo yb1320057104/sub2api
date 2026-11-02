@@ -37,6 +37,7 @@ func RegisterAdminRoutes(
 			authorization := admin.Group("/account-authorization")
 			authorization.GET("/config", h.AccountAuthorization.Config)
 			authorization.POST("/accounts/:id/credentials", h.AccountAuthorization.Supplement)
+			authorization.POST("/accounts/credentials/batch", panelRateLimiter.Heavy(), h.AccountAuthorization.SupplementBatch)
 			authorization.PUT("/config", h.AccountAuthorization.SaveConfig)
 			authorization.PUT("/workbench", h.AccountAuthorization.SaveWorkbench)
 			authorization.GET("/jobs", h.AccountAuthorization.List("jobs"))
@@ -480,6 +481,7 @@ func registerAccountRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUpAu
 		accounts.POST("/batch-delete", h.Admin.Account.BatchDelete)
 		accounts.POST("/batch-clear-error", h.Admin.Account.BatchClearError)
 		accounts.POST("/batch-refresh", h.Admin.Account.BatchRefresh)
+		accounts.POST("/reset-credits/batch", h.Admin.Account.BatchQueryResetCredits)
 
 		// Antigravity 默认模型映射
 		accounts.GET("/antigravity/default-model-mapping", h.Admin.Account.GetAntigravityDefaultModelMapping)

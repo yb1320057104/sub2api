@@ -154,7 +154,13 @@ WHERE id=$1 AND next_poll_at<=NOW() AND api_locked_until<=NOW() RETURNING failur
 		}
 		if err == nil {
 			var receipts []binancepay.Receipt
-			receipts, err = s.client.History(ctx, apiKey, secret, a.RecipientUID, from, to)
+			var client BinanceRechargeClient
+			var finish func()
+			client, finish, err = s.accountClient(a)
+			if err == nil {
+				receipts, err = client.History(ctx, apiKey, secret, a.RecipientUID, from, to)
+				finish()
+			}
 			if err == nil {
 				for _, receipt := range receipts {
 					var matched, review bool

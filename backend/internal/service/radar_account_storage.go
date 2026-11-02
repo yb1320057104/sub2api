@@ -91,6 +91,13 @@ func (s *AccountCandyTestService) claimRadar(ctx context.Context, id int64, sour
 	if source == "scheduled" && !due {
 		return nil, nil, infraerrors.Conflict("RADAR_NOT_DUE", "账号尚未到测试时间")
 	}
+	available, err := accountCandyCapacityAvailable(ctx, tx)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !available {
+		return nil, nil, infraerrors.Conflict("RADAR_BUSY", "已有3个账号正在测试，请稍后再试")
+	}
 	if old.Valid {
 		if _, err = tx.ExecContext(ctx, `UPDATE pk_radar_account_runs SET status='failed',verdict=CASE WHEN verdict='fail' THEN 'fail' ELSE 'unknown' END,error_message='任务租约已过期',finished_at=NOW() WHERE id=$1 AND status='running'`, old.Int64); err != nil {
 			return nil, nil, err
@@ -287,7 +294,7 @@ func (s *AccountCandyTestService) finishRadar(ctx, executionCtx context.Context,
 	if err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE pk_radar_account_runs SET status=$2,verdict=$3,moved_to_group_id=$4,error_message=$5,move_error=$6,finished_at=NOW(),duration_ms=$7,egress_ip=NULLIF($8,'')::inet,egress_checked_at=$9,egress_error=$10,moved_to_group_ids=$11::jsonb WHERE id=$1 AND status='running'`, run.ID, status, verdict, moved, failure, moveFailure, elapsed, run.EgressIP, run.EgressCheckedAt, run.EgressError, string(movedJSON)); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE pk_radar_account_runs SET status=$2,verdict=$3,moved_to_group_id=$4,error_message=$5,move_error=$6,finished_at=NOW(),duration_ms=$7,egress_ip=NULLIF($8,'')::inet,egress_checked_at=$9,egress_error=$10,moved_to_group_ids=$11::jsonb,egress_mode=$12 WHERE id=$1 AND status='running'`, run.ID, status, verdict, moved, failure, moveFailure, elapsed, run.EgressIP, run.EgressCheckedAt, run.EgressError, string(movedJSON), run.EgressMode); err != nil {
 		return err
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE pk_radar_account_state SET active_run_id=NULL,lease_token=NULL,lease_until=NULL,latest_run_id=$2,verdict=$3,generation=$4,next_run_at=CASE WHEN $5 THEN NOW() ELSE NOW()+make_interval(mins=>$6)END WHERE account_id=$1 AND active_run_id=$2`, run.AccountID, run.ID, verdict, cfg.Generation, current.Generation != cfg.Generation, current.IntervalMinutes); err != nil {

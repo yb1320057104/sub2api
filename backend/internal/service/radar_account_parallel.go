@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -54,14 +55,24 @@ func (s *AccountCandyTestService) executeRadarModel(ctx context.Context, run *Ra
 	}
 	modelCtx, modelCancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer modelCancel()
-	m.EgressIP, m.EgressCheckedAt, m.EgressError = probeRadarEgress(modelCtx, account)
-	if result.err = s.writeRadarModel(modelCtx, run, m); result.err != nil {
-		return result
-	}
-	if result.err = s.checkRadarIdentity(modelCtx, run); result.err != nil {
-		return result
-	}
-	text, callErr := s.testService.runAccountCandyProbe(modelCtx, account, credential, &AccountCandyTestConfig{Model: m.Model, Effort: m.Effort})
+	text, callErr := runAccountCandyWithProxyRetry(modelCtx, s.db, s.testService, account, credential, &AccountCandyTestConfig{Model: m.Model, Effort: m.Effort}, func(attemptCtx context.Context, route *Account, attempt int) error {
+		if err := s.checkRadarIdentity(attemptCtx, run); err != nil {
+			return err
+		}
+		m.egressMode = "direct"
+		if route.ProxyID != nil {
+			m.egressMode = "proxy"
+		}
+		m.ErrorMessage = ""
+		if attempt > 1 {
+			m.ErrorMessage = fmt.Sprintf("连接失败，已切换临时代理 #%d；正在进行第%d/%d次尝试", *route.ProxyID, attempt, accountCandyProxyAttempts)
+		}
+		m.EgressIP, m.EgressCheckedAt, m.EgressError = probeRadarEgress(attemptCtx, route)
+		if err := s.writeRadarModel(attemptCtx, run, m); err != nil {
+			return err
+		}
+		return s.checkRadarIdentity(attemptCtx, run)
+	})
 	finished := time.Now()
 	elapsed := finished.Sub(now).Milliseconds()
 	m.FinishedAt, m.DurationMS = &finished, &elapsed
@@ -69,7 +80,7 @@ func (s *AccountCandyTestService) executeRadarModel(ctx context.Context, run *Ra
 		m.Status = "failed"
 		m.ErrorMessage = strings.ReplaceAll(accountCandySafeError(callErr), "未转组", "此失败不作为转组依据")
 	} else {
-		m.Status, m.ResponseText = "completed", text
+		m.Status, m.ResponseText, m.ErrorMessage = "completed", text, ""
 		m.Answer = intelligenceExtractAnswer(text)
 		passed := m.Answer != nil && *m.Answer == 21
 		m.Passed = &passed

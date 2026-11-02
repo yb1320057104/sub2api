@@ -42,6 +42,8 @@ type BinanceRechargeAccount struct {
 	CreditMultiplier    string     `json:"credit_multiplier"`
 	APIKeyConfigured    bool       `json:"api_key_configured"`
 	APISecretConfigured bool       `json:"api_secret_configured"`
+	ProxyConfigured     bool       `json:"proxy_configured"`
+	ProxyPreflight      bool       `json:"proxy_preflight"`
 	HasOrders           bool       `json:"has_orders"`
 	LastCheckedAt       *time.Time `json:"last_checked_at,omitempty"`
 	LastError           string     `json:"last_error,omitempty"`
@@ -49,13 +51,19 @@ type BinanceRechargeAccount struct {
 	UpdatedAt           time.Time  `json:"updated_at"`
 	apiKeyEncrypted     string
 	apiSecretEncrypted  string
+	proxyURLCiphertext  string
 }
 
 type BinanceRechargeAccountInput struct {
-	Name             string  `json:"name"`
-	RecipientUID     string  `json:"recipient_uid"`
-	APIKey           string  `json:"api_key"`
-	APISecret        string  `json:"api_secret"`
+	Name         string `json:"name"`
+	RecipientUID string `json:"recipient_uid"`
+	APIKey       string `json:"api_key"`
+	APISecret    string `json:"api_secret"`
+	// ProxyURL is encrypted at rest and never returned by the API. An empty
+	// value on update preserves the existing proxy, matching credential fields.
+	ProxyURL         string  `json:"proxy_url"`
+	ClearProxy       bool    `json:"clear_proxy"`
+	ProxyPreflight   *bool   `json:"proxy_preflight"`
 	Enabled          bool    `json:"enabled"`
 	OrderTTLMinutes  int     `json:"order_ttl_minutes"`
 	CreditMultiplier *string `json:"credit_multiplier"`
@@ -169,6 +177,7 @@ func normalizeBinanceRechargeAccountInput(input BinanceRechargeAccountInput) (Bi
 	input.RecipientUID = strings.TrimLeft(strings.TrimSpace(input.RecipientUID), "0")
 	input.APIKey = strings.TrimSpace(input.APIKey)
 	input.APISecret = strings.TrimSpace(input.APISecret)
+	input.ProxyURL = strings.TrimSpace(input.ProxyURL)
 	if input.OrderTTLMinutes == 0 {
 		input.OrderTTLMinutes = 30
 	}
@@ -181,6 +190,12 @@ func normalizeBinanceRechargeAccountInput(input BinanceRechargeAccountInput) (Bi
 	if len(input.APIKey) > 512 || len(input.APISecret) > 512 {
 		return input, infraerrors.BadRequest("BINANCE_CREDENTIAL_INVALID", "币安 API 凭据格式无效")
 	}
+	if len(input.ProxyURL) > 2048 {
+		return input, infraerrors.BadRequest("BINANCE_PROXY_INVALID", "币安专属代理地址过长")
+	}
+	if input.ClearProxy && input.ProxyURL != "" {
+		return input, infraerrors.BadRequest("BINANCE_PROXY_INVALID", "不能同时设置和清除币安专属代理")
+	}
 	if input.CreditMultiplier != nil {
 		multiplier, err := normalizeBinanceCreditMultiplier(*input.CreditMultiplier)
 		if err != nil {
@@ -192,7 +207,7 @@ func normalizeBinanceRechargeAccountInput(input BinanceRechargeAccountInput) (Bi
 }
 
 const binanceAccountColumns = `a.id, a.name, a.recipient_uid, a.enabled, a.order_ttl_minutes, a.credit_multiplier::text,
-a.api_key_encrypted, a.api_secret_encrypted, a.last_checked_at, a.last_error, a.created_at, a.updated_at,
+a.api_key_encrypted, a.api_secret_encrypted, a.proxy_url_encrypted, a.proxy_preflight, a.last_checked_at, a.last_error, a.created_at, a.updated_at,
 EXISTS(SELECT 1 FROM binance_recharge_orders o WHERE o.account_id = a.id)`
 
 type binanceRowScanner interface{ Scan(...any) error }
@@ -200,9 +215,10 @@ type binanceRowScanner interface{ Scan(...any) error }
 func scanBinanceRechargeAccount(row binanceRowScanner) (*BinanceRechargeAccount, error) {
 	var a BinanceRechargeAccount
 	err := row.Scan(&a.ID, &a.Name, &a.RecipientUID, &a.Enabled, &a.OrderTTLMinutes, &a.CreditMultiplier,
-		&a.apiKeyEncrypted, &a.apiSecretEncrypted, &a.LastCheckedAt, &a.LastError, &a.CreatedAt, &a.UpdatedAt, &a.HasOrders)
+		&a.apiKeyEncrypted, &a.apiSecretEncrypted, &a.proxyURLCiphertext, &a.ProxyPreflight, &a.LastCheckedAt, &a.LastError, &a.CreatedAt, &a.UpdatedAt, &a.HasOrders)
 	a.APIKeyConfigured = a.apiKeyEncrypted != ""
 	a.APISecretConfigured = a.apiSecretEncrypted != ""
+	a.ProxyConfigured = a.proxyURLCiphertext != ""
 	return &a, err
 }
 
@@ -281,6 +297,14 @@ func (s *BinanceRechargeService) SaveAccount(ctx context.Context, id int64, inpu
 		}
 	}
 	keyEncrypted, secretEncrypted := current.apiKeyEncrypted, current.apiSecretEncrypted
+	proxyCiphertext := current.proxyURLCiphertext
+	proxyPreflight := current.ProxyPreflight
+	if input.ProxyPreflight != nil {
+		proxyPreflight = *input.ProxyPreflight
+	}
+	if input.ClearProxy {
+		proxyCiphertext, proxyPreflight = "", false
+	}
 	if input.APIKey != "" {
 		keyEncrypted, err = s.encryptor.Encrypt(input.APIKey)
 		if err != nil {
@@ -291,6 +315,36 @@ func (s *BinanceRechargeService) SaveAccount(ctx context.Context, id int64, inpu
 		secretEncrypted, err = s.encryptor.Encrypt(input.APISecret)
 		if err != nil {
 			return nil, infraerrors.ServiceUnavailable("BINANCE_ENCRYPTION_FAILED", "保存币安 API 凭据失败")
+		}
+	}
+	if input.ProxyURL != "" {
+		// Validate before encrypting so malformed URLs cannot be stored and then
+		// fail later in a background poll. The client constructor performs the
+		// complete scheme/host/port validation and never falls back to direct.
+		if err := validateBinanceAccountProxy(input.ProxyURL, proxyPreflight); err != nil {
+			return nil, infraerrors.BadRequest("BINANCE_PROXY_INVALID", "币安专属代理地址无效")
+		}
+		proxyCiphertext, err = s.encryptor.Encrypt(input.ProxyURL)
+		if err != nil {
+			return nil, infraerrors.ServiceUnavailable("BINANCE_ENCRYPTION_FAILED", "保存币安专属代理失败")
+		}
+	}
+	if proxyPreflight && proxyCiphertext == "" {
+		return nil, infraerrors.BadRequest("BINANCE_PROXY_REQUIRED", "开启专属代理预探测前必须配置专属代理")
+	}
+	if input.ProxyURL == "" && !input.ClearProxy && proxyPreflight != current.ProxyPreflight && proxyCiphertext != "" {
+		proxyURL, decryptErr := s.encryptor.Decrypt(proxyCiphertext)
+		if decryptErr != nil || proxyURL == "" || validateBinanceAccountProxy(proxyURL, proxyPreflight) != nil {
+			return nil, infraerrors.BadRequest("BINANCE_PROXY_INVALID", "已保存的专属代理不支持当前预探测配置，请重新填写代理")
+		}
+	}
+	if id > 0 && (proxyCiphertext != current.proxyURLCiphertext || proxyPreflight != current.ProxyPreflight) {
+		var polling bool
+		if err := tx.QueryRowContext(ctx, `SELECT poll_token<>'' AND api_locked_until>NOW() FROM binance_recharge_accounts WHERE id=$1`, id).Scan(&polling); err != nil {
+			return nil, err
+		}
+		if polling {
+			return nil, infraerrors.Conflict("BINANCE_ACCOUNT_POLLING", "币安查询进行中，请查询结束后再修改专属代理")
 		}
 	}
 	if input.Enabled && (keyEncrypted == "" || secretEncrypted == "") {
@@ -304,9 +358,9 @@ func (s *BinanceRechargeService) SaveAccount(ctx context.Context, id int64, inpu
 		multiplier = *input.CreditMultiplier
 	}
 	if id == 0 {
-		err = tx.QueryRowContext(ctx, `INSERT INTO binance_recharge_accounts (name,recipient_uid,api_key_encrypted,api_secret_encrypted,enabled,order_ttl_minutes,credit_multiplier) VALUES ($1,$2,$3,$4,$5,$6,$7::numeric) RETURNING id`, input.Name, input.RecipientUID, keyEncrypted, secretEncrypted, input.Enabled, input.OrderTTLMinutes, multiplier).Scan(&id)
+		err = tx.QueryRowContext(ctx, `INSERT INTO binance_recharge_accounts (name,recipient_uid,api_key_encrypted,api_secret_encrypted,proxy_url_encrypted,proxy_preflight,enabled,order_ttl_minutes,credit_multiplier) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::numeric) RETURNING id`, input.Name, input.RecipientUID, keyEncrypted, secretEncrypted, proxyCiphertext, proxyPreflight, input.Enabled, input.OrderTTLMinutes, multiplier).Scan(&id)
 	} else {
-		_, err = tx.ExecContext(ctx, `UPDATE binance_recharge_accounts SET name=$2,recipient_uid=$3,api_key_encrypted=$4,api_secret_encrypted=$5,enabled=$6,order_ttl_minutes=$7,credit_multiplier=$8::numeric,updated_at=NOW() WHERE id=$1`, id, input.Name, input.RecipientUID, keyEncrypted, secretEncrypted, input.Enabled, input.OrderTTLMinutes, multiplier)
+		_, err = tx.ExecContext(ctx, `UPDATE binance_recharge_accounts SET name=$2,recipient_uid=$3,api_key_encrypted=$4,api_secret_encrypted=$5,proxy_url_encrypted=$6,proxy_preflight=$7,enabled=$8,order_ttl_minutes=$9,credit_multiplier=$10::numeric,updated_at=NOW() WHERE id=$1`, id, input.Name, input.RecipientUID, keyEncrypted, secretEncrypted, proxyCiphertext, proxyPreflight, input.Enabled, input.OrderTTLMinutes, multiplier)
 	}
 	if err != nil {
 		if isBinanceUniqueViolation(err) {
@@ -361,6 +415,9 @@ func binanceRechargeReceiptReviewReason(order *BinanceRechargeOrder, receipt bin
 }
 
 func binanceRechargePollError(err error) string {
+	if errors.Is(err, errBinanceAccountProxy) {
+		return "币安专属代理配置不可用，未执行查账，请检查该收款账户代理配置"
+	}
 	if errors.Is(err, binancepay.ErrProxyPreflight) {
 		return "币安代理节点探测失败，未执行查账，稍后自动重试"
 	}

@@ -171,3 +171,151 @@ func TestAccountHandlerBatchDeleteRejectsEmptyNormalizedIDs(t *testing.T) {
 
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 }
+
+type resetCreditBatchAdminStub struct {
+	service.AdminService
+	accounts map[int64]*service.Account
+}
+
+func (s *resetCreditBatchAdminStub) GetAccountsByIDs(_ context.Context, ids []int64) ([]*service.Account, error) {
+	var accounts []*service.Account
+	for _, id := range ids {
+		if account := s.accounts[id]; account != nil {
+			accounts = append(accounts, account)
+		}
+	}
+	return accounts, nil
+}
+
+type resetCreditBatchQuotaStub struct {
+	mu           sync.Mutex
+	active, max  int
+	queries      []int64
+	redemptions  int
+	queryErrorID int64
+	cacheError   error
+}
+
+func (s *resetCreditBatchQuotaStub) QueryUsage(ctx context.Context, id int64) (*service.OpenAIQuotaUsage, error) {
+	s.mu.Lock()
+	s.active++
+	if s.active > s.max {
+		s.max = s.active
+	}
+	s.queries = append(s.queries, id)
+	s.mu.Unlock()
+	defer func() { s.mu.Lock(); s.active--; s.mu.Unlock() }()
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-time.After(10 * time.Millisecond):
+	}
+	if id == s.queryErrorID {
+		return nil, errors.New("secret-proxy-url-must-not-leak")
+	}
+	return &service.OpenAIQuotaUsage{FetchedAt: 1, RateLimitResetCredits: &service.OpenAIRateLimitResetCredits{AvailableCount: 2}}, nil
+}
+
+func (s *resetCreditBatchQuotaStub) CacheResetCreditsSnapshot(context.Context, int64, *service.OpenAIRateLimitResetCredits) error {
+	return s.cacheError
+}
+
+func (s *resetCreditBatchQuotaStub) CacheCreditsSnapshot(context.Context, int64, *service.OpenAIQuotaUsage) error {
+	return nil
+}
+
+func (s *resetCreditBatchQuotaStub) ResetCredit(context.Context, int64) (*service.OpenAIQuotaResetResult, error) {
+	s.redemptions++
+	return nil, errors.New("must not redeem")
+}
+
+type resetCreditBatchClaudeStub struct{ queries, redemptions int }
+
+func (s *resetCreditBatchClaudeStub) Query(context.Context, int64) (*service.ClaudeResetCredits, error) {
+	s.queries++
+	return &service.ClaudeResetCredits{AvailableCount: 1, Credits: []service.ClaudeResetCredit{{ResetsLeft: 3}}}, nil
+}
+
+func (s *resetCreditBatchClaudeStub) Redeem(context.Context, int64, string) (*service.ClaudeResetOutcome, error) {
+	s.redemptions++
+	return nil, errors.New("must not redeem")
+}
+
+func performResetCreditBatchRequest(h *AccountHandler, body []byte, ctx context.Context) *httptest.ResponseRecorder {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/api/v1/admin/accounts/reset-credits/batch", h.BatchQueryResetCredits)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/accounts/reset-credits/batch", bytes.NewReader(body))
+	if ctx != nil {
+		req = req.WithContext(ctx)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestPKResetCreditBatchDeduplicatesBoundsConcurrencyAndNeverRedeems(t *testing.T) {
+	accounts := map[int64]*service.Account{}
+	for id := int64(1); id <= 6; id++ {
+		accounts[id] = &service.Account{ID: id, Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth}
+	}
+	accounts[7] = &service.Account{ID: 7, Platform: service.PlatformAnthropic, Type: service.AccountTypeOAuth}
+	accounts[8] = &service.Account{ID: 8, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey}
+	quota := &resetCreditBatchQuotaStub{queryErrorID: 3, cacheError: errors.New("cache unavailable")}
+	claude := &resetCreditBatchClaudeStub{}
+	h := &AccountHandler{adminService: &resetCreditBatchAdminStub{accounts: accounts}, resetCreditQuota: quota, claudeResetCredits: claude}
+	rec := performResetCreditBatchRequest(h, []byte(`{"account_ids":[1,2,3,4,5,6,7,8,9,1]}`), nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var result struct {
+		Data struct {
+			Total, Success, Failed, Skipped int
+			Results                         []resetCreditBatchResult
+		}
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &result))
+	require.Equal(t, 9, result.Data.Total)
+	require.Equal(t, 6, result.Data.Success)
+	require.Equal(t, 2, result.Data.Failed)
+	require.Equal(t, 1, result.Data.Skipped)
+	require.ElementsMatch(t, []int64{1, 2, 3, 4, 5, 6}, quota.queries)
+	require.LessOrEqual(t, quota.max, 3)
+	require.Greater(t, quota.max, 1)
+	require.Equal(t, 1, claude.queries)
+	require.Zero(t, quota.redemptions)
+	require.Zero(t, claude.redemptions)
+	require.NotContains(t, rec.Body.String(), "secret-proxy-url")
+	for _, item := range result.Data.Results {
+		if item.AccountID == 7 {
+			require.Equal(t, 3, *item.Total)
+			require.Equal(t, 1, *item.Available)
+		}
+		if item.AccountID == 1 {
+			require.Equal(t, "RESET_CREDITS_CACHE_NOT_SAVED", item.WarningCode)
+			require.Equal(t, 2, *item.Total)
+		}
+	}
+}
+
+func TestPKResetCreditBatchRejectsInvalidSelectionBeforeUpstreamCalls(t *testing.T) {
+	for _, body := range []string{`{}`, `{"account_ids":[]}`, `{"account_ids":[0]}`, `{"account_ids":[-1]}`, `{"account_ids":[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21]}`} {
+		t.Run(body, func(t *testing.T) {
+			quota := &resetCreditBatchQuotaStub{}
+			rec := performResetCreditBatchRequest(&AccountHandler{resetCreditQuota: quota}, []byte(body), nil)
+			require.Equal(t, http.StatusBadRequest, rec.Code)
+			require.Empty(t, quota.queries)
+		})
+	}
+}
+
+func TestPKResetCreditBatchCancelledRequestDoesNotStartUpstreamCalls(t *testing.T) {
+	quota := &resetCreditBatchQuotaStub{}
+	h := &AccountHandler{adminService: &resetCreditBatchAdminStub{accounts: map[int64]*service.Account{1: {ID: 1, Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth}}}, resetCreditQuota: quota}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	rec := performResetCreditBatchRequest(h, []byte(`{"account_ids":[1]}`), ctx)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, rec.Body.String(), "RESET_CREDITS_QUERY_CANCELLED")
+	require.Empty(t, quota.queries)
+	require.Zero(t, quota.redemptions)
+}

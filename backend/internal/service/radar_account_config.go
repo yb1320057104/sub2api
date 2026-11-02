@@ -38,6 +38,7 @@ type RadarConfig struct {
 }
 
 type RadarModelResult struct {
+	egressMode      string
 	ID              int64      `json:"id"`
 	Model           string     `json:"model"`
 	MappedModel     string     `json:"mapped_model"`

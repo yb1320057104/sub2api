@@ -509,6 +509,10 @@ func (s *AccountAuthorizationService) CancelJob(ctx context.Context, id int64) e
 // Supplement updates the current encrypted credential record. It never queues
 // authorization; existing jobs keep their snapshots and the next round reads the edit.
 func (s *AccountAuthorizationService) Supplement(ctx context.Context, id int64, secret *AuthorizationSecret) error {
+	return s.supplementAuthorization(ctx, id, secret, nil)
+}
+
+func (s *AccountAuthorizationService) supplementAuthorization(ctx context.Context, id int64, secret *AuthorizationSecret, matchedID *int64) error {
 	if err := s.requireAuthorizationEncryption(); err != nil {
 		return err
 	}
@@ -526,12 +530,21 @@ func (s *AccountAuthorizationService) Supplement(ctx context.Context, id int64, 
 	if err = pinLegacyAuthorizationCredentials(ctx, tx, secret.Email); err != nil {
 		return err
 	}
+	if matchedID != nil {
+		id, err = authorizationSupplementAccount(ctx, tx, secret.Email)
+		if err != nil {
+			return err
+		}
+	}
 	var email, version string
 	if err = tx.QueryRowContext(ctx, `SELECT `+authorizationEmailSQL+`,md5(a.credentials::text) FROM accounts a WHERE a.id=$1 AND a.deleted_at IS NULL AND a.platform='openai' AND `+authorizationSupportedSQL+` FOR UPDATE`, id).Scan(&email, &version); err != nil {
 		return err
 	}
 	if email != "" && email != secret.Email {
 		return infraerrors.Conflict("AUTHORIZATION_EMAIL_CHANGED", "补全邮箱必须与账号管理中的邮箱一致")
+	}
+	if matchedID != nil && email != secret.Email {
+		return infraerrors.Conflict("AUTHORIZATION_EMAIL_CHANGED", "账号邮箱已变化，请重新读取后补全")
 	}
 	if email == "" {
 		if _, err = tx.ExecContext(ctx, `UPDATE accounts SET credentials=jsonb_set(credentials,'{email}',to_jsonb($2::text)),updated_at=NOW() WHERE id=$1`, id, secret.Email); err != nil {
@@ -561,6 +574,9 @@ func (s *AccountAuthorizationService) Supplement(ctx context.Context, id int64, 
 	}
 	if err = tx.Commit(); err != nil {
 		return err
+	}
+	if matchedID != nil {
+		*matchedID = id
 	}
 	if email == "" {
 		s.authorizationAccountCommitted(ctx, id)

@@ -20,6 +20,7 @@
             <dl class="grid grid-cols-2 gap-3 text-sm">
               <div><dt class="text-gray-500">{{ t('binanceRecharge.credentials') }}</dt><dd>{{ account.api_key_configured && account.api_secret_configured ? t('binanceRecharge.credentialsConfigured') : t('binanceRecharge.credentialsMissing') }}</dd></div>
               <div><dt class="text-gray-500">{{ t('binanceRecharge.ttl') }}</dt><dd>{{ t('binanceRecharge.minutes', { minutes: account.order_ttl_minutes }) }}</dd></div>
+              <div class="col-span-2"><dt class="text-gray-500">{{ t('binanceRecharge.proxy') }}</dt><dd>{{ account.proxy_configured ? t(account.proxy_preflight ? 'binanceRecharge.proxyWithPreflight' : 'binanceRecharge.proxyConfigured') : t('binanceRecharge.proxyInherited') }}</dd></div>
               <div class="col-span-2"><dt class="text-gray-500">{{ t('binanceRecharge.creditMultiplier') }}</dt><dd>{{ t('binanceRecharge.exchangeRate', { multiplier: formatBinanceMultiplier(account.credit_multiplier) }) }}</dd></div>
               <div class="col-span-2"><dt class="text-gray-500">{{ t('binanceRecharge.lastChecked') }}</dt><dd>{{ account.last_checked_at ? date(account.last_checked_at) : t('binanceRecharge.neverChecked') }}</dd></div>
             </dl>
@@ -53,6 +54,14 @@
         <p class="text-xs text-gray-500">{{ t('binanceRecharge.credentialsHint') }}</p>
         <div><label for="binance-api-key" class="input-label">{{ t('binanceRecharge.apiKey') }}</label><input id="binance-api-key" v-model="form.api_key" type="password" autocomplete="new-password" class="input mt-1 w-full" :required="!editingAccount" /></div>
         <div><label for="binance-api-secret" class="input-label">{{ t('binanceRecharge.apiSecret') }}</label><input id="binance-api-secret" v-model="form.api_secret" type="password" autocomplete="new-password" class="input mt-1 w-full" :required="!editingAccount" /><p class="mt-2 text-xs text-gray-500">{{ t('binanceRecharge.secretHint') }}</p></div>
+        <div>
+          <label for="binance-proxy" class="input-label">{{ t('binanceRecharge.proxy') }}</label>
+          <input id="binance-proxy" v-model="form.proxy_url" type="password" autocomplete="new-password" class="input mt-1 w-full" maxlength="2048" :disabled="saving || form.clear_proxy" :placeholder="t(editingAccount?.proxy_configured ? 'binanceRecharge.proxyKeepPlaceholder' : 'binanceRecharge.proxyPlaceholder')" />
+          <p class="mt-2 text-xs text-gray-500">{{ t('binanceRecharge.proxyHint') }}</p>
+          <label v-if="editingAccount?.proxy_configured" class="mt-2 flex items-center gap-2 text-sm"><input id="binance-clear-proxy" v-model="form.clear_proxy" type="checkbox" class="h-4 w-4 rounded" :disabled="saving" @change="clearAccountProxy" />{{ t('binanceRecharge.clearProxy') }}</label>
+          <label class="mt-2 flex items-center gap-2 text-sm"><input id="binance-proxy-preflight" v-model="form.proxy_preflight" type="checkbox" class="h-4 w-4 rounded" :disabled="saving || form.clear_proxy || (!form.proxy_url?.trim() && !editingAccount?.proxy_configured)" />{{ t('binanceRecharge.proxyPreflight') }}</label>
+          <p class="mt-1 text-xs text-gray-500">{{ t('binanceRecharge.proxyPreflightHint') }}</p>
+        </div>
         <div><label for="binance-ttl" class="input-label">{{ t('binanceRecharge.ttl') }}</label><Select id="binance-ttl" v-model="form.order_ttl_minutes" class="mt-1 w-full" :disabled="saving" :options="[15, 30].map(value => ({ value, label: t('binanceRecharge.minutes', { minutes: value }) }))" /></div>
         <label class="flex items-center gap-2 text-sm"><input v-model="form.enabled" type="checkbox" class="h-4 w-4 rounded" />{{ t('binanceRecharge.enabled') }}</label>
       </form>
@@ -94,7 +103,7 @@ const checkingId = ref<number | null>(null)
 const showAccountDialog = ref(false)
 const editingAccount = ref<BinanceRechargeAccount | null>(null)
 const saving = ref(false)
-const form = reactive<BinanceRechargeAccountInput>({ name: '', recipient_uid: '', api_key: '', api_secret: '', enabled: false, order_ttl_minutes: 15, credit_multiplier: '1' })
+const form = reactive<BinanceRechargeAccountInput>({ name: '', recipient_uid: '', api_key: '', api_secret: '', proxy_url: '', clear_proxy: false, proxy_preflight: false, enabled: false, order_ttl_minutes: 15, credit_multiplier: '1' })
 const orders = ref<BinanceRechargeOrder[]>([])
 const ordersLoading = ref(false)
 const selectedOrder = ref<BinanceRechargeOrder | null>(null)
@@ -123,7 +132,7 @@ async function loadAccounts() {
 function editAccount(account?: BinanceRechargeAccount) {
   editingAccount.value = account || null
   // Build the form explicitly: never copy unknown response fields or stored secrets.
-  Object.assign(form, { name: account?.name || '', recipient_uid: account?.recipient_uid || '', api_key: '', api_secret: '', enabled: account?.enabled ?? false, order_ttl_minutes: account?.order_ttl_minutes || 15, credit_multiplier: account ? formatBinanceMultiplier(account.credit_multiplier) : '1' })
+  Object.assign(form, { name: account?.name || '', recipient_uid: account?.recipient_uid || '', api_key: '', api_secret: '', proxy_url: '', clear_proxy: false, proxy_preflight: account?.proxy_preflight ?? false, enabled: account?.enabled ?? false, order_ttl_minutes: account?.order_ttl_minutes || 15, credit_multiplier: account ? formatBinanceMultiplier(account.credit_multiplier) : '1' })
   showAccountDialog.value = true
 }
 function closeAccountDialog() {
@@ -131,7 +140,18 @@ function closeAccountDialog() {
   showAccountDialog.value = false
   form.api_key = ''
   form.api_secret = ''
+  form.proxy_url = ''
+  form.clear_proxy = false
+  form.proxy_preflight = false
   editingAccount.value = null
+}
+function clearAccountProxy() {
+  if (form.clear_proxy) {
+    form.proxy_url = ''
+    form.proxy_preflight = false
+  } else {
+    form.proxy_preflight = editingAccount.value?.proxy_preflight ?? false
+  }
 }
 async function saveAccount() {
   if (saving.value) return
@@ -147,10 +167,18 @@ async function saveAccount() {
     const data: BinanceRechargeAccountInput = { name: form.name.trim(), recipient_uid: form.recipient_uid.trim(), enabled: form.enabled, order_ttl_minutes: form.order_ttl_minutes, credit_multiplier: multiplier }
     if (form.api_key?.trim()) data.api_key = form.api_key.trim()
     if (form.api_secret?.trim()) data.api_secret = form.api_secret.trim()
+    if (form.clear_proxy) data.clear_proxy = true
+    else {
+      if (form.proxy_url?.trim()) data.proxy_url = form.proxy_url.trim()
+      if (form.proxy_url?.trim() || Boolean(form.proxy_preflight) !== Boolean(editingAccount.value?.proxy_preflight)) {
+        data.proxy_preflight = Boolean(form.proxy_preflight)
+      }
+    }
     if (editingAccount.value) await adminBinanceRechargeAPI.updateAccount(editingAccount.value.id, data)
     else await adminBinanceRechargeAPI.createAccount(data)
     form.api_key = ''
     form.api_secret = ''
+    form.proxy_url = ''
     showAccountDialog.value = false
     appStore.showSuccess(t('binanceRecharge.saveSuccess'))
     await loadAccounts()

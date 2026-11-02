@@ -74,9 +74,17 @@ func (h *AccountCandyTestHandler) RadarAccounts(c *gin.Context) {
 		response.BadRequest(c, "搜索词过长")
 		return
 	}
+	groupID := int64(0)
+	if rawGroupID := strings.TrimSpace(c.Query("group_id")); rawGroupID != "" {
+		groupID, err = strconv.ParseInt(rawGroupID, 10, 64)
+		if err != nil || groupID <= 0 {
+			response.BadRequest(c, "分组ID无效")
+			return
+		}
+	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 	defer cancel()
-	observations, total, cfg, err := h.service.ListRadarAccounts(ctx, page, size, c.DefaultQuery("verdict", "all"), search)
+	observations, total, cfg, err := h.service.ListRadarAccounts(ctx, page, size, c.DefaultQuery("verdict", "all"), search, groupID)
 	if response.ErrorFrom(c, err) {
 		return
 	}

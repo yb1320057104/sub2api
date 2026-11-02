@@ -66,6 +66,38 @@ beforeEach(() => {
   vi.mocked(resetOpenAIQuota).mockReset()
 })
 
+describe('OpenAIQuotaResetCell — bulk reset credit queries', () => {
+  it('hydrates a bulk read without querying or redeeming and ignores an older batch result', async () => {
+    const quota: OpenAIQuotaRefreshResult = { fetched_at: 200, cache_persisted: true, credits_cache_persisted: true, rate_limit_reset_credits: { available_count: 2 } }
+    const wrapper = mount(OpenAIQuotaResetCell, { props: { account: makeAccount({}), queriedQuota: quota } })
+    expect(wrapper.findAll('button')[0].text()).toContain('2')
+    expect(refreshOpenAIQuota).not.toHaveBeenCalled()
+    expect(resetOpenAIQuota).not.toHaveBeenCalled()
+    await wrapper.setProps({ queriedQuota: { ...quota, fetched_at: 100, rate_limit_reset_credits: { available_count: 7 } } })
+    expect(wrapper.findAll('button')[0].text()).toContain('2')
+    expect(wrapper.findAll('button')[0].text()).not.toContain('7')
+    wrapper.unmount()
+  })
+
+  it('invalidates the parent bulk result before a manual query or reset', async () => {
+    const quota: OpenAIQuotaRefreshResult = { fetched_at: 200, cache_persisted: true, credits_cache_persisted: true, rate_limit_reset_credits: { available_count: 2 } }
+    vi.mocked(refreshOpenAIQuota).mockResolvedValue({ ...quota, fetched_at: 300 })
+    vi.mocked(resetOpenAIQuota).mockResolvedValue({ code: 'ok', windows_reset: 1, cache_refreshed: true, account_state_recovered: true, quota: { ...quota, fetched_at: 400, rate_limit_reset_credits: { available_count: 1 } } })
+    const wrapper = mount(OpenAIQuotaResetCell, { props: { account: makeAccount({}), queriedQuota: quota } })
+    await wrapper.findAll('button')[0].trigger('click')
+    await flushPromises()
+    expect(wrapper.emitted('query-invalidated')).toHaveLength(1)
+    await resetButton(wrapper).trigger('click')
+    wrapper.findComponent(ConfirmDialog).vm.$emit('confirm')
+    await flushPromises()
+    expect(wrapper.emitted('query-invalidated')).toHaveLength(2)
+    await wrapper.setProps({ queriedQuota: { ...quota, fetched_at: 300 } })
+    expect(wrapper.findAll('button')[0].text()).toContain('1')
+    expect(resetOpenAIQuota).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+})
+
 describe('OpenAIQuotaResetCell — Codex 点数', () => {
   const points = (wrapper: ReturnType<typeof mount>) => wrapper.get('[data-testid="codex-credits"]')
   const balance = { has_credits: true, unlimited: false, balance: '12345678901234567890.0123' }

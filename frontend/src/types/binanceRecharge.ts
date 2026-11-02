@@ -21,6 +21,8 @@ export interface BinanceRechargeAccount extends BinanceRechargeAccountOption {
   enabled: boolean
   api_key_configured: boolean
   api_secret_configured: boolean
+  proxy_configured: boolean
+  proxy_preflight: boolean
   has_orders: boolean
   last_checked_at?: string
   last_error?: string
@@ -33,6 +35,10 @@ export interface BinanceRechargeAccountInput {
   recipient_uid: string
   api_key?: string
   api_secret?: string
+  /** Write-only proxy URL. Blank preserves the saved encrypted value. */
+  proxy_url?: string
+  clear_proxy?: boolean
+  proxy_preflight?: boolean
   enabled: boolean
   order_ttl_minutes: number
   credit_multiplier?: string

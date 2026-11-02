@@ -22,6 +22,7 @@
         <div class="flex flex-wrap items-center justify-between gap-3">
           <div class="flex flex-wrap items-center gap-3">
             <div class="w-36"><Select v-model="filter" :options="filterOptions" :aria-label="t('radar.filter')" /></div>
+            <div class="w-48"><Select v-model="groupFilter" :options="groupFilterOptions" :aria-label="t('radar.groupFilter')" /></div>
             <form class="flex gap-2" @submit.prevent="applySearch"><input v-model="searchDraft" class="input w-52" :placeholder="t('radar.search')" :aria-label="t('radar.search')" maxlength="200" /><button class="btn btn-secondary" type="submit">{{ t('common.search') }}</button></form>
           </div>
           <span class="text-xs tabular-nums text-gray-500">{{ t('radar.total', { count: total }) }}</span>
@@ -135,6 +136,7 @@ const testGroups = ref<IntelligenceTestGroup[]>([])
 const groupsLoaded = ref(false)
 const groupError = ref('')
 const filter = ref('all')
+const groupFilter = ref('0')
 const searchDraft = ref('')
 const search = ref('')
 const page = ref(1)
@@ -156,6 +158,10 @@ const showSettings = ref(false)
 const selected = ref<RadarObservation | null>(null)
 const starting = ref(new Set<number>())
 const filterOptions = computed(() => ['all', 'pass', 'fail'].map(value => ({ value, label: t('radar.filter' + value) })))
+const groupFilterOptions = computed(() => [
+  { value: '0', label: t('radar.allGroups') },
+  ...groups.value.map(group => ({ value: String(group.id), label: group.name }))
+])
 let controller: AbortController | null = null
 let disposed = false
 const stringValue = (value: unknown): string | undefined => typeof value === 'string' && value ? value : undefined
@@ -179,7 +185,7 @@ async function loadAccounts(silent = false) {
   controller?.abort()
   const request = new AbortController(); controller = request; loading.value = true
   try {
-    const data = await accountCandyAPI.accounts({ page: page.value, page_size: pageSize, filter: filter.value, search: search.value }, request.signal)
+    const data = await accountCandyAPI.accounts({ page: page.value, page_size: pageSize, filter: filter.value, search: search.value, group_id: Number(groupFilter.value) || undefined }, request.signal)
     if (request.signal.aborted || disposed) return
     total.value = data.total
     if (page.value > Math.max(1, Math.ceil(total.value / pageSize))) { page.value = Math.max(1, Math.ceil(total.value / pageSize)); return }
@@ -220,6 +226,7 @@ async function flushUsage() {
 }
 
 watch(filter, () => { items.value = []; if (page.value !== 1) page.value = 1; else void loadAccounts() })
+watch(groupFilter, () => { items.value = []; if (page.value !== 1) page.value = 1; else void loadAccounts() })
 watch(page, () => { items.value = []; void loadAccounts() })
 watch(() => route.query.tab, value => { tab.value = resolveTab(value) })
 watch(tab, () => { if (route.query.tab !== tab.value) void router.replace({ query: { ...route.query, tab: tab.value } }); if (tab.value === 'accounts') void loadAccounts(); else { controller?.abort(); loading.value = false; if (tab.value === 'groups') void loadGroups() } })

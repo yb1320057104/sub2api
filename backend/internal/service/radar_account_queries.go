@@ -230,9 +230,12 @@ type RadarObservation struct {
 	ScheduleReason string     `json:"schedule_reason"`
 }
 
-func (s *AccountCandyTestService) ListRadarAccounts(ctx context.Context, page, size int, filter, search string) ([]RadarObservation, int, *RadarConfig, error) {
+func (s *AccountCandyTestService) ListRadarAccounts(ctx context.Context, page, size int, filter, search string, groupID int64) ([]RadarObservation, int, *RadarConfig, error) {
 	if page < 1 || size < 1 || size > 100 {
 		return nil, 0, nil, infraerrors.BadRequest("RADAR_PAGINATION", "分页参数无效")
+	}
+	if groupID < 0 {
+		return nil, 0, nil, infraerrors.BadRequest("RADAR_GROUP_FILTER", "分组筛选无效")
 	}
 	if filter != "all" && filter != "pass" && filter != "fail" {
 		return nil, 0, nil, infraerrors.BadRequest("RADAR_FILTER", "筛选条件无效")
@@ -251,12 +254,12 @@ func (s *AccountCandyTestService) ListRadarAccounts(ctx context.Context, page, s
 	}
 	where := ` FROM accounts a LEFT JOIN pk_radar_account_state st ON st.account_id=a.id
 		LEFT JOIN pk_radar_account_runs rr ON rr.id=COALESCE(st.active_run_id,st.latest_run_id)` + authorizationRadarAccountJoin + `
-		WHERE a.deleted_at IS NULL AND($1='all' OR (` + radarObservedVerdictSQL + `)=$1) AND($3='' OR a.name ILIKE '%'||$3||'%')`
+		WHERE a.deleted_at IS NULL AND($1='all' OR (` + radarObservedVerdictSQL + `)=$1) AND($3='' OR a.name ILIKE '%'||$3||'%') AND($4::bigint=0 OR EXISTS(SELECT 1 FROM account_groups ag JOIN groups g ON g.id=ag.group_id AND g.deleted_at IS NULL WHERE ag.account_id=a.id AND ag.group_id=$4::bigint))`
 	var total int
-	if err = tx.QueryRowContext(ctx, `SELECT count(*)`+where, filter, cfg.Generation, search).Scan(&total); err != nil {
+	if err = tx.QueryRowContext(ctx, `SELECT count(*)`+where, filter, cfg.Generation, search, groupID).Scan(&total); err != nil {
 		return nil, 0, nil, err
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT a.id,COALESCE(st.active_run_id,st.latest_run_id),CASE WHEN `+radarUseAuthorizationSQL+` THEN ar.id END,`+radarObservedVerdictSQL+`,st.next_run_at,st.active_run_id IS NOT NULL`+where+` ORDER BY a.id DESC LIMIT $4 OFFSET $5`, filter, cfg.Generation, search, size, (page-1)*size)
+	rows, err := tx.QueryContext(ctx, `SELECT a.id,COALESCE(st.active_run_id,st.latest_run_id),CASE WHEN `+radarUseAuthorizationSQL+` THEN ar.id END,`+radarObservedVerdictSQL+`,st.next_run_at,st.active_run_id IS NOT NULL`+where+` ORDER BY a.id DESC LIMIT $5 OFFSET $6`, filter, cfg.Generation, search, groupID, size, (page-1)*size)
 	if err != nil {
 		return nil, 0, nil, err
 	}

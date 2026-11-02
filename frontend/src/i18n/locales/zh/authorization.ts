@@ -1,5 +1,16 @@
 export default {
   authorization: {
+    batchSupplement: '批量补全凭据',
+    batchSupplementHint: '每行填写“邮箱----密码----2FA密钥”，每批最多200行。按邮箱匹配现有 OpenAI 账号并保存凭据，已有凭据会更新；不存在或匹配多个账号的行跳过。保存后等待下一次重授权，不创建账号、不立即授权。',
+    batchSupplementPlaceholder: '邮箱----密码----2FA密钥\n每行一个账号',
+    batchSupplementPrivacy: '2FA填写验证器密钥，不是六位验证码；密码包含“----”时请使用单账号补全。提交、关闭或切换到后台时清空输入。取消只停止尚未完成的保存，已保存的凭据保留。',
+    batchSupplementSaving: '正在逐行匹配并加密保存…',
+    batchSupplementLimit: '每批最多200个非空行，内容不得超过2 MiB。',
+    batchSupplementComplete: '共处理 {total} 行，成功保存 {saved} 行。',
+    batchSupplementCancelled: '已停止等待并取消后续处理。正在提交的行可能已经保存，请刷新巡检或凭据历史确认。',
+    batchSupplementUnconfirmed: '未收到完整结果，部分行可能已经保存，请刷新巡检或凭据历史确认。',
+    batchLine: '原始行号', batchStop: '停止剩余保存',
+    batchResults: { saved: '已保存，等待下一次重授权', invalid_format: '格式错误，须有3列并用----分隔', invalid_email: '邮箱无效', invalid_password: '密码缺失或超过1024字节', invalid_twofa: '2FA密钥缺失、无效或过长', duplicate_email: '邮箱重复，保留前一行处理结果', not_found: '未找到同邮箱的现有 OpenAI 账号', ambiguous_email: '同邮箱有多个账号，请单独补全', unsupported_account: '该账号不支持密码授权巡检', account_changed: '账号已变化，请刷新后重试', failed: '保存失败，请检查数据库或加密配置', cancelled: '尚未保存，已取消', interrupted: '保存中断，请刷新历史确认' },
     passGroupsRemoved: '已移除已删除或停用的入库分组：{ids}。请确认当前选择或重新选择分组后，再次保存或提交。',
     gateEnabled: '授权后开启糖果测试',
     gateEnabledHint: '授权成功后，仅对匹配来源分组规则的账号测智；未配置规则的账号跳过测试。',

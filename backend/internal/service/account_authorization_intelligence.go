@@ -137,17 +137,39 @@ func (s *AccountAuthorizationService) executeAuthorizationIntelligence(ctx conte
 		result.ErrorMessage = "来源分组规则已变化或暂不可用，此模型未继续测试"
 		return result
 	}
-	result.EgressMode = "direct"
-	if account.ProxyID != nil {
-		result.EgressMode = "proxy"
-	}
-	result.EgressIP, result.EgressCheckedAt, result.EgressError = probeRadarEgress(ctx, account)
 	result.MappedModel = account.GetMappedModel(model.Model)
 	if err = s.checkAuthorizationSourceRule(ctx, sourceGroupID); err != nil {
 		result.ErrorMessage = "来源分组规则已变化或暂不可用，此模型未继续测试"
 		return result
 	}
-	text, err := s.tests.runAccountCandyProbe(ctx, account, account, &AccountCandyTestConfig{Model: model.Model, Effort: model.Effort})
+	text, err := runAccountCandyWithProxyRetry(ctx, s.db, s.tests, account, account, &AccountCandyTestConfig{Model: model.Model, Effort: model.Effort}, func(attemptCtx context.Context, route *Account, _ int) error {
+		current, err := s.accounts.GetByID(attemptCtx, accountID)
+		if err != nil {
+			return err
+		}
+		if !snapshot.matches(current) {
+			return context.Canceled
+		}
+		if err = s.checkAuthorizationSourceRule(attemptCtx, sourceGroupID); err != nil {
+			return err
+		}
+		result.EgressMode = "direct"
+		if route.ProxyID != nil {
+			result.EgressMode = "proxy"
+		}
+		result.EgressIP, result.EgressCheckedAt, result.EgressError = probeRadarEgress(attemptCtx, route)
+		if err = s.checkAuthorizationSourceRule(attemptCtx, sourceGroupID); err != nil {
+			return err
+		}
+		current, err = s.accounts.GetByID(attemptCtx, accountID)
+		if err != nil {
+			return err
+		}
+		if !snapshot.matches(current) {
+			return context.Canceled
+		}
+		return nil
+	})
 	if err != nil {
 		result.ErrorMessage = redactCandyAccountError(accountCandySafeError(err), account)
 		result.ErrorMessage = strings.ReplaceAll(result.ErrorMessage, "未转组", "此错误不作为不及格依据")

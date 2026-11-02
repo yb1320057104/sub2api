@@ -1,5 +1,16 @@
 export default {
   authorization: {
+    batchSupplement: 'Complete credentials in bulk',
+    batchSupplementHint: 'Enter email----password----2FA secret, one account per line, up to 200 lines. Credentials are saved for an existing OpenAI account with the same email, replacing earlier credentials. Missing or ambiguous accounts are skipped. Saving waits for the next reauthorization round; it does not create accounts or start authorization.',
+    batchSupplementPlaceholder: 'email----password----2FA secret\nOne account per line',
+    batchSupplementPrivacy: 'Use the authenticator secret, not a six-digit code. If a password contains ----, use the single-account form. Input is cleared on submission, closing, or hiding the page. Cancelling stops remaining saves; completed saves are retained.',
+    batchSupplementSaving: 'Matching accounts and saving encrypted credentials…',
+    batchSupplementLimit: 'Enter up to 200 non-empty lines and no more than 2 MiB.',
+    batchSupplementComplete: 'Processed {total} lines; saved {saved}.',
+    batchSupplementCancelled: 'Stopped waiting and cancelled remaining work. A save already in progress may have completed; refresh inspection or credential history to confirm.',
+    batchSupplementUnconfirmed: 'The complete result was not received. Some lines may have been saved; refresh inspection or credential history to confirm.',
+    batchLine: 'Input line', batchStop: 'Stop remaining saves',
+    batchResults: { saved: 'Saved; awaiting next reauthorization', invalid_format: 'Use exactly 3 fields separated by ----', invalid_email: 'Invalid email', invalid_password: 'Password missing or longer than 1024 bytes', invalid_twofa: '2FA secret missing, invalid, or too long', duplicate_email: 'Duplicate email; earlier row takes precedence', not_found: 'No existing OpenAI account matches this email', ambiguous_email: 'Multiple accounts match; use the single-account form', unsupported_account: 'Password authorization is unsupported for this account', account_changed: 'Account changed; refresh and retry', failed: 'Save failed; check database or encryption configuration', cancelled: 'Not saved; cancelled', interrupted: 'Save interrupted; refresh history to confirm' },
     passGroupsRemoved: 'Removed deleted or inactive import groups: {ids}. Review or replace the current choices, then save or submit again.',
     gateEnabled: 'Run candy tests after authorization',
     gateEnabledHint: 'After authorization, test only accounts matching a source group rule. Accounts without a rule skip testing.',

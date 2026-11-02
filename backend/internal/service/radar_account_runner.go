@@ -104,7 +104,10 @@ func (s *AccountCandyTestService) StartRadar(ctx context.Context, id int64, sour
 	s.mu.Unlock()
 	snapshot := *run
 	snapshot.ModelResults = append([]RadarModelResult(nil), run.ModelResults...)
-	go func() { defer cleanup(); s.executeRadar(workerCtx, &snapshot, cfg) }()
+	go func() {
+		defer func() { cleanup(); s.notify() }()
+		s.executeRadar(workerCtx, &snapshot, cfg)
+	}()
 	return run, nil
 }
 
@@ -153,6 +156,9 @@ func (s *AccountCandyTestService) executeRadar(parent context.Context, run *Rada
 			cancel()
 		}
 		model := result.model
+		if model.egressMode == "proxy" {
+			run.EgressMode = "proxy"
+		}
 		if model.EgressCheckedAt != nil && (run.EgressCheckedAt == nil || model.EgressCheckedAt.After(*run.EgressCheckedAt)) {
 			run.EgressIP, run.EgressCheckedAt, run.EgressError = model.EgressIP, model.EgressCheckedAt, model.EgressError
 		} else if run.EgressCheckedAt == nil && model.EgressError != "" {

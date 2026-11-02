@@ -4,15 +4,19 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"strings"
 	"testing"
 	"testing/iotest"
 	"time"
 
+	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
@@ -25,7 +29,9 @@ import (
 
 type queuedHTTPUpstream struct {
 	responses []*http.Response
+	errors    []error
 	requests  []*http.Request
+	routes    []string
 	tlsFlags  []bool
 }
 
@@ -33,9 +39,17 @@ func (u *queuedHTTPUpstream) Do(_ *http.Request, _ string, _ int64, _ int) (*htt
 	return nil, fmt.Errorf("unexpected Do call")
 }
 
-func (u *queuedHTTPUpstream) DoWithTLS(req *http.Request, _ string, _ int64, _ int, profile *tlsfingerprint.Profile) (*http.Response, error) {
+func (u *queuedHTTPUpstream) DoWithTLS(req *http.Request, route string, _ int64, _ int, profile *tlsfingerprint.Profile) (*http.Response, error) {
 	u.requests = append(u.requests, req)
+	u.routes = append(u.routes, route)
 	u.tlsFlags = append(u.tlsFlags, profile != nil)
+	if len(u.errors) > 0 {
+		err := u.errors[0]
+		u.errors = u.errors[1:]
+		if err != nil {
+			return nil, err
+		}
+	}
 	if len(u.responses) == 0 {
 		return nil, fmt.Errorf("no mocked response")
 	}
@@ -102,6 +116,229 @@ func TestPKAccountCandyUpstreamAccountUsesConfiguredKey(t *testing.T) {
 	err = svc.testOpenAIAccountConnection(c, account, cfg.Model, "", AccountTestModeDefault)
 	require.ErrorContains(t, err, "Unsupported account type")
 	require.Len(t, upstream.requests, 1)
+}
+
+func TestPKAccountCandyProxyRetryRequiresUnsentTransportFailure(t *testing.T) {
+	dialErr := &net.OpError{Op: "dial", Net: "tcp", Err: &net.DNSError{Err: "temporary network failure", IsTemporary: true}}
+	for _, tt := range []struct {
+		name       string
+		written    bool
+		response   bool
+		cancel     bool
+		err        error
+		wantRotate bool
+	}{
+		{name: "connect failure", err: dialErr, wantRotate: true},
+		{name: "local dial timeout", err: &net.OpError{Op: "dial", Net: "tcp", Err: context.DeadlineExceeded}, wantRotate: true},
+		{name: "SOCKS connect wraps dial timeout", err: &net.OpError{Op: "socks connect", Net: "socks5", Err: &net.OpError{Op: "dial", Net: "tcp", Err: context.DeadlineExceeded}}, wantRotate: true},
+		{name: "SOCKS connect tunnel interrupted", err: &net.OpError{Op: "socks connect", Net: "socks5", Err: io.ErrUnexpectedEOF}, wantRotate: true},
+		{name: "untyped deadline", err: context.DeadlineExceeded},
+		{name: "parent cancelled during dial", cancel: true, err: dialErr},
+		{name: "already wrote request", written: true, err: dialErr},
+		{name: "response received", response: true, err: dialErr},
+		{name: "untyped plugin error", err: fmt.Errorf("dial timeout secret-proxy")},
+		{name: "read failure", err: &net.OpError{Op: "read", Net: "tcp", Err: io.ErrUnexpectedEOF}},
+		{name: "cancelled", err: context.Canceled},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.WithValue(context.Background(), accountCandyProxyRetryKey{}, true)
+			ctx, cancel := context.WithCancel(ctx)
+			defer cancel()
+			request, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://example.test", strings.NewReader("payload"))
+			require.NoError(t, err)
+			calls := 0
+			_, err = doAccountCandyTLSHandshakeRetry(request, func(attempt *http.Request) (*http.Response, error) {
+				calls++
+				if tt.cancel {
+					cancel()
+				}
+				if tt.written {
+					httptrace.ContextClientTrace(attempt.Context()).WroteHeaders()
+				}
+				if tt.response {
+					return newJSONResponse(http.StatusUnauthorized, ""), tt.err
+				}
+				return nil, tt.err
+			})
+			require.Equal(t, 1, calls)
+			require.Equal(t, tt.wantRotate, accountCandyCanChangeProxy(err))
+		})
+	}
+}
+
+func TestPKAccountCandyProxyRetryUsesDistinctTemporaryNativeRoutes(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+	columns := []string{"id", "protocol", "host", "port", "username", "password", "status", "expires_at"}
+	// Skip the original route even if a second database ID points at it.
+	mock.ExpectQuery("SELECT id,protocol,host,port").WithArgs(int64(0)).WillReturnRows(sqlmock.NewRows(columns).AddRow(8, "http", "original.example.test", 8080, "", "", "active", nil))
+	mock.ExpectQuery("SELECT id,protocol,host,port").WithArgs(int64(8)).WillReturnRows(sqlmock.NewRows(columns).AddRow(9, "http", "backup.example.test", 8080, "", "", "active", nil))
+	mock.ExpectQuery("SELECT EXISTS\\(SELECT 1 FROM proxies").WithArgs(int64(9), "http", "backup.example.test", 8080, "", "").WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
+	upstream := &queuedHTTPUpstream{
+		errors:    []error{&net.OpError{Op: "dial", Net: "tcp", Err: &net.DNSError{Err: "unavailable"}}},
+		responses: []*http.Response{newJSONResponse(http.StatusOK, `{"status":"completed","output":[{"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"<final_answer>21</final_answer>"}]}]}`)},
+	}
+	tests := &AccountTestService{httpUpstream: upstream, cfg: &config.Config{}}
+	originalProxy := &Proxy{ID: 7, Protocol: "http", Host: "original.example.test", Port: 8080}
+	account := &Account{ID: 19, Platform: PlatformOpenAI, Type: AccountTypeUpstream, Concurrency: 1, ProxyID: &originalProxy.ID, Proxy: originalProxy, Credentials: map[string]any{"api_key": "key", "base_url": "https://upstream.example.test"}}
+	var attempts []int
+	text, err := runAccountCandyWithProxyRetry(context.Background(), db, tests, account, account, defaultAccountCandyConfig(), func(_ context.Context, _ *Account, attempt int) error {
+		attempts = append(attempts, attempt)
+		return nil
+	})
+	require.NoError(t, err)
+	require.Equal(t, "<final_answer>21</final_answer>", text)
+	require.Equal(t, []int{1, 2}, attempts)
+	require.Equal(t, []string{"http://original.example.test:8080", "http://backup.example.test:8080"}, upstream.routes)
+	for _, request := range upstream.requests {
+		body, readErr := io.ReadAll(request.Body)
+		require.NoError(t, readErr)
+		require.Contains(t, gjson.GetBytes(body, "input.0.content.0.text").String(), "<final_answer>")
+		require.Equal(t, "Bearer key", request.Header.Get("Authorization"))
+	}
+	require.Equal(t, int64(7), *account.ProxyID)
+	require.Same(t, originalProxy, account.Proxy)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestPKAccountCandyProxyRetryDoesNotRotateAfterHTTPResponse(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+	upstream := &queuedHTTPUpstream{responses: []*http.Response{newJSONResponse(http.StatusTooManyRequests, `{"error":{"message":"rate limited"}}`)}}
+	tests := &AccountTestService{httpUpstream: upstream, cfg: &config.Config{}}
+	account := &Account{ID: 19, Platform: PlatformOpenAI, Type: AccountTypeUpstream, Concurrency: 1, Credentials: map[string]any{"api_key": "key", "base_url": "https://upstream.example.test"}}
+	_, err = runAccountCandyWithProxyRetry(context.Background(), db, tests, account, account, defaultAccountCandyConfig(), nil)
+	require.ErrorContains(t, err, "HTTP 429")
+	require.Len(t, upstream.requests, 1)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestPKAccountCandyProxyRetryHonorsParentDeadline(t *testing.T) {
+	ctx := context.WithValue(context.Background(), accountCandyProxyRetryKey{}, true)
+	ctx, cancel := context.WithDeadline(ctx, time.Now().Add(-time.Second))
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://example.test", strings.NewReader("payload"))
+	require.NoError(t, err)
+	calls := 0
+	_, err = doAccountCandyTLSHandshakeRetry(request, func(*http.Request) (*http.Response, error) {
+		calls++
+		return nil, &net.OpError{Op: "dial", Net: "tcp", Err: context.DeadlineExceeded}
+	})
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.False(t, accountCandyCanChangeProxy(err))
+	require.Zero(t, calls)
+}
+
+func TestPKAuthorizationBatchSupplementParsesIndependentRows(t *testing.T) {
+	const secret = "JBSWY3DPEHPK3PXP"
+	input := "\r\n A@Example.com ---- keep password spaces ----" + strings.ToLower(secret) + "\r\n" +
+		"a@example.com----other----" + secret + "\n" +
+		"not an email----password-canary----" + secret + "\n" +
+		"b@example.com--------" + secret + "\n" +
+		"c@example.com----password-canary----123456\n" +
+		"d@example.com----password-canary\n" +
+		"e@example.com----password-canary----" + secret
+	rows, err := parseAuthorizationSupplement(input)
+	require.NoError(t, err)
+	require.Len(t, rows, 7)
+	require.Equal(t, 2, rows[0].result.Line)
+	require.Equal(t, "a@example.com", rows[0].secret.Email)
+	require.Equal(t, " keep password spaces ", rows[0].secret.Password)
+	require.Equal(t, secret, rows[0].secret.TwoFA)
+	for index, want := range []string{"", "duplicate_email", "invalid_email", "invalid_password", "invalid_twofa", "invalid_format", ""} {
+		require.Equal(t, want, rows[index].result.Status)
+		if want != "" {
+			require.Empty(t, rows[index].secret)
+		}
+		raw, marshalErr := json.Marshal(rows[index].result)
+		require.NoError(t, marshalErr)
+		require.NotContains(t, string(raw), "password-canary")
+		require.NotContains(t, string(raw), secret)
+	}
+	_, err = parseAuthorizationSupplement(strings.Repeat("a@example.com----p----"+secret+"\n", 201))
+	require.Error(t, err)
+	_, err = parseAuthorizationSupplement(strings.Repeat("x", (2<<20)+1))
+	require.Error(t, err)
+	_, err = parseAuthorizationSupplement("\n \r\n")
+	require.Error(t, err)
+}
+
+type pkAuthorizationSupplementEncryptor struct{ plaintext string }
+
+func (e *pkAuthorizationSupplementEncryptor) Encrypt(value string) (string, error) {
+	e.plaintext = value
+	return "encrypted-supplement-value", nil
+}
+func (*pkAuthorizationSupplementEncryptor) Decrypt(string) (string, error) {
+	return "", fmt.Errorf("unexpected decrypt")
+}
+
+func TestPKAuthorizationBatchSupplementMatchesExistingAccountsAndPreservesJobs(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+	for _, row := range []struct {
+		email string
+		ids   []int64
+	}{
+		{email: "missing@example.com"},
+		{email: "duplicate@example.com", ids: []int64{1, 2}},
+		{email: "valid@example.com", ids: []int64{9}},
+	} {
+		mock.ExpectBegin()
+		mock.ExpectExec("SELECT pg_advisory_xact_lock").WillReturnResult(sqlmock.NewResult(0, 1))
+		// Keep the single-account history -> job -> account lock order.
+		mock.ExpectExec("UPDATE pk_authorization_jobs j SET settings=").WithArgs(row.email).WillReturnResult(sqlmock.NewResult(0, 1))
+		matched := sqlmock.NewRows([]string{"id", "supported"})
+		for _, id := range row.ids {
+			matched.AddRow(id, true)
+		}
+		mock.ExpectQuery("SELECT a.id,").WithArgs(row.email).WillReturnRows(matched)
+		if len(row.ids) != 1 {
+			mock.ExpectRollback()
+			continue
+		}
+		// Existing jobs keep their encrypted snapshots; no job/account is created.
+		mock.ExpectQuery("SELECT lower").WithArgs(int64(9)).WillReturnRows(sqlmock.NewRows([]string{"email", "version"}).AddRow(row.email, "v1"))
+		mock.ExpectQuery("SELECT id,md5").WithArgs(row.email).WillReturnRows(sqlmock.NewRows([]string{"id", "revision"}).AddRow(int64(21), "r1"))
+		mock.ExpectExec("UPDATE pk_authorization_history SET secret_encrypted=").WithArgs(int64(21), "encrypted-supplement-value").WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectCommit()
+	}
+	cfg := &config.Config{}
+	cfg.Totp.EncryptionKeyConfigured = true
+	encryptor := &pkAuthorizationSupplementEncryptor{}
+	svc := &AccountAuthorizationService{db: db, cfg: cfg, encryptor: encryptor}
+	input := &AuthorizationSupplementBatch{Accounts: "missing@example.com----secret-canary----JBSWY3DPEHPK3PXP\nduplicate@example.com----secret-canary----JBSWY3DPEHPK3PXP\nvalid@example.com----secret-canary----JBSWY3DPEHPK3PXP"}
+	result, err := svc.SupplementBatch(context.Background(), input)
+	require.NoError(t, err)
+	require.Empty(t, input.Accounts)
+	require.Equal(t, 1, result.Saved)
+	require.Equal(t, "not_found", result.Items[0].Status)
+	require.Equal(t, "ambiguous_email", result.Items[1].Status)
+	require.Equal(t, "saved", result.Items[2].Status)
+	require.Equal(t, int64(9), result.Items[2].AccountID)
+	require.Contains(t, encryptor.plaintext, "secret-canary")
+	encoded, err := json.Marshal(result)
+	require.NoError(t, err)
+	require.NotContains(t, string(encoded), "secret-canary")
+	require.NotContains(t, string(encoded), "JBSWY3DPEHPK3PXP")
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestPKAuthorizationBatchSupplementCancellationAndSafeErrors(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Totp.EncryptionKeyConfigured = true
+	svc := &AccountAuthorizationService{cfg: cfg}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	result, err := svc.SupplementBatch(ctx, &AuthorizationSupplementBatch{Accounts: "a@example.com----password----JBSWY3DPEHPK3PXP"})
+	require.NoError(t, err)
+	require.True(t, result.Cancelled)
+	require.Zero(t, result.Saved)
+	require.Equal(t, "cancelled", result.Items[0].Status)
+	require.Equal(t, "failed", authorizationSupplementStatus(fmt.Errorf("driver rejected secret-password-2fa-canary")))
 }
 
 func TestPKAccountCandyReplyDetectsBodyAndNativeTerminal(t *testing.T) {

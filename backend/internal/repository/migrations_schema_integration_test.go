@@ -141,6 +141,39 @@ func requirePKBinanceSQLState(t *testing.T, err error, expected string) {
 	require.Equal(t, expected, state.SQLState())
 }
 
+func TestPKBinanceAccountProxyMigrationPreservesExistingRows(t *testing.T) {
+	ctx := context.Background()
+	tx := testTx(t)
+	schema := fmt.Sprintf("pk_binance_proxy_%d", time.Now().UnixNano())
+	_, err := tx.ExecContext(ctx, `CREATE SCHEMA `+schema)
+	require.NoError(t, err)
+	_, err = tx.ExecContext(ctx, `SET LOCAL search_path TO `+schema)
+	require.NoError(t, err)
+	_, err = tx.ExecContext(ctx, `CREATE TABLE binance_recharge_accounts (id BIGINT PRIMARY KEY, name TEXT, recipient_uid TEXT, api_key_encrypted TEXT, api_secret_encrypted TEXT, enabled BOOLEAN); INSERT INTO binance_recharge_accounts VALUES (1,'legacy','12345','existing-key','existing-secret',TRUE);`)
+	require.NoError(t, err)
+	var before string
+	require.NoError(t, tx.QueryRowContext(ctx, `SELECT to_jsonb(a)::text FROM binance_recharge_accounts a`).Scan(&before))
+	migration, err := os.ReadFile(filepath.Join("..", "..", "migrations", "257_binance_recharge_account_proxy.sql"))
+	require.NoError(t, err)
+	for i := 0; i < 2; i++ {
+		_, err = tx.ExecContext(ctx, string(migration))
+		require.NoError(t, err, "additive migration must be idempotent")
+	}
+	var after, proxy string
+	var preflight bool
+	require.NoError(t, tx.QueryRowContext(ctx, `SELECT (to_jsonb(a)-'proxy_url_encrypted'-'proxy_preflight')::text,proxy_url_encrypted,proxy_preflight FROM binance_recharge_accounts a`).Scan(&after, &proxy, &preflight))
+	require.JSONEq(t, before, after)
+	require.Empty(t, proxy, "legacy accounts must retain the existing global route")
+	require.False(t, preflight)
+	// Old application writes name/enabled without deleting the saved encrypted
+	// proxy. A rollback keeps the settings available for a later upgrade.
+	_, err = tx.ExecContext(ctx, `UPDATE binance_recharge_accounts SET proxy_url_encrypted='opaque-cipher',proxy_preflight=TRUE WHERE id=1; UPDATE binance_recharge_accounts SET name='legacy-edit',enabled=FALSE WHERE id=1`)
+	require.NoError(t, err)
+	require.NoError(t, tx.QueryRowContext(ctx, `SELECT proxy_url_encrypted,proxy_preflight FROM binance_recharge_accounts WHERE id=1`).Scan(&proxy, &preflight))
+	require.Equal(t, "opaque-cipher", proxy)
+	require.True(t, preflight)
+}
+
 func TestMigrationsRunner_ConcurrentInstancesSerializeOnSessionLock(t *testing.T) {
 	const instances = 2
 	errorsByInstance := make([]error, instances)

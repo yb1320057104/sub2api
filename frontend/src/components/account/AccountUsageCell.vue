@@ -88,7 +88,7 @@
         while usage is still loading survives the usage response. The local query
         button shares its row once usage data exists.
       -->
-      <ClaudeResetCreditsCell :account="account" class="mt-1" @redeemed="loadActiveUsage">
+      <ClaudeResetCreditsCell :account="account" :queried-credits="resetCreditQuery?.claude_credits" class="mt-1" @redeemed="loadActiveUsage" @query-invalidated="emit('reset-credit-query-invalidated')">
         <template v-if="usageInfo" #pre-actions>
           <span
             v-if="usageInfo.source === 'passive'"
@@ -149,7 +149,7 @@
           refresh button is rendered via the pre-actions slot so the user sees a
           single row of related buttons instead of two stacked rows.
         -->
-        <OpenAIQuotaResetCell v-if="showActions" :account="account" @account-updated="handleQuotaResetAccountUpdated">
+        <OpenAIQuotaResetCell v-if="showActions" :account="account" :queried-quota="resetCreditQuery?.openai_quota" @account-updated="handleQuotaResetAccountUpdated" @query-invalidated="emit('reset-credit-query-invalidated')">
           <template #pre-actions>
             <button
               type="button"
@@ -194,8 +194,10 @@
         <OpenAIQuotaResetCell
           v-if="showActions"
           :account="account"
+          :queried-quota="resetCreditQuery?.openai_quota"
           class="mt-1"
           @account-updated="handleQuotaResetAccountUpdated"
+          @query-invalidated="emit('reset-credit-query-invalidated')"
         />
       </div>
     </template>
@@ -704,6 +706,7 @@ import { ref, computed, onMounted, onBeforeUnmount, onUnmounted, watch } from 'v
 import { useI18n } from 'vue-i18n'
 import { adminAPI } from '@/api/admin'
 import type { Account, AccountUsageInfo, GeminiCredentials, WindowStats } from '@/types'
+import type { ResetCreditBatchResult } from '@/api/admin/accounts'
 import { buildOpenAIUsageRefreshKey } from '@/utils/accountUsageRefresh'
 import { enqueueUsageRequest } from '@/utils/usageLoadQueue'
 import { formatCompactNumber } from '@/utils/format'
@@ -739,6 +742,7 @@ const props = withDefaults(
     batchedUsageError?: string | null
     batchedUsageLoading?: boolean
     requestBatchedUsage?: ((account: Account, options?: { force?: boolean }) => void) | null
+    resetCreditQuery?: ResetCreditBatchResult
   }>(),
   {
     todayStats: null,
@@ -755,6 +759,7 @@ const props = withDefaults(
 const emit = defineEmits<{
   'account-updated': [account: Account]
   'usage-loaded': [usage: AccountUsageInfo]
+  'reset-credit-query-invalidated': []
 }>()
 
 const { t } = useI18n()

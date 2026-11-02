@@ -96,7 +96,7 @@ export const accountCandyAPI = {
       origin === 'legacy' ? `/admin/accounts/${accountID}/candy-test/results/${resultID}` : `/admin/radar/accounts/${accountID}/candy-runs/${resultID}`, { signal, params: origin === 'authorization' ? { origin } : undefined },
     )).data
   },
-  async accounts(params: { page: number; page_size: number; filter: string; search: string }, signal?: AbortSignal) {
+  async accounts(params: { page: number; page_size: number; filter: string; search: string; group_id?: number }, signal?: AbortSignal) {
     return (await apiClient.get<RadarAccountPage>('/admin/radar/accounts', { params: { ...params, verdict: params.filter }, signal })).data
   },
   async history(accountID: number, signal?: AbortSignal) {

@@ -17,7 +17,7 @@ import (
 const (
 	accountCandySettingKey       = "pk_account_candy_test_config"
 	accountCandyLockID     int64 = 81003401
-	accountCandyWorkers          = 8
+	accountCandyWorkers          = 3
 )
 
 type AccountCandyTestConfig struct {

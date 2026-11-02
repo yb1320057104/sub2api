@@ -152,6 +152,40 @@ func TestPasskeyLoginAuditUsesCanonicalLoginActionAndOmitsCredentialBody(t *test
 	require.Contains(t, auditBodyOmittedRoutes, route)
 }
 
+func TestPKAuthorizationBatchSupplementOmitsCredentialsFromAudit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	repository := &auditCaptureRepository{}
+	auditService := service.NewAuditLogService(repository, nil)
+	auditService.Start()
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		c.Set(string(ContextKeyUser), AuthSubject{UserID: 77})
+		c.Set(string(ContextKeyUserRole), "admin")
+		c.Next()
+	})
+	router.Use(gin.HandlerFunc(NewAuditLogMiddleware(auditService)))
+	const path = "/api/v1/admin/account-authorization/accounts/credentials/batch"
+	router.POST(path, func(c *gin.Context) {
+		var input service.AuthorizationSupplementBatch
+		require.NoError(t, c.ShouldBindJSON(&input))
+		require.Contains(t, input.Accounts, "audit-credential-canary")
+		SetAuditAction(c, "authorization.credentials.batch_supplement")
+		c.JSON(http.StatusOK, gin.H{"saved": 1})
+	})
+	request := httptest.NewRequest(http.MethodPost, path, bytes.NewBufferString(`{"accounts":"user@example.com----audit-credential-canary----JBSWY3DPEHPK3PXP"}`))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	auditService.Stop()
+	require.Equal(t, http.StatusOK, recorder.Code)
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	require.Len(t, repository.logs, 1)
+	require.Equal(t, "authorization.credentials.batch_supplement", repository.logs[0].Action)
+	require.Equal(t, "<credential-bearing body omitted>", repository.logs[0].RequestBody)
+	require.NotContains(t, repository.logs[0].RequestBody, "audit-credential-canary")
+}
+
 // Ollama 会话保存的请求体整体就是浏览器 Cookie 明文，键级脱敏清单曾漏掉裸键
 // "session"，必须走整体不入库路径，防止会话凭证长期留存在 audit_logs。
 func TestOllamaCloudUsageSessionRouteOmitsAuditBody(t *testing.T) {

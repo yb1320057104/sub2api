@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -140,6 +142,172 @@ func TestPKBinanceProxyStartupUsesLoadedConfig(t *testing.T) {
 	}
 }
 
+type pkBinanceProxyEncryptor struct{}
+
+func (pkBinanceProxyEncryptor) Encrypt(value string) (string, error) { return "cipher:" + value, nil }
+func (pkBinanceProxyEncryptor) Decrypt(value string) (string, error) {
+	if !strings.HasPrefix(value, "cipher:") {
+		return "", errors.New("fixture decryption failed")
+	}
+	return strings.TrimPrefix(value, "cipher:"), nil
+}
+
+func TestPKBinanceAccountProxyIsolatesChannelsAndNeverFallsBack(t *testing.T) {
+	defaultClient := &pkBinanceBillsClient{}
+	svc := NewBinanceRechargeService(nil, pkBinanceProxyEncryptor{}, defaultClient, nil, nil)
+	var requests [2]atomic.Int32
+	var clients [2]BinanceRechargeClient
+	for i := range clients {
+		index := i
+		proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			requests[index].Add(1)
+			if r.Method != http.MethodConnect || r.Host != "api.binance.com:443" {
+				t.Errorf("unexpected proxy destination: %s %s", r.Method, r.Host)
+			}
+			w.WriteHeader(http.StatusBadGateway)
+		}))
+		t.Cleanup(proxy.Close)
+		cipher, _ := svc.encryptor.Encrypt(proxy.URL)
+		client, finish, err := svc.accountClient(&BinanceRechargeAccount{proxyURLCiphertext: cipher})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(finish)
+		clients[i] = client
+	}
+	now := time.Now()
+	for i, client := range clients {
+		if _, err := client.History(context.Background(), "fixture-key", "fixture-secret", "12345", now.Add(-time.Hour), now); err == nil {
+			t.Fatal("failed proxy must fail history")
+		}
+		if err := client.Probe(context.Background(), "fixture-key", "fixture-secret"); err == nil {
+			t.Fatal("failed proxy must fail permission probe")
+		}
+		bills := client.(binanceRechargeBillsClient)
+		if _, err := bills.Bills(context.Background(), "fixture-key", "fixture-secret", "12345", now.Add(-time.Hour), now); err == nil {
+			t.Fatal("failed proxy must fail bills")
+		}
+		if got := requests[i].Load(); got != 3 {
+			t.Fatalf("channel %d used its proxy %d times, want 3", i, got)
+		}
+	}
+	if defaultClient.calls != 0 {
+		t.Fatal("dedicated proxy failed over to startup client")
+	}
+	legacy, finish, err := svc.accountClient(&BinanceRechargeAccount{})
+	if err != nil || legacy != defaultClient {
+		t.Fatal("unconfigured channel did not retain startup route")
+	}
+	finish()
+	for _, account := range []*BinanceRechargeAccount{
+		{proxyURLCiphertext: "broken-cipher"},
+		{proxyURLCiphertext: "cipher:"},
+		{proxyURLCiphertext: "cipher:http://example.test/private"},
+		{ProxyPreflight: true},
+	} {
+		if client, _, err := svc.accountClient(account); !errors.Is(err, errBinanceAccountProxy) || client != nil {
+			t.Fatal("unusable dedicated proxy must not return a fallback client")
+		}
+	}
+}
+
+func TestPKBinanceAccountProxyPreflightFailureDoesNotReachBinance(t *testing.T) {
+	var preflights, connects atomic.Int32
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/_binance/preflight" {
+			preflights.Add(1)
+			user, password, ok := r.BasicAuth()
+			if !ok || user != "fixture-user" || password != "fixture-pass" {
+				t.Error("preflight authentication missing")
+			}
+		} else {
+			connects.Add(1)
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer proxy.Close()
+	proxyURL := strings.Replace(proxy.URL, "http://", "http://fixture-user:fixture-pass@", 1)
+	svc := NewBinanceRechargeService(nil, pkBinanceProxyEncryptor{}, &pkBinanceBillsClient{}, nil, nil)
+	client, finish, err := svc.accountClient(&BinanceRechargeAccount{proxyURLCiphertext: "cipher:" + proxyURL, ProxyPreflight: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer finish()
+	if err := client.Probe(context.Background(), "fixture-key", "fixture-secret"); !errors.Is(err, binancepay.ErrProxyPreflight) {
+		t.Fatal("gateway failure did not fail closed")
+	}
+	if preflights.Load() != 1 || connects.Load() != 0 {
+		t.Fatal("failed preflight reached Binance")
+	}
+}
+
+func pkBinanceAccountRows(proxy string, preflight bool) *sqlmock.Rows {
+	return sqlmock.NewRows([]string{"id", "name", "recipient_uid", "enabled", "ttl", "multiplier", "key", "secret", "proxy", "preflight", "checked", "error", "created", "updated", "has_orders"}).AddRow(1, "fixture", "12345", true, 30, "1.000000", "cipher:key", "cipher:secret", proxy, preflight, nil, "", time.Now(), time.Now(), true)
+}
+
+func TestPKBinanceAccountProxySavePreserveClearAndMask(t *testing.T) {
+	for _, tc := range []struct {
+		name, replacement, wantProxy string
+		clear, polling, reject       bool
+	}{
+		{name: "omitted proxy preserved", wantProxy: "cipher:http://old-user:old-password@proxy.test:3128"},
+		{name: "replace encrypted proxy", replacement: "socks5://new-user:new-password@proxy.test:1080", wantProxy: "cipher:socks5://new-user:new-password@proxy.test:1080"},
+		{name: "explicit clear", clear: true},
+		{name: "active query rejects replacement", replacement: "http://proxy.test:3129", polling: true, reject: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = db.Close() }()
+			old := "cipher:http://old-user:old-password@proxy.test:3128"
+			mock.ExpectBegin()
+			mock.ExpectQuery(`SELECT a.id, a.name, a.recipient_uid`).WillReturnRows(pkBinanceAccountRows(old, false))
+			if tc.replacement != "" || tc.clear {
+				mock.ExpectQuery(`SELECT poll_token<>'' AND api_locked_until>NOW\(\)`).WithArgs(int64(1)).WillReturnRows(sqlmock.NewRows([]string{"polling"}).AddRow(tc.polling))
+			}
+			if tc.reject {
+				mock.ExpectRollback()
+			} else {
+				mock.ExpectExec(`UPDATE binance_recharge_accounts SET name=\$2`).WithArgs(int64(1), "fixture", "12345", "cipher:key", "cipher:secret", tc.wantProxy, false, true, 30, "1.000000").WillReturnResult(sqlmock.NewResult(0, 1))
+				mock.ExpectQuery(`SELECT a.id, a.name, a.recipient_uid`).WillReturnRows(pkBinanceAccountRows(tc.wantProxy, false))
+				mock.ExpectCommit()
+			}
+			svc := NewBinanceRechargeService(db, pkBinanceProxyEncryptor{}, &pkBinanceBillsClient{}, nil, nil)
+			account, err := svc.SaveAccount(context.Background(), 1, BinanceRechargeAccountInput{Name: "fixture", RecipientUID: "12345", Enabled: true, OrderTTLMinutes: 30, ProxyURL: tc.replacement, ClearProxy: tc.clear})
+			if (err != nil) != tc.reject {
+				t.Fatalf("save error = %v", err)
+			}
+			if !tc.reject {
+				if account.ProxyConfigured != (tc.wantProxy != "") {
+					t.Fatal("proxy configuration status incorrect")
+				}
+				body, err := json.Marshal(account)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, secret := range []string{"old-password", "new-password", "proxy.test", "cipher:", "proxy_url"} {
+					if strings.Contains(string(body), secret) {
+						t.Fatalf("account response leaks %s", secret)
+					}
+				}
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	input := BinanceRechargeAccountInput{Name: "fixture", RecipientUID: "12345", ProxyURL: "http://proxy.test:3128", ClearProxy: true}
+	if _, err := normalizeBinanceRechargeAccountInput(input); err == nil {
+		t.Fatal("ambiguous clear and replacement accepted")
+	}
+	redacted := RedactAuditBody([]byte(`{"proxy_url":"http://private-user:private-password@proxy.test:3128","clear_proxy":true}`), "application/json")
+	if strings.Contains(redacted, "private-password") || strings.Contains(redacted, "proxy.test") {
+		t.Fatal("proxy credentials leaked to audit")
+	}
+}
+
 func (c *pkBinanceLifecycleClient) History(ctx context.Context, _, _, _ string, _, _ time.Time) ([]binancepay.Receipt, error) {
 	close(c.entered)
 	<-ctx.Done()
@@ -175,7 +343,7 @@ func TestPKBinanceBillsReadDoesNotMutateOrdersOrRescheduleCollection(t *testing.
 	}
 	defer func() { _ = db.Close() }()
 	mock.ExpectQuery(`UPDATE binance_recharge_accounts a`).WillReturnRows(sqlmock.NewRows([]string{"failure_count"}).AddRow(0))
-	mock.ExpectQuery(`SELECT a.id, a.name, a.recipient_uid`).WillReturnRows(sqlmock.NewRows([]string{"id", "name", "recipient_uid", "enabled", "ttl", "multiplier", "key", "secret", "checked", "error", "created", "updated", "has_orders"}).AddRow(1, "test", "12345", true, 30, "1.000000", "test-key", "test-secret", nil, "", time.Now(), time.Now(), true))
+	mock.ExpectQuery(`SELECT a.id, a.name, a.recipient_uid`).WillReturnRows(sqlmock.NewRows([]string{"id", "name", "recipient_uid", "enabled", "ttl", "multiplier", "key", "secret", "proxy", "preflight", "checked", "error", "created", "updated", "has_orders"}).AddRow(1, "test", "12345", true, 30, "1.000000", "test-key", "test-secret", "", false, nil, "", time.Now(), time.Now(), true))
 	// The only successful-read mutation releases the shared API lock. There is
 	// no order, receipt, user balance or next_poll_at update on this path.
 	mock.ExpectExec(`UPDATE binance_recharge_accounts SET api_locked_until=to_timestamp\(0\),poll_token='' WHERE id=\$1 AND poll_token=\$2`).WillReturnResult(sqlmock.NewResult(0, 1))
@@ -209,7 +377,7 @@ func TestPKBinanceBillsRespectSharedLeaseAndProviderBackoff(t *testing.T) {
 			} else {
 				client.err = &binancepay.RateLimitError{StatusCode: 418, RetryAfter: 24 * time.Hour}
 				mock.ExpectQuery(`UPDATE binance_recharge_accounts a`).WillReturnRows(sqlmock.NewRows([]string{"failure_count"}).AddRow(0))
-				mock.ExpectQuery(`SELECT a.id, a.name, a.recipient_uid`).WillReturnRows(sqlmock.NewRows([]string{"id", "name", "recipient_uid", "enabled", "ttl", "multiplier", "key", "secret", "checked", "error", "created", "updated", "has_orders"}).AddRow(1, "test", "12345", true, 30, "1.000000", "test-key", "test-secret", nil, "", time.Now(), time.Now(), true))
+				mock.ExpectQuery(`SELECT a.id, a.name, a.recipient_uid`).WillReturnRows(sqlmock.NewRows([]string{"id", "name", "recipient_uid", "enabled", "ttl", "multiplier", "key", "secret", "proxy", "preflight", "checked", "error", "created", "updated", "has_orders"}).AddRow(1, "test", "12345", true, 30, "1.000000", "test-key", "test-secret", "", false, nil, "", time.Now(), time.Now(), true))
 				mock.ExpectExec(`UPDATE binance_recharge_accounts SET api_locked_until=to_timestamp\(0\),poll_token='',failure_count=\$3, next_poll_at=GREATEST`).WithArgs(int64(1), sqlmock.AnyArg(), 1, float64(86400), "币安 API 限流，已延后查收").WillReturnResult(sqlmock.NewResult(0, 1))
 			}
 			svc := NewBinanceRechargeService(db, pkBinanceLifecycleEncryptor{}, client, nil, nil)
@@ -245,7 +413,7 @@ func TestPKBinanceLifecycle_StopCancelsPollingAndWaits(t *testing.T) {
 	defer func() { _ = db.Close() }()
 	mock.ExpectQuery(`SELECT a.id FROM binance_recharge_accounts`).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(1))
 	mock.ExpectQuery(`UPDATE binance_recharge_accounts SET next_poll_at`).WillReturnRows(sqlmock.NewRows([]string{"failure_count"}).AddRow(0))
-	mock.ExpectQuery(`SELECT a.id, a.name, a.recipient_uid`).WillReturnRows(sqlmock.NewRows([]string{"id", "name", "recipient_uid", "enabled", "ttl", "multiplier", "key", "secret", "checked", "error", "created", "updated", "has_orders"}).AddRow(1, "test", "12345", true, 30, "1.000000", "test-key", "test-secret", nil, "", time.Now(), time.Now(), true))
+	mock.ExpectQuery(`SELECT a.id, a.name, a.recipient_uid`).WillReturnRows(sqlmock.NewRows([]string{"id", "name", "recipient_uid", "enabled", "ttl", "multiplier", "key", "secret", "proxy", "preflight", "checked", "error", "created", "updated", "has_orders"}).AddRow(1, "test", "12345", true, 30, "1.000000", "test-key", "test-secret", "", false, nil, "", time.Now(), time.Now(), true))
 	mock.ExpectExec(`UPDATE binance_recharge_accounts SET last_checked_at`).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`UPDATE binance_recharge_orders SET status='EXPIRED'`).WillReturnResult(sqlmock.NewResult(0, 0))
 	client := &pkBinanceLifecycleClient{entered: make(chan struct{})}

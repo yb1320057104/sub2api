@@ -5,6 +5,7 @@
 
 import { apiClient } from '../client'
 import type { OpenAIReferralRefreshResult, OpenAIReferralSendResult } from '@/types/openaiReferrals'
+import type { ClaudeResetCredits } from './claudeResetCredits'
 import type {
   Account,
   AccountListItem,
@@ -973,6 +974,37 @@ export interface OpenAIQuotaRefreshResult extends OpenAIQuotaUsage {
   credits_cache_persisted?: boolean
 }
 
+export interface ResetCreditBatchResult {
+  account_id: number
+  account_name: string
+  platform: string
+  status: 'success' | 'failed' | 'skipped'
+  available_count: number | null
+  total_count: number | null
+  error_code?: string
+  warning_code?: string
+  openai_quota?: OpenAIQuotaRefreshResult
+  claude_credits?: ClaudeResetCredits
+}
+
+export interface ResetCreditBatchResponse {
+  total: number
+  success: number
+  failed: number
+  skipped: number
+  results: ResetCreditBatchResult[]
+}
+
+/** Query remaining reset credits only; this endpoint never redeems a credit. */
+export async function batchQueryResetCredits(accountIds: number[], signal?: AbortSignal): Promise<ResetCreditBatchResponse> {
+  const { data } = await apiClient.post<ResetCreditBatchResponse>(
+    '/admin/accounts/reset-credits/batch',
+    { account_ids: accountIds },
+    { timeout: 310_000, signal }
+  )
+  return data
+}
+
 /**
  * Query the upstream quota AND persist the reset-credit snapshot on the account
  * so the card can be rehydrated without an upstream round-trip. It is a POST
@@ -1193,6 +1225,7 @@ export const accountsAPI = {
   setPrivacy,
   revertProxyFallback,
   refreshOpenAIQuota,
+  batchQueryResetCredits,
   resetOpenAIQuota,
   createSparkShadow,
   getUpstreamBillingProbeSettings,

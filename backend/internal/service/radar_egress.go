@@ -53,7 +53,7 @@ func probeRadarEgress(ctx context.Context, account *Account) (string, *time.Time
 	}
 	resp, err := isolated.Do(req)
 	if err != nil {
-		return "", nil, "出口IP探测失败；未切换代理或回退直连"
+		return "", nil, "当前尝试的出口IP探测失败；未回退直连"
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {

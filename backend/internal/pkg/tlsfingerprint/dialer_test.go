@@ -13,7 +13,9 @@ package tlsfingerprint
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -21,6 +23,157 @@ import (
 	"testing"
 	"time"
 )
+
+// Local peers accept TCP and deliberately stop before tunnel/TLS completion.
+// The tests never contact a model, public service, or configured proxy.
+func TestPKTLSConnectBudgetBoundsAllConnectionPaths(t *testing.T) {
+	for _, kind := range []string{"direct", "http", "socks5"} {
+		t.Run(kind, func(t *testing.T) {
+			listener, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer listener.Close()
+			closed := make(chan struct{})
+			go func() {
+				defer close(closed)
+				conn, acceptErr := listener.Accept()
+				if acceptErr != nil {
+					return
+				}
+				defer conn.Close()
+				_, _ = io.Copy(io.Discard, conn)
+			}()
+			var dial func(context.Context, string, string) (net.Conn, error)
+			address := listener.Addr().String()
+			switch kind {
+			case "direct":
+				dial = NewDialer(nil, nil).DialTLSContext
+			case "http":
+				dial = NewHTTPProxyDialer(nil, mustParseURL("http://"+address)).DialTLSContext
+			case "socks5":
+				dial = NewSOCKS5ProxyDialer(nil, mustParseURL("socks5://"+address)).DialTLSContext
+			}
+			parent, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			started := time.Now()
+			conn, err := dial(WithConnectTimeout(parent, 80*time.Millisecond), "tcp", address)
+			if conn != nil {
+				_ = conn.Close()
+				t.Fatal("stalled handshake unexpectedly succeeded")
+			}
+			var operation *net.OpError
+			if !errors.As(err, &operation) || operation.Op != "dial" || !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("expected typed local connection timeout, got %v", err)
+			}
+			if parent.Err() != nil || time.Since(started) > 2*time.Second {
+				t.Fatalf("connection used the model budget: parent=%v elapsed=%s", parent.Err(), time.Since(started))
+			}
+			select {
+			case <-closed:
+			case <-time.After(time.Second):
+				t.Fatal("timed-out connection was not closed")
+			}
+		})
+	}
+}
+
+func TestPKTLSConnectBudgetParentCancellationIsNotLocalTimeout(t *testing.T) {
+	parent, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client, peer := net.Pipe()
+	defer peer.Close()
+	dialer := NewDialer(nil, func(context.Context, string, string) (net.Conn, error) {
+		cancel()
+		return client, nil
+	})
+	conn, err := dialer.DialTLSContext(WithConnectTimeout(parent, time.Second), "tcp", "example.test:443")
+	if conn != nil || !errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected parent cancellation, got conn=%v err=%v", conn, err)
+	}
+}
+
+func TestPKTLSConnectBudgetDoesNotLimitEstablishedConnection(t *testing.T) {
+	parent, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_, budget := beginConnectBudget(WithConnectTimeout(parent, 20*time.Millisecond))
+	client, peer := net.Pipe()
+	defer peer.Close()
+	defer client.Close()
+	if err := budget.watch(client); err != nil {
+		t.Fatal(err)
+	}
+	conn, err := budget.finish(client, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Both the connection deadline and its close callback must be removed.
+	cancel()
+	<-time.After(50 * time.Millisecond)
+	if err := peer.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	written := make(chan error, 1)
+	go func() { _, writeErr := conn.Write([]byte("x")); written <- writeErr }()
+	buffer := make([]byte, 1)
+	if _, err = io.ReadFull(peer, buffer); err != nil {
+		t.Fatalf("connection did not survive the setup budget: %v", err)
+	}
+	if err = <-written; err != nil || string(buffer) != "x" {
+		t.Fatalf("established connection changed: data=%q err=%v", buffer, err)
+	}
+}
+
+func TestPKTLSConnectBudgetSurvivesHTTPTransportContext(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	closed := make(chan struct{})
+	go func() {
+		defer close(closed)
+		conn, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer conn.Close()
+		_, _ = io.Copy(io.Discard, conn)
+	}()
+	transport := &http.Transport{DialTLSContext: NewDialer(nil, nil).DialTLSContext}
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Transport: transport}
+	parent, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(WithConnectTimeout(parent, 80*time.Millisecond), http.MethodPost, "https://"+listener.Addr().String(), strings.NewReader("payload"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.Do(request)
+	var operation *net.OpError
+	if !errors.As(err, &operation) || operation.Op != "dial" || !errors.Is(err, context.DeadlineExceeded) || parent.Err() != nil {
+		t.Fatalf("request lost its local connection budget: %v; parent=%v", err, parent.Err())
+	}
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("HTTP transport retained the timed-out connection")
+	}
+}
+
+func TestPKTLSConnectBudgetLeavesOrdinaryDialUnchanged(t *testing.T) {
+	want := errors.New("ordinary dial failure")
+	dialer := NewDialer(nil, func(ctx context.Context, _, _ string) (net.Conn, error) {
+		if _, limited := ctx.Deadline(); limited {
+			t.Error("ordinary request unexpectedly received a new deadline")
+		}
+		return nil, want
+	})
+	_, err := dialer.DialTLSContext(context.Background(), "tcp", "example.test:443")
+	if err != want {
+		t.Fatalf("ordinary request error changed: %v", err)
+	}
+}
 
 // TestDialerBasicConnection tests that the dialer can establish TLS connections.
 func TestDialerBasicConnection(t *testing.T) {
