@@ -25,6 +25,7 @@ const (
 	requestTimeout  = 15 * time.Second
 	historyTimeout  = 90 * time.Second
 	maxResponseSize = 8 << 20
+	maxErrorSize    = 16 << 10
 	maxHistoryCalls = 64
 	maxWindowMillis = int64(89 * 24 * time.Hour / time.Millisecond)
 )
@@ -92,6 +93,20 @@ func NewClientWithOptions(options ClientOptions) (*Client, error) {
 			return nil, err
 		}
 		transport.Proxy = http.ProxyURL(proxy)
+		previousConnect := transport.OnProxyConnectResponse
+		transport.OnProxyConnectResponse = func(ctx context.Context, proxyURL *url.URL, request *http.Request, response *http.Response) error {
+			if response.StatusCode != http.StatusOK {
+				reason := "proxy_connect"
+				if response.StatusCode == http.StatusProxyAuthRequired {
+					reason = "proxy_auth"
+				}
+				return &RequestError{Reason: reason, HTTPStatus: response.StatusCode}
+			}
+			if previousConnect != nil {
+				return previousConnect(ctx, proxyURL, request, response)
+			}
+			return nil
+		}
 	}
 	client := NewClientWithTransport(transport)
 	if options.ProxyPreflight {
@@ -165,7 +180,7 @@ func (c *Client) History(ctx context.Context, apiKey, secret, receiverUID string
 		return nil, err
 	}
 	if !validUID(receiverUID) {
-		return nil, errors.New("binance: invalid receiving UID")
+		return nil, &RequestError{Stage: "local_validation", Reason: "request_invalid"}
 	}
 	if from.IsZero() || to.IsZero() || from.UnixMilli() < 0 || to.Before(from) {
 		return nil, errors.New("binance: invalid history interval")
@@ -187,7 +202,7 @@ func (c *Client) History(ctx context.Context, apiKey, secret, receiverUID string
 		end = serverNow
 	}
 	if start > end {
-		return nil, errors.New("binance: history starts after provider time")
+		return nil, &RequestError{Stage: "time_sync", Reason: "provider_time_invalid"}
 	}
 	budget := maxHistoryCalls
 	unique := make(map[string]Receipt)
@@ -225,7 +240,7 @@ type historyResponse struct {
 
 func (c *Client) historyWindow(ctx context.Context, apiKey, secret, receiverUID string, offset, from, to int64, depth int, budget *int, receipts map[string]Receipt) error {
 	if depth > 48 || *budget <= 0 {
-		return errors.New("binance: history scan limit reached")
+		return &RequestError{Stage: "pay_history", Reason: "history_incomplete"}
 	}
 	*budget = *budget - 1
 	var response historyResponse
@@ -238,11 +253,11 @@ func (c *Client) historyWindow(ctx context.Context, apiKey, secret, receiverUID 
 		return err
 	}
 	if response.Code != "000000" || !response.Success {
-		return errors.New("binance: Pay history query rejected")
+		return &RequestError{Stage: "pay_history", Reason: "pay_rejected", HTTPStatus: http.StatusOK, ProviderCode: safeProviderCode(response.Code)}
 	}
 	if len(response.Data) >= 100 {
 		if from >= to {
-			return errors.New("binance: history timestamp contains too many transfers")
+			return &RequestError{Stage: "pay_history", Reason: "history_incomplete"}
 		}
 		middle := from + (to-from)/2
 		if err := c.historyWindow(ctx, apiKey, secret, receiverUID, offset, from, middle, depth+1, budget, receipts); err != nil {
@@ -262,7 +277,7 @@ func (c *Client) historyWindow(ctx context.Context, apiKey, secret, receiverUID 
 			} `json:"receiverInfo"`
 		}
 		if err := json.Unmarshal(body, &transfer); err != nil {
-			return errors.New("binance: invalid transfer response")
+			return &RequestError{Stage: "pay_history", Reason: "response_invalid"}
 		}
 		if transfer.Currency != "USDT" || string(transfer.Receiver.UID) != receiverUID ||
 			(transfer.Kind != "C2C" && transfer.Kind != "PAY") || transfer.Time <= 0 ||
@@ -277,7 +292,7 @@ func (c *Client) historyWindow(ctx context.Context, apiKey, secret, receiverUID 
 		receipt := Receipt{TransactionID: transfer.ID, AmountUnits: amount, Time: time.UnixMilli(transfer.Time).UTC()}
 		if prior, exists := receipts[receipt.TransactionID]; exists {
 			if prior.AmountUnits != receipt.AmountUnits || !prior.Time.Equal(receipt.Time) {
-				return errors.New("binance: conflicting transfer data")
+				return &RequestError{Stage: "pay_history", Reason: "response_invalid"}
 			}
 			continue
 		}
@@ -310,7 +325,7 @@ func (c *Client) Probe(ctx context.Context, apiKey, secret string) error {
 		return err
 	}
 	if !permissions.EnableReading {
-		return errors.New("binance: API reading permission is not enabled")
+		return &RequestError{Stage: "permission_check", Reason: "reading_disabled"}
 	}
 	now := time.Now().UnixMilli() + offset
 	var response historyResponse
@@ -319,7 +334,7 @@ func (c *Client) Probe(ctx context.Context, apiKey, secret string) error {
 		return err
 	}
 	if response.Code != "000000" || !response.Success {
-		return errors.New("binance: Pay history query rejected")
+		return &RequestError{Stage: "pay_history", Reason: "pay_rejected", HTTPStatus: http.StatusOK, ProviderCode: safeProviderCode(response.Code)}
 	}
 	return nil
 }
@@ -334,12 +349,13 @@ func (c *Client) syncTime(ctx context.Context) (int64, error) {
 	}
 	after := time.Now().UnixMilli()
 	if response.ServerTime <= 0 {
-		return 0, errors.New("binance: invalid provider time")
+		return 0, &RequestError{Stage: "time_sync", Reason: "provider_time_invalid"}
 	}
 	return response.ServerTime - (before + (after-before)/2), nil
 }
 
 func (c *Client) get(ctx context.Context, path string, params url.Values, apiKey, secret string, offset int64, target any) error {
+	stage := requestStage(path)
 	if c == nil || c.http == nil {
 		return errors.New("binance: client is not configured")
 	}
@@ -365,53 +381,53 @@ func (c *Client) get(ctx context.Context, path string, params url.Values, apiKey
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
 		// net/http errors can contain a signed URL or proxy credentials.
-		return errors.New("binance: network request failed")
+		return transportRequestError(stage, ctx, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusTeapot {
 		return &RateLimitError{RetryAfter: retryDelay(resp.Header.Get("Retry-After"), resp.StatusCode), StatusCode: resp.StatusCode}
 	}
+	limit := maxResponseSize
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("binance: request failed (HTTP %d)", resp.StatusCode)
+		limit = maxErrorSize
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize+1))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, int64(limit+1)))
+	// A rejected response is already conclusive. A missing/truncated error
+	// body must not hide the known status or require reading a large WAF page.
+	if resp.StatusCode != http.StatusOK {
+		code := ""
+		if err == nil && len(body) <= limit {
+			code = responseProviderCode(body)
+		}
+		return responseRequestError(stage, resp.StatusCode, code)
+	}
 	if err != nil {
 		if ctx.Err() != nil {
-			return ctx.Err()
+			return transportRequestError(stage, ctx, ctx.Err())
 		}
-		return errors.New("binance: response could not be read")
+		return &RequestError{Stage: stage, Reason: "response_read", HTTPStatus: resp.StatusCode}
 	}
 	if len(body) > maxResponseSize {
-		return errors.New("binance: response exceeds size limit")
+		return &RequestError{Stage: stage, Reason: "response_oversized", HTTPStatus: resp.StatusCode}
 	}
-	// Spot error codes are numeric; Pay success codes are strings. Only a
-	// numeric code is included in errors, never the upstream message or body.
-	var apiError struct {
-		Code json.RawMessage `json:"code"`
-	}
-	if json.Unmarshal(body, &apiError) == nil {
-		var code int
-		if json.Unmarshal(apiError.Code, &code) == nil && code < 0 {
-			return fmt.Errorf("binance: request rejected (code %d)", code)
-		}
+	code := responseProviderCode(body)
+	if negativeProviderCode(code) {
+		return responseRequestError(stage, resp.StatusCode, code)
 	}
 	if err := json.Unmarshal(body, target); err != nil {
-		return errors.New("binance: invalid response format")
+		return &RequestError{Stage: stage, Reason: "response_invalid", HTTPStatus: resp.StatusCode}
 	}
 	return nil
 }
 
 func validateCredentials(apiKey, secret string) error {
 	if apiKey == "" || secret == "" || len(apiKey) > 512 || len(secret) > 512 {
-		return errors.New("binance: API credentials are required")
+		return &RequestError{Stage: "credentials", Reason: "credentials"}
 	}
 	for _, ch := range apiKey {
 		if ch < 33 || ch > 126 {
-			return errors.New("binance: invalid API key")
+			return &RequestError{Stage: "credentials", Reason: "api_key_invalid"}
 		}
 	}
 	return nil

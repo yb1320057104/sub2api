@@ -1096,6 +1096,7 @@
         ref="dropdownRef"
         class="animate-in fade-in slide-in-from-top-2 fixed z-[100000020] w-[480px] max-w-[calc(100vw-16px)] overflow-hidden rounded-xl bg-white shadow-lg ring-1 ring-black/5 duration-200 dark:bg-dark-800 dark:ring-white/10"
         style="pointer-events: auto !important;"
+        @click.stop
         :style="{
           top: dropdownPosition.top !== undefined ? dropdownPosition.top + 'px' : undefined,
           bottom: dropdownPosition.bottom !== undefined ? dropdownPosition.bottom + 'px' : undefined,

@@ -85,6 +85,9 @@ RETURNING failure_count`, accountID, token).Scan(&failures)
 		if err == nil {
 			secret, err = s.encryptor.Decrypt(a.apiSecretEncrypted)
 		}
+		if err != nil {
+			err = errBinanceCredentialDecrypt
+		}
 		if err == nil {
 			var operation BinanceRechargeClient
 			var finish func()

@@ -567,6 +567,9 @@ func TestPKBinancePollPersistsProviderLockOnlyForRateLimits(t *testing.T) {
 		{name: "429", err: &binancepay.RateLimitError{StatusCode: 429, RetryAfter: 2 * time.Minute}, delay: 120, limited: true},
 		{name: "418", err: &binancepay.RateLimitError{StatusCode: 418, RetryAfter: 24 * time.Hour}, delay: 86400, limited: true},
 		{name: "network", err: errors.New("private proxy address"), delay: 60},
+		{name: "proxy authentication", err: &binancepay.RequestError{Stage: "time_sync", Reason: "proxy_auth", HTTPStatus: 407}, delay: 60},
+		{name: "IP whitelist", err: &binancepay.RequestError{Stage: "pay_history", Reason: "api_key_ip_permission", HTTPStatus: 401, ProviderCode: "-2015"}, delay: 60},
+		{name: "regional access", err: &binancepay.RequestError{Stage: "time_sync", Reason: "region_restricted", HTTPStatus: 451}, delay: 60},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			db, mock, err := sqlmock.New()

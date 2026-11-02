@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"net/url"
 	"regexp"
 	"sort"
@@ -71,7 +72,7 @@ func (c *Client) Bills(ctx context.Context, apiKey, secret, accountUID string, f
 		end = now
 	}
 	if end < from.UnixMilli() {
-		return nil, errors.New("binance: bill interval starts after provider time")
+		return nil, &RequestError{Stage: "time_sync", Reason: "provider_time_invalid"}
 	}
 	var response historyResponse
 	params := url.Values{"startTime": {strconv.FormatInt(from.UnixMilli(), 10)}, "endTime": {strconv.FormatInt(end, 10)}, "limit": {"100"}}
@@ -79,23 +80,23 @@ func (c *Client) Bills(ctx context.Context, apiKey, secret, accountUID string, f
 		return nil, err
 	}
 	if response.Code != "000000" || !response.Success {
-		return nil, errors.New("binance: Pay bill query rejected")
+		return nil, &RequestError{Stage: "pay_history", Reason: "pay_rejected", HTTPStatus: http.StatusOK, ProviderCode: safeProviderCode(response.Code)}
 	}
 	page := &BillsPage{Items: make([]Bill, 0), Limit: 100, PossiblyMore: len(response.Data) >= 100}
 	if len(response.Data) > 100 {
-		return nil, errors.New("binance: oversized Pay bill page")
+		return nil, &RequestError{Stage: "pay_history", Reason: "response_oversized", HTTPStatus: http.StatusOK}
 	}
 	for _, raw := range response.Data {
 		decoder := json.NewDecoder(bytes.NewReader(raw))
 		decoder.UseNumber()
 		var data map[string]any
 		if err := decoder.Decode(&data); err != nil {
-			return nil, errors.New("binance: invalid Pay bill response")
+			return nil, &RequestError{Stage: "pay_history", Reason: "response_invalid", HTTPStatus: http.StatusOK}
 		}
 		id, amount := billScalar(data["transactionId"]), billScalar(data["amount"])
 		millis, err := strconv.ParseInt(billScalar(data["transactionTime"]), 10, 64)
 		if err != nil || millis <= 0 || id == "" || len(id) > 160 || len(amount) > 128 || !billAmountPattern.MatchString(amount) {
-			return nil, errors.New("binance: invalid Pay bill fields")
+			return nil, &RequestError{Stage: "pay_history", Reason: "response_invalid", HTTPStatus: http.StatusOK}
 		}
 		if millis < from.UnixMilli() || millis > end {
 			continue

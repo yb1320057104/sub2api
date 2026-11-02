@@ -55,7 +55,7 @@ export default {
     proxyInherited: '沿用服务器币安出口',
     proxyPlaceholder: 'http(s):// 或 socks5(h):// 代理地址',
     proxyKeepPlaceholder: '已保存，留空保留当前专属代理',
-    proxyHint: '该渠道的币安校时、查收、订单查询与实时账单均走此代理。支持 HTTP、HTTPS、SOCKS5；地址和认证信息加密保存，不回显。未配置时沿用服务器币安出口，专属代理失败不会直连。',
+    proxyHint: '该渠道的币安校时、查收、订单查询与实时账单均走此代理。支持 HTTP、HTTPS、SOCKS5；地址和认证信息加密保存，不回显。未配置时沿用服务器币安出口，专属代理失败不会直连。若币安 API Key 启用了 IP 白名单，请添加此代理的实际出口 IP；地区和代理网关地址不能代替出口 IP。出口变化时需同步更新白名单，建议使用固定出口。',
     clearProxy: '清除专属代理，改用服务器币安出口',
     proxyPreflight: '每次查询前预探测香港节点',
     proxyPreflightHint: '仅适用于已部署的币安预探测网关，须填写带用户名和密码的 HTTP(S) 网关地址。普通代理保持关闭。',

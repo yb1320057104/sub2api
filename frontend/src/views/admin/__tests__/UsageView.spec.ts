@@ -6,6 +6,7 @@ import UsageView from '../UsageView.vue'
 import AdminDailyUsage from '@/components/admin/usage/AdminDailyUsage.vue'
 import SecurityPolicyRankingView from '../SecurityPolicyRankingView.vue'
 import UserAllowlistSelector from '@/components/admin/user/UserAllowlistSelector.vue'
+import zhRanking from '@/i18n/locales/zh/securityPolicyRanking'
 
 const rankingMocks = vi.hoisted(() => ({
   getRanking: vi.fn(), getPublicRanking: vi.fn(), getSettings: vi.fn(),
@@ -58,6 +59,7 @@ const messages: Record<string, string> = {
   'securityPolicyRanking.countSummary': 'counted {counted} / skipped {skipped} / unknown {unknown}',
   'securityPolicyRanking.chargeFormula': 'Calculated {cost} × {multiplier} = {amount}',
   'securityPolicyRanking.chargeDeducted': 'Actually deducted {amount}',
+  'securityPolicyRanking.groupMultiplier': zhRanking.securityPolicyRanking.groupMultiplier,
 }
 
 const formatLocalDate = (date: Date): string => {
@@ -1040,6 +1042,10 @@ describe('PKSecurityPolicyRanking', () => {
     const wrapper = mountRanking()
     await flushPromises()
     expect(wrapper.get('[data-testid="ranking-group-multiplier-1"]').element).toHaveProperty('value', '0.290001')
+    const multiplierInput = wrapper.get('[data-testid="ranking-group-multiplier-1"]')
+    expect(multiplierInput.classes()).toEqual(expect.arrayContaining(['font-semibold', '!text-red-700', 'dark:!text-red-300']))
+    expect(multiplierInput.element.closest('label')?.textContent).toContain('破甲倍率')
+    expect(multiplierInput.element.closest('label')?.querySelector('span')?.classList.contains('text-red-700')).toBe(true)
     expect(wrapper.findComponent(UserAllowlistSelector).props('modelValue')).toEqual([7, 9])
     await wrapper.get('[data-testid="ranking-group-auto-deduct-1"]').setValue(true)
     await wrapper.get('[data-testid="ranking-group-1"]').setValue(false)

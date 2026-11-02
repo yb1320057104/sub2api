@@ -471,6 +471,16 @@ func binanceRechargePollError(err error) string {
 	if errors.As(err, &limited) {
 		return binanceRechargeRateLimitMessage
 	}
+	var requestFailure *binancepay.RequestError
+	if errors.As(err, &requestFailure) {
+		return binanceRequestErrorMessage(requestFailure)
+	}
+	if errors.Is(err, errBinanceCredentialDecrypt) {
+		return "币安已保存的 API 凭据无法解密，请重新保存该渠道的 API Key 和 Secret"
+	}
+	if errors.Is(err, errBinanceLocalProcessing) {
+		return "币安账单已获取，但本地核对或入账未完成，请检查服务日志和数据库状态"
+	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return "币安查收超时，稍后自动重试"
 	}
@@ -492,9 +502,10 @@ func binanceRechargeRecoverableError(message string) bool {
 	case "币安专属代理配置不可用，未执行查账，请检查该收款账户代理配置",
 		"币安代理节点探测失败，未执行查账，稍后自动重试",
 		"币安查收超时，稍后自动重试",
+		"币安已保存的 API 凭据无法解密，请重新保存该渠道的 API Key 和 Secret",
 		"币安查收失败，请检查 API 读取权限、收款 UID、凭据和网络":
 		return true
 	default:
-		return false
+		return binanceTypedErrorRecoverable(message)
 	}
 }

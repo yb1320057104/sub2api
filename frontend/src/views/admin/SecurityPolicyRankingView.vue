@@ -69,8 +69,8 @@
                   <span class="ml-auto shrink-0 text-xs text-gray-500">#{{ group.id }}<span v-if="group.status !== 'active'"> · {{ t('common.disabled') }}</span></span>
                 </label>
                 <label class="flex items-center justify-between gap-2 text-xs">
-                  {{ t('securityPolicyRanking.groupMultiplier') }}
-                  <input :value="groupRule(group.id).multiplier" type="text" inputmode="decimal" maxlength="11" class="input w-28" :disabled="group.status !== 'active'" :data-testid="`ranking-group-multiplier-${group.id}`" @input="updateGroupRule(group.id, { multiplier: ($event.target as HTMLInputElement).value })" />
+                  <span class="font-semibold text-red-700 dark:text-red-300">{{ t('securityPolicyRanking.groupMultiplier') }}</span>
+                  <input :value="groupRule(group.id).multiplier" type="text" inputmode="decimal" maxlength="11" class="input w-28 font-semibold !text-red-700 dark:!text-red-300" :disabled="group.status !== 'active'" :data-testid="`ranking-group-multiplier-${group.id}`" @input="updateGroupRule(group.id, { multiplier: ($event.target as HTMLInputElement).value })" />
                 </label>
                 <label class="flex items-center gap-2 text-xs">
                   <input :checked="groupRule(group.id).auto_deduct_enabled" type="checkbox" class="h-4 w-4 rounded" :disabled="group.status !== 'active'" :data-testid="`ranking-group-auto-deduct-${group.id}`" @change="updateGroupRule(group.id, { auto_deduct_enabled: ($event.target as HTMLInputElement).checked })" />

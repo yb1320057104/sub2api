@@ -1,5 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { enableAutoUnmount, flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { nextTick } from 'vue'
 
 import type { ApiKey, Group } from '@/types'
@@ -7,6 +7,10 @@ import { keysAPI } from '@/api'
 import KeysView from '../KeysView.vue'
 import OrderedKeyGroupSelector from '@/components/keys/OrderedKeyGroupSelector.vue'
 import KeyGroupBadge from '@/components/keys/KeyGroupBadge.vue'
+import zhDashboard from '@/i18n/locales/zh/dashboard'
+import enDashboard from '@/i18n/locales/en/dashboard'
+
+enableAutoUnmount(afterEach)
 
 const {
   listKeys,
@@ -47,7 +51,7 @@ const messages: Record<string, string> = {
   'keys.created': 'Created',
   'keys.expiresAt': 'Expires',
   'keys.group': 'Group',
-  'keys.auditRate': 'Security audit multiplier {multiplier}x',
+  'keys.auditRate': zhDashboard.keys.auditRate,
   'keys.id': 'ID',
   'keys.currentConcurrency': 'Current Concurrency',
   'keys.lastUsedAt': 'Last Used',
@@ -224,15 +228,16 @@ const IconStub = {
   template: '<span data-test="icon">{{ name }}</span>',
 }
 
-const mountView = async () => {
+const mountView = async (realGroupUI = false) => {
   const wrapper = mount(KeysView, {
+    attachTo: realGroupUI ? document.body : undefined,
     global: {
       stubs: {
         AppLayout: AppLayoutStub,
         TablePageLayout: TablePageLayoutStub,
         DataTable: DataTableStub,
         Pagination: PaginationStub,
-        BaseDialog: {
+        BaseDialog: realGroupUI ? false : {
           props: ['show', 'title'],
           emits: ['close'],
           template: '<div v-if="show" role="dialog"><button data-test="close-dialog" @click="$emit(\'close\')">Close</button><slot /><slot name="footer" /></div>',
@@ -245,15 +250,21 @@ const mountView = async () => {
         UseKeyModal: true,
         BulkEditKeysModal: true,
         EndpointPopover: true,
-        GroupBadge: true,
+        GroupBadge: !realGroupUI,
         GroupOptionItem: true,
-        Teleport: true,
+        Teleport: !realGroupUI,
       },
     },
   })
   await flushPromises()
   await nextTick()
   return wrapper
+}
+
+const nativeClick = async (element: Element) => {
+  ;(element as HTMLElement).click()
+  await nextTick()
+  await flushPromises()
 }
 
 const visibleColumnKeys = (wrapper: VueWrapper) =>
@@ -273,6 +284,7 @@ const getButtonByText = (wrapper: VueWrapper, text: string) => {
 describe('user KeysView column settings', () => {
   beforeEach(() => {
     localStorage.clear()
+    messages['keys.auditRate'] = zhDashboard.keys.auditRate
 
     listKeys.mockReset()
     updateKey.mockReset()
@@ -669,9 +681,9 @@ describe('user KeysView column settings', () => {
       const wrapper = await mountView()
       const badges = wrapper.get('[data-test="key-groups-1"]').findAllComponents(KeyGroupBadge)
       expect(badges.map((badge) => badge.props('group').id)).toEqual([5, 3])
-      expect(badges[0].text()).toContain('Security audit multiplier 1x')
+      expect(badges[0].text()).toContain('破甲倍率 1×')
       expect(badges[0].text()).toContain('keys.auditAutoDeductOff')
-      expect(badges[1].text()).toContain('Security audit multiplier 3.500000x')
+      expect(badges[1].text()).toContain('破甲倍率 3.500000×')
       expect(badges[1].text()).toContain('keys.auditAutoDeductOn')
       expect(badges[1].props('userRate')).toBe(1.5)
       await wrapper.get('[title="keys.clickToChangeGroup"]').trigger('click')
@@ -685,10 +697,125 @@ describe('user KeysView column settings', () => {
       wrapper.unmount()
     })
 
+    it.each([
+      ['Chinese', zhDashboard.keys.auditRate, '破甲倍率 3.500000×'],
+      ['English', enDashboard.keys.auditRate, 'Armor-piercing multiplier 3.500000×'],
+    ])('renders the real %s armor-piercing badge in red without changing normal rates', async (_locale, message, expected) => {
+      messages['keys.auditRate'] = message
+      const group = { ...availableGroups[2], rate_multiplier: 2, security_audit_multiplier: '3.500000', security_audit_auto_deduct_enabled: true }
+      const key = { ...createApiKey(), group_id: 3, group_ids: [3], group, groups: [group] }
+      getAvailableGroups.mockResolvedValue([group])
+      getUserGroupRates.mockResolvedValue({ 3: 1.5 })
+      listKeys.mockResolvedValue({ items: [key], total: 1, page: 1, page_size: 20, pages: 1 })
+      const wrapper = await mountView(true)
+      const badge = wrapper.getComponent(KeyGroupBadge)
+      expect(badge.get('[data-test="key-group-audit-rate"]').text()).toBe(expected)
+      expect(badge.get('[data-test="key-group-audit-rate"]').classes()).toEqual(expect.arrayContaining(['font-semibold', 'text-red-700', 'dark:text-red-300']))
+      expect(badge.get('.line-through').text()).toBe('2x')
+      expect(badge.get('.font-bold').text()).toBe('1.5x')
+      expect(updateKey).not.toHaveBeenCalled()
+    })
+
+    it('removes groups through real create-dialog controls, allows an empty draft and only submits the remaining selection', async () => {
+      const wrapper = await mountView(true)
+      await nativeClick(wrapper.get('[data-tour="keys-create-btn"]').element)
+      await nativeClick(document.querySelector('input[name="key-provider"][value="domestic"]')!)
+      const selector = wrapper.getComponent(OrderedKeyGroupSelector)
+      await nativeClick(selector.get('[data-test="key-group-option-3"]').element.closest('label')!)
+      await nativeClick(selector.get('[data-test="key-group-option-5"]').element.closest('label')!)
+      expect(selector.props('modelValue')).toEqual([3, 5])
+      await nativeClick(selector.get('[data-test="key-group-remove-3"]').element)
+      expect(selector.props('modelValue')).toEqual([5])
+      expect(selector.get<HTMLInputElement>('[data-test="key-group-option-3"]').element.checked).toBe(false)
+      await nativeClick(selector.get('[data-test="key-group-remove-5"]').element)
+      expect(selector.props('modelValue')).toEqual([])
+      expect(selector.find('[data-test="key-group-priority-list"]').exists()).toBe(false)
+      const form = document.querySelector<HTMLFormElement>('#key-form')!
+      form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+      await flushPromises()
+      expect(showError).toHaveBeenCalledWith('keys.groupRequired')
+      expect(keysAPI.create).not.toHaveBeenCalled()
+      await nativeClick(selector.get('[data-test="key-group-option-5"]').element)
+      const name = document.querySelector<HTMLInputElement>('[data-tour="key-form-name"]')!
+      name.value = 'Remaining group'
+      name.dispatchEvent(new Event('input', { bubbles: true }))
+      vi.mocked(keysAPI.create).mockResolvedValue({ ...createApiKey(), group_id: 5, group_ids: [5] })
+      form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+      await flushPromises()
+      expect(vi.mocked(keysAPI.create).mock.calls[0][1]).toBe(5)
+      expect(vi.mocked(keysAPI.create).mock.calls[0][8]).toEqual([5])
+    })
+
+    it('keeps the real teleported picker open when the clicked row leaves the DOM and saves the explicit removal', async () => {
+      const key = { ...createApiKey(), group_id: 5, group_ids: [5, 99, 3] }
+      listKeys.mockResolvedValue({ items: [key], total: 1, page: 1, page_size: 20, pages: 1 })
+      updateKey.mockResolvedValue({ ...key, group_id: 3, group_ids: [3] })
+      const wrapper = await mountView(true)
+      await nativeClick(wrapper.get('[title="keys.clickToChangeGroup"]').element)
+      const selector = wrapper.getComponent(OrderedKeyGroupSelector)
+      const remove = selector.get('[data-test="key-group-remove-5"]').element
+      // Reproduce a DOM patch before the document-level outside-click listener:
+      // native browser event dispatch can flush Vue's update between listeners.
+      remove.addEventListener('click', () => remove.closest('[data-test="key-group-priority-5"]')?.remove(), { once: true })
+      await nativeClick(remove)
+      expect(document.querySelector('[data-test="inline-key-group-selector"]')).not.toBeNull()
+      expect(selector.props('modelValue')).toEqual([99, 3])
+      expect(selector.get<HTMLInputElement>('[data-test="key-group-option-5"]').element.checked).toBe(false)
+      await nativeClick(selector.get('[data-test="key-group-remove-99"]').element)
+      expect(selector.props('modelValue')).toEqual([3])
+      expect(updateKey).not.toHaveBeenCalled()
+      await nativeClick(document.querySelector('[data-test="save-inline-key-groups"]')!)
+      expect(updateKey).toHaveBeenCalledOnce()
+      expect(updateKey).toHaveBeenCalledWith(1, { group_id: 3, group_ids: [3] })
+    })
+
+    it('keeps inline removals as a draft on cancel or outside click, and disables save for an empty draft', async () => {
+      const key = { ...createApiKey(), group_id: 5, group_ids: [5, 3] }
+      listKeys.mockResolvedValue({ items: [key], total: 1, page: 1, page_size: 20, pages: 1 })
+      const wrapper = await mountView(true)
+      const trigger = wrapper.get('[title="keys.clickToChangeGroup"]').element
+      await nativeClick(trigger)
+      let selector = wrapper.getComponent(OrderedKeyGroupSelector)
+      await nativeClick(selector.get('[data-test="key-group-remove-5"]').element)
+      await nativeClick(selector.get('[data-test="key-group-remove-3"]').element)
+      expect(selector.props('modelValue')).toEqual([])
+      expect(document.querySelector<HTMLButtonElement>('[data-test="save-inline-key-groups"]')!.disabled).toBe(true)
+      const popup = selector.element.parentElement!.parentElement!
+      await nativeClick([...popup.querySelectorAll('button')].find(button => button.textContent === 'common.cancel')!)
+      await nativeClick(trigger)
+      selector = wrapper.getComponent(OrderedKeyGroupSelector)
+      expect(selector.props('modelValue')).toEqual([5, 3])
+      await nativeClick(selector.get('[data-test="key-group-remove-5"]').element)
+      await nativeClick(document.body)
+      expect(document.querySelector('[data-test="inline-key-group-selector"]')).toBeNull()
+      await nativeClick(trigger)
+      expect(wrapper.getComponent(OrderedKeyGroupSelector).props('modelValue')).toEqual([5, 3])
+      expect(updateKey).not.toHaveBeenCalled()
+    })
+
+    it('retains missing edit selections until a real remove click and never re-adds a removed option', async () => {
+      const key = { ...createApiKey(), group_id: 5, group_ids: [5, 99, 3] }
+      listKeys.mockResolvedValue({ items: [key], total: 1, page: 1, page_size: 20, pages: 1 })
+      updateKey.mockResolvedValue({ ...key, group_ids: [5] })
+      const wrapper = await mountView(true)
+      await nativeClick(getButtonByText(wrapper, 'common.edit').element)
+      const selector = wrapper.getComponent(OrderedKeyGroupSelector)
+      expect(selector.props('modelValue')).toEqual([5, 99, 3])
+      await nativeClick(selector.get('[data-test="key-group-remove-99"]').element)
+      const remove = selector.get('[data-test="key-group-remove-3"]').element
+      await nativeClick(remove)
+      await nativeClick(remove)
+      expect(selector.props('modelValue')).toEqual([5])
+      expect(updateKey).not.toHaveBeenCalled()
+      document.querySelector('#key-form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+      await flushPromises()
+      expect(updateKey).toHaveBeenCalledWith(1, expect.objectContaining({ group_id: 5, group_ids: [5] }))
+    })
+
     it('limits selection to 20 groups while allowing removal and priority changes', async () => {
       const groups = Array.from({ length: 21 }, (_, index) => ({ ...availableGroups[0], id: index + 1 })) as Group[]
       const selected = groups.slice(0, 20).map((group) => group.id)
-      const wrapper = mount(OrderedKeyGroupSelector, { props: { modelValue: selected, groups }, global: { stubs: { KeyGroupBadge: true } } })
+      const wrapper = mount(OrderedKeyGroupSelector, { props: { modelValue: selected, groups } })
       expect(wrapper.get('[data-test="key-group-option-21"]').attributes()).toHaveProperty('disabled')
       expect(wrapper.get('[data-test="key-group-up-1"]').attributes()).toHaveProperty('disabled')
       await wrapper.get('[data-test="key-group-down-1"]').trigger('click')

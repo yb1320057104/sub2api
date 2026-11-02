@@ -55,7 +55,7 @@ export default {
     proxyInherited: 'Use the server Binance route',
     proxyPlaceholder: 'http(s):// or socks5(h):// proxy URL',
     proxyKeepPlaceholder: 'Saved; leave blank to keep this proxy',
-    proxyHint: 'Time sync, collection, order checks and live bills for this channel all use this proxy. HTTP, HTTPS and SOCKS5 are supported. The URL and credentials are encrypted and never returned. Without a dedicated proxy, the server Binance route is used. Proxy failures never fall back to direct access.',
+    proxyHint: 'Time sync, collection, order checks and live bills for this channel all use this proxy. HTTP, HTTPS and SOCKS5 are supported. The URL and credentials are encrypted and never returned. Without a dedicated proxy, the server Binance route is used. Proxy failures never fall back to direct access. If the Binance API Key has an IP allowlist, add this proxy’s actual exit IP; its region and gateway address cannot replace the exit IP. Update the allowlist whenever the exit changes; a fixed exit IP is recommended.',
     clearProxy: 'Remove the dedicated proxy and use the server Binance route',
     proxyPreflight: 'Probe Hong Kong nodes before each query',
     proxyPreflightHint: 'Only for the deployed Binance preflight gateway. Use an authenticated HTTP(S) gateway URL. Leave disabled for an ordinary proxy.',

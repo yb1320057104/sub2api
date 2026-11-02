@@ -9,7 +9,7 @@
         <div class="flex shrink-0 gap-1">
           <button type="button" class="btn btn-secondary btn-sm" :disabled="disabled || index === 0" :aria-label="t('keys.moveGroupUp', { id })" :data-test="`key-group-up-${id}`" @click="move(index, -1)">↑</button>
           <button type="button" class="btn btn-secondary btn-sm" :disabled="disabled || index === modelValue.length - 1" :aria-label="t('keys.moveGroupDown', { id })" :data-test="`key-group-down-${id}`" @click="move(index, 1)">↓</button>
-          <button type="button" class="btn btn-secondary btn-sm" :disabled="disabled" :aria-label="t('keys.removeGroup', { id })" :data-test="`key-group-remove-${id}`" @click="toggle(id)">×</button>
+          <button type="button" class="btn btn-secondary btn-sm" :disabled="disabled" :aria-label="t('keys.removeGroup', { id })" :data-test="`key-group-remove-${id}`" @click.stop="remove(id)">×</button>
         </div>
       </div>
     </div>
@@ -43,8 +43,12 @@ const filteredGroups = computed(() => {
 })
 function toggle(id: number) {
   if (props.disabled) return
-  if (props.modelValue.includes(id)) emit('update:modelValue', props.modelValue.filter((selected) => selected !== id))
+  if (props.modelValue.includes(id)) remove(id)
   else if (props.modelValue.length < maxGroups) emit('update:modelValue', [...props.modelValue, id])
+}
+function remove(id: number) {
+  if (props.disabled || !props.modelValue.includes(id)) return
+  emit('update:modelValue', props.modelValue.filter((selected) => selected !== id))
 }
 function move(index: number, direction: number) {
   const target = index + direction

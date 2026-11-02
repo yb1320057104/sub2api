@@ -147,6 +147,9 @@ WHERE id=$1 AND next_poll_at<=NOW() AND api_locked_until<=NOW() RETURNING failur
 		if err == nil {
 			secret, err = s.encryptor.Decrypt(a.apiSecretEncrypted)
 		}
+		if err != nil {
+			err = errBinanceCredentialDecrypt
+		}
 		if err == nil {
 			var receipts []binancepay.Receipt
 			var client BinanceRechargeClient
@@ -161,6 +164,7 @@ WHERE id=$1 AND next_poll_at<=NOW() AND api_locked_until<=NOW() RETURNING failur
 					var matched, review bool
 					matched, review, err = s.acceptReceipt(ctx, a, receipt)
 					if err != nil {
+						err = errBinanceLocalProcessing
 						break
 					}
 					if matched {
