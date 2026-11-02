@@ -28,3 +28,12 @@
 ## 发布边界
 
 唯一目标分支和正式标签 v0.2.19-pk.46，旧标签/制品不移动。使用已授权本机构建、服务器独立DinD十一项同制品验收及独立空库往返验证；同一二进制进入网页更新包与Docker镜像归档。只发布私库Release，不发布GHCR或切换生产。正式提交、哈希、验收和发布结果按实际执行补录。
+
+## 最终发行结果
+
+- 正式提交 `7eee4df0125b5bd8b995cfc4f50ad2fed0d46ac4`，tree `aaa2e87557b6e766eea608ceec3823b0df8c6e5a`；版本分支及正式标签均绑定该提交，提交已在私库 main 历史中。后续仅补录此结果，不移动标签、不重打已发布制品。
+- Go 1.27.3 windows/amd64 本机构建 Linux/amd64，CGO关闭、embed、trimpath、release标识；程序 SHA256 `35e8e10426c15e0afaa736e231b23431a30b82bcf0aca5cbc28acdd26fde3639`。本轮源码、前端产物、工具和二进制证据绑定一致。
+- Package `1793629812-7eee4df0125b`；同一程序进入网页更新包和 Docker 镜像归档。更新包 SHA256 `fb6714cca25cc87e7cf45da1e1a89d7ba7cd6f6e88c48d6f4179be2a4962ae6c`；镜像归档 SHA256 `a42eef870d7c5c56538927875660435383d3df45fb42047b3a67df1df49da754`；镜像ID `sha256:497f5c3591839f72997b4b7b21e964f51792fa0b9530b3988a0dff6fd3b86bcb`。
+- 服务器独立 DinD 的 `pk-artifact-v2` 十一项全部 passed/exit 0，独立空库往返七项全部通过。完整迁移清单及校验值不变，无新增迁移；禁用模拟渠道的专属代理字段及整行在 pk.45→pk.46→pk.45 后保持。实际基线程序与镜像 seed 分别绑定，保留网页更新后的混合运行环境。测试容器、数据卷、内部网络和专用 daemon 清理已验证。
+- 正式私库 Release 已发布并核对为 latest、非draft、非prerelease：[v0.2.19-pk.46](https://github.com/yb1320057104/sub2api/releases/tag/v0.2.19-pk.46)。8项资产逐项核对名称、长度及GitHub SHA256，包含网页更新包、镜像归档、checksums及本轮构建、制品和回退证据。
+- 本轮未执行生产切换、重启或生产数据修改，未发布GHCR；由用户手动切换 pk.46。首字计时起点及统计口径保持，不运行全套源码回归或真实模型、授权、币安接口。
