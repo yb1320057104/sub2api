@@ -420,3 +420,40 @@ func TestGrokMediaVideoCompletionStillClaimsBillingOnce(t *testing.T) {
 	}
 	require.Len(t, bindings.billed, 1)
 }
+
+func TestSecurityAuditDeferredVideoKeepsPrivateCreationSnapshot(t *testing.T) {
+	for _, provider := range []string{"grok", "seedance"} {
+		t.Run(provider, func(t *testing.T) {
+			h, _, bindings, _ := newGrokMediaSlotHandler(t, false, false)
+			c, _ := grokMediaSlotContext(context.Background(), false)
+			key, ok := middleware2.GetAPIKeyFromContext(c)
+			require.True(t, ok)
+			subject := middleware2.AuthSubject{UserID: 10, Concurrency: 5}
+			score := 80.0
+			input := &service.CyberPolicyAuditBlockInput{EventKey: "server-private-video:http", UserID: subject.UserID, GroupID: key.GroupID, Source: "prompt_audit", PolicyAction: "charge_allow", RiskScore: &score}
+			pending := service.GrokVideoPendingBilling{AuditAction: input, Model: "video-model", VideoDurationSeconds: 6}
+			require.NoError(t, h.gatewayService.StoreGrokVideoPendingBilling(context.Background(), "task-audit", subject.UserID, key.ID, pending))
+			// Forward results cannot accept audit identities from upstream/client JSON.
+			var result service.OpenAIForwardResult
+			require.NoError(t, json.Unmarshal([]byte(`{"AuditAction":{"EventKey":"forged"}}`), &result))
+			require.Nil(t, result.AuditAction)
+			result.ResponseID = "task-audit"
+			result.VideoCount, result.VideoDurationSeconds, result.Usage.OutputTokens = 1, 6, 123
+			complete := func() *service.OpenAIForwardResult {
+				if provider == "seedance" {
+					return prepareSeedanceCompletionBilling(context.Background(), h, key, subject, result.ResponseID, &result)
+				}
+				return prepareGrokVideoCompletionBilling(context.Background(), h, zap.NewNop(), key, subject, result.ResponseID, &result)
+			}
+			bill := complete()
+			require.NotNil(t, bill)
+			require.Equal(t, input, bill.AuditAction)
+			require.Equal(t, service.StableGrokVideoBillingRequestID(result.ResponseID), bill.RequestID)
+			require.Nil(t, complete(), "subsequent polls never repeat original billing or audit charge")
+			require.Len(t, bindings.billed, 1)
+			public, err := json.Marshal(bill)
+			require.NoError(t, err)
+			require.NotContains(t, string(public), "server-private-video")
+		})
+	}
+}

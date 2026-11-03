@@ -208,7 +208,7 @@ func (r *Runner) processJob(ctx context.Context, workerID int, cfg ActiveConfig,
 		}
 		results = append(results, result)
 		LogInfo(EventChunkCompleted, mergeLogFields(baseFields, map[string]any{"worker_id": workerID, "chunk_index": index + 1, "chunk_total": len(chunks), "guard_endpoint_id": result.GuardEndpointID, "action": result.Action, "latency_ms": r.clock.Now().Sub(chunkStarted).Milliseconds(), "status": "completed"}))
-		if result.Action == ActionBlock {
+		if cfg.RiskPolicy == nil && result.Action == ActionBlock {
 			break
 		}
 	}
@@ -220,6 +220,7 @@ func (r *Runner) processJob(ctx context.Context, workerID int, cfg ActiveConfig,
 		return r.finishFailure(ctx, job, &GuardError{Code: ErrorCodeInvalidResponse, Cause: err})
 	}
 	aggregated.ChunkTotal = len(chunks)
+	applyPromptRiskPolicy(aggregated, cfg, false)
 	if cfg.IsUserAllowlisted(job.Snapshot.UserID) {
 		applyPromptUserExemption(aggregated)
 	}

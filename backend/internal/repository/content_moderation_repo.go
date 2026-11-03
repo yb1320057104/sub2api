@@ -16,6 +16,13 @@ type contentModerationRepository struct {
 	db *sql.DB
 }
 
+// Scored events belong to the unified policy counter. Keep their legacy flag
+// false on disk so an older binary cannot count them again after rollback;
+// current views and retention recover the hit from the recorded risk score.
+func contentModerationHitSQL(prefix string) string {
+	return "(CASE WHEN " + prefix + "policy_action IS NOT NULL THEN COALESCE(" + prefix + "risk_score > 0, FALSE) ELSE " + prefix + "flagged END)"
+}
+
 func NewContentModerationRepository(db *sql.DB) service.ContentModerationRepository {
 	return &contentModerationRepository{db: db}
 }
@@ -56,22 +63,26 @@ func (r *contentModerationRepository) CreateLog(ctx context.Context, log *servic
 	if log.UpstreamLatencyMS != nil {
 		latency = *log.UpstreamLatencyMS
 	}
+	legacyFlagged := log.Flagged && log.PolicyAction == ""
 	err = r.db.QueryRowContext(ctx, `
 INSERT INTO content_moderation_logs (
     request_id, user_id, user_email, api_key_id, api_key_name, group_id, group_name,
     endpoint, provider, model, mode, action, flagged, highest_category, highest_score,
     category_scores, threshold_snapshot, input_excerpt, upstream_latency_ms, error,
-    violation_count, auto_banned, email_sent, queue_delay_ms, matched_keyword, engine_meta
+    violation_count, auto_banned, email_sent, queue_delay_ms, matched_keyword, engine_meta,
+    risk_score, risk_level, policy_action
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7,
     $8, $9, $10, $11, $12, $13, $14, $15,
     $16::jsonb, $17::jsonb, $18, $19, $20,
-    $21, $22, $23, $24, $25, $26::jsonb
+    $21, $22, $23, $24, $25, $26::jsonb,
+    $27, NULLIF($28, ''), NULLIF($29, '')
 ) RETURNING id, created_at`,
 		log.RequestID, userID, log.UserEmail, apiKeyID, log.APIKeyName, groupID, log.GroupName,
-		log.Endpoint, log.Provider, log.Model, log.Mode, log.Action, log.Flagged, log.HighestCategory, log.HighestScore,
+		log.Endpoint, log.Provider, log.Model, log.Mode, log.Action, legacyFlagged, log.HighestCategory, log.HighestScore,
 		string(categoryScores), string(thresholdSnapshot), log.InputExcerpt, latency, log.Error,
 		log.ViolationCount, log.AutoBanned, log.EmailSent, nullableIntPtr(log.QueueDelayMS), log.MatchedKeyword, engineMeta,
+		log.RiskScore, log.RiskLevel, log.PolicyAction,
 	).Scan(&log.ID, &log.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("insert content moderation log: %w", err)
@@ -105,7 +116,8 @@ SELECT
     l.id, l.request_id, l.user_id, l.user_email, l.api_key_id, l.api_key_name, l.group_id, l.group_name,
     l.endpoint, l.provider, l.model, l.mode, l.action, l.flagged, l.highest_category, l.highest_score,
     l.category_scores, l.threshold_snapshot, l.input_excerpt, l.upstream_latency_ms, l.error,
-    l.violation_count, l.auto_banned, l.email_sent, COALESCE(u.status, ''), l.queue_delay_ms, l.matched_keyword, l.created_at, l.engine_meta
+    l.violation_count, l.auto_banned, l.email_sent, COALESCE(u.status, ''), l.queue_delay_ms, l.matched_keyword, l.created_at, l.engine_meta,
+    l.risk_score, COALESCE(l.risk_level, ''), COALESCE(l.policy_action, '')
 FROM content_moderation_logs l
 LEFT JOIN users u ON u.id = l.user_id `+whereSQL+`
 ORDER BY l.created_at DESC, l.id DESC
@@ -121,6 +133,7 @@ LIMIT $`+fmt.Sprint(len(queryArgs)-1)+` OFFSET $`+fmt.Sprint(len(queryArgs)),
 	for rows.Next() {
 		var item service.ContentModerationLog
 		var userID, apiKeyID, groupID, latency, queueDelay sql.NullInt64
+		var riskScore sql.NullFloat64
 		var scoresRaw, thresholdsRaw, engineRaw []byte
 		if err := rows.Scan(
 			&item.ID,
@@ -152,6 +165,9 @@ LIMIT $`+fmt.Sprint(len(queryArgs)-1)+` OFFSET $`+fmt.Sprint(len(queryArgs)),
 			&item.MatchedKeyword,
 			&item.CreatedAt,
 			&engineRaw,
+			&riskScore,
+			&item.RiskLevel,
+			&item.PolicyAction,
 		); err != nil {
 			return nil, nil, fmt.Errorf("scan content moderation log: %w", err)
 		}
@@ -174,6 +190,13 @@ LIMIT $`+fmt.Sprint(len(queryArgs)-1)+` OFFSET $`+fmt.Sprint(len(queryArgs)),
 		if queueDelay.Valid {
 			v := int(queueDelay.Int64)
 			item.QueueDelayMS = &v
+		}
+		if riskScore.Valid {
+			value := riskScore.Float64
+			item.RiskScore = &value
+		}
+		if item.PolicyAction != "" {
+			item.Flagged = riskScore.Valid && riskScore.Float64 > 0
 		}
 		item.CategoryScores = map[string]float64{}
 		_ = json.Unmarshal(scoresRaw, &item.CategoryScores)
@@ -213,6 +236,7 @@ WHERE user_id = $1
   AND action <> 'hash_block'
   AND mode <> 'cyber_log_only'
   AND mode <> 'risk_control_log_only'
+  AND policy_action IS NULL
   AND ($3::bool IS FALSE OR action <> 'cyber_policy')
   AND created_at >= $2
   AND created_at > COALESCE((SELECT at FROM last_auto_ban), '-infinity'::timestamptz)
@@ -238,7 +262,7 @@ func (r *contentModerationRepository) CleanupExpiredLogs(ctx context.Context, hi
 	}
 	hitExec, err := r.db.ExecContext(ctx, `
 DELETE FROM content_moderation_logs
-WHERE flagged = TRUE AND created_at < $1
+WHERE `+contentModerationHitSQL("")+` = TRUE AND created_at < $1
 `, hitBefore)
 	if err != nil {
 		return nil, fmt.Errorf("delete expired hit content moderation logs: %w", err)
@@ -247,7 +271,7 @@ WHERE flagged = TRUE AND created_at < $1
 
 	nonHitExec, err := r.db.ExecContext(ctx, `
 DELETE FROM content_moderation_logs
-WHERE flagged = FALSE AND created_at < $1
+WHERE `+contentModerationHitSQL("")+` = FALSE AND created_at < $1
 `, nonHitBefore)
 	if err != nil {
 		return nil, fmt.Errorf("delete expired non-hit content moderation logs: %w", err)
@@ -274,11 +298,11 @@ func buildContentModerationLogWhere(filter service.ContentModerationLogFilter) (
 	}
 	switch strings.ToLower(strings.TrimSpace(filter.Result)) {
 	case "hit", "flagged":
-		where = append(where, "l.flagged = TRUE")
+		where = append(where, contentModerationHitSQL("l.")+" = TRUE")
 	case "blocked", "block":
 		where = append(where, "l.action IN ('block', 'keyword_block', 'hash_block')")
 	case "pass", "allow":
-		where = append(where, "l.flagged = FALSE AND l.error = ''")
+		where = append(where, contentModerationHitSQL("l.")+" = FALSE AND l.error = ''")
 	case "error":
 		where = append(where, "l.error <> ''")
 	}

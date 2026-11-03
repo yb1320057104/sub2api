@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/auditrisk"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 )
@@ -65,6 +66,7 @@ type StorageEndpoint struct {
 }
 
 type storageConfig struct {
+	RiskPolicy             *auditrisk.Policy `json:"risk_policy"`
 	Engine                 string            `json:"engine"`
 	AuditInstructions      string            `json:"audit_instructions"`
 	LocalRules             []LocalRule       `json:"local_rules"`
@@ -104,6 +106,7 @@ type ActiveEndpoint struct {
 }
 
 type ActiveConfig struct {
+	RiskPolicy             *auditrisk.Policy
 	Engine                 string
 	AuditInstructions      string
 	LocalRules             []LocalRule
@@ -141,28 +144,29 @@ type PublicEndpoint struct {
 }
 
 type PublicConfig struct {
-	DefaultLocalRules        []LocalRule      `json:"default_local_rules"`
-	DefaultAuditInstructions string           `json:"default_audit_instructions"`
-	Engine                   string           `json:"engine"`
-	AuditInstructions        string           `json:"audit_instructions"`
-	LocalRules               []LocalRule      `json:"local_rules"`
-	Enabled                  bool             `json:"enabled"`
-	BlockingEnabled          bool             `json:"blocking_enabled"`
-	BlockingLatestTurnOnly   bool             `json:"blocking_latest_turn_only"`
-	StorePassEvents          bool             `json:"store_pass_events"`
-	EffectiveMode            Mode             `json:"effective_mode"`
-	Strategy                 string           `json:"strategy"`
-	WorkerCount              int              `json:"worker_count"`
-	QueueCapacity            int              `json:"queue_capacity"`
-	Scanners                 []string         `json:"scanners"`
-	AllGroups                bool             `json:"all_groups"`
-	GroupIDs                 []int64          `json:"group_ids"`
-	UserAllowlistIDs         []int64          `json:"user_allowlist_ids"`
-	Endpoints                []PublicEndpoint `json:"endpoints"`
-	ConfigVersion            int64            `json:"config_version"`
-	UpdatedAt                time.Time        `json:"updated_at"`
-	UpdatedBy                int64            `json:"updated_by"`
-	ChangeSummary            string           `json:"change_summary"`
+	RiskPolicy               *auditrisk.Policy `json:"risk_policy"`
+	DefaultLocalRules        []LocalRule       `json:"default_local_rules"`
+	DefaultAuditInstructions string            `json:"default_audit_instructions"`
+	Engine                   string            `json:"engine"`
+	AuditInstructions        string            `json:"audit_instructions"`
+	LocalRules               []LocalRule       `json:"local_rules"`
+	Enabled                  bool              `json:"enabled"`
+	BlockingEnabled          bool              `json:"blocking_enabled"`
+	BlockingLatestTurnOnly   bool              `json:"blocking_latest_turn_only"`
+	StorePassEvents          bool              `json:"store_pass_events"`
+	EffectiveMode            Mode              `json:"effective_mode"`
+	Strategy                 string            `json:"strategy"`
+	WorkerCount              int               `json:"worker_count"`
+	QueueCapacity            int               `json:"queue_capacity"`
+	Scanners                 []string          `json:"scanners"`
+	AllGroups                bool              `json:"all_groups"`
+	GroupIDs                 []int64           `json:"group_ids"`
+	UserAllowlistIDs         []int64           `json:"user_allowlist_ids"`
+	Endpoints                []PublicEndpoint  `json:"endpoints"`
+	ConfigVersion            int64             `json:"config_version"`
+	UpdatedAt                time.Time         `json:"updated_at"`
+	UpdatedBy                int64             `json:"updated_by"`
+	ChangeSummary            string            `json:"change_summary"`
 }
 
 type UpdateEndpoint struct {
@@ -179,6 +183,7 @@ type UpdateEndpoint struct {
 }
 
 type UpdateConfigRequest struct {
+	RiskPolicy             json.RawMessage  `json:"risk_policy,omitempty"`
 	Engine                 string           `json:"engine"`
 	AuditInstructions      string           `json:"audit_instructions"`
 	LocalRules             []LocalRule      `json:"local_rules"`
@@ -226,6 +231,17 @@ func ParseStorageConfig(raw string) (storageConfig, error) {
 	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
 		return storageConfig{}, fmt.Errorf("decode prompt audit config: %w", err)
 	}
+	var policyField struct {
+		RiskPolicy json.RawMessage `json:"risk_policy"`
+	}
+	if err := json.Unmarshal([]byte(raw), &policyField); err != nil {
+		return storageConfig{}, fmt.Errorf("decode prompt audit policy: %w", err)
+	}
+	policy, err := auditrisk.Update(nil, policyField.RiskPolicy)
+	if err != nil {
+		return storageConfig{}, err
+	}
+	cfg.RiskPolicy = policy
 	normalizeStorageConfig(&cfg)
 	if err := validateStorageConfig(cfg); err != nil {
 		return storageConfig{}, err
@@ -289,6 +305,9 @@ func normalizeStorageConfig(cfg *storageConfig) {
 }
 
 func validateStorageConfig(cfg storageConfig) error {
+	if err := cfg.RiskPolicy.Validate(); err != nil {
+		return infraerrors.BadRequest("prompt_audit_risk_policy_invalid", err.Error())
+	}
 	if _, err := service.NormalizeAuditUserAllowlist(cfg.UserAllowlistIDs); err != nil {
 		return err
 	}
@@ -472,7 +491,8 @@ func PublicFromStorage(cfg storageConfig, riskControlEnabled bool, invalidTokenE
 	active := ActiveConfig{RiskControlEnabled: riskControlEnabled, Enabled: cfg.Enabled, BlockingEnabled: cfg.BlockingEnabled}
 	return PublicConfig{
 		DefaultLocalRules: DefaultLocalRules(), DefaultAuditInstructions: DefaultAuditInstructions,
-		Engine: normalizePromptEngine(cfg.Engine), AuditInstructions: cfg.AuditInstructions, LocalRules: append([]LocalRule{}, cfg.LocalRules...),
+		RiskPolicy: auditrisk.Clone(cfg.RiskPolicy),
+		Engine:     normalizePromptEngine(cfg.Engine), AuditInstructions: cfg.AuditInstructions, LocalRules: cloneLocalRules(cfg.LocalRules),
 		Enabled: cfg.Enabled, BlockingEnabled: cfg.BlockingEnabled, BlockingLatestTurnOnly: cfg.BlockingLatestTurnOnly, StorePassEvents: cfg.StorePassEvents,
 		EffectiveMode: active.EffectiveMode(), Strategy: cfg.Strategy, WorkerCount: cfg.WorkerCount,
 		QueueCapacity: cfg.QueueCapacity, Scanners: scanners, AllGroups: false,
@@ -488,7 +508,8 @@ func ActiveFromStorage(cfg storageConfig, riskControlEnabled bool, encryptor Sec
 		return ActiveConfig{}, err
 	}
 	active := ActiveConfig{
-		Engine: normalizePromptEngine(cfg.Engine), AuditInstructions: cfg.AuditInstructions, LocalRules: append([]LocalRule{}, cfg.LocalRules...), compiledRules: compiled,
+		RiskPolicy: auditrisk.Clone(cfg.RiskPolicy),
+		Engine:     normalizePromptEngine(cfg.Engine), AuditInstructions: cfg.AuditInstructions, LocalRules: cloneLocalRules(cfg.LocalRules), compiledRules: compiled,
 		RiskControlEnabled: riskControlEnabled, Enabled: cfg.Enabled, BlockingEnabled: cfg.BlockingEnabled,
 		BlockingLatestTurnOnly: cfg.BlockingLatestTurnOnly,
 		StorePassEvents:        cfg.StorePassEvents, Strategy: cfg.Strategy, WorkerCount: cfg.WorkerCount,
@@ -528,23 +549,25 @@ func ActiveFromStorage(cfg storageConfig, riskControlEnabled bool, encryptor Sec
 
 func changeSummary(cfg storageConfig) string {
 	summary := struct {
-		Engine                 string `json:"engine"`
-		LocalRuleCount         int    `json:"local_rule_count"`
-		LocalRuleHash          string `json:"local_rule_hash"`
-		AuditInstructionHash   string `json:"audit_instruction_hash"`
-		Enabled                bool   `json:"enabled"`
-		BlockingEnabled        bool   `json:"blocking_enabled"`
-		BlockingLatestTurnOnly bool   `json:"blocking_latest_turn_only"`
-		StorePassEvents        bool   `json:"store_pass_events"`
-		EndpointCount          int    `json:"endpoint_count"`
-		ScannerCount           int    `json:"scanner_count"`
-		AllGroups              bool   `json:"all_groups"`
-		GroupCount             int    `json:"group_count"`
-		GroupHash              string `json:"group_hash"`
-		UserAllowlistCount     int    `json:"user_allowlist_count"`
-		UserAllowlistHash      string `json:"user_allowlist_hash"`
+		RiskPolicy             *auditrisk.Policy `json:"risk_policy"`
+		Engine                 string            `json:"engine"`
+		LocalRuleCount         int               `json:"local_rule_count"`
+		LocalRuleHash          string            `json:"local_rule_hash"`
+		AuditInstructionHash   string            `json:"audit_instruction_hash"`
+		Enabled                bool              `json:"enabled"`
+		BlockingEnabled        bool              `json:"blocking_enabled"`
+		BlockingLatestTurnOnly bool              `json:"blocking_latest_turn_only"`
+		StorePassEvents        bool              `json:"store_pass_events"`
+		EndpointCount          int               `json:"endpoint_count"`
+		ScannerCount           int               `json:"scanner_count"`
+		AllGroups              bool              `json:"all_groups"`
+		GroupCount             int               `json:"group_count"`
+		GroupHash              string            `json:"group_hash"`
+		UserAllowlistCount     int               `json:"user_allowlist_count"`
+		UserAllowlistHash      string            `json:"user_allowlist_hash"`
 	}{
-		Engine: normalizePromptEngine(cfg.Engine), LocalRuleCount: len(cfg.LocalRules),
+		RiskPolicy: auditrisk.Clone(cfg.RiskPolicy),
+		Engine:     normalizePromptEngine(cfg.Engine), LocalRuleCount: len(cfg.LocalRules),
 		Enabled: cfg.Enabled, BlockingEnabled: cfg.BlockingEnabled, BlockingLatestTurnOnly: cfg.BlockingLatestTurnOnly,
 		StorePassEvents: cfg.StorePassEvents, EndpointCount: len(cfg.Endpoints), ScannerCount: len(cfg.Scanners),
 		AllGroups: false, GroupCount: len(cfg.GroupIDs),

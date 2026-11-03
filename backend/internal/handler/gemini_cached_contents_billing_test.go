@@ -20,6 +20,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
+	"github.com/Wei-Shaw/sub2api/internal/securityaudit"
 	middleware "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
@@ -469,6 +470,27 @@ func TestGeminiCachedContentsCreate_UnaffordableStorageDeletesUpstreamAndBillsIn
 	totals := env.waitForUsage(t, 1)
 	require.Len(t, totals, 1)
 	require.InDelta(t, cachedBillingTokens*cachedBillingInputPrice, totals[0], 1e-9, "只收已发生的缓存 token 输入费")
+}
+
+func TestSecurityAuditCachedContentChargesOnlySuccessfulCreate(t *testing.T) {
+	for _, balance := range []float64{1, 500} {
+		t.Run(strconv.FormatFloat(balance, 'f', 0, 64), func(t *testing.T) {
+			env := newCachedBillingEnv(t, balance, 900)
+			env.upstream.createBody = cachedBillingCreateBody(time.Now().Add(24 * time.Hour))
+			r := &rankingAuditRecorder{}
+			env.h.cyberAuditRecorder = r
+			env.h.securityAuditCoordinator = securityaudit.NewCoordinator(rankingLegacyEngine{&securityaudit.LegacyDecision{Allowed: true, Flagged: true, PolicyAction: "charge_allow", RiskScore: 40, RiskLevel: "medium"}}, nil)
+			response := env.create()
+			require.Len(t, env.waitForUsage(t, 1), 1, "both completed and rejected requests retain original incurred billing")
+			if balance == 1 {
+				require.NotEqual(t, http.StatusOK, response.Code)
+				require.Empty(t, r.usageInputs, "failed reserve cannot create a risk penalty")
+			} else {
+				require.Equal(t, http.StatusOK, response.Code)
+				require.Len(t, r.usageInputs, 1)
+			}
+		})
+	}
 }
 
 func TestGeminiCachedContentsCreate_UnusableUpstreamResponseCleansUpWithoutRetry(t *testing.T) {

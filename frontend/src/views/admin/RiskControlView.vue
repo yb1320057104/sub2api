@@ -320,10 +320,11 @@
                       <span class="inline-flex rounded-md px-2 py-1 text-xs font-medium" :class="resultBadgeClass(row)">
                         {{ resultLabel(row) }}
                       </span>
+                      <div v-if="row.policy_action && typeof row.risk_score === 'number'" class="mt-1 text-xs text-gray-500" data-test="content-event-score">{{ row.risk_score }} / 100 · {{ t(`admin.promptAudit.riskPolicy.actions.${row.policy_action}`) }}</div>
                     </td>
                     <td class="whitespace-nowrap px-5 py-4 text-sm text-gray-700 dark:text-gray-300">
                       <div>{{ row.highest_category || '-' }}</div>
-                      <div class="text-xs text-gray-400">{{ percent(row.highest_score) }}</div>
+                      <div class="text-xs text-gray-400">{{ row.policy_action && typeof row.risk_score === 'number' ? `${row.risk_score} / 100` : percent(row.highest_score) }}</div>
                       <div v-if="row.matched_keyword" class="mt-0.5 text-xs font-medium text-red-600 dark:text-red-300" :title="t('admin.riskControl.matchedKeyword') + ': ' + row.matched_keyword">
                         {{ t('admin.riskControl.matchedKeyword') }}: {{ row.matched_keyword }}
                       </div>
@@ -552,6 +553,7 @@
                       <div>
                         <p class="text-sm font-semibold text-gray-900 dark:text-white">{{ t('admin.riskControl.auditTestInput') }}</p>
                         <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.auditTestInputHint') }}</p>
+                        <p v-if="configForm.risk_policy" class="mt-2 text-xs leading-5 text-amber-700 dark:text-amber-300" data-test="api-test-policy-scope">{{ t('admin.promptAudit.riskPolicy.apiTestHint') }}</p>
                       </div>
                       <button
                         v-if="moderationTestPrompt || moderationTestImages.length > 0 || moderationTestResult"
@@ -920,6 +922,8 @@
           </div>
 
           <div v-else-if="activeSettingsTab === 'riskThresholds'" class="space-y-5">
+            <AuditRiskPolicyPanel v-model="configForm.risk_policy" audit="content" :synchronous="configForm.enabled && configForm.mode === 'pre_block'" />
+            <div v-if="!configForm.risk_policy" class="space-y-5" data-test="legacy-category-thresholds">
             <p class="text-sm font-medium">{{ engineLabel(configForm.engine) }}</p>
             <p v-if="configForm.engine === 'typesafe'" class="text-sm text-amber-700 dark:text-amber-300">{{ t('admin.riskControl.typeSafeThresholds') }}</p>
             <div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
@@ -975,6 +979,7 @@
                   </div>
                 </div>
               </div>
+            </div>
             </div>
           </div>
 
@@ -1056,6 +1061,7 @@
                 {{ t('admin.riskControl.blockedKeywordsLimit', { max: blockedKeywordMax }) }}
               </p>
             </div>
+            <ContentKeywordScores v-if="configForm.risk_policy" :keywords="blockedKeywordList" :scores="configForm.keyword_scores" :disabled="configForm.keyword_blocking_mode === 'api_only'" @update:scores="configForm.keyword_scores = $event" />
           </div>
 
           <div v-else class="grid grid-cols-1 gap-5 lg:grid-cols-2">
@@ -1117,11 +1123,12 @@
               <span class="mt-1 inline-flex rounded-md px-2 py-1 text-xs font-medium" :class="resultBadgeClass(inputDetailRow)">
                 {{ resultLabel(inputDetailRow) }}
               </span>
+              <p v-if="inputDetailRow.policy_action && typeof inputDetailRow.risk_score === 'number'" class="mt-2 text-xs" data-test="content-event-policy-action">{{ t(`admin.promptAudit.riskPolicy.actions.${inputDetailRow.policy_action}`) }}</p>
             </div>
             <div class="rounded-lg border border-gray-100 bg-gray-50 p-4 dark:border-dark-700 dark:bg-dark-800/70">
               <p class="text-xs font-medium text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.table.highest') }}</p>
               <p class="mt-1 truncate text-sm font-semibold text-gray-900 dark:text-white">
-                {{ inputDetailRow.highest_category || '-' }} / {{ percent(inputDetailRow.highest_score) }}
+                {{ inputDetailRow.highest_category || '-' }} / {{ inputDetailRow.policy_action && typeof inputDetailRow.risk_score === 'number' ? `${inputDetailRow.risk_score} / 100` : percent(inputDetailRow.highest_score) }}
               </p>
             </div>
             <div v-if="inputDetailRow.matched_keyword" class="rounded-lg border border-red-100 bg-red-50 p-4 dark:border-red-900/60 dark:bg-red-900/20">
@@ -1130,6 +1137,7 @@
             </div>
           </div>
 
+          <p class="text-xs leading-5 text-gray-500 dark:text-gray-400">{{ t('admin.promptAudit.riskPolicy.recordHint') }}</p>
           <div class="rounded-xl border border-gray-100 bg-white p-4 shadow-sm dark:border-dark-700 dark:bg-dark-800">
             <div class="flex flex-wrap items-center justify-between gap-3">
               <div>
@@ -1188,7 +1196,11 @@ import type { AdminGroup, Proxy, SelectOption } from '@/types'
 import { useAppStore } from '@/stores/app'
 import { extractApiErrorMessage } from '@/utils/apiError'
 import { formatDateTime as formatDateTimeValue } from '@/utils/format'
-import { CONTENT_AUDIT_KEYWORD_TEMPLATES, mergeContentAuditKeywords, parseContentAuditKeywords } from '@/utils/contentAuditKeywordTemplates'
+import { CONTENT_AUDIT_KEYWORD_TEMPLATES, contentAuditTemplateScore, mergeContentAuditKeywords, parseContentAuditKeywords } from '@/utils/contentAuditKeywordTemplates'
+import AuditRiskPolicyPanel from '@/components/admin/AuditRiskPolicyPanel.vue'
+import ContentKeywordScores from '@/components/admin/ContentKeywordScores.vue'
+import { auditKeywordKey, auditKeywordScoresPayload, validAuditRiskPolicy, validAuditScore } from '@/types/auditRiskPolicy'
+import type { AuditRiskPolicy } from '@/types/auditRiskPolicy'
 
 type SettingsTab = 'basic' | 'scope' | 'runtime' | 'response' | 'riskThresholds' | 'retention' | 'keywords'
 type WorkerSlotState = 'active' | 'idle' | 'disabled'
@@ -1271,6 +1283,8 @@ const engineLabel = (engine: ModerationEngine) => engine === 'typesafe' ? 'TypeS
 let statusTimer: number | null = null
 
 const configForm = reactive({
+  risk_policy: undefined as AuditRiskPolicy | null | undefined,
+  keyword_scores: {} as Record<string, number>,
   engine: 'openai' as ModerationEngine,
   enabled: false,
   mode: 'pre_block' as ModerationMode,
@@ -1395,12 +1409,12 @@ const keywordBlockingModeOptions = computed<Array<{ value: KeywordBlockingMode; 
   {
     value: 'keyword_and_api',
     label: t('admin.riskControl.keywordModeKeywordAndApi'),
-    description: t('admin.riskControl.keywordModeKeywordAndApiDesc'),
+    description: t(configForm.risk_policy ? 'admin.promptAudit.riskPolicy.keywordAndApi' : 'admin.riskControl.keywordModeKeywordAndApiDesc'),
   },
   {
     value: 'keyword_only',
     label: t('admin.riskControl.keywordModeKeywordOnly'),
-    description: t('admin.riskControl.keywordModeKeywordOnlyDesc'),
+    description: t(configForm.risk_policy ? 'admin.promptAudit.riskPolicy.keywordOnly' : 'admin.riskControl.keywordModeKeywordOnlyDesc'),
   },
   {
     value: 'api_only',
@@ -1458,6 +1472,13 @@ const keywordNotice = computed<KeywordNoticeView>(() => {
       ...keywordNoticeTones.info,
       title: t('admin.riskControl.keywordModeApiOnlyNotice'),
       description: t('admin.riskControl.keywordModeApiOnlyDesc'),
+    }
+  }
+  if (configForm.risk_policy) {
+    return {
+      ...keywordNoticeTones.info,
+      title: t('admin.promptAudit.riskPolicy.keywordNotice'),
+      description: t(configForm.mode !== 'pre_block' ? 'admin.promptAudit.riskPolicy.contentModeHint' : strategy === 'keyword_only' ? 'admin.promptAudit.riskPolicy.keywordOnly' : 'admin.promptAudit.riskPolicy.keywordAndApi'),
     }
   }
   if (configForm.mode !== 'pre_block') {
@@ -1796,6 +1817,8 @@ const runtimeBadgeClass = computed(() => {
 })
 
 function applyConfig(config: ContentModerationConfig) {
+  configForm.risk_policy = config.risk_policy == null ? config.risk_policy : { ...config.risk_policy }
+  configForm.keyword_scores = Object.fromEntries(Object.entries(config.keyword_scores ?? {}).map(([keyword, score]) => [auditKeywordKey(keyword), score]))
   savedEngine.value = config.engine ?? 'openai'
   configForm.engine = savedEngine.value
   configForm.enabled = config.enabled
@@ -1896,12 +1919,23 @@ async function loadStatus(silent = true) {
 async function saveConfig() {
   saving.value = true
   try {
+    if (!validAuditRiskPolicy(configForm.risk_policy)) {
+      appStore.showError(t('admin.promptAudit.riskPolicy.invalid'))
+      return
+    }
+    const keywordScores = auditKeywordScoresPayload(blockedKeywordList.value, configForm.keyword_scores)
+    if (Object.values(keywordScores).some(score => !validAuditScore(score))) {
+      appStore.showError(t('admin.promptAudit.riskPolicy.invalidScore'))
+      return
+    }
     const modelFilterPayload = buildModelFilterPayload()
     if (modelFilterPayload.type !== 'all' && modelFilterPayload.models.length === 0) {
       appStore.showError(t('admin.riskControl.modelFilterModelsRequired'))
       return
     }
     const payload: UpdateContentModerationConfig = {
+      risk_policy: configForm.risk_policy == null ? configForm.risk_policy : { ...configForm.risk_policy },
+      keyword_scores: keywordScores,
       engine: configForm.engine,
       enabled: configForm.enabled,
       mode: configForm.mode,
@@ -2064,7 +2098,9 @@ function appendKeywordTemplates(keywords: readonly string[]) {
     appStore.showError(t('admin.riskControl.keywordTemplatesLimit', { max: blockedKeywordMax }))
     return
   }
+  const existing = new Set(blockedKeywordList.value.map(auditKeywordKey))
   const added = merged.length - blockedKeywordCount.value
+  configForm.keyword_scores = { ...configForm.keyword_scores, ...Object.fromEntries(merged.filter(keyword => !existing.has(auditKeywordKey(keyword))).map(keyword => [auditKeywordKey(keyword), contentAuditTemplateScore(keyword)])) }
   configForm.blocked_keywords_text = merged.join('\n')
   keywordTemplateFeedback.value = t('admin.riskControl.keywordTemplatesAppended', { count: added })
 }

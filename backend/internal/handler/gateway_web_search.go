@@ -240,8 +240,10 @@ func (h *GatewayHandler) WebSearch(c *gin.Context) {
 			).Info("gateway.web_search.search_price_per_1k_explicit_free")
 		}
 	}
+	auditRequestSucceeded := c.Request.Context().Err() == nil
 	h.submitMandatoryUsageRecordTask(c.Request.Context(), func(ctx context.Context) {
 		if err := h.gatewayService.RecordUsage(ctx, &service.RecordUsageInput{
+			AuditRequestSucceeded: auditRequestSucceeded,
 			Result: &service.ForwardResult{
 				RequestID:   searchRequestID,
 				Model:       "grok-" + strings.ReplaceAll(searchLabel, "_", "-"),

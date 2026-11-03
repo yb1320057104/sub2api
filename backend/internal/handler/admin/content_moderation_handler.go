@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"encoding/json"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +21,8 @@ func NewContentModerationHandler(svc *service.ContentModerationService) *Content
 }
 
 type contentModerationConfigRequest struct {
+	RiskPolicy    json.RawMessage                                       `json:"risk_policy"`
+	KeywordScores *map[string]int                                       `json:"keyword_scores"`
 	Engine        *string                                               `json:"engine"`
 	EngineConfigs map[string]service.UpdateContentModerationEngineInput `json:"engine_configs"`
 	Enabled       *bool                                                 `json:"enabled"`
@@ -92,6 +95,7 @@ func (h *ContentModerationHandler) UpdateConfig(c *gin.Context) {
 		return
 	}
 	cfg, err := h.service.UpdateConfig(c.Request.Context(), service.UpdateContentModerationConfigInput{
+		RiskPolicy: req.RiskPolicy, KeywordScores: req.KeywordScores,
 		Engine: req.Engine, EngineConfigs: req.EngineConfigs,
 		Enabled:                        req.Enabled,
 		Mode:                           req.Mode,

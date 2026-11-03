@@ -257,7 +257,12 @@ func (s *BatchImagePublicService) Submit(ctx context.Context, owner BatchImageOw
 	accountID := account.ID
 	holdID := BatchImageHoldRequestID(batchID)
 	holdAmount := pricingSnapshot.HoldAmount
+	auditSnapshot := CyberPolicyAuditUsageInput(ctx)
+	if auditSnapshot != nil && (auditSnapshot.UserID != owner.UserID || !sameCyberAuditGroup(auditSnapshot.GroupID, owner.GroupID)) {
+		auditSnapshot = nil
+	}
 	job, err := s.Repo.CreateBatchImageJob(ctx, CreateBatchImageJobParams{
+		AuditSnapshot:           auditSnapshot,
 		BatchID:                 batchID,
 		UserID:                  owner.UserID,
 		APIKeyID:                &apiKeyID,

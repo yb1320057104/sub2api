@@ -65,6 +65,7 @@ export function createDefaultEndpoint(index = 1): PromptAuditEndpointDraft {
 export function buildUpdateRequest(draft: PromptAuditDraft): PromptAuditUpdateRequest {
   return {
     engine: draft.engine,
+    risk_policy: draft.risk_policy == null ? draft.risk_policy : { ...draft.risk_policy },
     audit_instructions: draft.audit_instructions,
     local_rules: cloneData(draft.local_rules),
     expected_config_version: draft.config_version,

@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { PromptAuditConfig, PromptLocalRule } from '../types'
+import { defaultAuditRiskPolicy } from '@/types/auditRiskPolicy'
+import { defaultAuditRiskPolicy } from '@/types/auditRiskPolicy'
 import {
   buildUpdateRequest,
   configToDraft,
@@ -34,6 +36,28 @@ const config = (): PromptAuditConfig => ({
 })
 
 describe('Prompt Audit view model', () => {
+  it('preserves missing policy as legacy, explicit null as disable, and score zero without applying defaults', () => {
+    const legacy = configToDraft(config())
+    expect(buildUpdateRequest(legacy).risk_policy).toBeUndefined()
+    const source = { ...config(), risk_policy: defaultAuditRiskPolicy(), local_rules: [{ id: 'one', name: 'One', kind: 'keyword' as const, pattern: 'test', category: 'pii', action: 'warn' as const, enabled: true, case_sensitive: false, score: 0 }] }
+    const draft = configToDraft(source)
+    draft.risk_policy!.low_threshold = 0
+    expect(source.risk_policy.low_threshold).toBe(20)
+    expect(buildUpdateRequest(draft).local_rules[0].score).toBe(0)
+    draft.risk_policy = null
+    expect(buildUpdateRequest(draft).risk_policy).toBeNull()
+  })
+  it('preserves missing policy as legacy, explicit null as disable, and score zero without applying defaults', () => {
+    const legacy = configToDraft(config())
+    expect(buildUpdateRequest(legacy).risk_policy).toBeUndefined()
+    const source = { ...config(), risk_policy: defaultAuditRiskPolicy(), local_rules: [{ id: 'one', name: 'One', kind: 'keyword' as const, pattern: 'test', category: 'pii', action: 'warn' as const, enabled: true, case_sensitive: false, score: 0 }] }
+    const draft = configToDraft(source)
+    draft.risk_policy!.low_threshold = 0
+    expect(source.risk_policy.low_threshold).toBe(20)
+    expect(buildUpdateRequest(draft).local_rules[0].score).toBe(0)
+    draft.risk_policy = null
+    expect(buildUpdateRequest(draft).risk_policy).toBeNull()
+  })
   it('uses local rules only for an unconfigured installation and preserves a saved engine choice', () => {
     expect(configToDraft({ ...config(), enabled: false, updated_at: '', endpoints: [] }).engine).toBe('local_rules')
     expect(configToDraft({ ...config(), engine: 'remote', enabled: false, endpoints: [] }).engine).toBe('remote')

@@ -20,6 +20,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/auditrisk"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/httpclient"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
@@ -140,12 +141,14 @@ func ContentModerationCategories() []string {
 }
 
 type ContentModerationConfig struct {
-	Engine   string                         `json:"engine,omitempty"`
-	TypeSafe *ContentModerationEngineConfig `json:"typesafe,omitempty"`
-	Enabled  bool                           `json:"enabled"`
-	Mode     string                         `json:"mode"`
-	BaseURL  string                         `json:"base_url"`
-	Model    string                         `json:"model"`
+	RiskPolicy    *auditrisk.Policy              `json:"risk_policy"`
+	KeywordScores map[string]int                 `json:"keyword_scores"`
+	Engine        string                         `json:"engine,omitempty"`
+	TypeSafe      *ContentModerationEngineConfig `json:"typesafe,omitempty"`
+	Enabled       bool                           `json:"enabled"`
+	Mode          string                         `json:"mode"`
+	BaseURL       string                         `json:"base_url"`
+	Model         string                         `json:"model"`
 	// ProxyID 指定审计请求使用的代理服务器（IP管理-代理服务器），nil 表示直连。
 	ProxyID              *int64                       `json:"proxy_id,omitempty"`
 	APIKey               string                       `json:"api_key,omitempty"`
@@ -179,6 +182,8 @@ type ContentModerationConfig struct {
 }
 
 type ContentModerationConfigView struct {
+	RiskPolicy                     *auditrisk.Policy                       `json:"risk_policy"`
+	KeywordScores                  map[string]int                          `json:"keyword_scores"`
 	Engine                         string                                  `json:"engine"`
 	EngineConfigs                  map[string]*ContentModerationConfigView `json:"engine_configs,omitempty"`
 	Enabled                        bool                                    `json:"enabled"`
@@ -277,6 +282,8 @@ type ContentModerationTestAuditResult struct {
 }
 
 type UpdateContentModerationConfigInput struct {
+	RiskPolicy    json.RawMessage                               `json:"risk_policy"`
+	KeywordScores *map[string]int                               `json:"keyword_scores"`
 	Engine        *string                                       `json:"engine"`
 	EngineConfigs map[string]UpdateContentModerationEngineInput `json:"engine_configs"`
 	Enabled       *bool                                         `json:"enabled"`
@@ -388,6 +395,9 @@ func (in ContentModerationInput) Hash() string {
 }
 
 type ContentModerationDecision struct {
+	RiskScore       float64            `json:"risk_score"`
+	RiskLevel       string             `json:"risk_level"`
+	PolicyAction    string             `json:"policy_action"`
 	Allowed         bool               `json:"allowed"`
 	Blocked         bool               `json:"blocked"`
 	Flagged         bool               `json:"flagged"`
@@ -401,6 +411,9 @@ type ContentModerationDecision struct {
 }
 
 type ContentModerationLog struct {
+	RiskScore         *float64                     `json:"risk_score"`
+	RiskLevel         string                       `json:"risk_level"`
+	PolicyAction      string                       `json:"policy_action"`
 	EngineMeta        *ContentModerationEngineMeta `json:"engine_meta,omitempty"`
 	ID                int64                        `json:"id"`
 	RequestID         string                       `json:"request_id"`
@@ -633,6 +646,16 @@ func (s *ContentModerationService) UpdateConfig(ctx context.Context, input Updat
 	cfg, err := s.loadConfig(ctx)
 	if err != nil {
 		return nil, err
+	}
+	cfg.RiskPolicy, err = auditrisk.Update(cfg.RiskPolicy, input.RiskPolicy)
+	if err != nil {
+		return nil, infraerrors.BadRequest("INVALID_CONTENT_MODERATION_RISK_POLICY", err.Error())
+	}
+	if input.KeywordScores != nil {
+		cfg.KeywordScores, err = normalizeContentModerationKeywordScores(*input.KeywordScores)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if input.Engine != nil {
 		if !validModerationEngine(*input.Engine) {
@@ -876,6 +899,9 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
 			decision.Allowed, decision.Blocked = true, false
 			decision.Action = ContentModerationActionAllow
 			decision.Message, decision.StatusCode = "", 0
+			if decision.PolicyAction != "" {
+				decision.PolicyAction = auditrisk.Allow
+			}
 		}
 	}()
 	cfg := runtimeSnapshot.config
@@ -948,35 +974,41 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
 	if cfg.Mode == ContentModerationModePreBlock {
 		if cfg.KeywordBlockingMode != ContentModerationKeywordModeAPIOnly && len(cfg.BlockedKeywords) > 0 {
 			keywordText := extractContentModerationKeywordText(input.Protocol, input.Body)
-			if keyword, hit := runtimeSnapshot.matchBlockedKeyword(keywordText); hit {
-				metricAction := ContentModerationActionKeywordBlock
-				if input.riskControlLogOnly {
-					metricAction = ContentModerationActionAllow
+			if cfg.RiskPolicy != nil {
+				if keyword, score, hit := runtimeSnapshot.matchRiskKeyword(keywordText); hit {
+					return s.keywordRiskDecision(input, cfg, keywordText, keyword, score), nil
 				}
-				s.recordPreBlockSyncMetric(0, metricAction)
-				slog.Info("content_moderation.keyword_block",
-					"user_id", input.UserID,
-					"api_key_id", input.APIKeyID,
-					"group_id", contentModerationLogGroupID(input.GroupID),
-					"endpoint", input.Endpoint,
-					"protocol", input.Protocol,
-					"keyword_blocking_mode", cfg.KeywordBlockingMode,
-					"keyword", keyword)
-				scores := map[string]float64{contentModerationKeywordCategory: 1.0}
-				log := s.buildLog(input, cfg, ContentModerationActionKeywordBlock, true, contentModerationKeywordCategory, 1.0, scores, keywordText, nil, nil, "")
-				log.MatchedKeyword = keyword
-				s.enqueueRecord(input, cfg, log, (ContentModerationInput{Text: keywordText}).Hash(), false, true)
-				return &ContentModerationDecision{
-					Allowed:         false,
-					Blocked:         true,
-					Flagged:         true,
-					Message:         cfg.BlockMessage,
-					StatusCode:      cfg.BlockStatus,
-					HighestCategory: contentModerationKeywordCategory,
-					HighestScore:    1.0,
-					CategoryScores:  scores,
-					Action:          ContentModerationActionKeywordBlock,
-				}, nil
+			} else {
+				if keyword, hit := runtimeSnapshot.matchBlockedKeyword(keywordText); hit {
+					metricAction := ContentModerationActionKeywordBlock
+					if input.riskControlLogOnly {
+						metricAction = ContentModerationActionAllow
+					}
+					s.recordPreBlockSyncMetric(0, metricAction)
+					slog.Info("content_moderation.keyword_block",
+						"user_id", input.UserID,
+						"api_key_id", input.APIKeyID,
+						"group_id", contentModerationLogGroupID(input.GroupID),
+						"endpoint", input.Endpoint,
+						"protocol", input.Protocol,
+						"keyword_blocking_mode", cfg.KeywordBlockingMode,
+						"keyword", keyword)
+					scores := map[string]float64{contentModerationKeywordCategory: 1.0}
+					log := s.buildLog(input, cfg, ContentModerationActionKeywordBlock, true, contentModerationKeywordCategory, 1.0, scores, keywordText, nil, nil, "")
+					log.MatchedKeyword = keyword
+					s.enqueueRecord(input, cfg, log, (ContentModerationInput{Text: keywordText}).Hash(), false, true)
+					return &ContentModerationDecision{
+						Allowed:         false,
+						Blocked:         true,
+						Flagged:         true,
+						Message:         cfg.BlockMessage,
+						StatusCode:      cfg.BlockStatus,
+						HighestCategory: contentModerationKeywordCategory,
+						HighestScore:    1.0,
+						CategoryScores:  scores,
+						Action:          ContentModerationActionKeywordBlock,
+					}, nil
+				}
 			}
 		}
 		if cfg.KeywordBlockingMode == ContentModerationKeywordModeKeywordOnly {
@@ -987,6 +1019,9 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
 				"group_id", contentModerationLogGroupID(input.GroupID),
 				"endpoint", input.Endpoint,
 				"protocol", input.Protocol)
+			if cfg.RiskPolicy != nil {
+				return contentModerationRiskDecision(cfg, 0, "none", auditrisk.Allow, "", nil, ContentModerationActionKeywordBlock), nil
+			}
 			return allow, nil
 		}
 	}
@@ -1011,7 +1046,9 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
 		"text_runes", len([]rune(content.Text)),
 		"image_count", len(content.Images))
 	hashText := content.Hash()
-	if cfg.PreHashCheckEnabled && s.hashCache != nil {
+	// Legacy hash entries have no score or policy version. A graded policy must
+	// recompute current evidence instead of promoting an old boolean hit to block.
+	if cfg.RiskPolicy == nil && cfg.PreHashCheckEnabled && s.hashCache != nil {
 		matched, err := s.hashCache.HasFlaggedInputHash(ctx, hashText)
 		if err != nil {
 			slog.Warn("content_moderation.hash_check_failed", "user_id", input.UserID, "endpoint", input.Endpoint, "error", err)
@@ -1127,6 +1164,9 @@ func (s *ContentModerationService) checkSync(ctx context.Context, input ContentM
 	}
 
 	flagged, highestCategory, highestScore := evaluateModerationScores(result.CategoryScores, cfg.Thresholds)
+	if cfg.RiskPolicy != nil {
+		return s.apiRiskDecision(ctx, input, cfg, content, result, latency, queueDelay, allowBlock, trackPreBlock)
+	}
 	action := ContentModerationActionAllow
 	blocked := false
 	if allowBlock && !input.riskControlLogOnly && flagged && cfg.Mode == ContentModerationModePreBlock {
@@ -1555,6 +1595,20 @@ func parseContentModerationConfig(raw string) (*ContentModerationConfig, error) 
 	if err := json.Unmarshal([]byte(raw), cfg); err != nil {
 		return nil, infraerrors.BadRequest("INVALID_CONTENT_MODERATION_CONFIG", "内容审计配置不是有效 JSON")
 	}
+	var riskFields struct {
+		RiskPolicy json.RawMessage `json:"risk_policy"`
+	}
+	if err := json.Unmarshal([]byte(raw), &riskFields); err != nil {
+		return nil, err
+	}
+	policy, err := auditrisk.Update(nil, riskFields.RiskPolicy)
+	if err != nil {
+		return nil, infraerrors.BadRequest("INVALID_CONTENT_MODERATION_RISK_POLICY", err.Error())
+	}
+	cfg.RiskPolicy = policy
+	if err := validateContentModerationRiskConfig(cfg); err != nil {
+		return nil, err
+	}
 	cfg.normalize()
 	if !validModerationEngine(cfg.Engine) {
 		return nil, infraerrors.BadRequest("INVALID_CONTENT_MODERATION_ENGINE", "内容审计引擎无效")
@@ -1717,6 +1771,9 @@ func (s *ContentModerationService) isRiskControlEnabled(ctx context.Context) boo
 func (s *ContentModerationService) validateConfig(ctx context.Context, cfg *ContentModerationConfig) error {
 	if cfg == nil {
 		return infraerrors.BadRequest("INVALID_CONTENT_MODERATION_CONFIG", "内容审计配置不能为空")
+	}
+	if err := validateContentModerationRiskConfig(cfg); err != nil {
+		return err
 	}
 	cfg.normalize()
 	if !validModerationEngine(cfg.Engine) {
@@ -1971,6 +2028,12 @@ func (s *ContentModerationService) persistContentModerationLog(ctx context.Conte
 	if log.Mode == ContentModerationModeRiskControlLogOnly {
 		recordHash, applySideEffects = false, false
 	}
+	if log.PolicyAction != "" {
+		recordHash = false
+		if log.PolicyAction == auditrisk.Allow {
+			applySideEffects = false
+		}
+	}
 	if recordHash && s.hashCache != nil {
 		if err := s.hashCache.RecordFlaggedInputHash(ctx, hashText); err != nil {
 			slog.Warn("content_moderation.record_hash_failed", "user_id", contentModerationEmailUserID(log), "endpoint", log.Endpoint, "error", err)
@@ -1978,7 +2041,10 @@ func (s *ContentModerationService) persistContentModerationLog(ctx context.Conte
 	}
 	autoBanJustApplied := false
 	if applySideEffects {
-		autoBanJustApplied = s.applyFlaggedAccountSideEffects(ctx, cfg, log)
+		// Graded penalties are counted once by the unified audit event recorder.
+		if log.PolicyAction == "" {
+			autoBanJustApplied = s.applyFlaggedAccountSideEffects(ctx, cfg, log)
+		}
 		s.sendFlaggedNotificationSideEffects(ctx, cfg, log, autoBanJustApplied)
 	}
 	if s.repo != nil {
@@ -2196,6 +2262,8 @@ func cloneContentModerationConfig(cfg *ContentModerationConfig) *ContentModerati
 		return nil
 	}
 	clone := *cfg
+	clone.RiskPolicy = auditrisk.Clone(cfg.RiskPolicy)
+	clone.KeywordScores = cloneContentModerationKeywordScores(cfg.KeywordScores)
 	if cfg.TypeSafe != nil {
 		clone.TypeSafe = cfg.engineProfile(ContentModerationEngineTypeSafe)
 	}
@@ -2494,6 +2562,8 @@ func (s *ContentModerationService) configView(cfg *ContentModerationConfig) *Con
 		apiKeyMasked = masks[0]
 	}
 	return &ContentModerationConfigView{
+		RiskPolicy:                     auditrisk.Clone(cfg.RiskPolicy),
+		KeywordScores:                  cloneContentModerationKeywordScores(cfg.KeywordScores),
 		Engine:                         cfg.Engine,
 		Enabled:                        cfg.Enabled,
 		Mode:                           cfg.Mode,

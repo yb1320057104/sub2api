@@ -1,5 +1,7 @@
 # PK出版部署指南
 
+pk.49最终范围同时包含审计风险分级和兼容迁移260，前端需要本次新构建。只发布GitHub供用户切换；回退保留新增证据及已执行账务，不撤销扣款或重跑历史。Xvfb专项已完成，最终制品状态以PK_AUDIT_RISK_PK49_REVIEW.md为准。
+
 本指南用于获得授权的部署者，在**全新 Linux x86_64（amd64）服务器**上安装 PK出版。源码、镜像、网页更新和恢复版本均来自 [yb1320057104/sub2api 私库](https://github.com/yb1320057104/sub2api)。程序没有绑定固定服务器 IP 或域名。
 
 部署前先查看[私有 Releases](https://github.com/yb1320057104/sub2api/releases)的说明，选择新私库中已正式发布、完成验收的明确版本；当前发行物仅支持 `linux/amd64`。迁入 Git 历史或标签不代表对应 Release 资产和 GHCR 镜像已发布。
@@ -158,6 +160,8 @@ docker exec <应用容器名> sh -c 'command -v chromium; command -v Xvfb; chrom
 ```
 
 **为什么必须装 Xvfb**：无头 Chromium 常被 Cloudflare 判为机器人，授权流程在挑战失败后会切换到“后台真 Chrome 会话”，这需要一个图形环境。既没有 `Xvfb` 也没有 `DISPLAY` 时，后台会话报 `browser_display_missing`。
+
+pk.48及更早版本的同一提示也可能是`:90`～`:99`的残留锁占满，不能只凭提示重复安装。先以应用用户检查Xvfb可执行性与显示进程；不要批量删除显示锁，仍有进程使用的显示会受影响。pk.49起使用Xvfb自动分配和就绪通知，正常退出优先TERM，避免固定十槽耗尽；旧残锁不要求人工清空。该程序修复可通过网页更新生效，外置浏览器依赖仍按上述方式管理。
 
 ### 8.2 自动补装
 

@@ -399,7 +399,7 @@ const cyberPublicRankingCTE = `WITH source_counts AS (
  LEFT JOIN cyber_policy_count_events e ON e.usage_id=l.id AND e.usage_created_at=l.created_at
  WHERE l.request_type=4 AND l.created_at >= $1 AND l.created_at < $2 GROUP BY l.user_id
  UNION ALL
- SELECT b.user_id,COUNT(*) AS trigger_count,` + cyberAuditCountColumns + `,COUNT(*) AS audit_block_count
+ SELECT b.user_id,COUNT(*) AS trigger_count,` + cyberAuditCountColumns + `,COUNT(*) FILTER (WHERE b.policy_action='block') AS audit_block_count
  FROM cyber_policy_audit_blocks b JOIN users u ON u.id=b.user_id AND u.deleted_at IS NULL
  WHERE b.created_at >= $1 AND b.created_at < $2 GROUP BY b.user_id
 ), counts AS (
@@ -415,7 +415,7 @@ const cyberRankingCTE = `WITH source_counts AS (
  LEFT JOIN cyber_policy_count_events e ON e.usage_id=l.id AND e.usage_created_at=l.created_at
  WHERE l.request_type=4 AND l.created_at >= $1 AND l.created_at < $2 GROUP BY l.user_id
  UNION ALL
- SELECT b.user_id,COUNT(*) AS trigger_count,0::bigint AS usage_count,0::bigint AS deducted_count,` + cyberAuditCountColumns + `,COUNT(*) AS audit_block_count
+ SELECT b.user_id,COUNT(*) AS trigger_count,0::bigint AS usage_count,0::bigint AS deducted_count,` + cyberAuditCountColumns + `,COUNT(*) FILTER (WHERE b.policy_action='block') AS audit_block_count
  FROM cyber_policy_audit_blocks b JOIN users u ON u.id=b.user_id AND u.deleted_at IS NULL
  WHERE b.created_at >= $1 AND b.created_at < $2 GROUP BY b.user_id
 ), counts AS (
@@ -479,6 +479,10 @@ func (s *CyberPolicyService) Ranking(ctx context.Context, input CyberPolicyWindo
 }
 
 type CyberPolicyCountRecord struct {
+	PolicyAction     string     `json:"policy_action"`
+	RiskScore        *float64   `json:"risk_score"`
+	RiskLevel        *string    `json:"risk_level"`
+	LinkedUsageID    *int64     `json:"linked_usage_id"`
 	UsageID          int64      `json:"usage_id"`
 	AuditID          *int64     `json:"audit_id"`
 	RecordKey        string     `json:"record_key"`
@@ -521,7 +525,8 @@ const cyberRecordsQuery = `WITH records AS (
  COALESCE(e.count_reason,'historical_unknown') AS count_reason,e.scope_matched,e.settings_revision,e.evaluated_at,
  'upstream_policy'::text AS source,NULL::bigint AS audit_id,
  COALESCE(ac.status,'historical_unknown') AS auto_charge_status,COALESCE(ac.reason,'') AS auto_charge_reason,
- ac.actual_cost::text AS actual_cost,ac.multiplier::text AS audit_multiplier,ac.amount::text AS auto_charge_amount
+ ac.actual_cost::text AS actual_cost,ac.multiplier::text AS audit_multiplier,ac.amount::text AS auto_charge_amount,
+ ''::text AS policy_action,NULL::numeric AS risk_score,NULL::text AS risk_level,NULL::bigint AS linked_usage_id
  FROM usage_logs l
  LEFT JOIN cyber_policy_count_events e ON e.usage_id=l.id AND e.usage_created_at=l.created_at
  LEFT JOIN groups g ON g.id=l.group_id
@@ -530,13 +535,16 @@ const cyberRecordsQuery = `WITH records AS (
  UNION ALL
  SELECT 0::bigint AS usage_id,b.created_at AS occurred_at,b.group_id,b.group_name,b.request_id,b.model,
  b.count_status,b.count_reason,b.scope_matched,b.settings_revision,b.evaluated_at,b.source,b.id AS audit_id,
- COALESCE(ac.status,'historical_unknown'),COALESCE(ac.reason,''),ac.actual_cost::text,ac.multiplier::text,ac.amount::text
+ COALESCE(ac.status,'historical_unknown'),COALESCE(ac.reason,''),ac.actual_cost::text,ac.multiplier::text,ac.amount::text,
+ b.policy_action,b.risk_score,b.risk_level,b.usage_id AS linked_usage_id
  FROM cyber_policy_audit_blocks b
- LEFT JOIN cyber_policy_auto_charges ac ON ac.audit_id=b.id
+ LEFT JOIN cyber_policy_auto_charges ac ON ac.audit_id=b.id OR
+ (b.policy_action='charge_allow' AND ac.usage_id=b.usage_id AND ac.usage_created_at=b.usage_created_at)
  WHERE b.user_id=$1 AND b.created_at >= $2 AND b.created_at < $3
 )
  SELECT usage_id,occurred_at,group_id,group_name,request_id,model,count_status,count_reason,
- scope_matched,settings_revision,evaluated_at,source,audit_id,auto_charge_status,auto_charge_reason,actual_cost,audit_multiplier,auto_charge_amount FROM records
+ scope_matched,settings_revision,evaluated_at,source,audit_id,auto_charge_status,auto_charge_reason,actual_cost,audit_multiplier,auto_charge_amount,
+ policy_action,risk_score,risk_level,linked_usage_id FROM records
  ORDER BY occurred_at DESC,source,usage_id DESC,audit_id DESC NULLS LAST LIMIT $4 OFFSET $5`
 
 // Records is administrator-only at the handler. Decisions come from immutable
@@ -589,7 +597,7 @@ func (s *CyberPolicyService) Records(ctx context.Context, userID int64, input Cy
 		var groupID, revision, auditID sql.NullInt64
 		var scope sql.NullBool
 		var evaluated sql.NullTime
-		if err := rows.Scan(&item.UsageID, &item.OccurredAt, &groupID, &item.GroupName, &item.RequestID, &item.Model, &item.CountStatus, &item.CountReason, &scope, &revision, &evaluated, &item.Source, &auditID, &item.AutoChargeStatus, &item.AutoChargeReason, &item.ActualCost, &item.AuditMultiplier, &item.AutoChargeAmount); err != nil {
+		if err := rows.Scan(&item.UsageID, &item.OccurredAt, &groupID, &item.GroupName, &item.RequestID, &item.Model, &item.CountStatus, &item.CountReason, &scope, &revision, &evaluated, &item.Source, &auditID, &item.AutoChargeStatus, &item.AutoChargeReason, &item.ActualCost, &item.AuditMultiplier, &item.AutoChargeAmount, &item.PolicyAction, &item.RiskScore, &item.RiskLevel, &item.LinkedUsageID); err != nil {
 			return nil, err
 		}
 		if auditID.Valid {

@@ -7,6 +7,7 @@ import RiskControlView from '../RiskControlView.vue'
 import type { ContentModerationAPIKeyStatus, ContentModerationConfig, UpdateContentModerationConfig } from '@/api/admin/riskControl'
 import { CONTENT_AUDIT_KEYWORD_TEMPLATES } from '@/utils/contentAuditKeywordTemplates'
 import UserAllowlistSelector from '@/components/admin/user/UserAllowlistSelector.vue'
+import { defaultAuditRiskPolicy } from '@/types/auditRiskPolicy'
 
 const userMocks = vi.hoisted(() => ({ list: vi.fn(), getById: vi.fn() }))
 vi.mock('@/api/admin/users', () => ({ default: userMocks }))
@@ -225,6 +226,57 @@ describe('admin RiskControlView', () => {
       api_key_masks: [],
       api_key_statuses: [],
     }))
+  })
+
+  it('keeps old audit policy until enabled, saves keyword scores and clears scored mode explicitly', async () => {
+    const config = { ...baseConfig(), blocked_keywords: ['Custom', '忽略之前的所有指令'], keyword_scores: { custom: 0, '忽略之前的所有指令': 7 } }
+    getConfig.mockResolvedValue(config)
+    updateConfig.mockImplementation(async (payload: UpdateContentModerationConfig) => ({ ...config, ...payload }))
+    const wrapper = mount(RiskControlView, { global: { stubs: { AppLayout: AppLayoutStub, BaseDialog: BaseDialogStub, Icon: true, Select: true, Toggle: true, Pagination: true, ModelWhitelistSelector: ModelWhitelistSelectorStub, ProxySelector: true } } })
+    await flushPromises()
+    await findButtonByText(wrapper, 'admin.riskControl.openSettings').trigger('click')
+    await findButtonByText(wrapper, 'admin.riskControl.tabs.riskThresholds').trigger('click')
+    expect(wrapper.find('[data-test="content-risk-policy-legacy"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="legacy-category-thresholds"]').exists()).toBe(true)
+    expect(updateConfig).not.toHaveBeenCalled()
+    await wrapper.get('[data-test="content-risk-policy-enabled"]').setValue(true)
+    await wrapper.get('[data-test="content-risk-medium-action"]').setValue('charge_allow')
+    expect(wrapper.find('[data-test="legacy-category-thresholds"]').exists()).toBe(false)
+    await findButtonByText(wrapper, 'admin.riskControl.tabs.keywords').trigger('click')
+    await wrapper.get('[data-test="keyword-template-instruction_override"]').trigger('click')
+    await wrapper.get('[data-test="keyword-template-credential_theft"]').trigger('click')
+    await findButtonByText(wrapper, 'admin.riskControl.saveConfig').trigger('click')
+    await flushPromises()
+    expect(updateConfig).toHaveBeenLastCalledWith(expect.objectContaining({
+      risk_policy: { ...defaultAuditRiskPolicy(), medium_action: 'charge_allow' },
+      keyword_scores: expect.objectContaining({ custom: 0, '忽略之前的所有指令': 7, '忽略上面的安全规则': 20, '窃取他人的登录密码': 80 }),
+    }))
+    await findButtonByText(wrapper, 'admin.riskControl.openSettings').trigger('click')
+    await findButtonByText(wrapper, 'admin.riskControl.tabs.riskThresholds').trigger('click')
+    await wrapper.get('[data-test="content-risk-policy-enabled"]').setValue(false)
+    await findButtonByText(wrapper, 'admin.riskControl.saveConfig').trigger('click')
+    await flushPromises()
+    expect(updateConfig).toHaveBeenLastCalledWith(expect.objectContaining({ risk_policy: null, keyword_scores: expect.objectContaining({ custom: 0 }) }))
+    expect(testAPIKeys).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('rejects invalid thresholds and keyword scores before sending any save request', async () => {
+    getConfig.mockResolvedValue({ ...baseConfig(), risk_policy: defaultAuditRiskPolicy(), blocked_keywords: ['Custom'] })
+    const wrapper = mount(RiskControlView, { global: { stubs: { AppLayout: AppLayoutStub, BaseDialog: BaseDialogStub, Icon: true, Select: true, Toggle: true, Pagination: true, ModelWhitelistSelector: ModelWhitelistSelectorStub, ProxySelector: true } } })
+    await flushPromises()
+    await findButtonByText(wrapper, 'admin.riskControl.openSettings').trigger('click')
+    await findButtonByText(wrapper, 'admin.riskControl.tabs.riskThresholds').trigger('click')
+    await wrapper.get('[data-test="content-risk-medium-threshold"]').setValue(20)
+    await findButtonByText(wrapper, 'admin.riskControl.saveConfig').trigger('click')
+    expect(showError).toHaveBeenLastCalledWith('admin.promptAudit.riskPolicy.invalid')
+    await wrapper.get('[data-test="content-risk-medium-threshold"]').setValue(40)
+    await findButtonByText(wrapper, 'admin.riskControl.tabs.keywords').trigger('click')
+    await wrapper.get('[data-keyword-score="Custom"]').setValue('')
+    await findButtonByText(wrapper, 'admin.riskControl.saveConfig').trigger('click')
+    expect(showError).toHaveBeenLastCalledWith('admin.promptAudit.riskPolicy.invalidScore')
+    expect(updateConfig).not.toHaveBeenCalled()
+    wrapper.unmount()
   })
 
   it('selects content audit exempt users by email or ID, preserves missing IDs, and explicitly clears the saved list', async () => {

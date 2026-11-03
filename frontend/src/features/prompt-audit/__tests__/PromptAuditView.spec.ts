@@ -5,6 +5,8 @@ import type { PromptAuditConfig, PromptAuditDraft, PromptAuditRuntime, PromptAud
 import { SCANNER_CATALOG } from '../viewModel'
 import PromptAuditView from '../PromptAuditView.vue'
 import LocalRulePanel from '../components/LocalRulePanel.vue'
+import { defaultAuditRiskPolicy } from '@/types/auditRiskPolicy'
+import { defaultAuditRiskPolicy } from '@/types/auditRiskPolicy'
 
 const mocks = vi.hoisted(() => ({
   getConfig: vi.fn(), updateConfig: vi.fn(), probeEndpoint: vi.fn(), getRuntime: vi.fn(), listEvents: vi.fn(),
@@ -72,6 +74,80 @@ describe('PromptAuditView', () => {
     mocks.deleteEventsByFilter.mockResolvedValue({ deleted_events: 2, deleted_jobs: 2 })
     mocks.deleteEvent.mockResolvedValue({ deleted_events: 1, deleted_jobs: 1 })
     mocks.batchDeleteEvents.mockResolvedValue({ deleted_events: 2, deleted_jobs: 2 })
+  })
+
+  it('opts into scored policy without changing legacy actions, saves zero scores, and explicitly restores legacy mode', async () => {
+    const oldRule = { id: 'one', name: 'Existing', kind: 'keyword' as const, pattern: 'custom phrase', category: 'pii', action: 'block' as const, enabled: true, case_sensitive: false }
+    const config = { ...baseConfig(), engine: 'local_rules' as const, local_rules: [oldRule] }
+    mocks.getConfig.mockResolvedValue(config)
+    mocks.updateConfig.mockImplementation(async (payload: PromptAuditUpdateRequest) => ({ ...config, ...payload, config_version: 8 }))
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.get('[data-test="tab-config"]').trigger('click')
+    expect(wrapper.find('[data-test="prompt-risk-policy-legacy"]').exists()).toBe(true)
+    expect(mocks.updateConfig).not.toHaveBeenCalled()
+    await wrapper.get('[data-test="prompt-risk-policy-enabled"]').setValue(true)
+    expect(wrapper.get<HTMLInputElement>('[data-test="local-rule-score-0"]').element.value).toBe('100')
+    await wrapper.get('[data-test="local-rule-score-0"]').setValue(0)
+    await wrapper.get('[data-test="prompt-risk-medium-action"]').setValue('charge_allow')
+    await wrapper.get('[data-test="save-config"]').trigger('click')
+    await flushPromises()
+    expect(mocks.updateConfig).toHaveBeenLastCalledWith(expect.objectContaining({ risk_policy: { ...defaultAuditRiskPolicy(), medium_action: 'charge_allow' }, local_rules: [{ ...oldRule, score: 0 }] }))
+    await wrapper.get('[data-test="prompt-risk-policy-enabled"]').setValue(false)
+    await wrapper.get('[data-test="save-config"]').trigger('click')
+    await flushPromises()
+    expect(mocks.updateConfig).toHaveBeenLastCalledWith(expect.objectContaining({ risk_policy: null, local_rules: [{ ...oldRule, score: 0 }] }))
+    expect(mocks.probeEndpoint).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('rejects invalid risk thresholds before sending configuration', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.get('[data-test="tab-config"]').trigger('click')
+    await wrapper.get('[data-test="prompt-risk-policy-enabled"]').setValue(true)
+    await wrapper.get('[data-test="prompt-risk-high-threshold"]').setValue(40)
+    await wrapper.get('[data-test="save-config"]').trigger('click')
+    expect(mocks.updateConfig).not.toHaveBeenCalled()
+    expect(mocks.showError).toHaveBeenCalledWith('admin.promptAudit.riskPolicy.invalid')
+    wrapper.unmount()
+  })
+
+  it('opts into scored policy without changing legacy actions, saves zero scores, and explicitly restores legacy mode', async () => {
+    const oldRule = { id: 'one', name: 'Existing', kind: 'keyword' as const, pattern: 'custom phrase', category: 'pii', action: 'block' as const, enabled: true, case_sensitive: false }
+    const config = { ...baseConfig(), engine: 'local_rules' as const, local_rules: [oldRule] }
+    mocks.getConfig.mockResolvedValue(config)
+    mocks.updateConfig.mockImplementation(async (payload: PromptAuditUpdateRequest) => ({ ...config, ...payload, config_version: 8 }))
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.get('[data-test="tab-config"]').trigger('click')
+    expect(wrapper.find('[data-test="prompt-risk-policy-legacy"]').exists()).toBe(true)
+    expect(mocks.updateConfig).not.toHaveBeenCalled()
+    await wrapper.get('[data-test="prompt-risk-policy-enabled"]').setValue(true)
+    expect(wrapper.get<HTMLInputElement>('[data-test="local-rule-score-0"]').element.value).toBe('100')
+    await wrapper.get('[data-test="local-rule-score-0"]').setValue(0)
+    await wrapper.get('[data-test="prompt-risk-medium-action"]').setValue('charge_allow')
+    await wrapper.get('[data-test="save-config"]').trigger('click')
+    await flushPromises()
+    expect(mocks.updateConfig).toHaveBeenLastCalledWith(expect.objectContaining({ risk_policy: { ...defaultAuditRiskPolicy(), medium_action: 'charge_allow' }, local_rules: [{ ...oldRule, score: 0 }] }))
+    await wrapper.get('[data-test="prompt-risk-policy-enabled"]').setValue(false)
+    await wrapper.get('[data-test="save-config"]').trigger('click')
+    await flushPromises()
+    expect(mocks.updateConfig).toHaveBeenLastCalledWith(expect.objectContaining({ risk_policy: null, local_rules: [{ ...oldRule, score: 0 }] }))
+    expect(mocks.probeEndpoint).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('rejects invalid risk thresholds before sending configuration', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.get('[data-test="tab-config"]').trigger('click')
+    await wrapper.get('[data-test="prompt-risk-policy-enabled"]').setValue(true)
+    await wrapper.get('[data-test="prompt-risk-high-threshold"]').setValue(40)
+    await wrapper.get('[data-test="save-config"]').trigger('click')
+    expect(mocks.updateConfig).not.toHaveBeenCalled()
+    expect(mocks.showError).toHaveBeenCalledWith('admin.promptAudit.riskPolicy.invalid')
+    wrapper.unmount()
   })
 
   it('saves local auditing with selected groups without any endpoint or probe', async () => {

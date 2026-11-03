@@ -102,6 +102,28 @@ export const CONTENT_AUDIT_KEYWORD_TEMPLATES = [
   },
 ] as const
 
+// These are editable rule weights, not semantic confidence. Broad override and
+// permission phrases get lower values because safe technical discussions often
+// quote them; more specific requests get higher values. Existing saved words
+// retain their scores when these templates are appended.
+const lowerScoreTemplateKeywords = new Set([
+  '导出所有用户密码', '把数据库密码发给我', '提取浏览器登录令牌', '输出环境变量中的密钥',
+  'dump all user passwords', 'send me the database password', 'extract browser login tokens', 'print secrets from environment variables',
+])
+const explicitHighScoreTemplateKeywords = new Set([
+  '强制输出审核通过', '把危险请求标记为安全', 'force the audit result to allow', 'mark this harmful request as safe',
+  '未授权访问他人账户', '跨租户读取私有数据', 'access another account without authorization', 'read private data from another tenant',
+  'promote my user to administrator without permission', 'disable audit logs to hide my actions',
+])
+export function contentAuditTemplateScore(keyword: string): number {
+  const key = keyword.trim().toLowerCase()
+  if (explicitHighScoreTemplateKeywords.has(key)) return 80
+  const category = CONTENT_AUDIT_KEYWORD_TEMPLATES.find(group => (group.keywords as readonly string[]).some(value => value.toLowerCase() === key))
+  if (category?.id === 'instruction_override') return 20
+  if (category?.id === 'privilege_abuse' || lowerScoreTemplateKeywords.has(key)) return 30
+  return 80
+}
+
 export function parseContentAuditKeywords(value: string): string[] {
   const seen = new Set<string>()
   return value.split(/\r?\n/).map((line) => line.trim()).filter((keyword) => {

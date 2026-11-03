@@ -282,6 +282,9 @@ func (h *GatewayHandler) GeminiCachedContentsCreate(c *gin.Context) {
 		if err != nil {
 			reqLog.Info("gemini.cached_content.storage_charge_rejected", zap.Float64("amount", amount), zap.Error(err))
 			h.cleanupGeminiCachedContentUpstream(reqLog, account, upstream.Name)
+			// The failed request retains its incurred input bill, but did not
+			// successfully create a usable cache and cannot incur an audit penalty.
+			c.Request = c.Request.WithContext(service.WithoutCyberPolicyAuditUsage(c.Request.Context()))
 			h.submitGeminiCachedContentUsage(c, apiKey, account, subscription, pricingAt,
 				service.GeminiCachedContentCreateUsageRequestID(publicID), modelName, mappedModel, int(tokens), 0, usageFields, body)
 			writeGeminiCachedContentBillingError(c, err)
@@ -689,22 +692,24 @@ func (h *GatewayHandler) submitGeminiCachedContentUsage(
 	clientIP := ip.GetClientIP(c)
 	requestPayloadHash := service.HashUsageRequestPayload(payload)
 	quotaPlatform := service.QuotaPlatform(c.Request.Context(), apiKey)
+	auditRequestSucceeded := c.Request.Context().Err() == nil
 	h.submitMandatoryUsageRecordTask(c.Request.Context(), func(ctx context.Context) {
 		if err := h.gatewayService.RecordUsage(ctx, &service.RecordUsageInput{
-			Result:             result,
-			APIKey:             apiKey,
-			User:               apiKey.User,
-			Account:            account,
-			Subscription:       subscription,
-			PricingAt:          pricingAt,
-			InboundEndpoint:    inboundEndpoint,
-			UpstreamEndpoint:   upstreamEndpoint,
-			UserAgent:          userAgent,
-			IPAddress:          clientIP,
-			RequestPayloadHash: requestPayloadHash,
-			APIKeyService:      h.apiKeyService,
-			QuotaPlatform:      quotaPlatform,
-			ChannelUsageFields: usageFields,
+			AuditRequestSucceeded: auditRequestSucceeded,
+			Result:                result,
+			APIKey:                apiKey,
+			User:                  apiKey.User,
+			Account:               account,
+			Subscription:          subscription,
+			PricingAt:             pricingAt,
+			InboundEndpoint:       inboundEndpoint,
+			UpstreamEndpoint:      upstreamEndpoint,
+			UserAgent:             userAgent,
+			IPAddress:             clientIP,
+			RequestPayloadHash:    requestPayloadHash,
+			APIKeyService:         h.apiKeyService,
+			QuotaPlatform:         quotaPlatform,
+			ChannelUsageFields:    usageFields,
 		}); err != nil {
 			logger.L().With(
 				zap.String("component", "handler.gemini_v1beta.cached_contents"),

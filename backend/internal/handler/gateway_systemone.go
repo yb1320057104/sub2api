@@ -261,23 +261,25 @@ func (h *GatewayHandler) recordSystemOneUsage(c *gin.Context, apiKey *service.AP
 	// pricing and usage fields before handing the task to an asynchronous worker.
 	channelUsageFields := clientRequestedUsageFields(c, mapping, model, result.UpstreamModel)
 
+	auditRequestSucceeded := c.Request.Context().Err() == nil
 	h.submitMandatoryUsageRecordTask(c.Request.Context(), func(ctx context.Context) {
 		if err := h.gatewayService.RecordUsage(ctx, &service.RecordUsageInput{
-			Result:             &result.ForwardResult,
-			APIKey:             apiKey,
-			User:               apiKey.User,
-			Account:            account,
-			Subscription:       subscription,
-			PricingAt:          pricingAt,
-			InboundEndpoint:    inboundEndpoint,
-			UpstreamEndpoint:   upstreamEndpoint,
-			UserAgent:          userAgent,
-			IPAddress:          clientIP,
-			SessionID:          sessionID,
-			RequestPayloadHash: requestPayloadHash,
-			APIKeyService:      h.apiKeyService,
-			QuotaPlatform:      quotaPlatform,
-			ChannelUsageFields: channelUsageFields,
+			AuditRequestSucceeded: auditRequestSucceeded,
+			Result:                &result.ForwardResult,
+			APIKey:                apiKey,
+			User:                  apiKey.User,
+			Account:               account,
+			Subscription:          subscription,
+			PricingAt:             pricingAt,
+			InboundEndpoint:       inboundEndpoint,
+			UpstreamEndpoint:      upstreamEndpoint,
+			UserAgent:             userAgent,
+			IPAddress:             clientIP,
+			SessionID:             sessionID,
+			RequestPayloadHash:    requestPayloadHash,
+			APIKeyService:         h.apiKeyService,
+			QuotaPlatform:         quotaPlatform,
+			ChannelUsageFields:    channelUsageFields,
 		}); err != nil {
 			logger.L().With(
 				zap.String("component", "handler.gateway.systemone"),

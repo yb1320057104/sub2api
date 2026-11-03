@@ -32,6 +32,16 @@ const (
 	liveUpstreamBodyLimit         = 2 << 20
 )
 
+// Keep the existing error identity for controller lifecycle callers while
+// distinguishing a real terminal event from disconnect/expiry/read failure.
+var errLiveAuditCompleted = fmt.Errorf("live terminal event: %w", ErrLiveCallNotFound)
+
+func (s *OpenAIGatewayService) SetCyberAuditUsageRecorder(recorder CyberPolicyAuditUsageRecorder) {
+	if s != nil {
+		s.cyberAuditUsageRecorder = recorder
+	}
+}
+
 // liveObserverStoreRetryInterval 是 var 以便测试缩短 store 报错的重试等待。
 var liveObserverStoreRetryInterval = time.Second
 
@@ -213,6 +223,7 @@ func (s *OpenAIGatewayService) CreateLiveCall(
 			model = "gpt-live"
 		}
 		record := &LiveCallRecord{
+			AuditAction:           CyberPolicyAuditUsageInput(ctx),
 			CallID:                created.CallID,
 			CallHash:              hashLiveCallID(created.CallID),
 			AccountID:             account.ID,
@@ -551,7 +562,7 @@ func (s *OpenAIGatewayService) ProxyLiveSideband(
 			if messageType == coderws.MessageText {
 				eventType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
 				if eventType == "session.closed" || eventType == "session.ended" {
-					errCh <- ErrLiveCallNotFound
+					errCh <- errLiveAuditCompleted
 					return
 				}
 			}
@@ -562,7 +573,7 @@ func (s *OpenAIGatewayService) ProxyLiveSideband(
 	cancel()
 	_, _ = store.ReleaseLiveController(context.Background(), record.CallHash, owner)
 	if liveSessionEnded(runErr) || !time.Now().Before(record.ExpiresAt) {
-		s.finalizeLiveCall(record)
+		s.finalizeLiveCallWithAudit(record, errors.Is(runErr, errLiveAuditCompleted))
 		return runErr
 	}
 	go s.observeLiveCall(record)
@@ -670,7 +681,7 @@ func (s *OpenAIGatewayService) observeLiveCall(record *LiveCallRecord) {
 			return
 		}
 		if liveSessionEnded(runErr) {
-			s.finalizeLiveCall(record)
+			s.finalizeLiveCallWithAudit(record, errors.Is(runErr, errLiveAuditCompleted))
 			return
 		}
 		if !s.waitForLiveObserverRetry(record) {
@@ -715,7 +726,7 @@ func (s *OpenAIGatewayService) runLiveObserverConnection(record *LiveCallRecord,
 		case payload := <-frameCh:
 			eventType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
 			if eventType == "session.closed" || eventType == "session.ended" {
-				return ErrLiveCallNotFound
+				return errLiveAuditCompleted
 			}
 		case err := <-errCh:
 			return err
@@ -795,6 +806,10 @@ func (s *OpenAIGatewayService) releaseLiveLease(accountID, userID, apiKeyID int6
 }
 
 func (s *OpenAIGatewayService) finalizeLiveCall(record *LiveCallRecord) {
+	s.finalizeLiveCallWithAudit(record, false)
+}
+
+func (s *OpenAIGatewayService) finalizeLiveCallWithAudit(record *LiveCallRecord, completed bool) {
 	if record == nil {
 		return
 	}
@@ -832,7 +847,11 @@ func (s *OpenAIGatewayService) finalizeLiveCall(record *LiveCallRecord) {
 	//
 	// 这是该会话唯一一次落库机会（MarkLiveCallClosed 已标记 first），失败即永久
 	// 丢失，因此走带日志与同步兜底的 writeUsageLogBestEffort（issue #3656）。
-	writeUsageLogBestEffort(context.Background(), s.usageLogRepo, &UsageLog{
+	usageCtx := context.Background()
+	if completed && record.AuditAction != nil && s.cyberAuditUsageRecorder != nil {
+		usageCtx = WithCyberPolicyAuditUsage(usageCtx, *record.AuditAction, s.cyberAuditUsageRecorder)
+	}
+	writeUsageLogBestEffort(usageCtx, s.usageLogRepo, &UsageLog{
 		UserID:           record.UserID,
 		APIKeyID:         record.APIKeyID,
 		AccountID:        record.AccountID,

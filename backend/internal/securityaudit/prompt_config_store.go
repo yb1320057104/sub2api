@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/auditrisk"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/lib/pq"
@@ -413,7 +414,7 @@ func (m *ConfigManager) buildNextStorage(current storageConfig, req UpdateConfig
 		currentByID[endpoint.ID] = endpoint
 	}
 	next := storageConfig{
-		Engine: normalizePromptEngine(req.Engine), AuditInstructions: req.AuditInstructions, LocalRules: append([]LocalRule{}, req.LocalRules...),
+		Engine: normalizePromptEngine(req.Engine), AuditInstructions: req.AuditInstructions, LocalRules: cloneLocalRules(req.LocalRules),
 		Enabled: req.Enabled, BlockingEnabled: req.BlockingEnabled, BlockingLatestTurnOnly: req.BlockingLatestTurnOnly, StorePassEvents: req.StorePassEvents,
 		Strategy: strings.TrimSpace(req.Strategy), WorkerCount: req.WorkerCount,
 		QueueCapacity: req.QueueCapacity, Scanners: append([]string(nil), req.Scanners...),
@@ -422,13 +423,17 @@ func (m *ConfigManager) buildNextStorage(current storageConfig, req UpdateConfig
 		Endpoints: make([]StorageEndpoint, 0, len(req.Endpoints)),
 	}
 	if req.LocalRules == nil {
-		next.LocalRules = append([]LocalRule{}, current.LocalRules...)
+		next.LocalRules = cloneLocalRules(current.LocalRules)
 	}
 	users := req.UserAllowlistIDs
 	if users == nil {
 		users = current.UserAllowlistIDs
 	}
 	var err error
+	next.RiskPolicy, err = auditrisk.Update(current.RiskPolicy, req.RiskPolicy)
+	if err != nil {
+		return storageConfig{}, infraerrors.BadRequest("prompt_audit_risk_policy_invalid", err.Error())
+	}
 	next.UserAllowlistIDs, err = service.NormalizeAuditUserAllowlist(users)
 	if err != nil {
 		return storageConfig{}, err
@@ -601,7 +606,8 @@ func (m *ConfigManager) clearLoadError() bool {
 }
 
 func cloneStorageConfig(cfg storageConfig) storageConfig {
-	cfg.LocalRules = append([]LocalRule{}, cfg.LocalRules...)
+	cfg.LocalRules = cloneLocalRules(cfg.LocalRules)
+	cfg.RiskPolicy = auditrisk.Clone(cfg.RiskPolicy)
 	cfg.Scanners = append([]string(nil), cfg.Scanners...)
 	cfg.GroupIDs = append([]int64(nil), cfg.GroupIDs...)
 	cfg.UserAllowlistIDs = append([]int64{}, cfg.UserAllowlistIDs...)
@@ -610,7 +616,8 @@ func cloneStorageConfig(cfg storageConfig) storageConfig {
 }
 
 func cloneActiveConfig(cfg ActiveConfig) ActiveConfig {
-	cfg.LocalRules = append([]LocalRule{}, cfg.LocalRules...)
+	cfg.LocalRules = cloneLocalRules(cfg.LocalRules)
+	cfg.RiskPolicy = auditrisk.Clone(cfg.RiskPolicy)
 	cfg.compiledRules = append([]compiledLocalRule(nil), cfg.compiledRules...)
 	cfg.Scanners = append([]string(nil), cfg.Scanners...)
 	cfg.GroupIDs = append([]int64(nil), cfg.GroupIDs...)

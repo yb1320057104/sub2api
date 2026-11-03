@@ -55,12 +55,13 @@ func (r *BatchImageModelPricingResolver) BatchImageUnitPrice(ctx context.Context
 }
 
 type BatchImageSettlementService struct {
-	Repo         BatchImageRepository
-	BillingRepo  UsageBillingRepository
-	UsageLogRepo UsageLogRepository
-	Pricing      BatchImagePricingResolver
-	AuthCache    APIKeyAuthCacheInvalidator
-	Config       *config.Config
+	AuditRecorder CyberPolicyAuditUsageRecorder
+	Repo          BatchImageRepository
+	BillingRepo   UsageBillingRepository
+	UsageLogRepo  UsageLogRepository
+	Pricing       BatchImagePricingResolver
+	AuthCache     APIKeyAuthCacheInvalidator
+	Config        *config.Config
 }
 
 type BatchImageSettlementResult struct {
@@ -279,6 +280,16 @@ func (s *BatchImageSettlementService) recordUsageLog(ctx context.Context, job *B
 		ImageSize:             &imageSize,
 		SessionID:             job.SessionID,
 		CreatedAt:             createdAt,
+	}
+	ctx = WithoutCyberPolicyAuditUsage(ctx)
+	if input := job.AuditSnapshot; input != nil && input.UserID == job.UserID {
+		if input.GroupID != nil {
+			groupID := *input.GroupID
+			usageLog.GroupID = &groupID
+		}
+		if job.ItemCount > 0 && job.SuccessCount == job.ItemCount && job.FailCount == 0 && job.CancelledCount == 0 && s.AuditRecorder != nil {
+			ctx = WithCyberPolicyAuditUsage(ctx, *input, s.AuditRecorder)
+		}
 	}
 	writeUsageLogBestEffort(ctx, s.UsageLogRepo, usageLog, "service.batch_image_settlement")
 }

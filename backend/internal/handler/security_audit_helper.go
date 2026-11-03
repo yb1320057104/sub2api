@@ -126,6 +126,9 @@ func runSecurityAudit(c *gin.Context, reqLog *zap.Logger, coordinator *securitya
 			}
 		}
 	}
+	// A new group or WS turn is a fresh decision. Never carry a previous
+	// charge_allow into an unaudited/allowed fallback or a later turn.
+	c.Request = c.Request.WithContext(service.WithoutCyberPolicyAuditUsage(c.Request.Context()))
 	if coordinator == nil {
 		legacyDecision := runContentModeration(c, reqLog, legacy, apiKey, subject, protocol, model, body)
 		if legacyDecision == nil {
@@ -136,6 +139,7 @@ func runSecurityAudit(c *gin.Context, reqLog *zap.Logger, coordinator *securitya
 			Allowed: legacyDecision.Allowed, Blocked: legacyDecision.Blocked, Flagged: legacyDecision.Flagged,
 			Message: legacyDecision.Message, StatusCode: legacyDecision.StatusCode,
 			ErrorCode: "content_policy_violation", Action: legacyDecision.Action,
+			RiskScore: legacyDecision.RiskScore, RiskLevel: legacyDecision.RiskLevel, PolicyAction: legacyDecision.PolicyAction,
 		}
 		if legacyDecision.Blocked {
 			decision.Kind, decision.HTTPStatus, decision.ErrorCode, decision.ClientMessage, decision.AllowNextStage = securityaudit.DecisionBlock, contentModerationStatus(legacyDecision), "content_policy_violation", legacyDecision.Message, false
@@ -159,7 +163,7 @@ func runSecurityAudit(c *gin.Context, reqLog *zap.Logger, coordinator *securitya
 			}
 			logSecurityAuditStart(reqLog, request, len(body), false)
 			decision := coordinator.Check(c.Request.Context(), request)
-			if decision.Kind == securityaudit.DecisionAllow {
+			if decision.AllowNextStage {
 				c.Set(securityAuditWSDedupeContextKey, securityAuditWSDedupeEntry{
 					stage: request.Stage, turn: turnNo, bodyHash: bodyHash, decision: decision, scope: scope,
 				})

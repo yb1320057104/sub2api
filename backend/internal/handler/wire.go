@@ -152,6 +152,7 @@ func ProvideOpenAIGatewayHandler(
 	h.securityAuditCoordinator = coordinator
 	h.grokMediaEligibilityProber = grokQuotaService
 	h.cyberAuditRecorder = cyberPolicy
+	gatewayService.SetCyberAuditUsageRecorder(cyberPolicy)
 	return h
 }
 

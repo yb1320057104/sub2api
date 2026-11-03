@@ -43,6 +43,9 @@ func AggregateResults(results []*NormalizedResult, latency time.Duration) (*Norm
 		if result == nil {
 			return nil, errors.New("prompt guard partial result is not allowed")
 		}
+		if result.RiskScore > aggregated.RiskScore {
+			aggregated.RiskScore = result.RiskScore
+		}
 		if resultSeverity(result.Decision) > resultSeverity(aggregated.Decision) {
 			aggregated.ScannerBackend = result.ScannerBackend
 			aggregated.Decision = result.Decision

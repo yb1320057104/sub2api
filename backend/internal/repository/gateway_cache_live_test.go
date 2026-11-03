@@ -60,3 +60,30 @@ func TestGatewayCacheLiveCallIdentityAndController(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, closed)
 }
+
+func TestGatewayCacheLiveAuditSnapshotPrivateRoundTrip(t *testing.T) {
+	redisServer := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: redisServer.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	store := NewGatewayCache(client).(service.LiveCallStore)
+	group, score := int64(44), 65.0
+	record := &service.LiveCallRecord{CallID: "call_audit", CallHash: HashLiveCallID("call_audit"), UserID: 33, GroupID: group,
+		CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour),
+		AuditAction: &service.CyberPolicyAuditBlockInput{EventKey: "server-private:http", UserID: 33, GroupID: &group, PolicyAction: "charge_allow", RiskScore: &score}}
+	require.NoError(t, store.SaveLiveCall(context.Background(), record, time.Hour))
+	loaded, err := store.GetLiveCall(context.Background(), record.CallHash)
+	require.NoError(t, err)
+	require.Equal(t, record.AuditAction, loaded.AuditAction)
+	// A refreshed legacy record must not inherit previous optional evidence.
+	record.AuditAction = nil
+	require.NoError(t, store.SaveLiveCall(context.Background(), record, time.Hour))
+	loaded, err = store.GetLiveCall(context.Background(), record.CallHash)
+	require.NoError(t, err)
+	require.Nil(t, loaded.AuditAction)
+	// Invalid optional data does not prevent normal Live identity recovery.
+	require.NoError(t, client.HSet(context.Background(), liveCallKey(record.CallHash), "audit_action", "malformed").Err())
+	loaded, err = store.GetLiveCall(context.Background(), record.CallHash)
+	require.NoError(t, err)
+	require.Nil(t, loaded.AuditAction)
+	require.Equal(t, record.UserID, loaded.UserID)
+}

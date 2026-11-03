@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -421,6 +422,14 @@ func (c *gatewayCache) SaveLiveCall(ctx context.Context, record *service.LiveCal
 		"ip_address":       record.IPAddress,
 		"inbound_endpoint": record.InboundEndpoint,
 		"attestation":      record.AttestationCiphertext,
+		"audit_action":     "",
+	}
+	if record.AuditAction != nil {
+		encoded, err := json.Marshal(record.AuditAction)
+		if err != nil {
+			return err
+		}
+		values["audit_action"] = string(encoded)
 	}
 	key := liveCallKey(record.CallHash)
 	pipe := c.rdb.TxPipeline()
@@ -444,7 +453,15 @@ func (c *gatewayCache) GetLiveCall(ctx context.Context, callHash string) (*servi
 	}
 	createdAt := time.UnixMilli(parseInt("created_at"))
 	expiresAt := time.UnixMilli(parseInt("expires_at"))
+	var auditAction *service.CyberPolicyAuditBlockInput
+	if raw := values["audit_action"]; raw != "" {
+		// Old/invalid optional evidence never prevents original Live lifecycle.
+		if err := json.Unmarshal([]byte(raw), &auditAction); err != nil {
+			auditAction = nil
+		}
+	}
 	return &service.LiveCallRecord{
+		AuditAction:           auditAction,
 		CallID:                values["call_id"],
 		CallHash:              callHash,
 		AccountID:             parseInt("account_id"),

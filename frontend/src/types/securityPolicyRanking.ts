@@ -56,6 +56,10 @@ export interface SecurityPolicyRankingSettings {
 }
 
 export interface SecurityPolicyTriggerRecord {
+  policy_action?: string
+  risk_score?: number | null
+  risk_level?: string | null
+  linked_usage_id?: number | null
   usage_id: number
   record_key?: string
   source?: 'upstream_policy' | 'content_audit' | 'prompt_audit' | 'combined_audit'

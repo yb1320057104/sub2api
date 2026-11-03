@@ -87,11 +87,11 @@ func TestCyberPolicyRecordsKeepsHistoricalUnknownAndInsertionEvidence(t *testing
 	mock.ExpectQuery(regexp.QuoteMeta(cyberRecordsCountQuery)).
 		WithArgs(int64(7), start, end).WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(4))
 	mock.ExpectQuery(regexp.QuoteMeta(cyberRecordsQuery)).WithArgs(int64(7), start, end, 100, 0).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at", "group_id", "group_name", "request_id", "model", "status", "reason", "scope", "revision", "evaluated_at", "source", "audit_id", "charge_status", "charge_reason", "cost", "multiplier", "charge_amount"}).
-			AddRow(3, start.Add(3*time.Hour), 9, "original skipped group", "request-c", "model", "skipped", "group_not_enabled", false, 12, evaluated, "upstream_policy", nil, "skipped", "group_not_enabled", "0.0200000000", "1.000000", "0.02000000").
-			AddRow(2, start.Add(2*time.Hour), 7, "original counted group", "request-b", "model", "counted", "", true, 11, evaluated, "upstream_policy", nil, "deducted", "", "0.0200000000", "2.000000", "0.04000000").
-			AddRow(1, start.Add(time.Hour), nil, "", "request-a", "model", "unknown", "historical_unknown", nil, nil, nil, "upstream_policy", nil, "historical_unknown", "", nil, nil, nil).
-			AddRow(0, start.Add(30*time.Minute), 7, "audit group snapshot", "request-d", "model", "counted", "", true, 11, evaluated, "content_audit", 41, "zero_cost", "", "0.0000000000", "2.000000", "0.00000000")).RowsWillBeClosed()
+		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at", "group_id", "group_name", "request_id", "model", "status", "reason", "scope", "revision", "evaluated_at", "source", "audit_id", "charge_status", "charge_reason", "cost", "multiplier", "charge_amount", "policy_action", "risk_score", "risk_level", "linked_usage_id"}).
+			AddRow(3, start.Add(3*time.Hour), 9, "original skipped group", "request-c", "model", "skipped", "group_not_enabled", false, 12, evaluated, "upstream_policy", nil, "skipped", "group_not_enabled", "0.0200000000", "1.000000", "0.02000000", "", nil, nil, nil).
+			AddRow(2, start.Add(2*time.Hour), 7, "original counted group", "request-b", "model", "counted", "", true, 11, evaluated, "upstream_policy", nil, "deducted", "", "0.0200000000", "2.000000", "0.04000000", "", nil, nil, nil).
+			AddRow(1, start.Add(time.Hour), nil, "", "request-a", "model", "unknown", "historical_unknown", nil, nil, nil, "upstream_policy", nil, "historical_unknown", "", nil, nil, nil, "", nil, nil, nil).
+			AddRow(0, start.Add(30*time.Minute), 7, "audit group snapshot", "request-d", "model", "counted", "", true, 11, evaluated, "content_audit", 41, "zero_cost", "", "0.0000000000", "2.000000", "0.00000000", "block", 70, "high", nil)).RowsWillBeClosed()
 	mock.ExpectCommit()
 	result, err := svc.Records(context.Background(), 7, CyberPolicyWindowInput{StartDate: "2006-02-03", EndDate: "2006-02-03", Timezone: "Asia/Shanghai"}, 0, 1000)
 	require.NoError(t, err)

@@ -17,7 +17,7 @@
           <button type="button" class="btn btn-secondary btn-sm" data-test="local-rule-add" :disabled="draft.local_rules.length >= 64" @click="addRule">{{ t('admin.promptAudit.local.add') }}</button>
         </div>
       </div>
-      <p class="mt-2 text-xs text-gray-500 dark:text-dark-400">{{ t('admin.promptAudit.local.actionHint') }}</p>
+      <p class="mt-2 text-xs text-gray-500 dark:text-dark-400">{{ t(draft.risk_policy ? 'admin.promptAudit.riskPolicy.localScoreHint' : 'admin.promptAudit.local.actionHint') }}</p>
       <p class="mt-2 text-xs text-gray-500 dark:text-dark-400">{{ t('admin.promptAudit.local.templateUpdateHint') }}</p>
       <p v-if="draft.local_rules.length === 0" class="mt-4 rounded-lg bg-gray-50 p-4 text-sm text-gray-500 dark:bg-dark-900/40">{{ t('admin.promptAudit.local.empty') }}</p>
       <div class="mt-4 space-y-3">
@@ -34,8 +34,11 @@
             <label class="text-sm text-gray-700 dark:text-dark-200">{{ t('admin.promptAudit.local.category') }}
               <select :value="rule.category" class="input mt-1 w-full" @change="updateRule(index, { category: ($event.target as HTMLSelectElement).value })"><option v-for="scanner in SCANNER_CATALOG" :key="scanner.id" :value="scanner.id">{{ t(`admin.promptAudit.scanners.${scanner.id}`) }}</option></select>
             </label>
-            <label class="text-sm text-gray-700 dark:text-dark-200">{{ t('admin.promptAudit.local.action') }}
+            <label v-if="!draft.risk_policy" class="text-sm text-gray-700 dark:text-dark-200">{{ t('admin.promptAudit.local.action') }}
               <select :value="rule.action" class="input mt-1 w-full" @change="updateRule(index, { action: ($event.target as HTMLSelectElement).value as PromptLocalRule['action'] })"><option value="warn">{{ t('admin.promptAudit.local.warn') }}</option><option value="block">{{ t('admin.promptAudit.local.block') }}</option></select>
+            </label>
+            <label v-else class="text-sm text-gray-700 dark:text-dark-200">{{ t('admin.promptAudit.riskPolicy.score') }}
+              <input :value="rule.score === undefined ? (rule.action === 'block' ? 100 : 50) : rule.score" type="number" min="0" max="100" step="1" class="input mt-1 w-full" :data-test="`local-rule-score-${index}`" :aria-label="t('admin.promptAudit.riskPolicy.ruleScoreLabel', { name: rule.name })" @input="updateRule(index, { score: scoreInput(($event.target as HTMLInputElement).value) })" />
             </label>
           </div>
           <label class="mt-3 block text-sm text-gray-700 dark:text-dark-200">{{ t('admin.promptAudit.local.pattern') }}
@@ -76,8 +79,9 @@ function updateRule(index: number, value: Partial<PromptLocalRule>) {
 }
 function removeRule(index: number) { patch({ local_rules: props.draft.local_rules.filter((_, i) => i !== index) }) }
 function addRule() {
-  patch({ local_rules: [...cloneData(props.draft.local_rules), { id: `rule-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, name: t('admin.promptAudit.local.newRule'), kind: 'keyword', pattern: '', category: 'jailbreak', action: 'warn', enabled: true, case_sensitive: false }] })
+  patch({ local_rules: [...cloneData(props.draft.local_rules), { id: `rule-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, name: t('admin.promptAudit.local.newRule'), kind: 'keyword', pattern: '', category: 'jailbreak', action: 'warn', ...(props.draft.risk_policy ? { score: 20 } : {}), enabled: true, case_sensitive: false }] })
 }
+function scoreInput(value: string): number { return value.trim() === '' ? Number.NaN : Number(value) }
 function requestTemplates() {
   if (props.draft.local_rules.length) showTemplates.value = true
   else applyTemplates()

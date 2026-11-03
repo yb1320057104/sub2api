@@ -50,6 +50,8 @@ type LiveCallIdentity struct {
 }
 
 type LiveCallRecord struct {
+	// Server-owned audit decision, stored privately with the live mapping.
+	AuditAction     *CyberPolicyAuditBlockInput `json:"-"`
 	CallID          string
 	CallHash        string
 	AccountID       int64

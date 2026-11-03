@@ -41,6 +41,21 @@ func BuildIssueSummaries(result NormalizedResult) []IssueSummary {
 			Score: 1, Evidence: evidence, EvidenceHash: hex.EncodeToString(digest[:]),
 		})
 	}
+	if result.PolicyAction != "" {
+		label := "放行"
+		if result.PolicyAction == "block" {
+			label = "拦截"
+		}
+		if result.PolicyAction == "charge_allow" {
+			label = "扣费放行"
+		}
+		for index := range summaries {
+			summaries[index].Action = result.PolicyAction
+			summaries[index].ActionLabel = label
+			summaries[index].Severity = string(result.RiskLevel)
+			summaries[index].SeverityLabel = riskLabelZH(result.RiskLevel)
+		}
+	}
 	return summaries
 }
 

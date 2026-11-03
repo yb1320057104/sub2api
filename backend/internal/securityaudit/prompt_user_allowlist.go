@@ -6,6 +6,9 @@ import "strings"
 // making the effective action log-only. This does not affect the other audit
 // engine or the independent ranking exemptions.
 func applyPromptUserExemption(result *NormalizedResult) {
+	if result != nil && result.PolicyAction != "" {
+		result.PolicyAction = "allow"
+	}
 	if result == nil || result.Action == ActionAllow {
 		return
 	}

@@ -128,7 +128,7 @@ func (g *GuardEvaluator) Evaluate(ctx context.Context, cfg ActiveConfig, snapsho
 			"guard_endpoint_id": result.GuardEndpointID, "action": result.Action,
 			"latency_ms": g.clock.Now().Sub(chunkStarted).Milliseconds(), "status": "completed",
 		}))
-		if result.Action == ActionBlock {
+		if cfg.RiskPolicy == nil && result.Action == ActionBlock {
 			break
 		}
 	}
@@ -141,6 +141,7 @@ func (g *GuardEvaluator) Evaluate(ctx context.Context, cfg ActiveConfig, snapsho
 		return nil, &GuardError{Code: ErrorCodeInvalidResponse, Cause: err}
 	}
 	aggregated.ChunkTotal = len(chunks)
+	applyPromptRiskPolicy(aggregated, cfg, true)
 	if cfg.IsUserAllowlisted(snapshot.UserID) {
 		applyPromptUserExemption(aggregated)
 	}
@@ -151,7 +152,7 @@ func (g *GuardEvaluator) Evaluate(ctx context.Context, cfg ActiveConfig, snapsho
 	if aggregated.Action == ActionBlock {
 		kind = DecisionBlock
 	}
-	decision := &PromptDecision{Kind: kind, Result: aggregated, AllowNextStage: kind == DecisionAllow || kind == DecisionFlag}
+	decision := &PromptDecision{RiskScore: aggregated.RiskScore, RiskLevel: string(aggregated.RiskLevel), PolicyAction: aggregated.PolicyAction, Kind: kind, Result: aggregated, AllowNextStage: kind == DecisionAllow || kind == DecisionFlag}
 	if kind == DecisionBlock {
 		decision.ErrorCode = ErrorCodeBlocked
 	}

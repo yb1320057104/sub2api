@@ -164,7 +164,10 @@ func (s *PromptService) Evaluate(ctx context.Context, req Request) (decision *Pr
 				decision, evaluationErr = &PromptDecision{Kind: DecisionAllow, AllowNextStage: true}, nil
 				return
 			}
-			if decision.Kind == DecisionBlock {
+			if decision.PolicyAction != "" {
+				decision.PolicyAction = "allow"
+			}
+			if decision.Kind == DecisionBlock || (decision.Result != nil && decision.Result.PolicyAction == "charge_allow") {
 				applyPromptUserExemption(decision.Result)
 				decision.Kind, decision.ErrorCode, decision.AllowNextStage = DecisionFlag, "", true
 			}

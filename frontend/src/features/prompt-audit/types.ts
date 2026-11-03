@@ -1,6 +1,8 @@
+import type { AuditPolicyAction, AuditRiskPolicy } from '@/types/auditRiskPolicy'
+
 export type PromptAuditMode = 'off' | 'async_audit' | 'blocking'
 export type PromptDecision = 'pass' | 'flag' | 'critical'
-export type PromptRiskLevel = 'low' | 'medium' | 'high' | 'critical'
+export type PromptRiskLevel = 'none' | 'low' | 'medium' | 'high' | 'critical'
 export type PromptAuditEngine = 'local_rules' | 'remote'
 
 export interface PromptLocalRule {
@@ -10,6 +12,7 @@ export interface PromptLocalRule {
   pattern: string
   category: string
   action: 'warn' | 'block'
+  score?: number
   enabled: boolean
   case_sensitive: boolean
 }
@@ -33,6 +36,7 @@ export interface PromptAuditEndpointDraft extends PromptAuditEndpoint {
 }
 
 export interface PromptAuditConfig {
+  risk_policy?: AuditRiskPolicy | null
   engine?: PromptAuditEngine
   audit_instructions?: string
   local_rules?: PromptLocalRule[]
@@ -65,6 +69,7 @@ export interface PromptAuditDraft extends Omit<PromptAuditConfig, 'endpoints' | 
 }
 
 export interface PromptAuditUpdateRequest {
+  risk_policy?: AuditRiskPolicy | null
   engine: PromptAuditEngine
   audit_instructions: string
   local_rules: PromptLocalRule[]
@@ -198,6 +203,8 @@ export interface PromptIssueSummary {
 }
 
 export interface PromptAuditEvent {
+  risk_score?: number | null
+  policy_action?: AuditPolicyAction
   id: number
   job_id: number
   snapshot: PromptSnapshot

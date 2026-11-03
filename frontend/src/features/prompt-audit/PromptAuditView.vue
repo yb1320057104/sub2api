@@ -42,6 +42,7 @@
             <RuntimeOverview :runtime="runtime" :loading="loading.runtime" :error="loadErrors.runtime" @refresh="loadRuntime" />
 
             <template v-if="draft">
+              <AuditRiskPolicyPanel class="mt-6" :model-value="draft.risk_policy" audit="prompt" :synchronous="draft.enabled && draft.blocking_enabled" @update:model-value="replaceDraft({ ...draft!, risk_policy: $event })" />
               <LocalRulePanel :draft="draft" @update:draft="replaceDraft" />
               <EndpointPool
                 v-if="draft.engine === 'remote'"
@@ -156,6 +157,8 @@ import RuntimeOverview from './components/RuntimeOverview.vue'
 import EndpointPool from './components/EndpointPool.vue'
 import PolicyPanel from './components/PolicyPanel.vue'
 import LocalRulePanel from './components/LocalRulePanel.vue'
+import AuditRiskPolicyPanel from '@/components/admin/AuditRiskPolicyPanel.vue'
+import { validAuditRiskPolicy, validAuditScore } from '@/types/auditRiskPolicy'
 import EventWorkspace from './components/EventWorkspace.vue'
 import EventDetailDialog from './components/EventDetailDialog.vue'
 import FilterDeleteDialog from './components/FilterDeleteDialog.vue'
@@ -315,6 +318,14 @@ function resetDraft() {
 }
 async function saveConfig() {
   if (!draft.value || !dirty.value) return
+  if (!validAuditRiskPolicy(draft.value.risk_policy)) {
+    appStore.showError(t('admin.promptAudit.riskPolicy.invalid'))
+    return
+  }
+  if (draft.value.local_rules.some(rule => rule.score !== undefined && !validAuditScore(rule.score))) {
+    appStore.showError(t('admin.promptAudit.riskPolicy.invalidScore'))
+    return
+  }
   loading.saving = true
   try {
     const saved = await promptAuditAPI.updateConfig(buildUpdateRequest(draft.value))

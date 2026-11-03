@@ -17,6 +17,12 @@
           </div>
           <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
             <dt class="text-gray-500">{{ t('admin.promptAudit.events.decision') }}</dt><dd class="font-medium text-gray-900 dark:text-white">{{ formatDecisionAction(event.decision, event.action) }}</dd>
+            <template v-if="event.policy_action && typeof event.risk_score === 'number'">
+              <dt class="text-gray-500">{{ t('admin.promptAudit.riskPolicy.riskScore') }}</dt><dd data-test="prompt-event-risk-score">{{ event.risk_score }}</dd>
+              <dt class="text-gray-500">{{ t('admin.promptAudit.riskPolicy.policyAction') }}</dt><dd data-test="prompt-event-policy-action">{{ t(`admin.promptAudit.riskPolicy.actions.${event.policy_action}`) }}</dd>
+            </template>
+            <dd v-else class="col-span-2 text-xs text-gray-500">{{ t('admin.promptAudit.riskPolicy.legacyEvent') }}</dd>
+            <dd class="col-span-2 text-xs leading-5 text-gray-500">{{ t('admin.promptAudit.riskPolicy.recordHint') }}</dd>
             <dt class="text-gray-500">{{ t('admin.promptAudit.events.user') }}</dt><dd>{{ event.snapshot.username || '—' }}</dd>
             <dt class="text-gray-500">{{ t('admin.promptAudit.events.email') }}</dt><dd>{{ event.snapshot.user_email || '—' }}</dd>
             <dt class="text-gray-500">{{ t('admin.promptAudit.events.apiKey') }}</dt><dd>{{ event.snapshot.api_key_name || '—' }}</dd>
@@ -91,7 +97,7 @@ watch(() => props.event?.id, () => { activeTab.value = 'summary' })
 
 const DECISIONS = new Set(['pass', 'flag', 'critical'])
 const ACTIONS = new Set(['Allow', 'Warn', 'Block'])
-const RISK_LEVELS = new Set(['low', 'medium', 'high', 'critical'])
+const RISK_LEVELS = new Set(['none', 'low', 'medium', 'high', 'critical'])
 
 function displayPrompt(event: PromptAuditEvent): string {
   return event.snapshot.full_prompt || event.snapshot.redacted_preview || '—'
@@ -130,6 +136,8 @@ function formatGuardReturn(event: PromptAuditEvent): string {
     categories: event.categories.map(translateCategory),
     matched_scanners: event.matched_scanners.map(translateCategory),
     scanner_scores: event.scanner_scores,
+    risk_score: event.risk_score,
+    policy_action: event.policy_action,
     scanner_evidence: evidence,
     scanner_backend: event.scanner_backend,
     scanner_version: event.scanner_version,

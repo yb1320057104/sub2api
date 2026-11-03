@@ -121,6 +121,8 @@ func (s PromptSnapshot) Redacted() PromptSnapshot {
 }
 
 type NormalizedResult struct {
+	RiskScore         float64            `json:"risk_score"`
+	PolicyAction      string             `json:"policy_action,omitempty"`
 	Decision          EventDecision      `json:"decision"`
 	RiskLevel         RiskLevel          `json:"risk_level"`
 	Action            Action             `json:"action"`
@@ -140,6 +142,9 @@ type NormalizedResult struct {
 }
 
 type PromptDecision struct {
+	RiskScore      float64           `json:"risk_score"`
+	RiskLevel      string            `json:"risk_level,omitempty"`
+	PolicyAction   string            `json:"policy_action,omitempty"`
 	Kind           DecisionKind      `json:"kind"`
 	ErrorCode      string            `json:"error_code,omitempty"`
 	Result         *NormalizedResult `json:"result,omitempty"`
@@ -147,13 +152,16 @@ type PromptDecision struct {
 }
 
 type LegacyDecision struct {
-	Allowed    bool   `json:"allowed"`
-	Blocked    bool   `json:"blocked"`
-	Flagged    bool   `json:"flagged"`
-	Message    string `json:"message"`
-	StatusCode int    `json:"status_code"`
-	ErrorCode  string `json:"error_code"`
-	Action     string `json:"action"`
+	RiskScore    float64 `json:"risk_score"`
+	RiskLevel    string  `json:"risk_level,omitempty"`
+	PolicyAction string  `json:"policy_action,omitempty"`
+	Allowed      bool    `json:"allowed"`
+	Blocked      bool    `json:"blocked"`
+	Flagged      bool    `json:"flagged"`
+	Message      string  `json:"message"`
+	StatusCode   int     `json:"status_code"`
+	ErrorCode    string  `json:"error_code"`
+	Action       string  `json:"action"`
 }
 
 type Decision struct {

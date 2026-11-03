@@ -16,7 +16,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -552,37 +551,6 @@ FontFaceSet.prototype.check=new Proxy(FontFaceSet.prototype.check,{apply(t,s,a){
 }catch(e){}
 })()`
 
-// A private Xvfb-backed display for the background Chrome identity.
-func authorizationBrowserDisplayEnv(mode string) ([]string, func(), error) {
-	if mode != authorizationModeBackground || runtime.GOOS != "linux" || os.Getenv("DISPLAY") != "" {
-		return nil, func() {}, nil
-	}
-	binary, err := exec.LookPath("Xvfb")
-	if err != nil {
-		return nil, func() {}, errors.New("no display")
-	}
-	for number := 90; number < 100; number++ {
-		display := ":" + strconv.Itoa(number)
-		if _, statErr := os.Stat("/tmp/.X" + strconv.Itoa(number) + "-lock"); statErr == nil {
-			continue
-		}
-		cmd := exec.Command(binary, display, "-screen", "0", "1366x900x24", "-nolisten", "tcp")
-		cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
-		if err = cmd.Start(); err != nil {
-			return nil, func() {}, err
-		}
-		if authorizationPause(context.Background(), 700*time.Millisecond) != nil {
-			_ = cmd.Process.Kill()
-			return nil, func() {}, errors.New("display start interrupted")
-		}
-		return []string{"DISPLAY=" + display}, func() {
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
-		}, nil
-	}
-	return nil, func() {}, errors.New("no display")
-}
-
 // Chromium errors are reduced to known categories; never expose proxy URLs or
 // arbitrary upstream error text in administrator-visible results.
 func authorizationPrecheckNetworkFailure(reason string) error {
@@ -964,9 +932,13 @@ func runAuthorizationBrowserAttempt(ctx context.Context, mode, proxyURL, authURL
 		return "", authorizationBrowserFailure("proxy_missing", "尚未配置授权代理")
 	}
 	authorizationTrace(secret, "attempt start mode=%s browser=%s proxy=%s", mode, path, authorizationProxyEndpoint(proxyURL))
-	displayEnv, stopDisplay, displayErr := authorizationBrowserDisplayEnv(mode)
+	displayEnv, stopDisplay, displayErr := authorizationBrowserDisplayEnv(ctx, mode)
 	if displayErr != nil {
-		return "", authorizationBrowserFailure("browser_display_missing", "后台 Chrome 会话需要图形环境（Xvfb 或 DISPLAY），未提交账号密码")
+		var failure *authorizationBrowserError
+		if errors.As(displayErr, &failure) {
+			authorizationTrace(secret, "display unavailable stage=%s", failure.stage)
+		}
+		return "", displayErr
 	}
 	defer stopDisplay()
 	bridge, closeBridge, err := authorizationBrowserProxy(ctx, proxyURL)

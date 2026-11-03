@@ -1,4 +1,5 @@
 import { apiClient } from '../client'
+import type { AuditPolicyAction, AuditRiskLevel, AuditRiskPolicy } from '@/types/auditRiskPolicy'
 
 export type ModerationMode = 'off' | 'observe' | 'pre_block'
 export type ModerationEngine = 'openai' | 'typesafe'
@@ -17,6 +18,8 @@ export interface ContentModerationModelFilter {
 }
 
 export interface ContentModerationConfig {
+  risk_policy?: AuditRiskPolicy | null
+  keyword_scores?: Record<string, number>
   engine?: ModerationEngine
   engine_configs?: Record<ModerationEngine, ContentModerationConfig>
   enabled: boolean
@@ -103,6 +106,8 @@ export interface ContentModerationTestAuditResult {
 }
 
 export interface UpdateContentModerationConfig {
+  risk_policy?: AuditRiskPolicy | null
+  keyword_scores?: Record<string, number>
   engine?: ModerationEngine
   engine_configs?: Partial<Record<ModerationEngine, UpdateModerationEngineConfig>>
   enabled?: boolean
@@ -189,6 +194,9 @@ export interface ContentModerationAPIKeyLoad {
 }
 
 export interface ContentModerationLog {
+  risk_score?: number | null
+  risk_level?: AuditRiskLevel | 'none'
+  policy_action?: AuditPolicyAction
   engine_meta?: ModerationEngineMeta | null
   id: number
   request_id: string

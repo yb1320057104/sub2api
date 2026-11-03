@@ -168,6 +168,7 @@ func ParseQwen3Guard(content string, enabledScanners []string) (*NormalizedResul
 			result.Decision, result.RiskLevel, result.Action = EventFlag, RiskHigh, ActionWarn
 		}
 	}
+	result.RiskScore = score * 100
 	for _, category := range matched {
 		result.ScannerScores[category] = score
 		result.ScannerEvidence[category] = ScannerCatalog[category].Label

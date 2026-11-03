@@ -5,17 +5,20 @@ import (
 )
 
 type contentModerationKeywordMatcher struct {
-	nodes           []contentModerationKeywordNode
-	edges           []contentModerationKeywordEdge
-	rootTransitions [256]int32
-	keywords        []string
+	nodes              []contentModerationKeywordNode
+	edges              []contentModerationKeywordEdge
+	rootTransitions    [256]int32
+	keywords           []string
+	normalizedKeywords []string
 }
 
 type contentModerationKeywordNode struct {
-	failure     int32
-	bestKeyword int32
-	edgeStart   uint32
-	edgeCount   uint16
+	failure         int32
+	bestKeyword     int32
+	terminalKeyword int32
+	outputLink      int32
+	edgeStart       uint32
+	edgeCount       uint16
 }
 
 type contentModerationKeywordEdge struct {
@@ -37,13 +40,15 @@ func newContentModerationKeywordMatcher(keywords []string) *contentModerationKey
 	buildNodes := []contentModerationKeywordNode{newContentModerationKeywordNode()}
 	buildEdges := make([]contentModerationKeywordBuildEdge, 0)
 	originalKeywords := append([]string(nil), keywords...)
+	normalizedKeywords := make([]string, len(keywords))
 
 	for keywordIndex, keyword := range keywords {
 		if keyword == "" {
 			continue
 		}
 		state := int32(0)
-		for _, label := range []byte(strings.ToLower(keyword)) {
+		normalizedKeywords[keywordIndex] = strings.ToLower(keyword)
+		for _, label := range []byte(normalizedKeywords[keywordIndex]) {
 			next := contentModerationKeywordBuildTransition(buildNodes, buildEdges, state, label)
 			if next < 0 {
 				next = int32(len(buildNodes))
@@ -59,6 +64,7 @@ func newContentModerationKeywordMatcher(keywords []string) *contentModerationKey
 		}
 		if current := buildNodes[state].bestKeyword; current < 0 || int32(keywordIndex) < current {
 			buildNodes[state].bestKeyword = int32(keywordIndex)
+			buildNodes[state].terminalKeyword = int32(keywordIndex)
 		}
 	}
 
@@ -86,6 +92,12 @@ func newContentModerationKeywordMatcher(keywords []string) *contentModerationKey
 			}
 			if fallback >= 0 {
 				buildNodes[edge.target].failure = fallback
+			}
+			failureNode := buildNodes[edge.target].failure
+			if buildNodes[failureNode].terminalKeyword >= 0 {
+				buildNodes[edge.target].outputLink = failureNode
+			} else {
+				buildNodes[edge.target].outputLink = buildNodes[failureNode].outputLink
 			}
 			buildNodes[edge.target].bestKeyword = minKeywordIndex(
 				buildNodes[edge.target].bestKeyword,
@@ -119,15 +131,16 @@ func newContentModerationKeywordMatcher(keywords []string) *contentModerationKey
 	}
 
 	return &contentModerationKeywordMatcher{
-		nodes:           buildNodes,
-		edges:           edges,
-		rootTransitions: rootTransitions,
-		keywords:        originalKeywords,
+		nodes:              buildNodes,
+		edges:              edges,
+		rootTransitions:    rootTransitions,
+		keywords:           originalKeywords,
+		normalizedKeywords: normalizedKeywords,
 	}
 }
 
 func newContentModerationKeywordNode() contentModerationKeywordNode {
-	return contentModerationKeywordNode{bestKeyword: -1}
+	return contentModerationKeywordNode{bestKeyword: -1, terminalKeyword: -1}
 }
 
 func contentModerationKeywordBuildFirstEdge(node contentModerationKeywordNode) int32 {
@@ -193,6 +206,69 @@ func (m *contentModerationKeywordMatcher) Match(text string) (string, bool) {
 		return "", false
 	}
 	return m.keywords[bestKeyword], true
+}
+
+// MatchRisk checks every terminal output, including suffix matches, because the
+// old first-keyword priority cannot select the highest configured score. ASCII
+// word boundaries apply only here; legacy Match deliberately keeps its behavior.
+func (m *contentModerationKeywordMatcher) MatchRisk(text string, scores map[string]int) (string, int, bool) {
+	if m == nil || text == "" || len(m.nodes) == 0 {
+		return "", 0, false
+	}
+	lower := strings.ToLower(text)
+	state, best := int32(0), int32(-1)
+	bestScore := -1
+	for index := 0; index < len(lower); index++ {
+		for {
+			next := m.next(state, lower[index])
+			if next != 0 {
+				state = next
+				break
+			}
+			if state == 0 {
+				break
+			}
+			state = m.nodes[state].failure
+		}
+		for output := state; output != 0; output = m.nodes[output].outputLink {
+			candidate := m.nodes[output].terminalKeyword
+			if candidate < 0 {
+				continue
+			}
+			keyword := m.normalizedKeywords[candidate]
+			start, end := index+1-len(keyword), index+1
+			if !contentModerationRiskKeywordBoundary(lower, keyword, start, end) {
+				continue
+			}
+			score, configured := scores[keyword]
+			if !configured {
+				score = 100
+			}
+			if score > bestScore || (score == bestScore && (best < 0 || candidate < best)) {
+				best, bestScore = candidate, score
+			}
+		}
+	}
+	if best < 0 {
+		return "", 0, false
+	}
+	return m.keywords[best], bestScore, true
+}
+
+func contentModerationRiskKeywordBoundary(text, keyword string, start, end int) bool {
+	if start < 0 || len(keyword) == 0 {
+		return false
+	}
+	isWord := func(value byte) bool {
+		return value >= 'a' && value <= 'z' || value >= '0' && value <= '9' || value == '_'
+	}
+	if isWord(keyword[0]) && start > 0 && isWord(text[start-1]) {
+		return false
+	}
+	if isWord(keyword[len(keyword)-1]) && end < len(text) && isWord(text[end]) {
+		return false
+	}
+	return true
 }
 
 func (m *contentModerationKeywordMatcher) next(state int32, label byte) int32 {
