@@ -1,5 +1,7 @@
 # PK出版：源码、发布与上游更新
 
+2026-11-04 pk.50 发布完成：私库 Release `v0.2.19-pk.50` 已为 latest/非draft/非prerelease，9项附件长度及SHA256核验通过；正式提交 `080e6513dcdf08ecfc0f4d6f2eca5ddfd4b6f014`、package `1793726324-080e6513dcdf`。前后端构建、定向模拟及最终隔离制品/升级回退/API/SQL验证全部通过，最终证据见 docs/PK_RELEASE_PK50_REVIEW.md。正式分支、标签、制品不移动；最终文档只在main补录。生产仍由用户手动切换，本次未部署或重启生产、未发布GHCR。旧版回退读取主代理，不执行新版多代理全局限额，也不撤销已完成业务操作。
+
 pk.50 合并模型档位补丁前核验 `.runtime/pk50-models-handoff/manifest.json` 中的基线、完整补丁及源 SHA256。`admin.go`、`openai_gateway_forward.go`、`openai_gateway_request_body.go`、settings 与 locale 的交叉改动须按局部保留两侧。重新构建前端，先前 before-auth-egress 构建不作为最终证据。执行交接定向选择器，并在最终隔离 PostgreSQL 增加IQ候选真实SQL及管理员API检查；原11项同制品、7项升级回退及7项多代理API验收保持。仅单一版本分支/标签/Release，由集成会话统一发布，不部署生产。
 
 2026-11-03 pk.50追加验收：PK-036账号授权“入库账号出口”支持多代理数量、代理并发和全局账号上限；配置保存、任务快照与入库容量必须一致，已有账号重授权保留当前出口。PK-044覆盖HTTP/WS/插件、自定义relay及Live完整通话租约；接管/重连不重复占槽，失效租约不复活。最终制品另运行7项真实多代理API检查，与原11项制品、7项升级回退分别记载。只发布GitHub，仍不切换生产。
