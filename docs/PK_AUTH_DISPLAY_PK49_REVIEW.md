@@ -2,7 +2,7 @@
 
 ## 基线与授权范围
 
-基于私有`yb1320057104/sub2api` main `f8dc044d5c8fbc295d685cfdfb0df8356f41e00d`及pk.48正式提交`061d058900d99eacccfe9ad8eece8030f736b36f`。正式工作分支/标签为唯一`v0.2.19-pk.49`；已核对私库、Release未占用、开放PR为空、远端main未漂移。
+基于私有`yb1320057104/sub2api` main `f8dc044d5c8fbc295d685cfdfb0df8356f41e00d`及pk.48正式提交`061d058900d99eacccfe9ad8eece8030f736b36f`。正式工作分支/标签为唯一`v0.2.19-pk.49`；开始实施时已核对私库、Release未占用、开放PR为空及远端main基线。最终正式提交为`200fb02e439af411cd738000544ff4216710856f`，正式refs和发行结果见[总核对记录](PK_AUDIT_RISK_PK49_REVIEW.md)。
 
 用户报“后台 Chrome 会话需要图形环境（Xvfb 或 DISPLAY），未提交账号密码”，沿用用户只发布GitHub、自行切换生产的要求。允许本地修复、定向模拟及隔离制品验收；不部署/重启生产、不执行真实登录、授权、模型或币安请求，不跑全套源码回归。此显示修复沿用PK-016/021/036；同版用户追加的审计分级/前端/账务迁移范围另见PK_AUDIT_RISK_PK49_REVIEW.md，以下仅记录显示专项。
 
@@ -22,6 +22,8 @@ Linux后台且未设置DISPLAY时，使用Xvfb `-displayfd`自动选择可用显
 
 ## 验证状态
 
-Windows兼容编译exit0（no tests to run，不是Linux行为测试）；隔离Alpine3.21的8个顶层显示测试全部PASS、无skip，12个并发真实Xvfb以uid1000运行，network=none、无host mounts，10个root-owned旧90～99锁hash保持，新锁/socket/进程均0，容器及镜像清理PASS。attempt1仅SFTP准备写入模式失败，修正wx后attempt2成功。证据.runtime/pk49-display-checks.json及attempt2-test.log，测试二进制SHA256 cf54989d2586230589425c20520de1f18fc875f1eeaacef4a59e1627c94bfd6c，绑定4个显示相关源码hash；全树3519输入快照保留为当时编译记录。完整发行构建与同制品11+7尚待最终范围完成。Linux专项仅创建测试显示进程与合成锁，不启动Chrome或外部登录；旧锁哈希保持、并发显示唯一、正常清理和取消/超时为关注边界。
+Windows兼容编译exit0（no tests to run，不是Linux行为测试）；隔离Alpine3.21的8个顶层显示测试全部PASS、无skip，12个并发真实Xvfb以uid1000运行，network=none、无host mounts，10个root-owned旧90～99锁hash保持，新锁/socket/进程均0，容器及镜像清理PASS。attempt1仅SFTP准备写入模式失败，修正wx后attempt2成功。证据.runtime/pk49-display-checks.json及attempt2-test.log，测试二进制SHA256 cf54989d2586230589425c20520de1f18fc875f1eeaacef4a59e1627c94bfd6c，绑定4个显示相关源码hash；全树3519输入快照保留为当时编译记录。本版最终范围完成后已从正式提交重新构建，通过同一二进制11项制品、7项升级回退及正式源36项隔离PostgreSQL验收，详见总核对记录。Linux专项仅创建测试显示进程与合成锁，不启动Chrome或外部登录；旧锁哈希保持、并发显示唯一、正常清理和取消/超时为关注边界。
 
-原仅显示修复时准备的前端复用证据已作为阶段记录保留；用户追加审计UI后最终版必须重新构建并冻结前端，不能复用pk.48产物。正式发布保留同一二进制、私库main/标签归属及最终完整资产哈希证明，不推GHCR、不自动切换生产。
+原仅显示修复时准备的前端复用证据已作为阶段记录保留；用户追加审计UI后，最终版已重新构建并冻结本轮前端，未复用pk.48产物。正式发布保留同一二进制、私库main/标签归属及最终完整资产哈希证明。
+
+2026-11-03，正式版本`v0.2.19-pk.49`的GitHub Release已发布为latest并完成9项资产名称/长度/SHA256核对，生产由用户手动切换。本轮未部署/重启生产、未发布GHCR、未执行真实授权；后续仅main文档补录，正式版本分支/标签和制品不变。显示专项与整体发行证据分别留存，不将12个离线显示进程验证表述为真实账号授权恢复。
