@@ -38,3 +38,13 @@
 定向验证另绑定`.runtime/pk48-targeted-checks.json`的两组真实通过日志及24个源码文件哈希，owner确认测试后输入保持；此后冻结快照不冒充测试前捕获。最终后端本机构建、服务器独立同制品11项及升级回退7项验收、GitHub Release：进行中，实际结果完成后补录。无新增SQL/迁移或金融行为，本轮不重复pk.47的88项PostgreSQL/13项服务API专项，历史结果仅作历史依据。
 
 只从新私库发布正式非prerelease Release，归档同一程序的网页更新包、Docker镜像、SHA256及实际证据；不宣称GHCR已发布，不移动旧标签，不修改已发布制品。
+
+## 最终发行结果
+
+- 正式提交 `061d058900d99eacccfe9ad8eece8030f736b36f`，tree `1930d4cb7c3e557a05316186058dd5145de6b1f4`；版本分支/附注标签`v0.2.19-pk.48`与main原子推送，远端标签剥离后绑定同一commit。后续只在main补录实际结果，不移动标签、不重打正式包。
+- Go1.27.3 windows/amd64本机构建Linux/amd64，`go mod verify`通过，CGO关闭、embed/trimpath/release；二进制SHA256 `ae732f7380b0940998a69741a0e045e15bdda5aaaa6dea513d0190edca1168db`。构建前后前端与定向验证输入哈希一致、源码干净，实际build exit0。
+- Package `1793647590-061d058900d9`；同一程序进入网页更新包和Docker镜像归档。更新包SHA256 `0e0029a9f4b01ab0abe0d437d6a933c9b0a2e8fbd1669c4e3e06c3a0aa287e99`；镜像归档SHA256 `ce7a70174bedb93e8603e09b0174590453c25b9ae2911e65f9d92f8dcd7ba0aa`；image ID `sha256:1ae911638cad0d7c2749febc6501fb1b33cc2c3563c6a17a40ff8590b6f78c57`。
+- 服务器独立TLS DinD `pk-artifact-v2`十一项全部passed/exit0，独立空库pk.47→pk.48→pk.47七项升级回退全通过，316条既有迁移清单及校验值保持，无新增迁移。分组规则与计数/审计/扣费证据、API Key有序分组、渠道专属代理字段保持；全部合成禁用夹具，启动任务保持未激活，无真实上游调用。子容器/卷/网络及独立daemon清理通过。
+- 上线前基线只读确认：生产实际pk.47程序 `104334fa2157da7d8259441e49e8879fac71e86d` 与原镜像seed分别绑定，未把网页更新程序身份误当作镜像seed。生产程序、数据及配置未改动。
+- [GitHub Release v0.2.19-pk.48](https://github.com/yb1320057104/sub2api/releases/tag/v0.2.19-pk.48) 已发布并核对私有、latest、非draft/非prerelease，8项资产逐项核对名称、长度与GitHub SHA256。证据`.runtime/pk48-publication.json`。正式Release资产包含网页更新包、镜像归档、checksums、manifest、artifact-validation、local-build（含前端/定向证据）、review、isolated-smoke。
+- 用户手动切换生产；本轮未部署/重启生产、未发布GHCR，不跑全套源码回归或真实模型/授权/币安请求。用户需把代理实际出口IP加入币安白名单；此次仅确认其填了服务器IP的配置不匹配，不宣称已恢复真实查账。
