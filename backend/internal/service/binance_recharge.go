@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -22,7 +23,7 @@ const (
 	BinanceRechargeReview        = "REVIEW"
 	binanceRechargePollInterval  = 30 * time.Second
 	binanceRechargeHistoryWindow = 24 * time.Hour
-	binanceRechargePollTimeout   = 100 * time.Second
+	binanceRechargePollTimeout   = 490 * time.Second // five 90s scans + 30s backoff + settlement margin
 )
 
 // BinanceRechargeClient returns only authenticated, successful incoming USDT
@@ -34,32 +35,36 @@ type BinanceRechargeClient interface {
 }
 
 type BinanceRechargeAccount struct {
-	ID                  int64      `json:"id"`
-	Name                string     `json:"name"`
-	RecipientUID        string     `json:"recipient_uid"`
-	Enabled             bool       `json:"enabled"`
-	OrderTTLMinutes     int        `json:"order_ttl_minutes"`
-	CreditMultiplier    string     `json:"credit_multiplier"`
-	APIKeyConfigured    bool       `json:"api_key_configured"`
-	APISecretConfigured bool       `json:"api_secret_configured"`
-	ProxyConfigured     bool       `json:"proxy_configured"`
-	ProxyPreflight      bool       `json:"proxy_preflight"`
-	HasOrders           bool       `json:"has_orders"`
-	LastCheckedAt       *time.Time `json:"last_checked_at,omitempty"`
-	LastError           string     `json:"last_error,omitempty"`
-	CheckState          string     `json:"check_state"`
-	RetryAfterSeconds   int64      `json:"retry_after_seconds"`
-	CheckAvailableAt    *time.Time `json:"check_available_at,omitempty"`
-	CreatedAt           time.Time  `json:"created_at"`
-	UpdatedAt           time.Time  `json:"updated_at"`
-	apiKeyEncrypted     string
-	apiSecretEncrypted  string
-	proxyURLCiphertext  string
-	nextPollAt          time.Time
-	apiLockedUntil      time.Time
-	billsNextQueryAt    time.Time
-	failureCount        int
-	hasPollToken        bool
+	ID                       int64              `json:"id"`
+	Name                     string             `json:"name"`
+	RecipientUID             string             `json:"recipient_uid"`
+	Enabled                  bool               `json:"enabled"`
+	OrderTTLMinutes          int                `json:"order_ttl_minutes"`
+	CreditMultiplier         string             `json:"credit_multiplier"`
+	APIKeyConfigured         bool               `json:"api_key_configured"`
+	APISecretConfigured      bool               `json:"api_secret_configured"`
+	ProxyConfigured          bool               `json:"proxy_configured"`
+	ProxyPreflight           bool               `json:"proxy_preflight"`
+	BackupProxyConfigured    bool               `json:"backup_proxy_configured"`
+	BackupProxyPreflight     bool               `json:"backup_proxy_preflight"`
+	QueryStatus              BinanceQueryStatus `json:"query_status"`
+	HasOrders                bool               `json:"has_orders"`
+	LastCheckedAt            *time.Time         `json:"last_checked_at,omitempty"`
+	LastError                string             `json:"last_error,omitempty"`
+	CheckState               string             `json:"check_state"`
+	RetryAfterSeconds        int64              `json:"retry_after_seconds"`
+	CheckAvailableAt         *time.Time         `json:"check_available_at,omitempty"`
+	CreatedAt                time.Time          `json:"created_at"`
+	UpdatedAt                time.Time          `json:"updated_at"`
+	apiKeyEncrypted          string
+	apiSecretEncrypted       string
+	proxyURLCiphertext       string
+	backupProxyURLCiphertext string
+	nextPollAt               time.Time
+	apiLockedUntil           time.Time
+	billsNextQueryAt         time.Time
+	failureCount             int
+	hasPollToken             bool
 }
 
 type BinanceRechargeAccountInput struct {
@@ -69,12 +74,15 @@ type BinanceRechargeAccountInput struct {
 	APISecret    string `json:"api_secret"`
 	// ProxyURL is encrypted at rest and never returned by the API. An empty
 	// value on update preserves the existing proxy, matching credential fields.
-	ProxyURL         string  `json:"proxy_url"`
-	ClearProxy       bool    `json:"clear_proxy"`
-	ProxyPreflight   *bool   `json:"proxy_preflight"`
-	Enabled          bool    `json:"enabled"`
-	OrderTTLMinutes  int     `json:"order_ttl_minutes"`
-	CreditMultiplier *string `json:"credit_multiplier"`
+	ProxyURL             string  `json:"proxy_url"`
+	ClearProxy           bool    `json:"clear_proxy"`
+	ProxyPreflight       *bool   `json:"proxy_preflight"`
+	BackupProxyURL       string  `json:"backup_proxy_url"`
+	ClearBackupProxy     bool    `json:"clear_backup_proxy"`
+	BackupProxyPreflight *bool   `json:"backup_proxy_preflight"`
+	Enabled              bool    `json:"enabled"`
+	OrderTTLMinutes      int     `json:"order_ttl_minutes"`
+	CreditMultiplier     *string `json:"credit_multiplier"`
 }
 
 type BinanceRechargePublicAccount struct {
@@ -186,6 +194,7 @@ func normalizeBinanceRechargeAccountInput(input BinanceRechargeAccountInput) (Bi
 	input.APIKey = strings.TrimSpace(input.APIKey)
 	input.APISecret = strings.TrimSpace(input.APISecret)
 	input.ProxyURL = strings.TrimSpace(input.ProxyURL)
+	input.BackupProxyURL = strings.TrimSpace(input.BackupProxyURL)
 	if input.OrderTTLMinutes == 0 {
 		input.OrderTTLMinutes = 30
 	}
@@ -211,6 +220,16 @@ func normalizeBinanceRechargeAccountInput(input BinanceRechargeAccountInput) (Bi
 		}
 		input.ProxyURL = normalized
 	}
+	if len(input.BackupProxyURL) > 2048 || (input.ClearBackupProxy && input.BackupProxyURL != "") {
+		return input, infraerrors.BadRequest("BINANCE_PROXY_INVALID", "备用代理地址过长，或同时设置了保存与清除")
+	}
+	if input.BackupProxyURL != "" {
+		normalized, err := binancepay.NormalizeProxyURL(input.BackupProxyURL)
+		if err != nil {
+			return input, binanceProxyInputError(err)
+		}
+		input.BackupProxyURL = normalized
+	}
 	if input.CreditMultiplier != nil {
 		multiplier, err := normalizeBinanceCreditMultiplier(*input.CreditMultiplier)
 		if err != nil {
@@ -224,18 +243,26 @@ func normalizeBinanceRechargeAccountInput(input BinanceRechargeAccountInput) (Bi
 const binanceAccountColumns = `a.id, a.name, a.recipient_uid, a.enabled, a.order_ttl_minutes, a.credit_multiplier::text,
 a.api_key_encrypted, a.api_secret_encrypted, a.proxy_url_encrypted, a.proxy_preflight, a.last_checked_at, a.last_error, a.created_at, a.updated_at,
 EXISTS(SELECT 1 FROM binance_recharge_orders o WHERE o.account_id = a.id),
-a.next_poll_at,a.api_locked_until,a.bills_next_query_at,a.failure_count,a.poll_token<>''`
+a.next_poll_at,a.api_locked_until,a.bills_next_query_at,a.failure_count,a.poll_token<>'',
+a.backup_proxy_url_encrypted,a.backup_proxy_preflight,a.query_status`
 
 type binanceRowScanner interface{ Scan(...any) error }
 
 func scanBinanceRechargeAccount(row binanceRowScanner) (*BinanceRechargeAccount, error) {
 	var a BinanceRechargeAccount
+	var status []byte
 	err := row.Scan(&a.ID, &a.Name, &a.RecipientUID, &a.Enabled, &a.OrderTTLMinutes, &a.CreditMultiplier,
 		&a.apiKeyEncrypted, &a.apiSecretEncrypted, &a.proxyURLCiphertext, &a.ProxyPreflight, &a.LastCheckedAt, &a.LastError, &a.CreatedAt, &a.UpdatedAt, &a.HasOrders,
-		&a.nextPollAt, &a.apiLockedUntil, &a.billsNextQueryAt, &a.failureCount, &a.hasPollToken)
+		&a.nextPollAt, &a.apiLockedUntil, &a.billsNextQueryAt, &a.failureCount, &a.hasPollToken,
+		&a.backupProxyURLCiphertext, &a.BackupProxyPreflight, &status)
+	if err == nil {
+		_ = json.Unmarshal(status, &a.QueryStatus)
+		a.QueryStatus.sanitize()
+	}
 	a.APIKeyConfigured = a.apiKeyEncrypted != ""
 	a.APISecretConfigured = a.apiSecretEncrypted != ""
 	a.ProxyConfigured = a.proxyURLCiphertext != ""
+	a.BackupProxyConfigured = a.backupProxyURLCiphertext != ""
 	a.setCheckState(time.Now().UTC(), false)
 	return &a, err
 }
@@ -369,12 +396,21 @@ func (s *BinanceRechargeService) SaveAccount(ctx context.Context, id int64, inpu
 			return nil, infraerrors.BadRequest("BINANCE_PROXY_INVALID", "已保存的专属代理不支持当前预探测配置，请重新填写代理")
 		}
 	}
+	backupCiphertext, backupPreflight, err := s.prepareBinanceBackupProxy(current, input)
+	if err != nil {
+		return nil, err
+	}
+	if backupCiphertext != "" && proxyCiphertext == "" {
+		return nil, infraerrors.BadRequest("BINANCE_PRIMARY_PROXY_REQUIRED", "配置备用代理时必须保留主专属代理；如需清除主代理，请同时清除备用代理")
+	}
 	// Ciphertexts can change even when plaintext is identical. Only an actual
 	// route/credential change may recover a failed query's backoff.
 	connectionChanged := s.binanceAccountSecretChanged(current.apiKeyEncrypted, input.APIKey) ||
 		s.binanceAccountSecretChanged(current.apiSecretEncrypted, input.APISecret) ||
 		s.binanceAccountSecretChanged(current.proxyURLCiphertext, input.ProxyURL) ||
-		(input.ClearProxy && current.proxyURLCiphertext != "") || proxyPreflight != current.ProxyPreflight
+		(input.ClearProxy && current.proxyURLCiphertext != "") || proxyPreflight != current.ProxyPreflight ||
+		s.binanceAccountSecretChanged(current.backupProxyURLCiphertext, input.BackupProxyURL) ||
+		(input.ClearBackupProxy && current.backupProxyURLCiphertext != "") || backupPreflight != current.BackupProxyPreflight
 	if id > 0 && connectionChanged {
 		var polling bool
 		if err := tx.QueryRowContext(ctx, `SELECT poll_token<>'' AND api_locked_until>NOW() FROM binance_recharge_accounts WHERE id=$1`, id).Scan(&polling); err != nil {
@@ -395,9 +431,9 @@ func (s *BinanceRechargeService) SaveAccount(ctx context.Context, id int64, inpu
 		multiplier = *input.CreditMultiplier
 	}
 	if id == 0 {
-		err = tx.QueryRowContext(ctx, `INSERT INTO binance_recharge_accounts (name,recipient_uid,api_key_encrypted,api_secret_encrypted,proxy_url_encrypted,proxy_preflight,enabled,order_ttl_minutes,credit_multiplier) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::numeric) RETURNING id`, input.Name, input.RecipientUID, keyEncrypted, secretEncrypted, proxyCiphertext, proxyPreflight, input.Enabled, input.OrderTTLMinutes, multiplier).Scan(&id)
+		err = tx.QueryRowContext(ctx, `INSERT INTO binance_recharge_accounts (name,recipient_uid,api_key_encrypted,api_secret_encrypted,proxy_url_encrypted,proxy_preflight,enabled,order_ttl_minutes,credit_multiplier,backup_proxy_url_encrypted,backup_proxy_preflight) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::numeric,$10,$11) RETURNING id`, input.Name, input.RecipientUID, keyEncrypted, secretEncrypted, proxyCiphertext, proxyPreflight, input.Enabled, input.OrderTTLMinutes, multiplier, backupCiphertext, backupPreflight).Scan(&id)
 	} else {
-		_, err = tx.ExecContext(ctx, `UPDATE binance_recharge_accounts SET name=$2,recipient_uid=$3,api_key_encrypted=$4,api_secret_encrypted=$5,proxy_url_encrypted=$6,proxy_preflight=$7,enabled=$8,order_ttl_minutes=$9,credit_multiplier=$10::numeric,updated_at=NOW() WHERE id=$1`, id, input.Name, input.RecipientUID, keyEncrypted, secretEncrypted, proxyCiphertext, proxyPreflight, input.Enabled, input.OrderTTLMinutes, multiplier)
+		_, err = tx.ExecContext(ctx, `UPDATE binance_recharge_accounts SET name=$2,recipient_uid=$3,api_key_encrypted=$4,api_secret_encrypted=$5,proxy_url_encrypted=$6,proxy_preflight=$7,enabled=$8,order_ttl_minutes=$9,credit_multiplier=$10::numeric,backup_proxy_url_encrypted=$11,backup_proxy_preflight=$12,updated_at=NOW() WHERE id=$1`, id, input.Name, input.RecipientUID, keyEncrypted, secretEncrypted, proxyCiphertext, proxyPreflight, input.Enabled, input.OrderTTLMinutes, multiplier, backupCiphertext, backupPreflight)
 	}
 	if err != nil {
 		if isBinanceUniqueViolation(err) {

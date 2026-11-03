@@ -11,7 +11,8 @@ export interface AuthorizationConfig {
   intelligence_gate: boolean; workbench_revision: string; workbench_authorization_concurrency: number
   intelligence_group_rules: RadarGroupRule[]
   workbench_account_concurrency?: number; workbench_account_priority?: number
- account_proxy_mode?: 'direct' | 'managed'; max_accounts_per_proxy?: number;
+  account_proxy_mode?: 'direct' | 'managed'; max_accounts_per_proxy?: number
+  proxies_per_account?: number; proxy_concurrency?: number
   intelligence_models?: AuthorizationIntelligenceModel[]
   pass_group_ids: number[]; fail_group_ids: number[]
   intelligence_model: string; intelligence_effort: string
@@ -25,7 +26,8 @@ export interface AuthorizationConfig {
 }
 export interface AuthorizationSubmission {
   intelligence_gate: boolean; workbench_revision: string
- account_proxy_mode?: 'direct' | 'managed'; max_accounts_per_proxy?: number;
+  account_proxy_mode?: 'direct' | 'managed'; max_accounts_per_proxy?: number
+  proxies_per_account?: number; proxy_concurrency?: number
   pass_group_ids: number[]
   accounts: string; authorization_concurrency: number
   account_concurrency: number; account_priority: number; group_ids: number[]
@@ -38,6 +40,8 @@ export interface AuthorizationSupplementResult {
 export interface AuthorizationSupplementBatchResult { items: AuthorizationSupplementResult[]; saved: number; cancelled: boolean }
 export type AuthorizationList = 'jobs' | 'history' | 'proxies' | 'accounts'
 export interface AuthorizationRecord {
+  account_proxy_bindings?: { proxy_id: number; max_concurrency: number; max_accounts: number }[]
+  account_proxy_preserved?: boolean
   retry_of_job_id?: number; immediate_authorization?: boolean
   authorization_proxy_id?: number; authorization_proxy_scanned?: number
   authorization_proxy_passed?: number; authorization_proxy_limit?: number

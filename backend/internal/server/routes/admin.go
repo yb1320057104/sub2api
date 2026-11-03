@@ -58,6 +58,7 @@ func RegisterAdminRoutes(
 		}
 		if h.IntelligenceTest != nil {
 			admin.GET("/intelligence-test/config", h.IntelligenceTest.GetConfig)
+			admin.GET("/intelligence-test/models", h.IntelligenceTest.GetModels)
 			admin.PUT("/intelligence-test/config", h.IntelligenceTest.UpdateConfig)
 			admin.POST("/intelligence-test/keys/sync", panelRateLimiter.Heavy(), h.IntelligenceTest.SyncKeys)
 		}
@@ -479,6 +480,7 @@ func registerAccountRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUpAu
 		accounts.POST("/batch-update-credentials", h.Admin.Account.BatchUpdateCredentials)
 		accounts.POST("/batch-refresh-tier", h.Admin.Account.BatchRefreshTier)
 		accounts.POST("/bulk-update", h.Admin.Account.BulkUpdate)
+		accounts.POST("/assign-proxies", h.Admin.Account.AssignProxies)
 		accounts.POST("/batch-delete", h.Admin.Account.BatchDelete)
 		accounts.POST("/batch-clear-error", h.Admin.Account.BatchClearError)
 		accounts.POST("/batch-refresh", h.Admin.Account.BatchRefresh)

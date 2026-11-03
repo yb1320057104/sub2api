@@ -85,3 +85,39 @@ func (s *BinanceRechargeService) accountClient(a *BinanceRechargeAccount) (Binan
 	}
 	return client, client.CloseIdleConnections, nil
 }
+
+func (s *BinanceRechargeService) prepareBinanceBackupProxy(current BinanceRechargeAccount, input BinanceRechargeAccountInput) (string, bool, error) {
+	ciphertext, preflight := current.backupProxyURLCiphertext, current.BackupProxyPreflight
+	if input.BackupProxyPreflight != nil {
+		preflight = *input.BackupProxyPreflight
+	}
+	if input.ClearBackupProxy {
+		return "", false, nil
+	}
+	if input.BackupProxyURL != "" || (ciphertext != "" && preflight != current.BackupProxyPreflight) {
+		value := input.BackupProxyURL
+		var err error
+		if value == "" {
+			value, err = s.encryptor.Decrypt(ciphertext)
+		}
+		if err != nil || strings.TrimSpace(value) == "" {
+			return "", false, binanceProxyInputError(errBinanceAccountProxy)
+		}
+		if err := validateBinanceAccountProxy(value, preflight); err != nil {
+			if errors.Is(err, binancepay.ErrProxyPreflightConfiguration) {
+				return "", false, infraerrors.BadRequest("BINANCE_PROXY_PREFLIGHT_UNSUPPORTED", "备用代理预探测仅支持带用户名和密码的 HTTP(S) 网关；普通代理请关闭预探测")
+			}
+			return "", false, binanceProxyInputError(err)
+		}
+		if input.BackupProxyURL != "" {
+			ciphertext, err = s.encryptor.Encrypt(value)
+			if err != nil {
+				return "", false, infraerrors.ServiceUnavailable("BINANCE_ENCRYPTION_FAILED", "保存币安备用代理失败")
+			}
+		}
+	}
+	if preflight && ciphertext == "" {
+		return "", false, infraerrors.BadRequest("BINANCE_PROXY_REQUIRED", "开启备用代理预探测前必须配置备用代理")
+	}
+	return ciphertext, preflight, nil
+}

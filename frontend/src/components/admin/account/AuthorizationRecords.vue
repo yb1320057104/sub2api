@@ -36,6 +36,11 @@
                 <p v-if="row.immediate_authorization" class="mb-1 font-medium">{{ t('authorization.immediateJob') }}</p>
                 <p v-if="row.retry_of_job_id" class="mb-1">{{ t('authorization.retryOrigin', { id: row.retry_of_job_id }) }}</p>
                 <p v-if="row.authorization_proxy_id" class="mb-2 tabular-nums">{{ t('authorization.proxyAttemptProgress', { id: row.authorization_proxy_id, passed: row.authorization_proxy_passed || 0, limit: row.authorization_proxy_limit || 5, scanned: row.authorization_proxy_scanned || 0 }) }}</p>
+                <div v-if="row.account_proxy_bindings?.length" class="mb-2 space-y-1 rounded-lg bg-gray-50 px-2 py-1.5 dark:bg-dark-900/50" data-testid="authorization-applied-proxies">
+                  <p class="font-medium">{{ t('authorization.appliedAccountProxies') }}</p>
+                  <p v-for="binding in row.account_proxy_bindings" :key="binding.proxy_id" class="tabular-nums">{{ t('authorization.appliedAccountProxy', { id: binding.proxy_id, concurrency: binding.max_concurrency === 0 ? t('authorization.proxyUnlimited') : binding.max_concurrency, accounts: binding.max_accounts === 0 ? t('authorization.proxyUnlimited') : binding.max_accounts }) }}</p>
+                </div>
+                <p v-if="row.account_proxy_preserved" class="mb-2 text-gray-500 dark:text-dark-400" data-testid="authorization-proxy-preserved">{{ t('authorization.accountProxyPreserved') }}</p>
               </template>
               <template v-if="kind === 'jobs' && row.authorization_completed"><p class="mb-1 font-medium text-emerald-700 dark:text-emerald-300">{{ t('authorization.credentialsAuthorized') }}</p><p v-if="typeof row.intelligence_passed === 'boolean'">{{ t(row.intelligence_passed ? 'authorization.gatePassed' : 'authorization.gateFailed') }}<span v-if="row.intelligence_answer != null"> · {{ t('authorization.gateAnswer', { answer: row.intelligence_answer }) }}</span></p><p class="mb-2">{{ t('authorization.finalGroups') }}：{{ row.groups?.length ? row.groups.join('、') : t('authorization.ungrouped') }}</p></template>
               <div v-if="kind === 'jobs' && row.intelligence_results?.length" class="mb-3 space-y-2">

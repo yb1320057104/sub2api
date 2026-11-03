@@ -4,10 +4,19 @@ import en from '../locales/en'
 import zh from '../locales/zh'
 
 describe('OpenAI Fast/Flex policy locale keys', () => {
+  it('exposes the independent ultrafast force action and omitted-tier guidance', () => {
+    expect(zh.admin.settings.openaiFastPolicy.actionForceUltrafast).toBe('强制设置 ultrafast')
+    expect(en.admin.settings.openaiFastPolicy.actionForceUltrafast).toBe('Force ultrafast')
+    expect(zh.admin.settings.openaiFastPolicy.summaryAction.force_ultrafast).toBe('强制 ultrafast')
+    expect(en.admin.settings.openaiFastPolicy.summaryAction.force_ultrafast).toBe('Force ultrafast')
+    expect(zh.admin.settings.openaiFastPolicy.description).toContain('省略 tier')
+    expect(en.admin.settings.openaiFastPolicy.description).toContain('Omitted tier')
+  })
+
   it('exposes user scope copy at the runtime zh path', () => {
     expect(zh.admin.settings.openaiFastPolicy).toMatchObject({
       userIds: '指定用户',
-      userIdsHint: '输入任意邮箱关键词进行模糊搜索。留空表示对全部 Sub2API 用户生效；选中用户的 API Key 请求优先匹配用户规则。',
+      userIdsHint: '输入任意邮箱关键词进行模糊搜索。留空表示对全部 DP API 用户生效；选中用户的 API Key 请求优先匹配用户规则。',
       userSearchPlaceholder: '输入用户邮箱搜索',
       userSearchEmpty: '未找到匹配用户',
       userDeleted: '（已删除）',
@@ -19,7 +28,7 @@ describe('OpenAI Fast/Flex policy locale keys', () => {
   it('exposes user scope copy at the runtime en path', () => {
     expect(en.admin.settings.openaiFastPolicy).toMatchObject({
       userIds: 'Specific users',
-      userIdsHint: 'Type any part of a user email to search. Leave empty to apply to all Sub2API users. Selected users match requests from their API keys and take precedence over global rules.',
+      userIdsHint: 'Type any part of a user email to search. Leave empty to apply to all DP API users. Selected users match requests from their API keys and take precedence over global rules.',
       userSearchPlaceholder: 'Search by user email',
       userSearchEmpty: 'No matching users found',
       userDeleted: '(deleted)',

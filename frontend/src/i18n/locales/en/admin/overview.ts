@@ -929,7 +929,7 @@ export default {
         rpmLimitHint: 'Max requests per minute for each user in this group; 0 = unlimited. Once set, it takes over per-user rate limiting in this group (overrides the user-level rpm_limit fallback).',
         maxReasoningEffort: 'Max reasoning effort',
         maxReasoningEffortUnlimited: 'Unlimited (follow request)',
-        maxReasoningEffortHint: 'Limits explicit Anthropic and OpenAI reasoning effort requests. For Composite groups, it applies to the resolved target platform. Omitted effort stays omitted. The ceiling takes precedence over reasoning effort mappings.',
+        maxReasoningEffortHint: 'Limits explicit Anthropic and OpenAI reasoning effort requests. For Composite groups, it applies to the resolved target platform. Omitted effort stays omitted. The ceiling takes precedence over reasoning effort mappings. Advanced levels are ordered max < ultra < persistent; available levels depend on the model.',
         maxReasoningEffortOverLimit: 'Over-limit access control',
         maxReasoningEffortOverLimitDowngrade: 'Automatically downgrade when over limit',
         maxReasoningEffortOverLimitDeny: 'Deny access',

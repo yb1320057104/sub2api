@@ -6,6 +6,8 @@ import enCommon from "@/i18n/locales/en/common";
 import enSettings from "@/i18n/locales/en/admin/settings";
 import zhCommon from "@/i18n/locales/zh/common";
 import zhSettings from "@/i18n/locales/zh/admin/settings";
+import * as adminAccessKeysAPI from "@/api/admin/adminAccessKeys";
+import * as groupsAPI from "@/api/admin/groups";
 import SettingsView from "../SettingsView.vue";
 
 const {
@@ -22,10 +24,12 @@ const {
   getStreamTimeoutSettings,
   getRectifierSettings,
   getBetaPolicySettings,
+  getEmailTemplates,
   getUpstreamBillingProbeSettings,
   updateUpstreamBillingProbeSettings,
   getOllamaCloudUsageSettings,
   updateOllamaCloudUsageSettings,
+  getOpenCodeGoUsageSettings,
   getGroups,
   listProxies,
   getProviders,
@@ -56,6 +60,7 @@ const {
   getStreamTimeoutSettings: vi.fn(),
   getRectifierSettings: vi.fn(),
   getBetaPolicySettings: vi.fn(),
+  getEmailTemplates: vi.fn(),
   getUpstreamBillingProbeSettings: vi.fn().mockResolvedValue({
     enabled: true,
     interval_minutes: 30,
@@ -67,6 +72,7 @@ const {
     debounce_minutes: 1,
   }),
   updateOllamaCloudUsageSettings: vi.fn().mockImplementation(async (payload) => payload),
+  getOpenCodeGoUsageSettings: vi.fn(),
   getGroups: vi.fn(),
   listProxies: vi.fn(),
   getProviders: vi.fn(),
@@ -97,12 +103,14 @@ vi.mock("@/api", () => ({
       getStreamTimeoutSettings,
       getRectifierSettings,
       getBetaPolicySettings,
+      getEmailTemplates,
     },
     accounts: {
       getUpstreamBillingProbeSettings,
       updateUpstreamBillingProbeSettings,
       getOllamaCloudUsageSettings,
       updateOllamaCloudUsageSettings,
+      getOpenCodeGoUsageSettings,
     },
     groups: {
       getAll: getGroups,
@@ -1429,6 +1437,62 @@ describe("admin SettingsView payment visible method controls", () => {
     expect(summary.text()).toContain("过滤");
     expect(summary.text()).not.toContain("其他模型");
     expect(summary.text()).not.toContain("透传");
+  });
+
+  it("saves force ultrafast for both target and other-model actions", async () => {
+    const listAdminAccessKeys = vi.spyOn(adminAccessKeysAPI, "list")
+      .mockResolvedValueOnce({ items: [], permissions: [] });
+    const getAllGroups = vi.spyOn(groupsAPI, "getAllIncludingInactive")
+      .mockResolvedValueOnce([]);
+    const xhrOpen = vi.spyOn(XMLHttpRequest.prototype, "open");
+    getEmailTemplates.mockResolvedValueOnce({ events: [], locales: [], placeholders: [] });
+    getOpenCodeGoUsageSettings.mockResolvedValueOnce({ enabled: false, interval_minutes: 60, debounce_minutes: 1 });
+    getSettings.mockResolvedValueOnce({
+      ...baseSettingsResponse,
+      openai_fast_policy_settings: {
+        rules: [{
+          service_tier: "missing",
+          action: "pass",
+          scope: "all",
+          model_whitelist: ["gpt-5.6*"],
+          fallback_action: "pass",
+        }],
+      },
+    });
+    const wrapper = mountView();
+    try {
+      await flushPromises();
+      await openGatewayTab(wrapper);
+
+      const actionSelects = wrapper.findAll("select").filter((select) =>
+        select.find('option[value="force_ultrafast"]').exists(),
+      );
+      expect(actionSelects).toHaveLength(2);
+      for (const select of actionSelects) {
+        await select.setValue("force_ultrafast");
+      }
+      await wrapper.find("form").trigger("submit.prevent");
+      await flushPromises();
+      expect(updateSettings).toHaveBeenCalledWith(expect.objectContaining({
+        openai_fast_policy_settings: {
+          rules: [expect.objectContaining({
+            service_tier: "missing",
+            action: "force_ultrafast",
+            fallback_action: "force_ultrafast",
+            model_whitelist: ["gpt-5.6*"],
+          })],
+        },
+      }));
+      expect(listAdminAccessKeys).toHaveBeenCalledOnce();
+      expect(getAllGroups).toHaveBeenCalledOnce();
+      expect(xhrOpen).not.toHaveBeenCalled();
+      expect(showError).not.toHaveBeenCalled();
+    } finally {
+      wrapper.unmount();
+      listAdminAccessKeys.mockRestore();
+      getAllGroups.mockRestore();
+      xhrOpen.mockRestore();
+    }
   });
 
   it("loads and saves upstream billing probe settings from the gateway tab", async () => {

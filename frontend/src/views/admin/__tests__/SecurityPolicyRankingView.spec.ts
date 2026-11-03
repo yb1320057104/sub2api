@@ -21,6 +21,24 @@ describe('audit charge records in the ranking', () => {
     mocks.getRanking.mockResolvedValue({ data: { items: [{ rank: 1, user_id: 8, display_name: 'user', trigger_count: 1, pending_count: 0 }], total: 1, total_triggers: 1, start_date: '2026-11-03', end_date: '2026-11-03', timezone: 'UTC' } })
   })
 
+  it('shows actual automatic charges and groups while observations and disabled group charging hide the multiplier', async () => {
+    mocks.getRanking.mockResolvedValue({ data: { items: [{ rank: 1, user_id: 8, trigger_count: 2, pending_count: 0, auto_charged_count: 1, auto_charged_amount: '0.4', trigger_groups: 'Group A', observation_count: 1 }], total: 1, total_triggers: 2 } })
+    mocks.getRecords.mockResolvedValue({ data: { items: [
+      { usage_id: 0, audit_id: 1, source: 'prompt_observation', policy_action: 'allow', occurred_at: '2026-11-03T00:00:00Z', group_id: 9, group_name: 'Group A', count_status: 'skipped', count_reason: 'observation_only', auto_charge_status: 'skipped', auto_charge_reason: 'observation_only' },
+      { usage_id: 0, audit_id: 2, source: 'content_audit', policy_action: 'charge_allow', occurred_at: '2026-11-03T00:00:00Z', group_id: 9, group_name: 'Group A', count_status: 'skipped', count_reason: 'auto_disable_off', auto_charge_status: 'skipped', auto_charge_reason: 'auto_deduct_off', audit_multiplier: '9', actual_cost: '0.2', auto_charge_amount: '1.8' },
+    ], total: 2, page: 1, page_size: 20, pages: 1 } })
+    const wrapper = mount(SecurityPolicyRankingView, { global: { stubs: { AppLayout: { template: '<div><slot /></div>' }, BaseDialog: DialogStub, DateRangePicker: true, Pagination: true, UserAllowlistSelector: true } } })
+    await flushPromises()
+    expect(wrapper.get('[data-testid="ranking-auto-charge-summary"]').text()).toContain('0.4')
+    expect(wrapper.get('[data-testid="ranking-group-summary"]').text()).toBe('Group A')
+    await wrapper.get('[data-testid="ranking-records-8"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('securityPolicyRanking.observationHint')
+    expect(wrapper.find('[data-testid="ranking-record-charge-formula"]').exists()).toBe(false)
+    expect(mocks.deduct).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
   it('shows the linked completed usage and actual charge while keeping audit evidence out of manual deductions', async () => {
     mocks.getRecords.mockResolvedValue({ data: { items: [{ usage_id: 0, audit_id: 42, source: 'combined_audit', linked_usage_id: 77, policy_action: 'charge_allow', risk_score: 60, risk_level: 'high', occurred_at: '2026-11-03T00:00:00Z', group_id: 9, group_name: 'Main', request_id: 'r1', model: 'model', count_status: 'skipped', count_reason: 'auto_disable_off', auto_charge_status: 'deducted', actual_cost: '0.2', audit_multiplier: '2', auto_charge_amount: '0.4' }], total: 1, page: 1, page_size: 20, pages: 1 } })
     const wrapper = mount(SecurityPolicyRankingView, { global: { stubs: { AppLayout: { template: '<div><slot /></div>' }, BaseDialog: DialogStub, DateRangePicker: true, Pagination: true, UserAllowlistSelector: true } } })

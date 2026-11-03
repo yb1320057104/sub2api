@@ -275,6 +275,7 @@ func AccountFromServiceShallow(a *service.Account) *Account {
 		OllamaCloudUsage:        ollamaCloudUsage,
 		OpenCodeGoUsage:         openCodeGoUsage,
 		ProxyID:                 a.ProxyID,
+		ProxyBindings:           AccountProxyBindingsFromService(a.ProxyBindings),
 		ProxyFallbackOriginID:   a.ProxyFallbackOriginID,
 		ProxyFallbackOriginName: a.ProxyFallbackOriginName,
 		Concurrency:             a.Concurrency,
@@ -484,7 +485,8 @@ func AccountListItemFromAccount(a *Account) *AccountListItem {
 		ID: a.ID, Name: a.Name, Notes: a.Notes, Platform: a.Platform, Type: a.Type,
 		Credentials: a.Credentials, CredentialsStatus: a.CredentialsStatus, Extra: a.Extra,
 		OllamaCloudUsage: a.OllamaCloudUsage, OpenCodeGoUsage: a.OpenCodeGoUsage,
-		ProxyID: a.ProxyID, ProxyFallbackOriginID: a.ProxyFallbackOriginID, ProxyFallbackOriginName: a.ProxyFallbackOriginName,
+		ProxyBindings: a.ProxyBindings,
+		ProxyID:       a.ProxyID, ProxyFallbackOriginID: a.ProxyFallbackOriginID, ProxyFallbackOriginName: a.ProxyFallbackOriginName,
 		Concurrency: a.Concurrency, LoadFactor: a.LoadFactor, Priority: a.Priority, RateMultiplier: a.RateMultiplier,
 		Status: a.Status, ErrorMessage: a.ErrorMessage, LastUsedAt: a.LastUsedAt, ExpiresAt: a.ExpiresAt,
 		AutoPauseOnExpired: a.AutoPauseOnExpired, CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt,
@@ -541,6 +543,7 @@ func ProxyFromService(p *service.Proxy) *Proxy {
 		return nil
 	}
 	return &Proxy{
+		MaxConcurrency: p.MaxConcurrency, MaxAccounts: p.MaxAccounts,
 		ID:             p.ID,
 		Name:           p.Name,
 		Protocol:       p.Protocol,
@@ -984,4 +987,16 @@ func PromoCodeUsageFromService(u *service.PromoCodeUsage) *PromoCodeUsage {
 		UsedAt:      u.UsedAt,
 		User:        UserFromServiceShallow(u.User),
 	}
+}
+
+func AccountProxyBindingsFromService(items []service.AccountProxyBinding) []AccountProxyBinding {
+	out := make([]AccountProxyBinding, 0, len(items))
+	for _, b := range items {
+		proxy := ProxyFromService(b.Proxy)
+		if proxy != nil {
+			proxy.Username = ""
+		}
+		out = append(out, AccountProxyBinding{ProxyID: b.ProxyID, Proxy: proxy, MaxConcurrency: b.MaxConcurrency, MaxAccounts: b.MaxAccounts})
+	}
+	return out
 }

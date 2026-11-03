@@ -17,6 +17,8 @@ type WorkerRuntime struct {
 	lastErrorMu      sync.RWMutex
 	lastErrorCode    string
 	lastErrorMessage string
+	lastErrorAt      time.Time
+	lastRecoveredAt  time.Time
 }
 
 type Runner struct {
@@ -164,7 +166,11 @@ func (r *Runner) processJob(ctx context.Context, workerID int, cfg ActiveConfig,
 	job.Snapshot.FullPrompt = FullPromptFromScanText(scanText)
 	endpoints := cfg.EnabledEndpoints()
 	if len(endpoints) == 0 && cfg.Engine != PromptEngineLocalRules {
-		return r.finishFailure(ctx, job, &GuardError{Code: "no_enabled_endpoint", Retryable: true})
+		code := "no_enabled_endpoint"
+		if len(cfg.InvalidTokenEndpointIDs()) > 0 {
+			code = "audit_token_invalid"
+		}
+		return r.finishFailure(ctx, job, &GuardError{Code: code, Retryable: true})
 	}
 	if cfg.Engine != PromptEngineLocalRules && r.scanner == nil {
 		return r.finishFailure(ctx, job, &GuardError{Code: ErrorCodeUnavailable, Retryable: false})
@@ -236,6 +242,7 @@ func (r *Runner) processJob(ctx context.Context, workerID int, cfg ActiveConfig,
 	if err != nil {
 		return err
 	}
+	r.clearLastErrorAfter(started)
 	if deleteErr := r.payload.Delete(ctx, job.ID); deleteErr != nil {
 		LogWarn(EventProcessFailed, mergeLogFields(baseFields, map[string]any{"worker_id": workerID, "status": "payload_delete_deferred", "error_code": "payload_delete_failed"}))
 	}
@@ -341,9 +348,34 @@ func (r *Runner) Snapshot() (active, processed, failed int64, heartbeat, lastPro
 	return
 }
 
+func (r *Runner) clearLastErrorAfter(started time.Time) {
+	r.runtime.lastErrorMu.Lock()
+	defer r.runtime.lastErrorMu.Unlock()
+	if r.runtime.lastErrorCode != "" && !r.runtime.lastErrorAt.After(started) {
+		r.runtime.lastErrorCode, r.runtime.lastErrorMessage = "", ""
+		r.runtime.lastRecoveredAt = r.clock.Now()
+	}
+}
+
+func (r *Runner) recoveryTimes() (*time.Time, *time.Time) {
+	r.runtime.lastErrorMu.RLock()
+	defer r.runtime.lastErrorMu.RUnlock()
+	var failed, recovered *time.Time
+	if !r.runtime.lastErrorAt.IsZero() {
+		t := r.runtime.lastErrorAt
+		failed = &t
+	}
+	if !r.runtime.lastRecoveredAt.IsZero() {
+		t := r.runtime.lastRecoveredAt
+		recovered = &t
+	}
+	return failed, recovered
+}
+
 func (r *Runner) setLastError(code, _ string) {
 	code, message := sanitizeStoredError(code)
 	r.runtime.lastErrorMu.Lock()
+	r.runtime.lastErrorAt = r.clock.Now()
 	r.runtime.lastErrorCode = code
 	r.runtime.lastErrorMessage = message
 	r.runtime.lastErrorMu.Unlock()

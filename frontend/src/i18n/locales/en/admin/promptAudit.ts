@@ -1,5 +1,6 @@
 export default {
   promptAudit: {
+    fastMode: { title: 'Fast mode: local precheck + background node review', hint: 'Requires blocking mode. Local rules retain their configured actions; remote findings are displayed only, without blocking, suspension counts or extra charges. Disable to restore strict node prechecks.', contentTitle: 'Fast mode: keyword precheck + background API', contentHint: 'Apply scored keyword actions. Misses proceed while the API reviews in the background for display only. Blocked requests have no generation cost; charge-and-allow uses the completed request cost and group settings.', recovered: 'Subsequent audit recovered: {time}' },
     title: 'Prompt Audit',
     description: 'Audit selected groups with local rules or remote Qwen3Guard nodes. Full prompts are stored with events for admin review.',
     configVersion: 'Config version v{version}',

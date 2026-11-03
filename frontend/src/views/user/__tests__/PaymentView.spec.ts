@@ -1294,6 +1294,69 @@ describe('Binance UID top-up page', () => {
     })
   })
 
+  it('keeps backup proxy write-only, saves replacements and explicitly clears it', async () => {
+    binanceHarness.getAccounts.mockResolvedValue({ data: [{
+      id: 7, name: 'Receiving account', recipient_uid: '123456', enabled: true, order_ttl_minutes: 15,
+      credit_multiplier: '1.000000', has_orders: true, api_key_configured: true, api_secret_configured: true,
+      proxy_configured: true, proxy_preflight: false, backup_proxy_configured: true, backup_proxy_preflight: true,
+      backup_proxy_url: 'http://must-not-copy:hidden@backup.test:3128',
+    }] })
+    const wrapper = await mountAdminAccounts()
+    await wrapper.findAll('button').find(button => button.text() === 'common.edit')!.trigger('click')
+    expect((wrapper.get('#binance-backup-proxy').element as HTMLInputElement).value).toBe('')
+    expect((wrapper.get('#binance-backup-proxy-preflight').element as HTMLInputElement).checked).toBe(true)
+    await wrapper.get('#binance-account-form').trigger('submit')
+    await flushPromises()
+    expect(binanceHarness.updateAccount.mock.calls.at(-1)![1]).not.toHaveProperty('backup_proxy_url')
+    expect(binanceHarness.updateAccount.mock.calls.at(-1)![1]).not.toHaveProperty('backup_proxy_preflight')
+    await wrapper.findAll('button').find(button => button.text() === 'common.edit')!.trigger('click')
+    await wrapper.get('#binance-backup-proxy').setValue('http://fixture:password@backup.test:3128')
+    await wrapper.get('#binance-backup-proxy-preflight').setValue(false)
+    await wrapper.get('#binance-account-form').trigger('submit')
+    await flushPromises()
+    expect(binanceHarness.updateAccount).toHaveBeenLastCalledWith(7, expect.objectContaining({
+      backup_proxy_url: 'http://fixture:password@backup.test:3128', backup_proxy_preflight: false,
+    }))
+    await wrapper.findAll('button').find(button => button.text() === 'common.edit')!.trigger('click')
+    expect((wrapper.get('#binance-backup-proxy').element as HTMLInputElement).value).toBe('')
+    await wrapper.get('#binance-backup-proxy').setValue('http://must-clear:password@backup.test:3128')
+    await wrapper.get('#binance-clear-backup-proxy').setValue(true)
+    expect((wrapper.get('#binance-backup-proxy').element as HTMLInputElement).value).toBe('')
+    await wrapper.get('#binance-account-form').trigger('submit')
+    await flushPromises()
+    const saved = binanceHarness.updateAccount.mock.calls.at(-1)![1]
+    expect(saved.clear_backup_proxy).toBe(true)
+    expect(saved).not.toHaveProperty('backup_proxy_url')
+    expect(saved).not.toHaveProperty('backup_proxy_preflight')
+  })
+
+  it('requires both routes and shows the safe retry status without reissuing the query', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(document, 'hidden', 'get').mockReturnValue(false)
+    binanceHarness.getAccounts.mockResolvedValue({ data: [{
+      id: 7, name: 'Receiving account', recipient_uid: '123456', enabled: true, order_ttl_minutes: 15,
+      credit_multiplier: '1.000000', has_orders: true, api_key_configured: true, api_secret_configured: true,
+      proxy_configured: true, backup_proxy_configured: true, check_state: 'running', retry_after_seconds: 200,
+      query_status: { route: 'backup', attempt: 4, state: 'waiting', retry_at: '2026-11-03T12:00:00Z' },
+    }] })
+    const wrapper = await mountAdminAccounts()
+    expect(wrapper.get('[data-testid="binance-route-status-7"]').text()).toContain('binanceRecharge.routeProgress')
+    expect(wrapper.get('[data-testid="binance-route-status-7"]').text()).toContain('binanceRecharge.routeRetryAt')
+    await vi.advanceTimersByTimeAsync(3000)
+    await flushPromises()
+    expect(binanceHarness.getAccounts).toHaveBeenCalledTimes(2)
+    expect(binanceHarness.checkAccount).not.toHaveBeenCalled()
+    await wrapper.findAll('button').find(button => button.text() === 'common.edit')!.trigger('click')
+    await wrapper.get('#binance-clear-proxy').setValue(true)
+    await wrapper.get('#binance-account-form').trigger('submit')
+    await flushPromises()
+    expect(binanceHarness.updateAccount).not.toHaveBeenCalled()
+    await wrapper.get('#binance-clear-backup-proxy').setValue(true)
+    await wrapper.get('#binance-account-form').trigger('submit')
+    await flushPromises()
+    expect(binanceHarness.updateAccount).toHaveBeenCalledWith(7, expect.objectContaining({ clear_proxy: true, clear_backup_proxy: true }))
+  })
+
   it('rejects empty, out-of-range and over-precision edit rates before sending a request', async () => {
     binanceHarness.getAccounts.mockResolvedValue({ data: [{
       id: 7, name: 'Receiving account', recipient_uid: '123456', enabled: true, order_ttl_minutes: 15,

@@ -487,6 +487,7 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 			return nil, nil, err
 		}
 		targetURL = s.buildCustomRelayURL(validatedURL, "/v1/messages/count_tokens", account)
+		ctx = WithAccountProxyRelay(ctx, resolveAccountProxyURL(account))
 	}
 
 	clientHeaders := http.Header{}

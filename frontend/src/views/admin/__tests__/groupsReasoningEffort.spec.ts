@@ -29,6 +29,8 @@ describe("groupsReasoningEffort", () => {
       "high",
       "xhigh",
       "max",
+      "ultra",
+      "persistent",
     ];
     for (const platform of ["openai", "composite"] as const) {
       expect(
@@ -59,6 +61,8 @@ describe("groupsReasoningEffort", () => {
       ),
     ).toEqual(["low", "medium", "high", "xhigh", "max", reasoningEffortMappingDeny]);
     expect(supportsReasoningEffortPolicyPlatform("anthropic")).toBe(true);
+    expect(reasoningEffortSourceOptionsForPlatform("anthropic").map(option => option.value))
+      .toEqual(["none", "low", "medium", "high", "xhigh", "max"]);
 
     for (const platform of ["gemini", "antigravity", "grok"] as const) {
       expect(reasoningEffortOptionsForPlatform(platform)).toEqual([]);
@@ -72,7 +76,7 @@ describe("groupsReasoningEffort", () => {
     const rows = reasoningEffortMappingsToRows(
       [
         { from: " max ", to: " xhigh " },
-        { from: "ultra", to: "high" },
+        { from: "future-effort", to: "high" },
       ],
       "openai",
     );
@@ -321,10 +325,31 @@ describe("groupsReasoningEffort", () => {
   });
 
   it("rejects custom mappings", () => {
-    const row = createReasoningEffortMappingRow({ from: "ultra", to: "high" });
+    const row = createReasoningEffortMappingRow({ from: "future-effort", to: "high" });
     expect(validateReasoningEffortMappings([row], "openai")).toEqual({
       [row.pairs[0].id]: { from: "unsupportedFrom" },
     });
+  });
+
+  it("retains advanced OpenAI mappings when editing and excludes them from Anthropic", () => {
+    const mappings = [
+      { from: " ULTRA ", to: "persistent", match_type: "exact" as const, model: "gpt-6-astra" },
+      { from: "persistent", to: "deny" },
+    ];
+    for (const platform of ["openai", "composite"] as const) {
+      const rows = reasoningEffortMappingsToRows(mappings, platform);
+      expect(validateReasoningEffortMappings(rows, platform)).toEqual({});
+      expect(reasoningEffortMappingsToAPI(rows)).toEqual([
+        { from: "ultra", to: "persistent", match_type: "exact", model: "gpt-6-astra" },
+        { from: "persistent", to: "deny" },
+      ]);
+      expect(normalizeReasoningEffortForPlatform(platform, " PERSISTENT ")).toBe("persistent");
+    }
+    expect(reasoningEffortMappingsToRows(mappings, "anthropic")).toEqual([]);
+    for (const effort of ["minimal", "ultra", "persistent"]) {
+      expect(normalizeReasoningEffortForPlatform("anthropic", effort)).toBe("");
+      expect(normalizeReasoningEffortSourceForPlatform("anthropic", effort)).toBe("");
+    }
   });
 
   it("normalizes over-limit access control to downgrade or deny", () => {

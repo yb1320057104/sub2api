@@ -26,7 +26,7 @@ func (e *Enqueuer) Enqueue(ctx context.Context, req Request) error {
 	}
 	cfg, ok := e.config.Active()
 	baseFields := requestLogFields(req)
-	if !ok || cfg.EffectiveMode() != ModeAsync {
+	if !ok || (cfg.EffectiveMode() != ModeAsync && !cfg.fastModeActive()) {
 		LogInfo(EventEnqueueSkipped, mergeLogFields(baseFields, map[string]any{"status": "skipped", "error_code": "mode_not_async"}))
 		return nil
 	}

@@ -199,6 +199,12 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		account.ProxyID != nil && account.Proxy != nil,
 	)
 
+	proxyRoute, proxyErr := s.acquireWSProxy(ctx, account, preferredConnID)
+	if proxyErr != nil {
+		return nil, proxyErr
+	}
+	defer proxyRoute.Close()
+	ctx = proxyRoute.Context
 	acquireCtx, acquireCancel := context.WithTimeout(ctx, s.openAIWSAcquireTimeout())
 	defer acquireCancel()
 
@@ -211,12 +217,8 @@ func (s *OpenAIGatewayService) forwardOpenAIWSV2(
 		},
 		PreferredConnID: preferredConnID,
 		ForceNewConn:    forceNewConn,
-		ProxyURL: func() string {
-			if account.ProxyID != nil && account.Proxy != nil {
-				return account.Proxy.URL()
-			}
-			return ""
-		}(),
+		ProxyURL:        proxyRoute.URL,
+		ProxyID:         proxyRoute.ProxyID,
 	})
 	if err != nil {
 		var agentDialErr *openAIWSDialError

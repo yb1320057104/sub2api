@@ -22,6 +22,9 @@ func TestGatewayCacheLiveCallIdentityAndController(t *testing.T) {
 		CallID:                "call_secret",
 		CallHash:              HashLiveCallID("call_secret"),
 		AccountID:             11,
+		ProxyID:               73,
+		ProxyLeaseID:          "proxy-live-lease",
+		ProxyLeaseManaged:     true,
 		APIKeyID:              22,
 		UserID:                33,
 		GroupID:               44,
@@ -38,6 +41,9 @@ func TestGatewayCacheLiveCallIdentityAndController(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, record.CallID, loaded.CallID)
 	require.Equal(t, record.AccountID, loaded.AccountID)
+	require.Equal(t, record.ProxyID, loaded.ProxyID)
+	require.Equal(t, record.ProxyLeaseID, loaded.ProxyLeaseID)
+	require.True(t, loaded.ProxyLeaseManaged)
 	require.Equal(t, record.AttestationCiphertext, loaded.AttestationCiphertext)
 
 	claimed, err := cache.ClaimLiveController(context.Background(), record.CallHash, service.LiveControllerObserver, "observer-1")
@@ -59,6 +65,35 @@ func TestGatewayCacheLiveCallIdentityAndController(t *testing.T) {
 	closed, err = cache.MarkLiveCallClosed(context.Background(), record.CallHash, time.Hour)
 	require.NoError(t, err)
 	require.False(t, closed)
+}
+
+func TestGatewayCacheLegacyLiveProxyUpgradePreservesControllerAndOnlyWinsOnce(t *testing.T) {
+	rdb := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: rdb.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	cache := NewGatewayCache(client)
+	store := cache.(service.LiveCallStore)
+	upgrader := cache.(service.LiveProxyLeaseStore)
+	record := &service.LiveCallRecord{CallID: "legacy", CallHash: "legacy-hash", Controller: service.LiveControllerProxy, ControllerOwner: "new-controller", CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Minute)}
+	require.NoError(t, store.SaveLiveCall(t.Context(), record, time.Minute))
+	won, err := upgrader.AttachLiveProxyLease(t.Context(), record.CallHash, 7, "first-lease")
+	require.NoError(t, err)
+	require.True(t, won)
+	won, err = upgrader.AttachLiveProxyLease(t.Context(), record.CallHash, 8, "loser-lease")
+	require.NoError(t, err)
+	require.False(t, won)
+	loaded, err := store.GetLiveCall(t.Context(), record.CallHash)
+	require.NoError(t, err)
+	require.Equal(t, int64(7), loaded.ProxyID)
+	require.Equal(t, "first-lease", loaded.ProxyLeaseID)
+	require.True(t, loaded.ProxyLeaseManaged)
+	require.Equal(t, service.LiveControllerProxy, loaded.Controller)
+	require.Equal(t, "new-controller", loaded.ControllerOwner)
+	_, err = store.MarkLiveCallClosed(t.Context(), record.CallHash, time.Minute)
+	require.NoError(t, err)
+	won, err = upgrader.AttachLiveProxyLease(t.Context(), record.CallHash, 9, "after-close")
+	require.NoError(t, err)
+	require.False(t, won)
 }
 
 func TestGatewayCacheLiveAuditSnapshotPrivateRoundTrip(t *testing.T) {

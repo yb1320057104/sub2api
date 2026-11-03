@@ -150,6 +150,26 @@ func stableErrorCode(code string) string {
 
 func stableErrorMessage(code string) string {
 	switch stableErrorCode(code) {
+	case "audit_node_timeout":
+		return "审计节点请求超时，请检查节点响应时间或使用快速模式"
+	case "audit_node_connection_failed":
+		return "无法连接审计节点，请检查地址、网络和节点服务"
+	case "audit_node_authentication_failed":
+		return "审计节点拒绝认证（HTTP 401/403），请核对节点密钥和权限"
+	case "audit_node_rate_limited":
+		return "审计节点限流（HTTP 429），请降低并发或配置备用节点"
+	case "audit_node_server_error":
+		return "审计节点返回服务错误（HTTP 5xx）"
+	case "audit_node_http_error":
+		return "审计节点返回非成功状态，请核对地址、模型和接口配置"
+	case "no_enabled_endpoint":
+		return "没有可用审计节点，请启用节点并检查凭据状态"
+	case "audit_token_invalid":
+		return "审计节点密钥无法解密，请重新保存节点密钥"
+	case "audit_concurrency_full":
+		return "审计并发已满，请稍后重试或调整审计模式"
+	case ErrorCodeConfigUnavailable:
+		return "审计配置尚未加载，请检查配置状态"
 	case ErrorCodeBlocked:
 		return "Prompt Guard blocked the request"
 	case ErrorCodeUnavailable, "payload_store_unavailable", "payload_missing":

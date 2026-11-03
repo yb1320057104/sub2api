@@ -178,7 +178,7 @@ func TestPromptAuditProbeModelsFallbackAndResponseSafety(t *testing.T) {
 		defer server.Close()
 		result := newProbeTestService().Probe(context.Background(), ProbeRequest{Endpoint: probeEndpoint(server.URL, "temporary-token")})
 		require.False(t, result.OK)
-		require.Equal(t, ErrorCodeUnavailable, result.ErrorCode)
+		require.Equal(t, "audit_node_authentication_failed", result.ErrorCode)
 		require.Equal(t, http.StatusUnauthorized, result.HTTPStatus)
 		require.False(t, result.Retryable)
 	})

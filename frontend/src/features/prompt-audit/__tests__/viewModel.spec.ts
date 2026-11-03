@@ -36,6 +36,13 @@ const config = (): PromptAuditConfig => ({
 })
 
 describe('Prompt Audit view model', () => {
+  it('keeps strict mode by default and saves fast mode only after an explicit choice', () => {
+    const draft = configToDraft(config())
+    expect(buildUpdateRequest(draft).fast_mode).toBe(false)
+    draft.fast_mode = true
+    draft.blocking_enabled = true
+    expect(buildUpdateRequest(draft)).toMatchObject({ fast_mode: true, blocking_enabled: true })
+  })
   it('preserves missing policy as legacy, explicit null as disable, and score zero without applying defaults', () => {
     const legacy = configToDraft(config())
     expect(buildUpdateRequest(legacy).risk_policy).toBeUndefined()

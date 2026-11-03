@@ -9,9 +9,39 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
+
+func TestAnthropicCustomRelayRequestsCarryExplicitProxyRoutingMarker(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, countTokens := range []bool{false, true} {
+		t.Run(map[bool]string{false: "messages", true: "count tokens"}[countTokens], func(t *testing.T) {
+			gateway := &GatewayService{cfg: &config.Config{}}
+			proxyID := int64(3)
+			account := &Account{ID: 11, Platform: PlatformAnthropic, Type: AccountTypeOAuth,
+				Extra:   map[string]any{"custom_base_url_enabled": true, "custom_base_url": "https://relay.example"},
+				ProxyID: &proxyID, Proxy: &Proxy{ID: proxyID, Protocol: "http", Host: "legacy.invalid", Port: 1234}}
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+			body := []byte(`{"model":"claude-sonnet-4","messages":[{"role":"user","content":"hello"}]}`)
+			var request *http.Request
+			var err error
+			if countTokens {
+				request, _, err = gateway.buildCountTokensRequest(t.Context(), c, account, body, "fake-token", "oauth", "claude-sonnet-4", false)
+			} else {
+				request, _, err = gateway.buildUpstreamRequest(t.Context(), c, account, body, "fake-token", "oauth", "claude-sonnet-4", false, false)
+			}
+			require.NoError(t, err)
+			fallback, marked := AccountProxyRelayFromContext(request.Context())
+			require.True(t, marked)
+			require.Equal(t, account.Proxy.URL(), fallback)
+			require.Equal(t, fallback, request.URL.Query().Get("proxy"))
+			require.Equal(t, "relay.example", request.URL.Host)
+		})
+	}
+}
 
 // Scenario: OAuth / setup-token 凭据只能走签发方协议，API Key 与其他凭据类型不受限
 func TestAnthropicMessagesCredentialAllowed(t *testing.T) {

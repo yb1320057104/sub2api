@@ -276,7 +276,7 @@ export default {
       modePreBlock: '前置拦截',
       modePreBlockDesc: '每次请求先同步审核最新用户输入，命中后立即拒绝请求。',
       modeObserve: '仅观察',
-      modeObserveDesc: '请求直接放行，最新用户输入进入异步审核队列；命中后只记录、通知和按规则累计。',
+      modeObserveDesc: '请求直接放行，最新用户输入进入异步审核队列；命中仅记录并在排行榜展示，不扣款、不累计封禁次数，也不写入拦截缓存。',
       modeOff: '关闭',
       modeOffDesc: '不执行内容审计，也不会写入审核记录。',
       baseUrl: 'Base URL',

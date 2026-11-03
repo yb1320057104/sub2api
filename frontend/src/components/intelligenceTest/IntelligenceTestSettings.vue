@@ -15,6 +15,15 @@
         <Toggle v-model="config.enabled" aria-labelledby="intelligence-schedule-label" />
       </div>
 
+      <div class="space-y-2 border-b border-gray-100 px-5 py-4 text-xs leading-5 dark:border-dark-700 sm:px-6">
+        <p class="text-gray-500 dark:text-dark-400">{{ t('intelligenceTest.modelChoicesHint') }}</p>
+        <div class="flex flex-wrap items-center gap-3">
+          <span v-if="loadingModels" role="status" class="text-gray-500">{{ t('intelligenceTest.modelsLoading') }}</span>
+          <span v-else-if="modelsError" role="alert" class="text-amber-700 dark:text-amber-400">{{ t('intelligenceTest.modelsLoadFailed') }}</span>
+          <button type="button" class="font-medium text-primary-600 hover:underline disabled:opacity-50 dark:text-primary-400" :disabled="saving || loadingModels" @click="loadModels">{{ t('intelligenceTest.reloadModels') }}</button>
+        </div>
+      </div>
+
       <div class="grid divide-y divide-gray-100 dark:divide-dark-700 xl:grid-cols-2 xl:divide-x xl:divide-y-0">
         <section v-for="mode in modes" :key="mode" class="min-w-0 space-y-5 p-5 sm:p-6">
           <div class="flex items-center justify-between gap-3">
@@ -31,11 +40,11 @@
           <div class="grid gap-4 sm:grid-cols-2">
             <label class="block">
               <span class="input-label">{{ t('intelligenceTest.model') }}</span>
-              <input v-model="config[mode].model" class="input font-mono text-sm" type="text" maxlength="200" required autocomplete="off" />
+              <Select v-model="config[mode].model" :options="modelOptions" :disabled="saving" :loading="loadingModels" searchable creatable :search-placeholder="t('intelligenceTest.modelSearch')" :aria-label="`${t(`intelligenceTest.${mode}`)} ${t('intelligenceTest.model')}`" />
             </label>
             <label class="block">
               <span class="input-label">{{ t('intelligenceTest.effort') }}</span>
-              <Select v-model="config[mode].effort" :disabled="saving" :options="[{ value: '', label: t('intelligenceTest.effortDefault') }, ...efforts.map(value => ({ value, label: value }))]" />
+              <Select v-model="config[mode].effort" :disabled="saving" :options="[{ value: '', label: t('intelligenceTest.effortDefault') }, ...effortOptions]" :aria-label="`${t(`intelligenceTest.${mode}`)} ${t('intelligenceTest.effort')}`" />
             </label>
             <label class="block">
               <span class="input-label">{{ t('intelligenceTest.interval') }}</span>
@@ -56,8 +65,8 @@
                   <span class="font-mono text-xs font-normal text-gray-400">{{ group.platform }}</span>
                 </div>
                 <div class="grid gap-2 sm:grid-cols-2">
-                  <input :value="getOverride(mode, group.id)?.model ?? ''" :aria-label="`${group.name} ${t('intelligenceTest.model')}`" :placeholder="config[mode].model" class="input text-sm" type="text" maxlength="200" @input="setOverride(mode, group.id, 'model', ($event.target as HTMLInputElement).value)" />
-                  <Select :model-value="getOverride(mode, group.id)?.effort ?? ''" :aria-label="group.name + ' ' + t('intelligenceTest.effort')" :disabled="saving" :options="[{ value: '', label: t('intelligenceTest.inherit') }, ...efforts.map(value => ({ value, label: value }))]" @update:model-value="setOverride(mode, group.id, 'effort', String($event ?? ''))" />
+                  <Select :model-value="getOverride(mode, group.id)?.model ?? ''" :aria-label="`${t(`intelligenceTest.${mode}`)} ${group.name} ${t('intelligenceTest.model')}`" :options="[{ value: '', label: `${t('intelligenceTest.inherit')} (${config[mode].model})` }, ...modelOptions]" :disabled="saving" :loading="loadingModels" searchable creatable :search-placeholder="t('intelligenceTest.modelSearch')" @update:model-value="setOverride(mode, group.id, 'model', String($event ?? ''))" />
+                  <Select :model-value="getOverride(mode, group.id)?.effort ?? ''" :aria-label="`${t(`intelligenceTest.${mode}`)} ${group.name} ${t('intelligenceTest.effort')}`" :disabled="saving" :options="[{ value: '', label: t('intelligenceTest.inherit') }, ...effortOptions]" @update:model-value="setOverride(mode, group.id, 'effort', String($event ?? ''))" />
                 </div>
               </div>
             </div>
@@ -107,12 +116,13 @@
 
 <script setup lang="ts">
 import Select from '@/components/common/Select.vue'
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Toggle from '@/components/common/Toggle.vue'
-import { intelligenceTestAPI, type IntelligenceTestConfig, type IntelligenceTestGroup, type IntelligenceTestMode } from '@/api/intelligenceTest'
+import { intelligenceTestAPI, type IntelligenceTestConfig, type IntelligenceTestGroup, type IntelligenceTestMode, type IntelligenceTestModelCatalog } from '@/api/intelligenceTest'
 import { useAppStore } from '@/stores/app'
 import { useIntelligenceTestStore } from '@/stores/intelligenceTest'
+import { allModels } from '@/composables/useModelWhitelist'
 
 const props = defineProps<{ groups: IntelligenceTestGroup[]; groupsLoaded: boolean }>()
 const emit = defineEmits<{ saved: []; keysSynced: [] }>()
@@ -121,7 +131,26 @@ const app = useAppStore()
 const status = useIntelligenceTestStore()
 const modes: IntelligenceTestMode[] = ['svg', 'candy']
 const efforts = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'persistent']
+// Read the shared static catalog only; its upstream-fetch helper is never called.
+// Vision-capable text models remain selectable; dedicated media models do not.
+const builtInModels = allModels.map(option => option.value).filter(model =>
+  !/(?:cogview|cogvideo|grok-imagine)|(?:^|[-_.])(?:image|video|audio|realtime|voice|speech|tts|stt|embedding|embeddings|rerank|moderation)(?:$|[-_.])/i.test(model))
+const effortOptions = computed(() => efforts.map(value => ({ value, label: `${t(`intelligenceTest.efforts.${value}`)} (${value})` })))
 const config = ref<IntelligenceTestConfig | null>(null)
+const availableModels = ref<IntelligenceTestModelCatalog>({ models: [], excluded_models: [] })
+const loadingModels = ref(false)
+const modelsError = ref(false)
+const modelOptions = computed(() => {
+  const saved = modes.flatMap(mode => config.value
+    ? [config.value[mode].model, ...config.value[mode].group_overrides.map(item => item.model)]
+    : [])
+  // Apply local media alias exclusions to every suggestion, while preserving
+  // explicit saved/draft IDs without rewriting execution settings.
+  const excluded = new Set(availableModels.value.excluded_models)
+  const suggestions = [...availableModels.value.models, ...builtInModels].filter(model => !excluded.has(model))
+  return [...new Set([...suggestions, ...saved].filter(Boolean))]
+    .map(model => ({ value: model, label: model }))
+})
 const loading = ref(true)
 const saving = ref(false)
 const syncing = ref(false)
@@ -131,6 +160,8 @@ const failedGroups = computed(() => syncReport.value?.groups.filter(group => gro
 const selectedGroupIDs = ref<number[]>([])
 const selectedVisibleGroupIDs = computed(() => props.groups.filter(group => selectedGroupIDs.value.includes(group.id)).map(group => group.id))
 let groupSelectionInitialized = false
+let configController: AbortController | null = null
+let modelsController: AbortController | null = null
 
 function alignGroupSelection(groups: IntelligenceTestGroup[]) {
   selectedGroupIDs.value = groups.filter(group => group.selected === true).map(group => group.id)
@@ -162,20 +193,43 @@ function clearGroupSelection() {
 function normalized(value: IntelligenceTestConfig): IntelligenceTestConfig {
   return {
     ...value,
-    svg: { ...value.svg, group_overrides: value.svg.group_overrides ?? [] },
-    candy: { ...value.candy, expected_answer: value.candy.expected_answer ?? 21, group_overrides: value.candy.group_overrides ?? [] },
+    svg: { ...value.svg, group_overrides: (value.svg.group_overrides ?? []).map(item => ({ ...item })) },
+    candy: { ...value.candy, expected_answer: value.candy.expected_answer ?? 21, group_overrides: (value.candy.group_overrides ?? []).map(item => ({ ...item })) },
   }
 }
 
 async function loadConfig() {
+  configController?.abort()
+  const request = new AbortController()
+  configController = request
   loading.value = true
+  error.value = ''
   try {
-    config.value = normalized(await intelligenceTestAPI.config())
+    const saved = await intelligenceTestAPI.config(request.signal)
+    if (request.signal.aborted) return
+    config.value = normalized(saved)
     status.setEnabled(config.value.enabled)
   } catch {
-    config.value = null
+    if (!request.signal.aborted) error.value = t('intelligenceTest.configLoadFailed')
   } finally {
-    loading.value = false
+    if (!request.signal.aborted) loading.value = false
+  }
+}
+
+async function loadModels() {
+  modelsController?.abort()
+  const request = new AbortController()
+  modelsController = request
+  loadingModels.value = true
+  modelsError.value = false
+  try {
+    const models = await intelligenceTestAPI.models(request.signal)
+    // Catalog reads only update choices, never the editable configuration.
+    if (!request.signal.aborted) availableModels.value = models
+  } catch {
+    if (!request.signal.aborted) modelsError.value = true
+  } finally {
+    if (!request.signal.aborted) loadingModels.value = false
   }
 }
 
@@ -260,5 +314,12 @@ async function syncKeys() {
   }
 }
 
-onMounted(loadConfig)
+onMounted(() => {
+  void loadConfig()
+  void loadModels()
+})
+onUnmounted(() => {
+  configController?.abort()
+  modelsController?.abort()
+})
 </script>

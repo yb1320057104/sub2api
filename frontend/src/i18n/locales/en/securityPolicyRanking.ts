@@ -1,7 +1,9 @@
 export default {
   securityPolicyRanking: {
+    autoChargeSummary: 'Auto-charged {count} · {amount}',
+    observationHint: 'Display only: no suspension count or charge. Charge-and-allow requires a completed request and group auto-charging enabled.',
     title: 'Hall of Shame',
-    description: 'Ranks upstream Security Policy hits, actual content / prompt audit blocks, and completed allow-with-extra-charge events. Both audit types count once per request. Ordinary allows, warnings, observe/async audits, and technical failures do not count. History is not backfilled.',
+    description: 'Shows upstream Security Policy hits, actual content / prompt audit blocks, completed allow-with-extra-charge events, and observed audit findings. Penalty events from both audit types count once per request. Observation-only findings are listed separately without charging or suspension counts; each audit source can add an observation. Technical failures do not count. History is not backfilled.',
     maskedIdentity: 'Only the first 3 characters of each user identity are shown; the rest is masked.',
     timezone: 'Time zone: {timezone} (both selected dates included)',
     autoRefresh: 'Auto refresh',
@@ -71,7 +73,7 @@ export default {
     recordEvidenceHint: 'Counter and charge decisions retain settings at insertion. Later changes do not rewrite history. Old records without evidence remain unknown. Audit actions combine once per request; independent audit events never add manual-charge counts. Allow-with-extra-charge links completed usage. Calculated amounts are not proof of payment; check actual deductions. Successful positive automatic charges prevent charging again; zero amounts do not claim a manual charge.',
     auditBlockCount: 'Audit blocks included: {count}',
     recordSource: 'Record source',
-    recordSources: { upstream_policy: 'Upstream Security Policy', content_audit: 'Content audit', prompt_audit: 'Prompt audit', combined_audit: 'Content and prompt audit (same request)' },
+    recordSources: { content_observation: 'Content observation', prompt_observation: 'Prompt observation', upstream_policy: 'Upstream Security Policy', content_audit: 'Content audit', prompt_audit: 'Prompt audit', combined_audit: 'Content and prompt audit (same request)' },
     auditRecordId: 'Audit event #{id}',
     usageRecordId: 'Usage record #{id}',
     linkedUsageRecordId: 'Linked completed usage #{id}',
@@ -95,7 +97,7 @@ export default {
       skipped: 'Automatic deduction skipped', previously_charged: 'Previously charged; no repeated deduction', failed: 'Automatic deduction failed; no charge or automatic retry', historical_unknown: 'Historical automatic deduction unknown (no evidence)',
     },
     chargeReasons: {
-      group_not_enabled: 'Detection is not enabled for this group', user_exempt: 'Ranking user exemption', user_unavailable: 'User unavailable at insertion',
+      observation_only: 'Display only; no penalty', group_not_enabled: 'Detection is not enabled for this group', user_exempt: 'Ranking user exemption', user_unavailable: 'User unavailable at insertion',
       admin_exempt: 'Administrator exemption', auto_deduct_off: 'Automatic deductions were off for this group', invalid_cost: 'Invalid request cost or multiplier', charge_failed: 'Automatic charge did not complete; usage and counts remain. Existing manual deduction rules still apply.', unknown: 'Unrecognized reason',
     },
     recordSkipped: 'Counting skipped; reason not recorded',

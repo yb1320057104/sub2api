@@ -35,6 +35,8 @@ type AuthorizationConfig struct {
 
 	AccountProxyMode    string `json:"account_proxy_mode"`
 	MaxAccountsPerProxy int    `json:"max_accounts_per_proxy"`
+	ProxiesPerAccount   int    `json:"proxies_per_account"`
+	ProxyConcurrency    int    `json:"proxy_concurrency"`
 
 	IntelligenceModels       []RadarModel     `json:"intelligence_models"`
 	IntelligenceGate         bool             `json:"intelligence_gate"`
@@ -71,6 +73,9 @@ type AuthorizationSubmit struct {
 	IntelligenceSourceGroupID int64  `json:"intelligence_source_group_id,omitempty"`
 	AccountProxyMode          string `json:"account_proxy_mode"`
 	MaxAccountsPerProxy       int    `json:"max_accounts_per_proxy"`
+	ProxiesPerAccount         int    `json:"proxies_per_account,omitempty"`
+	// nil identifies old saved jobs/clients; they preserve existing global limits.
+	ProxyConcurrency *int `json:"proxy_concurrency,omitempty"`
 
 	IntelligenceGeneration   string       `json:"intelligence_generation,omitempty"`
 	IntelligenceModels       []RadarModel `json:"intelligence_models,omitempty"`
@@ -177,6 +182,10 @@ func (s *AccountAuthorizationService) GetConfig(ctx context.Context) (*Authoriza
 	c.WorkbenchAuthorizationConcurrency = workbench.AuthorizationConcurrency
 	c.IntelligenceGate = workbench.IntelligenceGate
 	c.AccountProxyMode, c.MaxAccountsPerProxy = workbench.AccountProxyMode, workbench.MaxAccountsPerProxy
+	c.ProxiesPerAccount, c.ProxyConcurrency = workbench.ProxiesPerAccount, 3
+	if workbench.ProxyConcurrency != nil {
+		c.ProxyConcurrency = *workbench.ProxyConcurrency
+	}
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return nil, err

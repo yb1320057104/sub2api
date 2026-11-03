@@ -163,9 +163,10 @@ type openAIHTTP2FallbackState struct {
 // 7. 代理变更时清空旧连接池，避免复用错误代理
 // 8. 账号并发数与连接池上限对应（账号隔离策略下）
 type httpUpstreamService struct {
-	cfg     *config.Config                  // 全局配置
-	mu      sync.RWMutex                    // 保护 clients map 的读写锁
-	clients map[string]*upstreamClientEntry // 客户端缓存池，key 由隔离策略决定
+	proxyRouter *service.AccountProxyRouter
+	cfg         *config.Config                  // 全局配置
+	mu          sync.RWMutex                    // 保护 clients map 的读写锁
+	clients     map[string]*upstreamClientEntry // 客户端缓存池，key 由隔离策略决定
 	// OpenAI 走 HTTP/HTTPS 代理时的 H2->H1 回退状态（key=标准化 proxyKey）
 	openAIHTTP2Fallbacks sync.Map
 }
@@ -183,6 +184,41 @@ func NewHTTPUpstream(cfg *config.Config) service.HTTPUpstream {
 		cfg:     cfg,
 		clients: make(map[string]*upstreamClientEntry),
 	}
+}
+
+func (s *httpUpstreamService) AccountProxyRouter() *service.AccountProxyRouter { return s.proxyRouter }
+
+func (s *httpUpstreamService) routeRequest(req *http.Request, proxyURL string, accountID int64) (*http.Request, *service.AccountProxyRoute, error) {
+	if req == nil {
+		return nil, nil, errors.New("nil upstream request")
+	}
+	relayFallback, isRelay := service.AccountProxyRelayFromContext(req.Context())
+	if isRelay {
+		if req.URL == nil {
+			return nil, nil, errors.New("nil relay request URL")
+		}
+		proxyURL = relayFallback
+	}
+	route, err := s.proxyRouter.Acquire(req.Context(), accountID, proxyURL, 0)
+	if err != nil {
+		return nil, nil, err
+	}
+	routed := req.WithContext(route.Context)
+	if isRelay {
+		// The same lease protects the relay's actual egress. Do not apply the
+		// chosen proxy to the relay connection as well, or keep its stale query.
+		clonedURL := *req.URL
+		query := clonedURL.Query()
+		if route.URL == "" {
+			query.Del("proxy")
+		} else {
+			query.Set("proxy", route.URL)
+		}
+		clonedURL.RawQuery = query.Encode()
+		routed.URL = &clonedURL
+		route.URL = ""
+	}
+	return routed, route, nil
 }
 
 // Do 执行 HTTP 请求
@@ -206,6 +242,19 @@ func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID i
 	if err := s.validateRequestHost(req); err != nil {
 		return nil, err
 	}
+	var route *service.AccountProxyRoute
+	var routeErr error
+	req, route, routeErr = s.routeRequest(req, proxyURL, accountID)
+	if routeErr != nil {
+		return nil, routeErr
+	}
+	proxyURL = route.URL
+	transferred := false
+	defer func() {
+		if !transferred {
+			route.Close()
+		}
+	}()
 	profile := service.HTTPUpstreamProfileDefault
 	if req != nil {
 		profile = service.HTTPUpstreamProfileFromContext(req.Context())
@@ -233,9 +282,11 @@ func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID i
 	// 包装响应体，在关闭时自动减少计数并更新时间戳
 	// 这确保了流式响应（如 SSE）在完全读取前不会被淘汰
 	resp.Body = wrapTrackedBody(resp.Body, func() {
+		route.Close()
 		atomic.AddInt64(&entry.inFlight, -1)
 		atomic.StoreInt64(&entry.lastUsed, time.Now().UnixNano())
 	})
+	transferred = true
 
 	return resp, nil
 }
@@ -272,6 +323,19 @@ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, acco
 	if err := s.validateRequestHost(req); err != nil {
 		return nil, err
 	}
+	var route *service.AccountProxyRoute
+	var routeErr error
+	req, route, routeErr = s.routeRequest(req, proxyURL, accountID)
+	if routeErr != nil {
+		return nil, routeErr
+	}
+	proxyURL = route.URL
+	transferred := false
+	defer func() {
+		if !transferred {
+			route.Close()
+		}
+	}()
 
 	entry, err := s.acquireClientWithTLS(proxyURL, accountID, accountConcurrency, profile, upstreamProfile)
 	if err != nil {
@@ -290,9 +354,11 @@ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, acco
 	}
 
 	resp.Body = wrapTrackedBody(resp.Body, func() {
+		route.Close()
 		atomic.AddInt64(&entry.inFlight, -1)
 		atomic.StoreInt64(&entry.lastUsed, time.Now().UnixNano())
 	})
+	transferred = true
 
 	return resp, nil
 }

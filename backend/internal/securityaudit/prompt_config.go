@@ -71,6 +71,7 @@ type storageConfig struct {
 	AuditInstructions      string            `json:"audit_instructions"`
 	LocalRules             []LocalRule       `json:"local_rules"`
 	Enabled                bool              `json:"enabled"`
+	FastMode               bool              `json:"fast_mode"`
 	BlockingEnabled        bool              `json:"blocking_enabled"`
 	BlockingLatestTurnOnly bool              `json:"blocking_latest_turn_only"`
 	StorePassEvents        bool              `json:"store_pass_events"`
@@ -113,6 +114,7 @@ type ActiveConfig struct {
 	compiledRules          []compiledLocalRule
 	RiskControlEnabled     bool
 	Enabled                bool
+	FastMode               bool `json:"fast_mode"`
 	BlockingEnabled        bool
 	BlockingLatestTurnOnly bool
 	StorePassEvents        bool
@@ -151,6 +153,7 @@ type PublicConfig struct {
 	AuditInstructions        string            `json:"audit_instructions"`
 	LocalRules               []LocalRule       `json:"local_rules"`
 	Enabled                  bool              `json:"enabled"`
+	FastMode                 bool              `json:"fast_mode"`
 	BlockingEnabled          bool              `json:"blocking_enabled"`
 	BlockingLatestTurnOnly   bool              `json:"blocking_latest_turn_only"`
 	StorePassEvents          bool              `json:"store_pass_events"`
@@ -189,6 +192,7 @@ type UpdateConfigRequest struct {
 	LocalRules             []LocalRule      `json:"local_rules"`
 	ExpectedConfigVersion  int64            `json:"expected_config_version" binding:"required"`
 	Enabled                bool             `json:"enabled"`
+	FastMode               bool             `json:"fast_mode"`
 	BlockingEnabled        bool             `json:"blocking_enabled"`
 	BlockingLatestTurnOnly bool             `json:"blocking_latest_turn_only"`
 	StorePassEvents        bool             `json:"store_pass_events"`
@@ -332,7 +336,7 @@ func validateStorageConfig(cfg storageConfig) error {
 	if _, err := compileLocalRules(cfg.LocalRules); err != nil {
 		return err
 	}
-	if cfg.Engine == PromptEngineLocalRules && cfg.Enabled {
+	if (cfg.Engine == PromptEngineLocalRules || cfg.FastMode) && cfg.Enabled {
 		enabledRule := false
 		for _, rule := range cfg.LocalRules {
 			enabledRule = enabledRule || rule.Enabled
@@ -413,6 +417,10 @@ func validateUpdateConfigRequest(req UpdateConfigRequest) error {
 	return nil
 }
 
+func (cfg ActiveConfig) fastModeActive() bool {
+	return cfg.FastMode && cfg.Engine == PromptEngineRemote && cfg.EffectiveMode() == ModeBlocking
+}
+
 func (cfg ActiveConfig) EffectiveMode() Mode {
 	if !cfg.RiskControlEnabled || !cfg.Enabled {
 		return ModeOff
@@ -488,12 +496,12 @@ func PublicFromStorage(cfg storageConfig, riskControlEnabled bool, invalidTokenE
 			Enabled: ep.Enabled, HasToken: hasToken, TokenStatus: status,
 		})
 	}
-	active := ActiveConfig{RiskControlEnabled: riskControlEnabled, Enabled: cfg.Enabled, BlockingEnabled: cfg.BlockingEnabled}
+	active := ActiveConfig{RiskControlEnabled: riskControlEnabled, Enabled: cfg.Enabled, FastMode: cfg.FastMode, BlockingEnabled: cfg.BlockingEnabled}
 	return PublicConfig{
 		DefaultLocalRules: DefaultLocalRules(), DefaultAuditInstructions: DefaultAuditInstructions,
 		RiskPolicy: auditrisk.Clone(cfg.RiskPolicy),
 		Engine:     normalizePromptEngine(cfg.Engine), AuditInstructions: cfg.AuditInstructions, LocalRules: cloneLocalRules(cfg.LocalRules),
-		Enabled: cfg.Enabled, BlockingEnabled: cfg.BlockingEnabled, BlockingLatestTurnOnly: cfg.BlockingLatestTurnOnly, StorePassEvents: cfg.StorePassEvents,
+		Enabled: cfg.Enabled, FastMode: cfg.FastMode, BlockingEnabled: cfg.BlockingEnabled, BlockingLatestTurnOnly: cfg.BlockingLatestTurnOnly, StorePassEvents: cfg.StorePassEvents,
 		EffectiveMode: active.EffectiveMode(), Strategy: cfg.Strategy, WorkerCount: cfg.WorkerCount,
 		QueueCapacity: cfg.QueueCapacity, Scanners: scanners, AllGroups: false,
 		GroupIDs: groupIDs, Endpoints: endpoints, ConfigVersion: cfg.ConfigVersion,
@@ -510,7 +518,7 @@ func ActiveFromStorage(cfg storageConfig, riskControlEnabled bool, encryptor Sec
 	active := ActiveConfig{
 		RiskPolicy: auditrisk.Clone(cfg.RiskPolicy),
 		Engine:     normalizePromptEngine(cfg.Engine), AuditInstructions: cfg.AuditInstructions, LocalRules: cloneLocalRules(cfg.LocalRules), compiledRules: compiled,
-		RiskControlEnabled: riskControlEnabled, Enabled: cfg.Enabled, BlockingEnabled: cfg.BlockingEnabled,
+		RiskControlEnabled: riskControlEnabled, Enabled: cfg.Enabled, FastMode: cfg.FastMode, BlockingEnabled: cfg.BlockingEnabled,
 		BlockingLatestTurnOnly: cfg.BlockingLatestTurnOnly,
 		StorePassEvents:        cfg.StorePassEvents, Strategy: cfg.Strategy, WorkerCount: cfg.WorkerCount,
 		QueueCapacity: cfg.QueueCapacity, Scanners: append([]string(nil), cfg.Scanners...), AllGroups: false,
@@ -555,6 +563,7 @@ func changeSummary(cfg storageConfig) string {
 		LocalRuleHash          string            `json:"local_rule_hash"`
 		AuditInstructionHash   string            `json:"audit_instruction_hash"`
 		Enabled                bool              `json:"enabled"`
+		FastMode               bool              `json:"fast_mode"`
 		BlockingEnabled        bool              `json:"blocking_enabled"`
 		BlockingLatestTurnOnly bool              `json:"blocking_latest_turn_only"`
 		StorePassEvents        bool              `json:"store_pass_events"`
@@ -568,7 +577,7 @@ func changeSummary(cfg storageConfig) string {
 	}{
 		RiskPolicy: auditrisk.Clone(cfg.RiskPolicy),
 		Engine:     normalizePromptEngine(cfg.Engine), LocalRuleCount: len(cfg.LocalRules),
-		Enabled: cfg.Enabled, BlockingEnabled: cfg.BlockingEnabled, BlockingLatestTurnOnly: cfg.BlockingLatestTurnOnly,
+		Enabled: cfg.Enabled, FastMode: cfg.FastMode, BlockingEnabled: cfg.BlockingEnabled, BlockingLatestTurnOnly: cfg.BlockingLatestTurnOnly,
 		StorePassEvents: cfg.StorePassEvents, EndpointCount: len(cfg.Endpoints), ScannerCount: len(cfg.Scanners),
 		AllGroups: false, GroupCount: len(cfg.GroupIDs),
 		UserAllowlistCount: len(cfg.UserAllowlistIDs),

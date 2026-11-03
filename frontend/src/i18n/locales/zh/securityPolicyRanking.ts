@@ -1,7 +1,9 @@
 export default {
   securityPolicyRanking: {
+    autoChargeSummary: '自动已扣 {count} 笔 · {amount}',
+    observationHint: '仅展示命中，不计封禁、不扣款。前置分级扣费放行需正常完成请求并启用该组自动扣款。',
     title: '耻辱排行榜',
-    description: '按上游安全策略命中、内容 / 提示词审计真实拦截，以及正常完成的“放行并额外扣费”事件排名。同一请求两套审计合并一次；普通放行、仅记录警告、观察/异步审计和技术失败不计，历史不补计。',
+    description: '展示上游安全策略、实际审计处罚及观察命中。观察记录只展示，不计封禁、不扣款；双审观察可能各有一条记录，处罚仍按请求去重。扣费放行按完成请求真实费用结算，历史不补扣',
     maskedIdentity: '用户标识仅显示前 3 个字符，其余已脱敏。',
     timezone: '统计时区：{timezone}（包含所选起止日期）',
     autoRefresh: '自动刷新',
@@ -71,7 +73,7 @@ export default {
     recordEvidenceHint: '计数及自动扣费状态按入库时配置保存，后续修改不改写历史。无证据的旧记录显示未知、不追算；同请求的审计动作只记一次，独立审计事件不参与手动扣款。额外扣费放行关联正常完成用量；自动计算额不代表已扣款，请查看实际扣除。成功正额自动扣款不再手扣，零额不占用手扣记录。',
     auditBlockCount: '其中审计拦截：{count}',
     recordSource: '记录来源',
-    recordSources: { upstream_policy: '上游安全策略', content_audit: '内容审计', prompt_audit: '提示词审计', combined_audit: '内容与提示词审计（同请求）' },
+    recordSources: { content_observation: '内容审计观察', prompt_observation: '提示词审计观察', upstream_policy: '上游安全策略', content_audit: '内容审计', prompt_audit: '提示词审计', combined_audit: '内容与提示词审计（同请求）' },
     auditRecordId: '审计事件 #{id}',
     usageRecordId: '用量记录 #{id}',
     linkedUsageRecordId: '关联完成用量 #{id}',
@@ -95,7 +97,7 @@ export default {
       skipped: '已跳过自动扣费', previously_charged: '此前已扣费，本次不重复扣除', failed: '自动扣费失败，未扣除且不自动重试', historical_unknown: '历史自动扣费未知（缺少证据）',
     },
     chargeReasons: {
-      group_not_enabled: '该分组未启用检测', user_exempt: '排行榜用户豁免', user_unavailable: '入库时用户不可用',
+      observation_only: '仅展示命中，不处罚', group_not_enabled: '该分组未启用检测', user_exempt: '排行榜用户豁免', user_unavailable: '入库时用户不可用',
       admin_exempt: '管理员账户豁免', auto_deduct_off: '该组自动扣费未开启', invalid_cost: '请求成本或倍率无效', charge_failed: '自动扣款未完成，原用量和计数保留；可按原规则手动处理', unknown: '原因未识别',
     },
     recordSkipped: '已跳过计数，原因未记录',

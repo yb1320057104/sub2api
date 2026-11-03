@@ -1277,6 +1277,7 @@
                           | 'filter'
                           | 'block'
                           | 'force_priority'
+                          | 'force_ultrafast'
                       "
                       :options="openaiFastPolicyActionOptions"
                     />
@@ -1439,6 +1440,7 @@
                         | 'filter'
                         | 'block'
                         | 'force_priority'
+                        | 'force_ultrafast'
                     "
                     :options="openaiFastPolicyActionOptions"
                   />
@@ -12565,6 +12567,10 @@ const openaiFastPolicyActionOptions = computed(() => [
   {
     value: "force_priority",
     label: t("admin.settings.openaiFastPolicy.actionForcePriority"),
+  },
+  {
+    value: "force_ultrafast",
+    label: t("admin.settings.openaiFastPolicy.actionForceUltrafast"),
   },
   { value: "block", label: t("admin.settings.openaiFastPolicy.actionBlock") },
 ]);

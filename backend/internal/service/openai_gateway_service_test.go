@@ -4337,8 +4337,14 @@ func TestPKKiloBridgeGroupPolicyPrecedesUpstreamDispatch(t *testing.T) {
 			}{
 				{name: "ceiling", max: "high", want: "high"},
 				{name: "ceiling-deny", max: "high", over: ReasoningEffortOverLimitDeny, denied: true},
+				{name: "legacy-mapping-before-deny-ceiling", max: "high", over: ReasoningEffortOverLimitDeny, mappings: []ReasoningEffortMapping{{From: "max", To: "low"}}, want: "low"},
+				{name: "advanced-ceiling-deny", max: "ultra", over: ReasoningEffortOverLimitDeny, want: "max", denied: effort == "persistent"},
 				{name: "mapping-deny", mappings: []ReasoningEffortMapping{{From: "max", To: ReasoningEffortMappingDeny}}, denied: true},
 				{name: "single-model-mapping", mappings: []ReasoningEffortMapping{{From: "max", To: "high", MatchType: "exact", Model: "client-model"}, {From: "high", To: "low"}}, want: "high"},
+				{name: "explicit-alias-mapping", mappings: []ReasoningEffortMapping{{From: effort, To: "high"}, {From: "max", To: ReasoningEffortMappingDeny}}, want: "high"},
+				{name: "explicit-alias-deny", mappings: []ReasoningEffortMapping{{From: effort, To: ReasoningEffortMappingDeny}}, denied: true},
+				{name: "explicit-alias-identity", mappings: []ReasoningEffortMapping{{From: effort, To: effort}, {From: "max", To: ReasoningEffortMappingDeny}}, want: "max"},
+				{name: "explicit-alias-ceiling", max: "medium", mappings: []ReasoningEffortMapping{{From: effort, To: "persistent"}, {From: "max", To: "low"}}, want: "medium"},
 				{name: "unrestricted", want: "max"},
 			} {
 				t.Run(protocol+"/"+effort+"/"+policy.name, func(t *testing.T) {
@@ -4368,6 +4374,17 @@ func TestPKKiloBridgeGroupPolicyPrecedesUpstreamDispatch(t *testing.T) {
 					require.NoError(t, err)
 					ctx := WithRequestedReasoningEffort(context.Background(), effort)
 					ctx = WithOpenAIReasoningEffortPolicy(ctx, policy.max, policy.mappings, policy.over)
+					if protocol != "messages" {
+						ctx = WithAppliedOpenAIReasoningEffortPolicy(ctx, body)
+						body, _, err = ApplyOpenAIReasoningEffortPolicyAtIngress(ctx, body)
+						if err != nil {
+							require.True(t, policy.denied)
+							require.True(t, IsReasoningEffortPolicyDenied(err))
+							require.Contains(t, err.Error(), effort)
+							require.Nil(t, upstream.lastReq, "ingress denial must not dispatch")
+							return
+						}
+					}
 					rec := httptest.NewRecorder()
 					c, _ := gin.CreateTestContext(rec)
 					c.Request = httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body)).WithContext(ctx)
@@ -4399,5 +4416,39 @@ func TestPKKiloBridgeGroupPolicyPrecedesUpstreamDispatch(t *testing.T) {
 				})
 			}
 		}
+	}
+}
+
+func TestOpenAIAdvancedReasoningPendingRejectsBeforeDispatch(t *testing.T) {
+	for _, protocol := range []string{"responses", "passthrough", "chat"} {
+		t.Run(protocol, func(t *testing.T) {
+			upstream := &httpUpstreamRecorder{}
+			account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+				Credentials: map[string]any{"api_key": "test", "base_url": "https://example.test/v1"},
+				Extra:       map[string]any{"openai_passthrough": protocol == "passthrough"}}
+			svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
+			body := []byte(`{"model":"gpt-6-astra","input":"hello","reasoning":{"effort":"ultra"}}`)
+			path := "/v1/responses"
+			if protocol == "chat" {
+				path = "/v1/chat/completions"
+				body = []byte(`{"model":"gpt-6-astra","messages":[{"role":"user","content":"hello"}],"reasoning_effort":"ultra"}`)
+			}
+			ctx := WithOpenAIReasoningEffortPolicy(context.Background(), "high", []ReasoningEffortMapping{{From: "max", To: "low"}}, ReasoningEffortOverLimitDeny)
+			ctx = WithAppliedOpenAIReasoningEffortPolicy(ctx, body)
+			pending, changed, err := ApplyOpenAIReasoningEffortPolicyAtIngress(ctx, body)
+			require.NoError(t, err)
+			require.False(t, changed)
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, path, bytes.NewReader(pending)).WithContext(ctx)
+			if protocol == "chat" {
+				_, err = svc.ForwardAsChatCompletions(ctx, c, account, pending, "", "")
+			} else {
+				_, err = svc.Forward(ctx, c, account, pending)
+			}
+			require.True(t, IsReasoningEffortPolicyDenied(err))
+			require.Equal(t, http.StatusForbidden, rec.Code)
+			require.Nil(t, upstream.lastReq, "ordinary accounts must enforce the pending ceiling before dispatch")
+		})
 	}
 }

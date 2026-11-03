@@ -163,7 +163,7 @@ func (s *accountCandyProxySession) nextFreeProxy(ctx context.Context) (*Proxy, e
 	}
 	for {
 		proxy := &Proxy{}
-		err := s.conn.QueryRowContext(ctx, `SELECT p.id,p.protocol,p.host,p.port,COALESCE(p.username,''),COALESCE(p.password,''),p.status,p.expires_at FROM proxies p WHERE p.id>$1 AND p.deleted_at IS NULL AND p.status='active' AND (p.expires_at IS NULL OR p.expires_at>NOW()) AND NOT EXISTS(SELECT 1 FROM accounts a WHERE a.proxy_id=p.id AND a.deleted_at IS NULL) ORDER BY p.id LIMIT 1`, s.after).Scan(&proxy.ID, &proxy.Protocol, &proxy.Host, &proxy.Port, &proxy.Username, &proxy.Password, &proxy.Status, &proxy.ExpiresAt)
+		err := s.conn.QueryRowContext(ctx, `SELECT p.id,p.protocol,p.host,p.port,COALESCE(p.username,''),COALESCE(p.password,''),p.status,p.expires_at FROM proxies p WHERE p.id>$1 AND p.deleted_at IS NULL AND p.status='active' AND (p.expires_at IS NULL OR p.expires_at>NOW()) AND NOT EXISTS(SELECT 1 FROM pk_effective_account_proxy_bindings b WHERE b.proxy_id=p.id) ORDER BY p.id LIMIT 1`, s.after).Scan(&proxy.ID, &proxy.Protocol, &proxy.Host, &proxy.Port, &proxy.Username, &proxy.Password, &proxy.Status, &proxy.ExpiresAt)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
@@ -234,7 +234,7 @@ func (s *accountCandyProxySession) checkFreeLocked(ctx context.Context, proxy *P
 	}
 	var free bool
 	var pid int
-	err := s.conn.QueryRowContext(ctx, `SELECT pg_backend_pid(),EXISTS(SELECT 1 FROM proxies p WHERE p.id=$1 AND p.protocol=$2 AND p.host=$3 AND p.port=$4 AND COALESCE(p.username,'')=$5 AND COALESCE(p.password,'')=$6 AND p.deleted_at IS NULL AND p.status='active' AND (p.expires_at IS NULL OR p.expires_at>NOW()) AND NOT EXISTS(SELECT 1 FROM accounts a WHERE a.proxy_id=p.id AND a.deleted_at IS NULL))`, proxy.ID, proxy.Protocol, proxy.Host, proxy.Port, proxy.Username, proxy.Password).Scan(&pid, &free)
+	err := s.conn.QueryRowContext(ctx, `SELECT pg_backend_pid(),EXISTS(SELECT 1 FROM proxies p WHERE p.id=$1 AND p.protocol=$2 AND p.host=$3 AND p.port=$4 AND COALESCE(p.username,'')=$5 AND COALESCE(p.password,'')=$6 AND p.deleted_at IS NULL AND p.status='active' AND (p.expires_at IS NULL OR p.expires_at>NOW()) AND NOT EXISTS(SELECT 1 FROM pk_effective_account_proxy_bindings b WHERE b.proxy_id=p.id))`, proxy.ID, proxy.Protocol, proxy.Host, proxy.Port, proxy.Username, proxy.Password).Scan(&pid, &free)
 	if err != nil || pid != s.backendPID {
 		s.untrustedConnection = true
 		return candyProbeFailure("无法确认备用代理预留及空闲状态，已停止使用；未转组。")

@@ -62,12 +62,13 @@ func (s *BinanceRechargeService) Bills(ctx context.Context, accountID int64, fro
 	if from.IsZero() || from.UnixMilli() < 0 || !to.After(from) || to.Sub(from) > 89*24*time.Hour {
 		return nil, infraerrors.BadRequest("BINANCE_BILLS_DATE_INVALID", "请选择 89 天以内的有效账单日期区间")
 	}
-	ctx, cancel := context.WithTimeout(ctx, 40*time.Second)
+	started := time.Now()
+	ctx, cancel := context.WithTimeout(ctx, 215*time.Second)
 	defer cancel()
 	token := uuid.NewString()
 	var failures int
 	err := s.db.QueryRowContext(ctx, `UPDATE binance_recharge_accounts a
-SET api_locked_until=NOW()+INTERVAL '45 seconds',bills_next_query_at=NOW()+INTERVAL '60 seconds',poll_token=$2
+SET api_locked_until=NOW()+INTERVAL '45 seconds'+CASE WHEN backup_proxy_url_encrypted<>'' THEN INTERVAL '180 seconds' ELSE INTERVAL '0 seconds' END,bills_next_query_at=NOW()+INTERVAL '60 seconds',poll_token=$2
 WHERE a.id=$1 AND a.api_locked_until<=NOW() AND a.bills_next_query_at<=NOW()
 AND NOT (a.next_poll_at<=NOW() AND EXISTS(SELECT 1 FROM binance_recharge_orders o WHERE o.account_id=a.id AND o.status IN ('PENDING','EXPIRED') AND o.created_at>=NOW()-INTERVAL '24 hours'))
 RETURNING failure_count`, accountID, token).Scan(&failures)
@@ -80,6 +81,11 @@ RETURNING failure_count`, accountID, token).Scan(&failures)
 	a, err := scanBinanceRechargeAccount(s.db.QueryRowContext(ctx, `SELECT `+binanceAccountColumns+` FROM binance_recharge_accounts a WHERE a.id=$1`, accountID))
 	var page *binancepay.BillsPage
 	if err == nil {
+		if a.backupProxyURLCiphertext == "" {
+			var legacyCancel context.CancelFunc
+			ctx, legacyCancel = context.WithDeadline(ctx, started.Add(40*time.Second))
+			defer legacyCancel()
+		}
 		var key, secret string
 		key, err = s.encryptor.Decrypt(a.apiKeyEncrypted)
 		if err == nil {
@@ -89,18 +95,18 @@ RETURNING failure_count`, accountID, token).Scan(&failures)
 			err = errBinanceCredentialDecrypt
 		}
 		if err == nil {
-			var operation BinanceRechargeClient
-			var finish func()
-			operation, finish, err = s.accountClient(a)
-			if err == nil {
+			err = s.withBinanceAccountRoutes(ctx, a, token, func(operation BinanceRechargeClient) error {
 				client, ok := operation.(binanceRechargeBillsClient)
 				if !ok {
-					err = infraerrors.ServiceUnavailable("BINANCE_BILLS_UNAVAILABLE", "币安账单查询服务不可用")
-				} else {
-					page, err = client.Bills(ctx, key, secret, a.RecipientUID, from, to)
+					return infraerrors.ServiceUnavailable("BINANCE_BILLS_UNAVAILABLE", "币安账单查询服务不可用")
 				}
-				finish()
-			}
+				var queryErr error
+				page, queryErr = client.Bills(ctx, key, secret, a.RecipientUID, from, to)
+				if queryErr != nil {
+					page = nil
+				}
+				return queryErr
+			})
 		}
 	}
 	finishCtx, finishCancel := context.WithTimeout(context.Background(), 5*time.Second)

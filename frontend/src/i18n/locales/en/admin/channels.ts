@@ -276,7 +276,7 @@ export default {
       modePreBlock: 'Pre-Block',
       modePreBlockDesc: 'Synchronously reviews the latest user input before every request and rejects hits immediately.',
       modeObserve: 'Observe Only',
-      modeObserveDesc: 'Requests pass through while the latest user input is queued for async review; hits are recorded, notified, and counted.',
+      modeObserveDesc: 'Requests pass through while the latest user input is queued for async review. Hits are recorded and shown in rankings without charges, ban counts, or block-cache entries.',
       modeOff: 'Off',
       modeOffDesc: 'Content moderation is disabled and no audit records are written.',
       baseUrl: 'Base URL',

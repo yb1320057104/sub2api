@@ -263,21 +263,25 @@ func ParseCyberPolicyWindow(input CyberPolicyWindowInput, now time.Time) (CyberP
 }
 
 type CyberPolicyRank struct {
-	Rank             int64  `json:"rank"`
-	UserID           int64  `json:"user_id"`
-	Email            string `json:"email"`
-	Username         string `json:"username"`
-	Balance          string `json:"balance"`
-	TriggerCount     int64  `json:"trigger_count"`
-	DeductedCount    int64  `json:"deducted_count"`
-	PendingCount     int64  `json:"pending_count"`
-	PendingAmount    string `json:"pending_amount"`
-	Status           string `json:"status"`
-	AutoDisableCount int64  `json:"auto_disable_count"`
-	CountedCount     int64  `json:"counted_count"`
-	SkippedCount     int64  `json:"skipped_count"`
-	UnknownCount     int64  `json:"unknown_count"`
-	AuditBlockCount  int64  `json:"audit_block_count"`
+	AutoChargedCount  int64  `json:"auto_charged_count"`
+	AutoChargedAmount string `json:"auto_charged_amount"`
+	TriggerGroups     string `json:"trigger_groups"`
+	ObservationCount  int64  `json:"observation_count"`
+	Rank              int64  `json:"rank"`
+	UserID            int64  `json:"user_id"`
+	Email             string `json:"email"`
+	Username          string `json:"username"`
+	Balance           string `json:"balance"`
+	TriggerCount      int64  `json:"trigger_count"`
+	DeductedCount     int64  `json:"deducted_count"`
+	PendingCount      int64  `json:"pending_count"`
+	PendingAmount     string `json:"pending_amount"`
+	Status            string `json:"status"`
+	AutoDisableCount  int64  `json:"auto_disable_count"`
+	CountedCount      int64  `json:"counted_count"`
+	SkippedCount      int64  `json:"skipped_count"`
+	UnknownCount      int64  `json:"unknown_count"`
+	AuditBlockCount   int64  `json:"audit_block_count"`
 }
 
 type CyberPolicyRanking struct {
@@ -402,6 +406,10 @@ const cyberPublicRankingCTE = `WITH source_counts AS (
  SELECT b.user_id,COUNT(*) AS trigger_count,` + cyberAuditCountColumns + `,COUNT(*) FILTER (WHERE b.policy_action='block') AS audit_block_count
  FROM cyber_policy_audit_blocks b JOIN users u ON u.id=b.user_id AND u.deleted_at IS NULL
  WHERE b.created_at >= $1 AND b.created_at < $2 GROUP BY b.user_id
+ UNION ALL
+ SELECT o.user_id,COUNT(*),0::bigint,COUNT(*),0::bigint,0::bigint
+ FROM cyber_policy_audit_observations o JOIN users u ON u.id=o.user_id AND u.deleted_at IS NULL
+ WHERE o.created_at >= $1 AND o.created_at < $2 GROUP BY o.user_id
 ), counts AS (
  SELECT user_id,SUM(trigger_count) AS trigger_count,SUM(counted_count) AS counted_count,
  SUM(skipped_count) AS skipped_count,SUM(unknown_count) AS unknown_count,SUM(audit_block_count) AS audit_block_count
@@ -418,6 +426,10 @@ const cyberRankingCTE = `WITH source_counts AS (
  SELECT b.user_id,COUNT(*) AS trigger_count,0::bigint AS usage_count,0::bigint AS deducted_count,` + cyberAuditCountColumns + `,COUNT(*) FILTER (WHERE b.policy_action='block') AS audit_block_count
  FROM cyber_policy_audit_blocks b JOIN users u ON u.id=b.user_id AND u.deleted_at IS NULL
  WHERE b.created_at >= $1 AND b.created_at < $2 GROUP BY b.user_id
+ UNION ALL
+ SELECT o.user_id,COUNT(*),0::bigint,0::bigint,0::bigint,COUNT(*),0::bigint,0::bigint
+ FROM cyber_policy_audit_observations o JOIN users u ON u.id=o.user_id AND u.deleted_at IS NULL
+ WHERE o.created_at >= $1 AND o.created_at < $2 GROUP BY o.user_id
 ), counts AS (
  SELECT user_id,SUM(trigger_count) AS trigger_count,SUM(usage_count) AS usage_count,SUM(deducted_count) AS deducted_count,
  SUM(counted_count) AS counted_count,SUM(skipped_count) AS skipped_count,SUM(unknown_count) AS unknown_count,SUM(audit_block_count) AS audit_block_count
@@ -454,14 +466,23 @@ func (s *CyberPolicyService) Ranking(ctx context.Context, input CyberPolicyWindo
 	if err := tx.QueryRowContext(ctx, cyberRankingCTE+`SELECT COUNT(*),COALESCE(SUM(trigger_count),0),COALESCE(SUM(usage_count-deducted_count),0),COALESCE(SUM(counted_count),0),COALESCE(SUM(skipped_count),0),COALESCE(SUM(unknown_count),0),COALESCE(SUM(audit_block_count),0) FROM counts`, window.From, window.To).Scan(&r.Total, &r.TotalTriggers, &r.TotalPending, &r.TotalCounted, &r.TotalSkipped, &r.TotalUnknown, &r.TotalAuditBlocks); err != nil {
 		return nil, err
 	}
-	rows, err := tx.QueryContext(ctx, cyberRankingCTE+`SELECT ROW_NUMBER() OVER(ORDER BY c.trigger_count DESC,c.user_id),c.user_id,u.email,COALESCE(u.username,''),u.balance::text,c.trigger_count,c.deducted_count,c.usage_count-c.deducted_count,((c.usage_count-c.deducted_count)*$3::numeric)::numeric(20,8)::text,u.status,COALESCE(a.trigger_count,0),c.counted_count,c.skipped_count,c.unknown_count,c.audit_block_count FROM counts c JOIN users u ON u.id=c.user_id LEFT JOIN cyber_policy_user_counters a ON a.user_id=c.user_id ORDER BY c.trigger_count DESC,c.user_id LIMIT $4 OFFSET $5`, window.From, window.To, r.Multiplier, size, (page-1)*size)
+	rows, err := tx.QueryContext(ctx, cyberRankingCTE+`SELECT ROW_NUMBER() OVER(ORDER BY c.trigger_count DESC,c.user_id),c.user_id,u.email,COALESCE(u.username,''),u.balance::text,c.trigger_count,c.deducted_count,c.usage_count-c.deducted_count,((c.usage_count-c.deducted_count)*$3::numeric)::numeric(20,8)::text,u.status,COALESCE(a.trigger_count,0),c.counted_count,c.skipped_count,c.unknown_count,c.audit_block_count,
+ (SELECT COUNT(*) FROM cyber_policy_auto_charges ac WHERE ac.user_id=c.user_id AND ac.evaluated_at >= $1 AND ac.evaluated_at < $2 AND ac.status='deducted'),
+ (SELECT COALESCE(SUM(ac.amount),0)::text FROM cyber_policy_auto_charges ac WHERE ac.user_id=c.user_id AND ac.evaluated_at >= $1 AND ac.evaluated_at < $2 AND ac.status='deducted'),
+ (SELECT COALESCE(string_agg(DISTINCT CASE WHEN z.group_id IS NULL THEN '未分组' ELSE COALESCE(NULLIF(z.group_name,''),'#'||z.group_id::text) END, '、'),'') FROM (
+   SELECT l.group_id,COALESCE(e.group_name,g.name,'') AS group_name FROM usage_logs l LEFT JOIN cyber_policy_count_events e ON e.usage_id=l.id AND e.usage_created_at=l.created_at LEFT JOIN groups g ON g.id=l.group_id WHERE l.user_id=c.user_id AND l.request_type=4 AND l.created_at >= $1 AND l.created_at < $2
+   UNION ALL SELECT b.group_id,b.group_name FROM cyber_policy_audit_blocks b WHERE b.user_id=c.user_id AND b.created_at >= $1 AND b.created_at < $2
+   UNION ALL SELECT o.group_id,o.group_name FROM cyber_policy_audit_observations o WHERE o.user_id=c.user_id AND o.created_at >= $1 AND o.created_at < $2
+ ) z),
+ (SELECT COUNT(*) FROM cyber_policy_audit_observations o WHERE o.user_id=c.user_id AND o.created_at >= $1 AND o.created_at < $2)
+ FROM counts c JOIN users u ON u.id=c.user_id LEFT JOIN cyber_policy_user_counters a ON a.user_id=c.user_id ORDER BY c.trigger_count DESC,c.user_id LIMIT $4 OFFSET $5`, window.From, window.To, r.Multiplier, size, (page-1)*size)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var item CyberPolicyRank
-		if err := rows.Scan(&item.Rank, &item.UserID, &item.Email, &item.Username, &item.Balance, &item.TriggerCount, &item.DeductedCount, &item.PendingCount, &item.PendingAmount, &item.Status, &item.AutoDisableCount, &item.CountedCount, &item.SkippedCount, &item.UnknownCount, &item.AuditBlockCount); err != nil {
+		if err := rows.Scan(&item.Rank, &item.UserID, &item.Email, &item.Username, &item.Balance, &item.TriggerCount, &item.DeductedCount, &item.PendingCount, &item.PendingAmount, &item.Status, &item.AutoDisableCount, &item.CountedCount, &item.SkippedCount, &item.UnknownCount, &item.AuditBlockCount, &item.AutoChargedCount, &item.AutoChargedAmount, &item.TriggerGroups, &item.ObservationCount); err != nil {
 			return nil, err
 		}
 		r.Items = append(r.Items, item)
@@ -515,7 +536,8 @@ type CyberPolicyCountRecords struct {
 
 const cyberRecordsCountQuery = `SELECT
  (SELECT COUNT(*) FROM usage_logs l WHERE l.user_id=$1 AND l.request_type=4 AND l.created_at >= $2 AND l.created_at < $3)
- +(SELECT COUNT(*) FROM cyber_policy_audit_blocks b WHERE b.user_id=$1 AND b.created_at >= $2 AND b.created_at < $3)`
+ +(SELECT COUNT(*) FROM cyber_policy_audit_blocks b WHERE b.user_id=$1 AND b.created_at >= $2 AND b.created_at < $3)
+ +(SELECT COUNT(*) FROM cyber_policy_audit_observations o WHERE o.user_id=$1 AND o.created_at >= $2 AND o.created_at < $3)`
 
 const cyberRecordsQuery = `WITH records AS (
  SELECT l.id AS usage_id,l.created_at AS occurred_at,
@@ -541,6 +563,13 @@ const cyberRecordsQuery = `WITH records AS (
  LEFT JOIN cyber_policy_auto_charges ac ON ac.audit_id=b.id OR
  (b.policy_action='charge_allow' AND ac.usage_id=b.usage_id AND ac.usage_created_at=b.usage_created_at)
  WHERE b.user_id=$1 AND b.created_at >= $2 AND b.created_at < $3
+ UNION ALL
+ SELECT 0::bigint,o.created_at,o.group_id,o.group_name,o.request_id,o.model,
+ 'skipped','observation_only',NULL::boolean,NULL::bigint,NULL::timestamptz,o.source,o.id,
+ 'skipped','observation_only',NULL::text,NULL::text,NULL::text,
+ 'allow',o.risk_score,o.risk_level,NULL::bigint
+ FROM cyber_policy_audit_observations o
+ WHERE o.user_id=$1 AND o.created_at >= $2 AND o.created_at < $3
 )
  SELECT usage_id,occurred_at,group_id,group_name,request_id,model,count_status,count_reason,
  scope_matched,settings_revision,evaluated_at,source,audit_id,auto_charge_status,auto_charge_reason,actual_cost,audit_multiplier,auto_charge_amount,

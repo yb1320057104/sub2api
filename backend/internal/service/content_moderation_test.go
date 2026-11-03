@@ -164,7 +164,11 @@ func (r *contentModerationTestRepo) CreateLog(ctx context.Context, log *ContentM
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if log != nil {
-		r.logs = append(r.logs, *log)
+		record := *log
+		if record.CreatedAt.IsZero() {
+			record.CreatedAt = time.Now()
+		}
+		r.logs = append(r.logs, record)
 	}
 	return nil
 }
@@ -178,7 +182,10 @@ func (r *contentModerationTestRepo) CountFlaggedByUserSince(ctx context.Context,
 	defer r.mu.Unlock()
 	count := 0
 	for _, log := range r.logs {
-		if log.UserID == nil || *log.UserID != userID || !log.Flagged || log.Action == ContentModerationActionHashBlock {
+		if log.UserID == nil || *log.UserID != userID || !log.Flagged || log.Action == ContentModerationActionHashBlock || log.Action == ContentModerationActionAllow {
+			continue
+		}
+		if log.Mode == ContentModerationModeObserve || log.Mode == ContentModerationModeCyberLogOnly || log.Mode == ContentModerationModeRiskControlLogOnly || log.PolicyAction != "" {
 			continue
 		}
 		if excludeCyberPolicy && log.Action == ContentModerationActionCyberPolicy {
@@ -1846,7 +1853,7 @@ func TestContentModerationClearFlaggedInputHashesAndStatusCount(t *testing.T) {
 	require.Equal(t, int64(0), status.FlaggedHashCount)
 }
 
-func TestContentModerationCheck_AsyncFlaggedWritesRedisHashCache(t *testing.T) {
+func TestContentModerationCheck_AsyncFlaggedRecordsEvidenceWithoutPenalties(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(moderationAPIResponse{
 			Results: []moderationAPIResult{{
@@ -1856,39 +1863,67 @@ func TestContentModerationCheck_AsyncFlaggedWritesRedisHashCache(t *testing.T) {
 	}))
 	defer server.Close()
 
-	cfg := defaultContentModerationConfig()
-	cfg.Enabled = true
-	cfg.GroupIDs = []int64{7}
-	cfg.Mode = ContentModerationModeObserve
-	cfg.BaseURL = server.URL
-	cfg.APIKeys = []string{"sk-test"}
-	rawCfg, err := json.Marshal(cfg)
-	require.NoError(t, err)
+	for _, mode := range []string{ContentModerationModeObserve, ContentModerationModePreBlock} {
+		t.Run(mode, func(t *testing.T) {
+			cfg := defaultContentModerationConfig()
+			cfg.Enabled = true
+			cfg.GroupIDs = []int64{7}
+			cfg.Mode = mode
+			cfg.KeywordBlockingMode = ContentModerationKeywordModeKeywordAsyncAPI
+			cfg.BaseURL = server.URL
+			cfg.APIKeys = []string{"sk-test"}
+			cfg.AutoBanEnabled = true
+			cfg.BanThreshold = 1
+			cfg.ViolationWindowHours = 24
+			rawCfg, err := json.Marshal(cfg)
+			require.NoError(t, err)
 
-	repo := &contentModerationTestRepo{}
-	hashCache := &contentModerationTestHashCache{}
-	svc := NewContentModerationService(
-		&contentModerationTestSettingRepo{values: map[string]string{
-			SettingKeyRiskControlEnabled:      "true",
-			SettingKeyContentModerationConfig: string(rawCfg),
-		}},
-		repo,
-		hashCache,
-		nil,
-		nil,
-		nil,
-		nil,
-		nil,
-	)
+			userID := int64(1001)
+			repo := &contentModerationTestRepo{}
+			hashCache := &contentModerationTestHashCache{}
+			userRepo := &contentModerationTestUserRepo{user: &User{ID: userID, Role: RoleUser, Status: StatusActive}}
+			invalidator := &contentModerationTestAuthCacheInvalidator{}
+			svc := NewContentModerationService(
+				&contentModerationTestSettingRepo{values: map[string]string{
+					SettingKeyRiskControlEnabled:      "true",
+					SettingKeyContentModerationConfig: string(rawCfg),
+				}}, repo, hashCache, nil, userRepo, nil, invalidator, nil,
+			)
 
-	decision := svc.checkSync(context.Background(), ContentModerationCheckInput{
-		Protocol: ContentModerationProtocolOpenAIChat,
-		Body:     []byte(`{"messages":[{"role":"user","content":"bad prompt"}]}`),
-	}, cfg, ContentModerationInput{Text: "bad prompt"}, strings.Repeat("b", 64), contentModerationIntPtr(25), false)
+			decision := svc.checkSync(context.Background(), ContentModerationCheckInput{
+				UserID: userID, GroupID: contentModerationTestGroupID(),
+				Protocol: ContentModerationProtocolOpenAIChat,
+				Body:     []byte(`{"messages":[{"role":"user","content":"bad prompt"}]}`),
+			}, cfg, ContentModerationInput{Text: "bad prompt"}, strings.Repeat("b", 64), contentModerationIntPtr(25), false)
 
-	require.False(t, decision.Blocked)
-	requireRecordedHashCount(t, hashCache, 1)
-	requireContentModerationLogCount(t, repo, 1)
+			require.True(t, decision.Allowed)
+			require.True(t, decision.Flagged)
+			require.False(t, decision.Blocked)
+			require.Empty(t, hashCache.snapshotRecorded(), "observation cannot prime a later hash block")
+			logs := requireContentModerationLogCount(t, repo, 1)
+			require.True(t, logs[0].Flagged, "the observed hit remains visible")
+			require.Equal(t, ContentModerationActionAllow, logs[0].Action)
+			require.Equal(t, contentModerationTestGroupID(), logs[0].GroupID)
+			require.Equal(t, mode, logs[0].Mode)
+			require.Zero(t, logs[0].ViolationCount)
+			require.False(t, logs[0].AutoBanned)
+			require.False(t, logs[0].EmailSent)
+			require.Equal(t, StatusActive, userRepo.user.Status)
+			require.Empty(t, userRepo.updated)
+			require.Empty(t, invalidator.userIDs)
+
+			// A later strict hit must not retroactively count the observation.
+			cfg.Mode = ContentModerationModePreBlock
+			cfg.BanThreshold = 2
+			svc.persistContentModerationLog(context.Background(), cfg, newContentModerationFlaggedLog(userID), "", false, true)
+			logs = requireContentModerationLogCount(t, repo, 2)
+			require.Equal(t, 1, logs[1].ViolationCount)
+			require.False(t, logs[1].AutoBanned)
+			require.Equal(t, StatusActive, userRepo.user.Status)
+			require.Empty(t, userRepo.updated)
+			require.Empty(t, invalidator.userIDs)
+		})
+	}
 }
 
 func TestBuildContentModerationAccountDisabledEmailBody_ContainsBanDetails(t *testing.T) {

@@ -21,12 +21,15 @@ func TestCyberPolicyRankingIncludesAuditBlocksWithoutAddingDeductions(t *testing
 		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg()).WillReturnRows(sqlmock.NewRows([]string{"total", "triggers", "pending", "counted", "skipped", "unknown", "audit"}).AddRow(2, 7, 2, 4, 2, 1, 4))
 	mock.ExpectQuery(regexp.QuoteMeta(cyberRankingCTE)+`SELECT ROW_NUMBER\(\).*c.usage_count-c.deducted_count.*c.audit_block_count`).
 		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), "2.000000", 20, 0).
-		WillReturnRows(sqlmock.NewRows([]string{"rank", "user_id", "email", "username", "balance", "trigger_count", "deducted_count", "pending_count", "pending_amount", "status", "auto_count", "counted", "skipped", "unknown", "audit"}).
-			AddRow(1, 7, "mixed@example.com", "mixed", "100", 5, 1, 2, "4.00000000", "active", 2, 2, 2, 1, 2).
-			AddRow(2, 8, "audit@example.com", "audit only", "100", 2, 0, 0, "0.00000000", "active", 2, 2, 0, 0, 2)).RowsWillBeClosed()
+		WillReturnRows(sqlmock.NewRows([]string{"rank", "user_id", "email", "username", "balance", "trigger_count", "deducted_count", "pending_count", "pending_amount", "status", "auto_count", "counted", "skipped", "unknown", "audit", "auto_charged_count", "auto_charged_amount", "trigger_groups", "observation_count"}).
+			AddRow(1, 7, "mixed@example.com", "mixed", "100", 5, 1, 2, "4.00000000", "active", 2, 2, 2, 1, 2, 1, "0.40000000", "Main", 2).
+			AddRow(2, 8, "audit@example.com", "audit only", "100", 2, 0, 0, "0.00000000", "active", 2, 2, 0, 0, 2, 1, "0.20000000", "Other", 0)).RowsWillBeClosed()
 	mock.ExpectCommit()
 	result, err := NewCyberPolicyService(db, nil, nil).Ranking(context.Background(), window, 1, 20)
 	require.NoError(t, err)
+	require.Equal(t, int64(1), result.Items[0].AutoChargedCount)
+	require.Equal(t, "0.40000000", result.Items[0].AutoChargedAmount)
+	require.Equal(t, "Main", result.Items[0].TriggerGroups)
 	require.Equal(t, int64(7), result.TotalTriggers)
 	require.Equal(t, int64(4), result.TotalAuditBlocks)
 	require.Equal(t, int64(2), result.TotalPending)

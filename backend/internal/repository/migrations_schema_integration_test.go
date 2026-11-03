@@ -174,6 +174,39 @@ func TestPKBinanceAccountProxyMigrationPreservesExistingRows(t *testing.T) {
 	require.True(t, preflight)
 }
 
+func TestPKBinanceBackupMigrationPreservesExistingRowsAndRollbackSettings(t *testing.T) {
+	ctx := context.Background()
+	tx := testTx(t)
+	schema := fmt.Sprintf("pk_binance_backup_%d", time.Now().UnixNano())
+	_, err := tx.ExecContext(ctx, `CREATE SCHEMA `+schema)
+	require.NoError(t, err)
+	_, err = tx.ExecContext(ctx, `SET LOCAL search_path TO `+schema)
+	require.NoError(t, err)
+	_, err = tx.ExecContext(ctx, `CREATE TABLE binance_recharge_accounts (id BIGINT PRIMARY KEY,name TEXT,proxy_url_encrypted TEXT,proxy_preflight BOOLEAN); INSERT INTO binance_recharge_accounts VALUES (1,'legacy','opaque-primary',TRUE)`)
+	require.NoError(t, err)
+	var before string
+	require.NoError(t, tx.QueryRowContext(ctx, `SELECT to_jsonb(a)::text FROM binance_recharge_accounts a`).Scan(&before))
+	migration, err := os.ReadFile(filepath.Join("..", "..", "migrations", "262_binance_backup_proxy.sql"))
+	require.NoError(t, err)
+	for i := 0; i < 2; i++ {
+		_, err = tx.ExecContext(ctx, string(migration))
+		require.NoError(t, err)
+	}
+	var after, backup, status string
+	var preflight bool
+	require.NoError(t, tx.QueryRowContext(ctx, `SELECT (to_jsonb(a)-'backup_proxy_url_encrypted'-'backup_proxy_preflight'-'query_status')::text,backup_proxy_url_encrypted,backup_proxy_preflight,query_status::text FROM binance_recharge_accounts a`).Scan(&after, &backup, &preflight, &status))
+	require.JSONEq(t, before, after)
+	require.Empty(t, backup)
+	require.False(t, preflight)
+	require.JSONEq(t, `{}`, status)
+	_, err = tx.ExecContext(ctx, `UPDATE binance_recharge_accounts SET backup_proxy_url_encrypted='opaque-backup',backup_proxy_preflight=TRUE,query_status='{"route":"backup","attempt":2,"state":"succeeded"}'; UPDATE binance_recharge_accounts SET name='old-version-edit',proxy_url_encrypted='new-primary'`)
+	require.NoError(t, err)
+	require.NoError(t, tx.QueryRowContext(ctx, `SELECT backup_proxy_url_encrypted,backup_proxy_preflight,query_status::text FROM binance_recharge_accounts`).Scan(&backup, &preflight, &status))
+	require.Equal(t, "opaque-backup", backup)
+	require.True(t, preflight)
+	require.JSONEq(t, `{"route":"backup","attempt":2,"state":"succeeded"}`, status)
+}
+
 func TestMigrationsRunner_ConcurrentInstancesSerializeOnSessionLock(t *testing.T) {
 	const instances = 2
 	errorsByInstance := make([]error, instances)

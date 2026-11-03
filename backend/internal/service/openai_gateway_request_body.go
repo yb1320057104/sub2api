@@ -1944,16 +1944,28 @@ func (s *OpenAIGatewayService) evaluateOpenAIFastPolicy(ctx context.Context, acc
 	return evaluateOpenAIFastPolicyWithSettings(settings, openAIFastPolicyUserID(ctx), account, model, tier)
 }
 
-// shouldForceOpenAIFastPriorityForMissingTier reports whether a request that
-// omitted service_tier should be upgraded to priority. This is opt-in through
+// forcedOpenAIFastTier maps a policy action to its explicit outbound tier.
+func forcedOpenAIFastTier(action string) string {
+	switch action {
+	case OpenAIFastPolicyActionForcePriority:
+		return OpenAIFastTierPriority
+	case OpenAIFastPolicyActionForceUltrafast:
+		return OpenAIFastTierUltrafast
+	default:
+		return ""
+	}
+}
+
+// forcedOpenAIFastTierForMissingTier returns the requested tier for a request
+// that omitted service_tier. This is opt-in through
 // the dedicated "missing" tier matcher; legacy "all" rules continue to apply
 // only to requests that explicitly selected a recognized tier.
-func (s *OpenAIGatewayService) shouldForceOpenAIFastPriorityForMissingTier(ctx context.Context, account *Account, model string) bool {
+func (s *OpenAIGatewayService) forcedOpenAIFastTierForMissingTier(ctx context.Context, account *Account, model string) string {
 	if account == nil || account.Platform != PlatformOpenAI {
-		return false
+		return ""
 	}
 	action, _ := s.evaluateOpenAIFastPolicy(ctx, account, model, OpenAIFastTierMissing)
-	return action == OpenAIFastPolicyActionForcePriority
+	return forcedOpenAIFastTier(action)
 }
 
 // evaluateOpenAIFastPolicyWithSettings is the pure-function core extracted so
@@ -2063,11 +2075,12 @@ func openAIGroupForcesFast(ctx context.Context, account *Account) bool {
 // body. When action=filter it removes the service_tier field; when
 // action=block it returns (body, *OpenAIFastBlockedError). On pass it
 // normalizes the service_tier value (e.g. client alias "fast" → "priority").
-// action=force_priority rewrites any matched known tier to "priority". Before
+// action=force_priority / force_ultrafast rewrites any matched known tier to
+// "priority" / "ultrafast" respectively. Before
 // the global policy is evaluated, a trusted request Group with
 // ForceOpenAIFast enabled unconditionally sets service_tier to "priority".
-// The global policy remains authoritative and may still pass, filter, or block
-// that final value.
+// The global policy remains authoritative and may still pass, filter, block,
+// or replace that tier.
 //
 // Rationale for normalize-on-pass: chat-completions / messages 入口在调用本
 // 函数之前已经通过 normalizeResponsesBodyServiceTier 把 service_tier 归一化
@@ -2087,10 +2100,10 @@ func (s *OpenAIGatewayService) applyOpenAIFastPolicyToBody(ctx context.Context, 
 	}
 	rawTier := gjson.GetBytes(body, "service_tier").String()
 	if rawTier == "" {
-		if s.shouldForceOpenAIFastPriorityForMissingTier(ctx, account, model) {
-			updated, err := sjson.SetBytes(body, "service_tier", OpenAIFastTierPriority)
+		if forcedTier := s.forcedOpenAIFastTierForMissingTier(ctx, account, model); forcedTier != "" {
+			updated, err := sjson.SetBytes(body, "service_tier", forcedTier)
 			if err != nil {
-				return body, fmt.Errorf("force missing service_tier priority on body: %w", err)
+				return body, fmt.Errorf("force missing service_tier %s on body: %w", forcedTier, err)
 			}
 			return updated, nil
 		}
@@ -2114,10 +2127,11 @@ func (s *OpenAIGatewayService) applyOpenAIFastPolicyToBody(ctx context.Context, 
 			return body, fmt.Errorf("strip service_tier from body: %w", err)
 		}
 		return trimmed, nil
-	case OpenAIFastPolicyActionForcePriority:
-		updated, err := sjson.SetBytes(body, "service_tier", OpenAIFastTierPriority)
+	case OpenAIFastPolicyActionForcePriority, OpenAIFastPolicyActionForceUltrafast:
+		forcedTier := forcedOpenAIFastTier(action)
+		updated, err := sjson.SetBytes(body, "service_tier", forcedTier)
 		if err != nil {
-			return body, fmt.Errorf("force service_tier priority on body: %w", err)
+			return body, fmt.Errorf("force service_tier %s on body: %w", forcedTier, err)
 		}
 		return updated, nil
 	default:
@@ -2164,6 +2178,7 @@ func writeOpenAIFastPolicyBlockedResponse(c *gin.Context, err *OpenAIFastBlocked
 //   - pass: keeps service_tier, normalizing aliases such as "fast" to "priority"
 //   - filter: returns a copy with top-level service_tier removed
 //   - force_priority: keeps service_tier and rewrites it to "priority"
+//   - force_ultrafast: keeps service_tier and rewrites it to "ultrafast"
 //   - block: returns (frame, *OpenAIFastBlockedError)
 //   - Group ForceOpenAIFast: sets priority first, then applies the global rule
 //
@@ -2213,10 +2228,10 @@ func (s *OpenAIGatewayService) applyOpenAIFastPolicyToWSResponseCreate(
 	}
 	rawTier := gjson.GetBytes(frame, "service_tier").String()
 	if rawTier == "" {
-		if s.shouldForceOpenAIFastPriorityForMissingTier(ctx, account, model) {
-			updated, err := sjson.SetBytes(frame, "service_tier", OpenAIFastTierPriority)
+		if forcedTier := s.forcedOpenAIFastTierForMissingTier(ctx, account, model); forcedTier != "" {
+			updated, err := sjson.SetBytes(frame, "service_tier", forcedTier)
 			if err != nil {
-				return frame, nil, fmt.Errorf("force missing service_tier priority in ws frame: %w", err)
+				return frame, nil, fmt.Errorf("force missing service_tier %s in ws frame: %w", forcedTier, err)
 			}
 			return updated, nil, nil
 		}
@@ -2240,10 +2255,11 @@ func (s *OpenAIGatewayService) applyOpenAIFastPolicyToWSResponseCreate(
 			return frame, nil, fmt.Errorf("strip service_tier from ws frame: %w", err)
 		}
 		return trimmed, nil, nil
-	case OpenAIFastPolicyActionForcePriority:
-		updated, err := sjson.SetBytes(frame, "service_tier", OpenAIFastTierPriority)
+	case OpenAIFastPolicyActionForcePriority, OpenAIFastPolicyActionForceUltrafast:
+		forcedTier := forcedOpenAIFastTier(action)
+		updated, err := sjson.SetBytes(frame, "service_tier", forcedTier)
 		if err != nil {
-			return frame, nil, fmt.Errorf("force service_tier priority in ws frame: %w", err)
+			return frame, nil, fmt.Errorf("force service_tier %s in ws frame: %w", forcedTier, err)
 		}
 		return updated, nil, nil
 	default:

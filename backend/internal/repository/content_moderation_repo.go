@@ -222,6 +222,9 @@ func (r *contentModerationRepository) CountFlaggedByUserSince(ctx context.Contex
 	// SQL 中的 'cyber_policy' 字面量须与 service.ContentModerationActionCyberPolicy 保持一致。
 	// 'cyber_log_only' matches service.ContentModerationModeCyberLogOnly; these
 	// events remain evidence but never become penalties after allowlist removal.
+	// Observation and fast-background hits stay visible but must not contribute
+	// to a later synchronous ban. Fast-background logs retain pre_block mode
+	// from the configured strategy, so their allow action must also be excluded.
 	var count int
 	err := r.db.QueryRowContext(ctx, `
 WITH last_auto_ban AS (
@@ -234,6 +237,8 @@ FROM content_moderation_logs
 WHERE user_id = $1
   AND flagged = TRUE
   AND action <> 'hash_block'
+  AND action <> 'allow'
+  AND mode <> 'observe'
   AND mode <> 'cyber_log_only'
   AND mode <> 'risk_control_log_only'
   AND policy_action IS NULL

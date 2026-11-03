@@ -17,6 +17,10 @@ type GuardEvaluator struct {
 	perNodeLimit int
 	nodeMu       sync.Mutex
 	nodes        map[string]chan struct{}
+	issueMu      sync.Mutex
+	issueCode    string
+	issueAt      time.Time
+	recoveredAt  time.Time
 }
 
 func NewGuardEvaluator(scanner PromptScanner, repo JobRepository, metrics Metrics) *GuardEvaluator {
@@ -34,7 +38,19 @@ func newGuardEvaluator(scanner PromptScanner, repo JobRepository, metrics Metric
 		global: make(chan struct{}, globalLimit), perNodeLimit: perNodeLimit, nodes: map[string]chan struct{}{}}
 }
 
-func (g *GuardEvaluator) Evaluate(ctx context.Context, cfg ActiveConfig, snapshot PromptSnapshot) (*PromptDecision, error) {
+func (g *GuardEvaluator) Evaluate(ctx context.Context, cfg ActiveConfig, snapshot PromptSnapshot) (decisionResult *PromptDecision, evaluationErr error) {
+	if g != nil {
+		started := g.clock.Now()
+		defer func() {
+			g.issueMu.Lock()
+			defer g.issueMu.Unlock()
+			if evaluationErr != nil {
+				g.issueCode, g.issueAt = guardErrorCode(evaluationErr), g.clock.Now()
+			} else if g.issueCode != "" && !g.issueAt.After(started) {
+				g.issueCode, g.recoveredAt = "", g.clock.Now()
+			}
+		}()
+	}
 	if g == nil || (g.scanner == nil && cfg.Engine != PromptEngineLocalRules) {
 		if g != nil && g.metrics != nil {
 			g.metrics.Observe(DecisionUnavailable, 0)
@@ -47,11 +63,15 @@ func (g *GuardEvaluator) Evaluate(ctx context.Context, cfg ActiveConfig, snapsho
 	baseFields["config_version"] = cfg.ConfigVersion
 	endpoints := cfg.EnabledEndpoints()
 	if len(endpoints) == 0 && cfg.Engine != PromptEngineLocalRules {
+		code := "no_enabled_endpoint"
+		if len(cfg.InvalidTokenEndpointIDs()) > 0 {
+			code = "audit_token_invalid"
+		}
 		if g.metrics != nil {
 			g.metrics.Observe(DecisionUnavailable, g.clock.Now().Sub(start))
 		}
-		logGuardFailure(snapshot, cfg, DecisionUnavailable, ErrorCodeUnavailable, "", g.clock.Now().Sub(start))
-		return nil, &GuardError{Code: ErrorCodeUnavailable}
+		logGuardFailure(snapshot, cfg, DecisionUnavailable, code, "", g.clock.Now().Sub(start))
+		return nil, &GuardError{Code: code}
 	}
 	select {
 	case g.global <- struct{}{}:
@@ -61,8 +81,8 @@ func (g *GuardEvaluator) Evaluate(ctx context.Context, cfg ActiveConfig, snapsho
 			g.metrics.IncBulkheadFull()
 			g.metrics.Observe(DecisionUnavailable, g.clock.Now().Sub(start))
 		}
-		logGuardFailure(snapshot, cfg, DecisionUnavailable, ErrorCodeUnavailable, "", g.clock.Now().Sub(start))
-		return nil, &GuardError{Code: ErrorCodeUnavailable}
+		logGuardFailure(snapshot, cfg, DecisionUnavailable, "audit_concurrency_full", "", g.clock.Now().Sub(start))
+		return nil, &GuardError{Code: "audit_concurrency_full"}
 	}
 	timeout := DefaultTimeoutMS * time.Millisecond
 	if len(endpoints) > 0 && cfg.Engine != PromptEngineLocalRules {
@@ -193,6 +213,15 @@ func (g *GuardEvaluator) Evaluate(ctx context.Context, cfg ActiveConfig, snapsho
 	return decision, nil
 }
 
+func (g *GuardEvaluator) dependencyState() (string, time.Time, time.Time) {
+	if g == nil {
+		return "", time.Time{}, time.Time{}
+	}
+	g.issueMu.Lock()
+	defer g.issueMu.Unlock()
+	return g.issueCode, g.issueAt, g.recoveredAt
+}
+
 func logGuardFailure(snapshot PromptSnapshot, cfg ActiveConfig, kind DecisionKind, code, guardEndpointID string, latency time.Duration) {
 	fields := snapshotLogFields(snapshot)
 	fields["config_version"] = cfg.ConfigVersion
@@ -217,7 +246,7 @@ func (g *GuardEvaluator) scanChunk(ctx context.Context, cfg ActiveConfig, endpoi
 			if g.metrics != nil {
 				g.metrics.IncBulkheadFull()
 			}
-			lastErr = &GuardError{Code: ErrorCodeUnavailable, Retryable: true}
+			lastErr = &GuardError{Code: "audit_concurrency_full", Retryable: true}
 			if index < len(endpoints)-1 && g.metrics != nil {
 				g.metrics.IncFailover()
 			}
@@ -233,6 +262,11 @@ func (g *GuardEvaluator) scanChunk(ctx context.Context, cfg ActiveConfig, endpoi
 		}
 		lastErr = err
 		var guardErr *GuardError
+		status := 0
+		if errors.As(err, &guardErr) {
+			status = guardErr.HTTPStatus
+		}
+		LogWarn(EventChunkFailed, map[string]any{"guard_endpoint_id": endpoint.ID, "error_code": guardErrorCode(err), "http_status": status, "status": "node_failed"})
 		if !errors.As(err, &guardErr) || !guardErr.Retryable {
 			return nil, err
 		}

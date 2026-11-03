@@ -562,6 +562,18 @@ export async function bulkUpdate(
   return data
 }
 
+export interface AssignAccountProxiesRequest {
+  account_ids: number[]
+  proxies_per_account: number
+  max_accounts_per_proxy: number
+  proxy_concurrency: number
+}
+
+export async function assignProxies(payload: AssignAccountProxiesRequest): Promise<{ account_count: number; binding_count: number; proxy_count: number }> {
+  const { data } = await apiClient.post<{ account_count: number; binding_count: number; proxy_count: number }>('/admin/accounts/assign-proxies', payload)
+  return data
+}
+
 /**
  * Get account today statistics
  * @param id - Account ID
@@ -1212,6 +1224,7 @@ export const accountsAPI = {
   batchCreate,
   batchUpdateCredentials,
   bulkUpdate,
+  assignProxies,
   previewFromCrs,
   syncFromCrs,
   exportData,

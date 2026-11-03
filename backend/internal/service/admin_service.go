@@ -432,6 +432,7 @@ type ShadowOptions struct {
 }
 
 type UpdateAccountInput struct {
+	ProxyBindings         *[]AccountProxyBindingInput
 	ProxyMode             string // 受限写入在验权后选择代理。
 	Name                  string
 	Notes                 *string
@@ -454,6 +455,7 @@ type UpdateAccountInput struct {
 
 // BulkUpdateAccountsInput describes the payload for bulk updating accounts.
 type BulkUpdateAccountsInput struct {
+	ProxyBindings  *[]AccountProxyBindingInput
 	AccountIDs     []int64
 	Filters        *BulkUpdateAccountFilters
 	Name           string

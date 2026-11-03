@@ -76,6 +76,7 @@ type openAIWSAcquireRequest struct {
 	// lastAcquire or delayed prewarm state.
 	HeadersFactory  func(context.Context, http.Header) (http.Header, error)
 	ProxyURL        string
+	ProxyID         int64
 	PreferredConnID string
 	// ForceNewConn: 强制本次获取新连接（避免复用导致连接内续链状态互相污染）。
 	ForceNewConn bool
@@ -84,6 +85,7 @@ type openAIWSAcquireRequest struct {
 }
 
 type openAIWSHandshakeCompatibilityKey struct {
+	proxyURL            string
 	betaFeatures        string
 	codexInstallationID string
 	sessionIDHyphen     string
@@ -279,8 +281,9 @@ func (l *openAIWSConnLease) Release() {
 }
 
 type openAIWSConn struct {
-	id string
-	ws openAIWSClientConn
+	proxyID int64
+	id      string
+	ws      openAIWSClientConn
 
 	handshakeHeaders       http.Header
 	handshakeCompatibility openAIWSHandshakeCompatibilityKey
@@ -1145,7 +1148,7 @@ func (p *openAIWSConnPool) acquire(ctx context.Context, req openAIWSAcquireReque
 
 retryAcquire:
 	accountID := req.Account.ID
-	compatibility := normalizeOpenAIWSHandshakeCompatibility(req.Account, req.Headers)
+	compatibility := normalizeOpenAIWSRequestCompatibility(req)
 	routingAffinity := normalizeOpenAIWSRoutingAffinity(req.Headers)
 	effectiveMaxConns := p.effectiveMaxConnsByAccount(req.Account)
 	if effectiveMaxConns <= 0 {
@@ -2149,10 +2152,11 @@ func (p *openAIWSConnPool) dialConn(ctx context.Context, req openAIWSAcquireRequ
 	}
 	id := p.nextConnID(req.Account.ID)
 	pooledConn := newOpenAIWSConn(id, req.Account.ID, conn, handshakeHeaders)
+	pooledConn.proxyID = req.ProxyID
 	accountID := req.Account.ID
 	evict := func() { p.evictConn(accountID, id) }
 	pooledConn.onPeerClosed.Store(&evict)
-	pooledConn.handshakeCompatibility = normalizeOpenAIWSHandshakeCompatibility(req.Account, req.Headers)
+	pooledConn.handshakeCompatibility = normalizeOpenAIWSRequestCompatibility(req)
 	pooledConn.routingAffinity = normalizeOpenAIWSRoutingAffinity(req.Headers)
 	return pooledConn, nil
 }
@@ -2334,6 +2338,12 @@ func sameOpenAIWSPrewarmTarget(a, b openAIWSAcquireRequest) bool {
 	return stringsTrim(a.WSURL) == stringsTrim(b.WSURL) &&
 		stringsTrim(a.ProxyURL) == stringsTrim(b.ProxyURL) &&
 		normalizeOpenAIWSHandshakeCompatibility(a.Account, a.Headers) == normalizeOpenAIWSHandshakeCompatibility(b.Account, b.Headers)
+}
+
+func normalizeOpenAIWSRequestCompatibility(req openAIWSAcquireRequest) openAIWSHandshakeCompatibilityKey {
+	key := normalizeOpenAIWSHandshakeCompatibility(req.Account, req.Headers)
+	key.proxyURL = stringsTrim(req.ProxyURL)
+	return key
 }
 
 func normalizeOpenAIWSBetaFeatures(headers http.Header) string {

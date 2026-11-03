@@ -1164,8 +1164,8 @@ export default {
         commonPatterns: '常用模式'
       },
       openaiFastPolicy: {
-        title: 'OpenAI Fast/Flex 策略',
-        description: '基于请求体 service_tier 字段拦截/过滤/透传 OpenAI fast(priority)、ultrafast 与 flex 请求；仅作用于 OpenAI 网关。“全部 tier 值”仅包含显式传入的 tier。',
+        title: 'OpenAI Fast/Ultrafast/Flex 策略',
+        description: '按请求体 service_tier 拦截、过滤、透传，或强制设置 priority / ultrafast；仅作用于 OpenAI 网关。“全部 tier 值”仅匹配显式传入的 tier；给未传档位的请求设置速度时请选择“省略 tier”。实际可用档位取决于上游模型与账号，计费沿用对应档位规则。',
         empty: '尚未配置任何规则。点击下方按钮新增。',
         ruleHeader: '规则 #{index}',
         removeRule: '删除规则',
@@ -1181,6 +1181,7 @@ export default {
         actionPass: '透传（保留 service_tier）',
         actionFilter: '过滤（移除 service_tier）',
         actionForcePriority: '强制设置 priority（fast）',
+        actionForceUltrafast: '强制设置 ultrafast',
         actionBlock: '拦截（拒绝请求）',
         scope: '生效范围',
         scopeAll: '全部账号',
@@ -1211,7 +1212,8 @@ export default {
           pass: '透传',
           filter: '过滤',
           block: '拦截',
-          force_priority: '强制 priority'
+          force_priority: '强制 priority',
+          force_ultrafast: '强制 ultrafast'
         }
       },
       wechatConnect: {

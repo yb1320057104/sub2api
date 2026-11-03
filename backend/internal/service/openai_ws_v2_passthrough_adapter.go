@@ -866,10 +866,13 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	if buildHdrErr != nil {
 		return fmt.Errorf("build ws headers: %w", buildHdrErr)
 	}
-	proxyURL := ""
-	if account.ProxyID != nil && account.Proxy != nil {
-		proxyURL = account.Proxy.URL()
+	proxyRoute, proxyErr := s.acquireWSProxy(ctx, account, "")
+	if proxyErr != nil {
+		return proxyErr
 	}
+	defer proxyRoute.Close()
+	ctx = proxyRoute.Context
+	proxyURL := proxyRoute.URL
 
 	dialer := s.getOpenAIWSPassthroughDialer()
 	if dialer == nil {

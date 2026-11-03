@@ -138,6 +138,16 @@ func (s *liveTestStore) GetLiveCall(_ context.Context, callHash string) (*LiveCa
 	return &copy, nil
 }
 
+func (s *liveTestStore) AttachLiveProxyLease(_ context.Context, callHash string, proxyID int64, leaseID string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.record == nil || s.record.CallHash != callHash || s.record.Controller == LiveControllerClosed || s.record.ProxyLeaseManaged {
+		return false, nil
+	}
+	s.record.ProxyID, s.record.ProxyLeaseID, s.record.ProxyLeaseManaged = proxyID, leaseID, true
+	return true, nil
+}
+
 func (s *liveTestStore) ClaimLiveController(_ context.Context, callHash, controller, owner string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -190,6 +200,137 @@ func (s *liveTestStore) MarkLiveCallClosed(_ context.Context, callHash string, _
 	s.record.Controller = LiveControllerClosed
 	s.record.ControllerOwner = ""
 	return true, nil
+}
+
+type liveProxyLeaseFixture struct {
+	mu       sync.Mutex
+	leases   map[string]bool
+	bindings []AccountProxyBinding
+}
+
+func (f *liveProxyLeaseFixture) GetAccountProxyBindings(context.Context, int64) ([]AccountProxyBinding, error) {
+	return f.bindings, nil
+}
+func (f *liveProxyLeaseFixture) AcquireProxy(_ context.Context, _ int64, limit int, lease string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if limit > 0 && len(f.leases) >= limit {
+		return false, nil
+	}
+	f.leases[lease] = true
+	return true, nil
+}
+func (f *liveProxyLeaseFixture) RefreshProxy(_ context.Context, _ int64, lease string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.leases[lease], nil
+}
+func (f *liveProxyLeaseFixture) ReleaseProxy(_ context.Context, _ int64, lease string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.leases, lease)
+	return nil
+}
+func (f *liveProxyLeaseFixture) GetProxyConcurrencyBatch(context.Context, []int64) (map[int64]int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return map[int64]int{3: len(f.leases)}, nil
+}
+
+func newLiveProxyLeaseFixture() *liveProxyLeaseFixture {
+	return &liveProxyLeaseFixture{leases: make(map[string]bool), bindings: []AccountProxyBinding{{ProxyID: 3, MaxConcurrency: 1, Proxy: &Proxy{ID: 3, Protocol: "http", Host: "live.invalid", Port: 80, Status: StatusActive}}}}
+}
+
+func TestLivePersistentProxyBorrowedHTTPClosureAndFinalization(t *testing.T) {
+	fixture := newLiveProxyLeaseFixture()
+	router := NewAccountProxyRouter(fixture, fixture)
+	ctx, cancel := context.WithCancel(WithAccountProxyRouting(t.Context()))
+	defer cancel()
+	held, err := router.AcquirePersistent(ctx, 11, "", 0, time.Minute)
+	require.NoError(t, err)
+	t.Cleanup(held.Close)
+	borrowed, err := router.Acquire(withBorrowedAccountProxyRoute(ctx, 11, held), 11, "", 0)
+	require.NoError(t, err, "HTTP/plugin must borrow even when the proxy's only slot is held")
+	require.Equal(t, held.LeaseID, borrowed.LeaseID)
+	borrowed.Close()
+	cancel()
+	require.NoError(t, held.Context.Err())
+	counts, _ := fixture.GetProxyConcurrencyBatch(t.Context(), nil)
+	require.Equal(t, 1, counts[3])
+	store := &liveTestStore{}
+	record := &LiveCallRecord{CallID: "live", CallHash: "live-hash", AccountID: 11, ProxyID: 3, ProxyLeaseID: held.LeaseID, ProxyLeaseManaged: true, ExpiresAt: time.Now().Add(time.Minute), Controller: LiveControllerObserver}
+	require.NoError(t, store.SaveLiveCall(t.Context(), record, time.Minute))
+	require.True(t, held.Handoff())
+	gateway := &OpenAIGatewayService{cache: store, httpUpstream: &pluginRoutingHTTPUpstream{proxyRouter: router}, concurrencyService: NewConcurrencyService(&liveTestConcurrencyCache{})}
+	require.True(t, gateway.refreshLiveLease(record))
+	gateway.finalizeLiveCall(record)
+	gateway.finalizeLiveCall(record)
+	counts, _ = fixture.GetProxyConcurrencyBatch(t.Context(), nil)
+	require.Zero(t, counts[3])
+	require.False(t, gateway.refreshLiveLease(record), "finalized lease cannot be resurrected")
+}
+
+func TestLiveLegacyProxyLeaseUpgradeIsPersistedAndNotDuplicated(t *testing.T) {
+	fixture := newLiveProxyLeaseFixture()
+	router := NewAccountProxyRouter(fixture, fixture)
+	store := &liveTestStore{}
+	record := &LiveCallRecord{CallID: "legacy", CallHash: "legacy-hash", AccountID: 11, ExpiresAt: time.Now().Add(time.Minute), Controller: LiveControllerProxy, ControllerOwner: "owner"}
+	require.NoError(t, store.SaveLiveCall(t.Context(), record, time.Minute))
+	gateway := &OpenAIGatewayService{cache: store, httpUpstream: &pluginRoutingHTTPUpstream{proxyRouter: router}}
+	proxyID := int64(3)
+	account := &Account{ID: 11, ProxyID: &proxyID, Proxy: fixture.bindings[0].Proxy}
+	require.NoError(t, gateway.ensureLiveProxyLease(t.Context(), record, account))
+	t.Cleanup(func() { gateway.releaseLiveProxyLease(record) })
+	require.True(t, record.ProxyLeaseManaged)
+	require.NotEmpty(t, record.ProxyLeaseID)
+	loaded, err := store.GetLiveCall(t.Context(), record.CallHash)
+	require.NoError(t, err)
+	require.Equal(t, record.ProxyLeaseID, loaded.ProxyLeaseID)
+	require.Equal(t, "owner", loaded.ControllerOwner)
+	require.NoError(t, gateway.ensureLiveProxyLease(t.Context(), loaded, account))
+	staleAtCapacity := *record
+	staleAtCapacity.ProxyLeaseManaged, staleAtCapacity.ProxyLeaseID = false, ""
+	require.NoError(t, gateway.ensureLiveProxyLease(t.Context(), &staleAtCapacity, account))
+	require.Equal(t, record.ProxyLeaseID, staleAtCapacity.ProxyLeaseID)
+	// A concurrent controller can have loaded the pre-upgrade record. Its
+	// provisional slot loses CAS and is released without overwriting the winner.
+	fixture.bindings[0].MaxConcurrency = 2
+	stale := *record
+	stale.ProxyLeaseManaged, stale.ProxyLeaseID = false, ""
+	require.NoError(t, gateway.ensureLiveProxyLease(t.Context(), &stale, account))
+	require.Equal(t, record.ProxyLeaseID, stale.ProxyLeaseID)
+	counts, _ := fixture.GetProxyConcurrencyBatch(t.Context(), nil)
+	require.Equal(t, 1, counts[3])
+	gateway.releaseLiveProxyLease(record)
+	_, err = router.ResumePersistent(t.Context(), 11, 3, record.ProxyLeaseID)
+	require.ErrorIs(t, err, ErrProxyLeaseUnavailable)
+}
+
+func TestLiveLostProxyLeaseClosesUpstreamForControllerAndObserver(t *testing.T) {
+	for _, observer := range []bool{false, true} {
+		t.Run(fmt.Sprintf("observer=%v", observer), func(t *testing.T) {
+			fixture := newLiveProxyLeaseFixture()
+			router := NewAccountProxyRouter(fixture, fixture)
+			gateway := &OpenAIGatewayService{httpUpstream: &pluginRoutingHTTPUpstream{proxyRouter: router}, concurrencyService: NewConcurrencyService(&liveTestConcurrencyCache{})}
+			record := &LiveCallRecord{AccountID: 11, ProxyID: 3, ProxyLeaseID: "lost-lease", ProxyLeaseManaged: true, ExpiresAt: time.Now().Add(time.Minute)}
+			upstream := newLiveTestFrameConn()
+			var err error
+			if observer {
+				err = gateway.runLiveObserverConnection(record, upstream)
+			} else {
+				err = gateway.runLiveController(t.Context(), record, upstream, make(chan error))
+			}
+			require.ErrorIs(t, err, ErrLiveUnavailable)
+			select {
+			case frame := <-upstream.writes:
+				require.JSONEq(t, `{"type":"session.close"}`, string(frame.payload))
+			default:
+				t.Fatal("lost lease must close the actual upstream Live session")
+			}
+			counts, _ := fixture.GetProxyConcurrencyBatch(t.Context(), nil)
+			require.Zero(t, counts[3])
+		})
+	}
 }
 
 type liveTestConcurrencyCache struct {

@@ -51,23 +51,26 @@ type LiveCallIdentity struct {
 
 type LiveCallRecord struct {
 	// Server-owned audit decision, stored privately with the live mapping.
-	AuditAction     *CyberPolicyAuditBlockInput `json:"-"`
-	CallID          string
-	CallHash        string
-	AccountID       int64
-	APIKeyID        int64
-	UserID          int64
-	GroupID         int64
-	SubscriptionID  int64
-	LeaseID         string
-	Model           string
-	CreatedAt       time.Time
-	ExpiresAt       time.Time
-	Controller      string
-	ControllerOwner string
-	UserAgent       string
-	IPAddress       string
-	InboundEndpoint string
+	AuditAction       *CyberPolicyAuditBlockInput `json:"-"`
+	CallID            string
+	CallHash          string
+	AccountID         int64
+	ProxyID           int64
+	ProxyLeaseID      string
+	ProxyLeaseManaged bool
+	APIKeyID          int64
+	UserID            int64
+	GroupID           int64
+	SubscriptionID    int64
+	LeaseID           string
+	Model             string
+	CreatedAt         time.Time
+	ExpiresAt         time.Time
+	Controller        string
+	ControllerOwner   string
+	UserAgent         string
+	IPAddress         string
+	InboundEndpoint   string
 	// AttestationCiphertext 仅用于让同一会话的 Sideband 复用创建时的证明。
 	AttestationCiphertext string
 }
@@ -87,6 +90,10 @@ type LiveCallStore interface {
 	ReleaseLiveController(ctx context.Context, callHash, owner string) (bool, error)
 	GetLiveController(ctx context.Context, callHash string) (string, error)
 	MarkLiveCallClosed(ctx context.Context, callHash string, ttl time.Duration) (bool, error)
+}
+
+type LiveProxyLeaseStore interface {
+	AttachLiveProxyLease(ctx context.Context, callHash string, proxyID int64, leaseID string) (bool, error)
 }
 
 type LiveConcurrencyCache interface {

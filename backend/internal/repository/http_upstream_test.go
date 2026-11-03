@@ -21,9 +21,72 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/alicebob/miniredis/v2"
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 )
+
+func TestHTTPUpstreamCustomRelayUsesChosenProxyWithoutProxyingRelay(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		routing    bool
+		bound      bool
+		useTLS     bool
+		wantProxy  string
+		wantLeases int
+	}{
+		{name: "selected binding", routing: true, bound: true, wantProxy: "http://new-user:new-pass@selected.invalid:1234", wantLeases: 1},
+		{name: "TLS entry point", routing: true, bound: true, useTLS: true, wantProxy: "http://new-user:new-pass@selected.invalid:1234", wantLeases: 1},
+		{name: "cleared bindings remove stale query", routing: true},
+		{name: "administrative fallback", bound: true, wantProxy: "http://legacy.invalid:5678"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			rdb := miniredis.RunT(t)
+			client := redis.NewClient(&redis.Options{Addr: rdb.Addr()})
+			t.Cleanup(func() { _ = client.Close() })
+			reader := routingBindingFixture{}
+			if tt.bound {
+				reader[11] = []service.AccountProxyBinding{{ProxyID: 2, MaxConcurrency: 1, Proxy: &service.Proxy{ID: 2, Status: service.StatusActive, Protocol: "http", Host: "selected.invalid", Port: 1234, Username: "new-user", Password: "new-pass"}}}
+			}
+			router := service.NewAccountProxyRouter(reader, NewProxyConcurrencyCache(client))
+			seen := make(chan url.Values, 1)
+			relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				seen <- r.URL.Query()
+				_, _ = w.Write([]byte("relay response"))
+			}))
+			t.Cleanup(relay.Close)
+			ctx := t.Context()
+			if tt.routing {
+				ctx = service.WithAccountProxyRouting(ctx)
+			}
+			ctx = service.WithAccountProxyRelay(ctx, "http://legacy.invalid:5678")
+			request, err := http.NewRequestWithContext(ctx, http.MethodPost, relay.URL+"/v1/messages?beta=true&proxy=stale-query&keep=unchanged", nil)
+			require.NoError(t, err)
+			transport := ProvideHTTPUpstream(nil, router)
+			var response *http.Response
+			if tt.useTLS {
+				response, err = transport.DoWithTLS(request, "", 11, 1, &tlsfingerprint.Profile{Name: "plain-http"})
+			} else {
+				response, err = transport.Do(request, "", 11, 1)
+			}
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = response.Body.Close() })
+			query := <-seen
+			require.Equal(t, tt.wantProxy, query.Get("proxy"))
+			require.Equal(t, "true", query.Get("beta"))
+			require.Equal(t, "unchanged", query.Get("keep"))
+			require.Equal(t, "stale-query", request.URL.Query().Get("proxy"), "caller URL must remain unchanged")
+			counts, err := router.GetProxyConcurrencyBatch(t.Context(), []int64{2})
+			require.NoError(t, err)
+			require.Equal(t, tt.wantLeases, counts[2])
+			require.NoError(t, response.Body.Close())
+			counts, err = router.GetProxyConcurrencyBatch(t.Context(), []int64{2})
+			require.NoError(t, err)
+			require.Zero(t, counts[2])
+		})
+	}
+}
 
 func TestHTTPUpstreamDoCanDisableRedirectsPerRequest(t *testing.T) {
 	var redirectedCalls atomic.Int64

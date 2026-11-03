@@ -140,7 +140,7 @@
                   <td class="px-4 py-4 text-right tabular-nums">{{ row.deducted_count }}</td>
                   <td class="px-4 py-4 text-right tabular-nums">{{ row.pending_count }}</td>
                   <td class="whitespace-nowrap px-4 py-4 text-right tabular-nums">{{ decimal(row.pending_amount) }}</td>
-                  <td class="whitespace-nowrap px-4 py-4 text-right tabular-nums">{{ decimal(row.balance) }}</td>
+                  <td class="whitespace-nowrap px-4 py-4 text-right tabular-nums">{{ decimal(row.balance) }}<div class="mt-1 text-xs text-green-700 dark:text-green-300" data-testid="ranking-auto-charge-summary">{{ t('securityPolicyRanking.autoChargeSummary', { count: row.auto_charged_count ?? 0, amount: decimal(row.auto_charged_amount) }) }}</div><div class="mt-1 max-w-72 whitespace-normal text-xs text-gray-500" data-testid="ranking-group-summary">{{ row.trigger_groups || '—' }}</div></td>
                   <td class="whitespace-nowrap px-4 py-4">
                     <span :class="row.status === 'active' ? 'text-green-600 dark:text-green-400' : 'text-gray-500'">{{ t(row.deleted ? 'securityPolicyRanking.deletedUser' : row.status === 'active' ? 'common.enabled' : 'common.disabled') }}</span>
                     <div v-if="row.auto_disable_count !== undefined" class="mt-1 text-xs text-gray-500">{{ t('securityPolicyRanking.disableCount', { count: row.auto_disable_count }) }}</div>
@@ -175,14 +175,14 @@
             <tbody class="divide-y divide-gray-100 dark:divide-dark-700">
               <tr v-for="record in records.items" :key="record.record_key || `${record.source || 'upstream_policy'}-${record.audit_id ?? record.usage_id}-${record.occurred_at}-${record.request_id}`" :data-testid="`ranking-record-${record.audit_id ? `audit-${record.audit_id}` : record.usage_id}`">
                 <td class="whitespace-nowrap px-3 py-3"><div>{{ dateTime(record.occurred_at) }}</div><div v-if="record.audit_id" class="mt-1 text-xs text-gray-500">{{ t('securityPolicyRanking.auditRecordId', { id: record.audit_id }) }}</div><div v-else-if="record.usage_id > 0" class="mt-1 text-xs text-gray-500">{{ t('securityPolicyRanking.usageRecordId', { id: record.usage_id }) }}</div><div v-if="record.linked_usage_id" class="mt-1 text-xs text-gray-500" data-testid="ranking-linked-usage">{{ t('securityPolicyRanking.linkedUsageRecordId', { id: record.linked_usage_id }) }}</div></td>
-                <td class="min-w-40 px-3 py-3"><div>{{ t(`securityPolicyRanking.recordSources.${record.source || 'upstream_policy'}`) }}</div><div v-if="record.policy_action === 'block' || record.policy_action === 'charge_allow'" class="mt-1 text-xs font-medium" data-testid="ranking-policy-action">{{ t(`admin.promptAudit.riskPolicy.actions.${record.policy_action}`) }}<span v-if="typeof record.risk_score === 'number'"> · {{ record.risk_score }} / 100</span></div><div v-if="record.source && record.source !== 'upstream_policy'" class="mt-1 text-xs text-gray-500">{{ t(record.policy_action === 'charge_allow' ? 'securityPolicyRanking.auditChargeNotManual' : 'securityPolicyRanking.auditNotDeductible') }}</div></td>
+                <td class="min-w-40 px-3 py-3"><div>{{ t(`securityPolicyRanking.recordSources.${record.source || 'upstream_policy'}`) }}</div><div v-if="record.policy_action === 'block' || record.policy_action === 'charge_allow' || (record.policy_action === 'allow' && (record.risk_score ?? 0) > 0)" class="mt-1 text-xs font-medium" data-testid="ranking-policy-action">{{ t(`admin.promptAudit.riskPolicy.actions.${record.policy_action}`) }}<span v-if="typeof record.risk_score === 'number'"> · {{ record.risk_score }} / 100</span></div><div v-if="record.source?.endsWith('_observation')" class="mt-1 text-xs text-gray-500">{{ t('securityPolicyRanking.observationHint') }}</div><div v-else-if="record.source && record.source !== 'upstream_policy'" class="mt-1 text-xs text-gray-500">{{ t(record.policy_action === 'charge_allow' ? 'securityPolicyRanking.auditChargeNotManual' : 'securityPolicyRanking.auditNotDeductible') }}</div></td>
                 <td class="px-3 py-3"><span v-if="record.group_id">{{ record.group_name || `#${record.group_id}` }}<span v-if="record.group_name" class="ml-1 text-xs text-gray-500">#{{ record.group_id }}</span></span><span v-else class="text-gray-500">{{ t('securityPolicyRanking.ungrouped') }}</span></td>
                 <td class="max-w-64 break-all px-3 py-3"><div>{{ record.model || '—' }}</div><div class="mt-1 text-xs text-gray-500">{{ record.request_id || '—' }}</div></td>
                 <td class="min-w-60 px-3 py-3"><div :class="record.count_status === 'counted' ? 'text-green-700 dark:text-green-300' : record.count_status === 'skipped' ? 'text-amber-700 dark:text-amber-300' : 'text-gray-500 dark:text-gray-400'">{{ recordCountLabel(record) }}</div><div v-if="record.settings_revision !== null && record.settings_revision !== undefined" class="mt-1 text-xs text-gray-500">{{ t('securityPolicyRanking.recordRevision', { revision: record.settings_revision }) }}</div></td>
                 <td class="min-w-64 px-3 py-3" data-testid="ranking-record-charge">
                   <div :class="record.auto_charge_status === 'deducted' ? 'text-green-700 dark:text-green-300' : 'text-gray-600 dark:text-gray-400'">{{ t(`securityPolicyRanking.chargeStatuses.${record.auto_charge_status || 'historical_unknown'}`) }}</div>
                   <div v-if="record.auto_charge_reason" class="mt-1 text-xs text-gray-500">{{ recordChargeReason(record.auto_charge_reason) }}</div>
-                  <div class="mt-1 text-xs tabular-nums text-gray-500" data-testid="ranking-record-charge-formula">{{ t('securityPolicyRanking.chargeFormula', { cost: decimal(record.actual_cost), multiplier: decimal(record.audit_multiplier), amount: decimal(record.auto_charge_amount) }) }}</div>
+                  <div v-if="record.audit_multiplier != null && record.auto_charge_reason !== 'auto_deduct_off'" class="mt-1 text-xs tabular-nums text-gray-500" data-testid="ranking-record-charge-formula">{{ t('securityPolicyRanking.chargeFormula', { cost: decimal(record.actual_cost), multiplier: decimal(record.audit_multiplier), amount: decimal(record.auto_charge_amount) }) }}</div>
                   <div class="mt-1 text-xs tabular-nums" data-testid="ranking-record-charge-deducted">{{ t('securityPolicyRanking.chargeDeducted', { amount: record.auto_charge_status === 'deducted' ? decimal(record.auto_charge_amount) : !record.auto_charge_status || record.auto_charge_status === 'historical_unknown' ? '—' : '0' }) }}</div>
                 </td>
               </tr>
@@ -323,14 +323,14 @@ function recordCountLabel(record: SecurityPolicyTriggerRecord) {
   if (record.count_status === 'counted') return t('securityPolicyRanking.recordCounted')
   if (record.count_status !== 'skipped') return t('securityPolicyRanking.recordUnknown')
   const keys: Record<string, string> = {
-    group_not_enabled: 'recordGroupSkipped', auto_disable_off: 'recordDisabledSkipped',
+    observation_only: 'observationHint', group_not_enabled: 'recordGroupSkipped', auto_disable_off: 'recordDisabledSkipped',
     admin_exempt: 'recordAdminSkipped', user_unavailable: 'recordUserSkipped', user_exempt: 'recordExemptSkipped',
   }
   return t(`securityPolicyRanking.${keys[record.count_reason] || 'recordSkipped'}`)
 }
 
 function recordChargeReason(reason: string) {
-  const known = ['group_not_enabled', 'user_exempt', 'user_unavailable', 'admin_exempt', 'auto_deduct_off', 'invalid_cost', 'charge_failed']
+  const known = ['observation_only', 'group_not_enabled', 'user_exempt', 'user_unavailable', 'admin_exempt', 'auto_deduct_off', 'invalid_cost', 'charge_failed']
   return t(`securityPolicyRanking.chargeReasons.${known.includes(reason) ? reason : 'unknown'}`)
 }
 

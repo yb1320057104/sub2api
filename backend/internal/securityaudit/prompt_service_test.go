@@ -87,6 +87,65 @@ func TestPromptServiceBlockingLatestTurnOnlyUsesNarrowSnapshot(t *testing.T) {
 	require.Equal(t, []string{"latest user input", "previous output"}, seen)
 }
 
+func TestPromptFastModeKeepsLocalBlockAndDoesNotWaitForRemote(t *testing.T) {
+	for _, fast := range []bool{false, true} {
+		cfg := guardConfig(ActiveEndpoint{ID: "node", Enabled: true, TimeoutMS: 1000, InputLimit: 4000})
+		cfg.Engine, cfg.FastMode, cfg.GroupIDs = PromptEngineRemote, fast, []int64{1}
+		cfg.LocalRules = []LocalRule{{ID: "fixture", Name: "Fixture", Kind: "keyword", Pattern: "forbidden", Category: "jailbreak", Action: "block", Enabled: true}}
+		var err error
+		cfg.compiledRules, err = compileLocalRules(cfg.LocalRules)
+		require.NoError(t, err)
+		calls := 0
+		eval := NewGuardEvaluator(PromptScannerFunc(func(context.Context, ActiveEndpoint, string, []string) (*NormalizedResult, error) {
+			calls++
+			return nil, &GuardError{Code: "audit_node_timeout", Retryable: true}
+		}), nil, nil)
+		svc := &PromptService{config: &fakeConfigStore{active: true, cfg: cfg}, evaluator: eval}
+		d, err := svc.Evaluate(context.Background(), Request{GroupID: promptTestGroupID(1), Protocol: "openai_chat_completions", Body: []byte(`{"messages":[{"role":"user","content":"forbidden"}]}`)})
+		if !fast {
+			require.Error(t, err, "strict mode must still fail closed")
+			require.Equal(t, 1, calls)
+		} else {
+			require.NoError(t, err)
+			require.Equal(t, DecisionBlock, d.Kind)
+			require.Zero(t, calls)
+		}
+	}
+}
+
+func TestPromptFastModeAllowsThenQueuesRemoteObservation(t *testing.T) {
+	cfg := asyncConfig()
+	cfg.Engine, cfg.FastMode, cfg.BlockingEnabled = PromptEngineRemote, true, true
+	cfg.Endpoints[0].InputLimit = 4000
+	cfg.LocalRules = []LocalRule{{ID: "fixture", Name: "Fixture", Kind: "keyword", Pattern: "forbidden", Category: "jailbreak", Action: "block", Enabled: true}}
+	var err error
+	cfg.compiledRules, err = compileLocalRules(cfg.LocalRules)
+	require.NoError(t, err)
+	store := &fakeConfigStore{active: true, cfg: cfg}
+	repo, payload := &fakeJobRepository{}, &fakePayloadStore{}
+	calls := 0
+	scanner := PromptScannerFunc(func(context.Context, ActiveEndpoint, string, []string) (*NormalizedResult, error) {
+		calls++
+		return &NormalizedResult{Decision: EventCritical, RiskLevel: RiskHigh, Action: ActionBlock}, nil
+	})
+	svc := &PromptService{
+		config: store, enqueuer: NewEnqueuer(store, repo, payload),
+		evaluator: NewGuardEvaluator(scanner, repo, nil), runner: NewRunner(store, repo, payload, scanner, nil),
+		background: context.Background(), enqueueSlots: make(chan struct{}, 1),
+	}
+	d, err := svc.Evaluate(context.Background(), asyncRequest())
+	require.NoError(t, err)
+	require.True(t, d.AllowNextStage)
+	require.Zero(t, calls, "preflight only evaluates local rules")
+	svc.enqueueWG.Wait()
+	require.NotNil(t, repo.createJob, "fast mode must queue despite effective blocking mode")
+	require.NotEmpty(t, payload.values[repo.createJob.ID])
+	require.NoError(t, svc.runner.processJob(context.Background(), 0, cfg, repo.createJob))
+	require.Equal(t, 1, calls)
+	require.Equal(t, 1, repo.completeCount, "remote result is completed through the async observation repository")
+	require.Equal(t, 1, repo.eventCount)
+}
+
 func TestPromptServiceSelectedGroupOnlySkipsBeforeParsingOrQueueing(t *testing.T) {
 	for _, engine := range []string{PromptEngineRemote, PromptEngineLocalRules} {
 		for _, groups := range [][]int64{nil, {1}} {

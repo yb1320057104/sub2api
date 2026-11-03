@@ -229,12 +229,12 @@ func (s *OpenAICompatibleScanner) Scan(ctx context.Context, endpoint ActiveEndpo
 		if errors.As(err, &netErr) && netErr.Timeout() {
 			timeout = true
 		}
-		return nil, &GuardError{Code: ErrorCodeUnavailable, Retryable: true, Timeout: timeout, Cause: err}
+		return nil, &GuardError{Code: promptNetworkErrorCode(timeout), Retryable: true, Timeout: timeout, Cause: err}
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		retryable := resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500
-		return nil, &GuardError{Code: ErrorCodeUnavailable, HTTPStatus: resp.StatusCode, Retryable: retryable}
+		return nil, &GuardError{Code: promptHTTPErrorCode(resp.StatusCode), HTTPStatus: resp.StatusCode, Retryable: retryable}
 	}
 	limited := io.LimitReader(resp.Body, maxGuardResponseBytes+1)
 	responseBody, err := io.ReadAll(limited)
@@ -255,6 +255,25 @@ func (s *OpenAICompatibleScanner) Scan(ctx context.Context, endpoint ActiveEndpo
 	result.GuardEndpointID = endpoint.ID
 	result.ScannerVersion = endpoint.Model
 	return result, nil
+}
+
+func promptNetworkErrorCode(timeout bool) string {
+	if timeout {
+		return "audit_node_timeout"
+	}
+	return "audit_node_connection_failed"
+}
+func promptHTTPErrorCode(status int) string {
+	switch {
+	case status == 401 || status == 403:
+		return "audit_node_authentication_failed"
+	case status == 429:
+		return "audit_node_rate_limited"
+	case status >= 500:
+		return "audit_node_server_error"
+	default:
+		return "audit_node_http_error"
+	}
 }
 
 func (s *OpenAICompatibleScanner) clientFor(endpoint ActiveEndpoint) (*http.Client, error) {

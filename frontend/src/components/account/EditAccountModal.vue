@@ -1923,7 +1923,7 @@
           <label class="input-label mb-0">{{ t('admin.accounts.proxy') }}</label>
           <ProxyAdBanner />
         </div>
-        <ProxySelector v-model="form.proxy_id" :proxies="proxies" />
+        <AccountProxyBindingsEditor :model-value="proxyBindings" :proxies="bindingProxies" :disabled="submitting" @update:model-value="proxyBindings = $event; proxyBindingsDirty = true" />
       </div>
 
       <UpstreamRequestIdHeaderField
@@ -3448,6 +3448,7 @@ import { adminAPI } from '@/api/admin'
 import { useQuotaNotifyState } from '@/composables/useQuotaNotifyState'
 import type {
   Account,
+  AccountProxyBindingInput,
   Proxy,
   AdminGroup,
   Group,
@@ -3470,7 +3471,8 @@ import HelpTooltip from '@/components/common/HelpTooltip.vue'
 import UpstreamRequestIdHeaderField from '@/components/account/UpstreamRequestIdHeaderField.vue'
 import Toggle from '@/components/common/Toggle.vue'
 import Icon from '@/components/icons/Icon.vue'
-import ProxySelector from '@/components/common/ProxySelector.vue'
+import AccountProxyBindingsEditor from '@/components/account/AccountProxyBindingsEditor.vue'
+import { accountProxyBindings, proxyBindingInputs, validProxyBindings } from '@/components/account/proxyBindings'
 import ProxyAdBanner from '@/components/common/ProxyAdBanner.vue'
 import GroupSelector from '@/components/common/GroupSelector.vue'
 import ModelWhitelistSelector from '@/components/account/ModelWhitelistSelector.vue'
@@ -4554,6 +4556,15 @@ const mixedChannelWarningMessageText = computed(() => {
   return mixedChannelWarningRawMessage.value
 })
 
+const proxyBindings = ref<AccountProxyBindingInput[]>([])
+const proxyBindingsDirty = ref(false)
+const bindingProxies = computed(() => {
+  const known = new Map(props.proxies.map(proxy => [proxy.id, proxy]))
+  if (props.account) for (const binding of accountProxyBindings(props.account)) {
+    if (binding.proxy && !known.has(binding.proxy_id)) known.set(binding.proxy_id, binding.proxy)
+  }
+  return [...known.values()]
+})
 const form = reactive({
   name: '',
   notes: '',
@@ -4666,6 +4677,8 @@ const syncFormFromAccount = (newAccount: Account | null) => {
   form.name = newAccount.name
   form.notes = newAccount.notes || ''
   form.proxy_id = newAccount.proxy_id
+  proxyBindings.value = proxyBindingInputs(newAccount)
+  proxyBindingsDirty.value = false
   form.concurrency = newAccount.concurrency
   form.load_factor = newAccount.load_factor ?? null
   form.priority = newAccount.priority
@@ -5726,9 +5739,10 @@ const handleSubmit = async () => {
 
   const updatePayload: Record<string, unknown> = { ...form }
   try {
-    // 后端期望 proxy_id: 0 表示清除代理，而不是 null
-    if (updatePayload.proxy_id === null) {
-      updatePayload.proxy_id = 0
+    delete updatePayload.proxy_id
+    if (proxyBindingsDirty.value && !isSparkShadow.value) {
+      if (!validProxyBindings(proxyBindings.value)) { appStore.showError(t('admin.accounts.multiProxy.invalid')); return }
+      updatePayload.proxy_bindings = proxyBindings.value.map(binding => ({ ...binding }))
     }
     if (form.expires_at === null) {
       updatePayload.expires_at = 0

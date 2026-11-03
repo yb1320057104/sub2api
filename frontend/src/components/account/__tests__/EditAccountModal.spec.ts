@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent } from 'vue'
 import { mount } from '@vue/test-utils'
+import AccountProxyBindingsEditor from '../AccountProxyBindingsEditor.vue'
 import {
   BUILTIN_PLATFORM_CATALOG,
   resetPlatformCatalog,
@@ -352,7 +353,29 @@ describe('EditAccountModal', () => {
       kilo_bridge_enabled: false, cache_conversion_enabled: true, cache_conversion_multiplier: 0.5
     })
     expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.model_mapping).toEqual(account.credentials.model_mapping)
-    expect(updateAccountMock.mock.calls[0]?.[1]?.proxy_id).toBe(7)
+    expect(updateAccountMock.mock.calls[0]?.[1]).not.toHaveProperty('proxy_id')
+    expect(updateAccountMock.mock.calls[0]?.[1]).not.toHaveProperty('proxy_bindings')
+    wrapper.unmount()
+  })
+
+  it('saves changed multi-proxy bindings and explicitly clears them without the legacy field', async () => {
+    const account = buildAccount()
+    account.proxy_id = 7
+    account.proxy_bindings = [{ proxy_id: 7, max_accounts: 1, max_concurrency: 3, current_concurrency: null }]
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+    const wrapper = mountModal(account)
+    const editor = wrapper.getComponent(AccountProxyBindingsEditor)
+    expect(editor.props('modelValue')).toEqual([{ proxy_id: 7, max_accounts: 1, max_concurrency: 3 }])
+    const bindings = [{ proxy_id: 7, max_accounts: 2, max_concurrency: 5 }, { proxy_id: 9, max_accounts: 1, max_concurrency: 3 }]
+    editor.vm.$emit('update:modelValue', bindings)
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    expect(updateAccountMock.mock.calls.at(-1)?.[1]?.proxy_bindings).toEqual(bindings)
+    expect(updateAccountMock.mock.calls.at(-1)?.[1]).not.toHaveProperty('proxy_id')
+    editor.vm.$emit('update:modelValue', [])
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    expect(updateAccountMock.mock.calls.at(-1)?.[1]?.proxy_bindings).toEqual([])
+    expect(updateAccountMock.mock.calls.at(-1)?.[1]).not.toHaveProperty('proxy_id')
     wrapper.unmount()
   })
 

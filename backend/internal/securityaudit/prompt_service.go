@@ -100,6 +100,14 @@ func (s *PromptService) Shutdown(ctx context.Context) error {
 	return configErr
 }
 
+func (s *PromptService) fastModeActive() bool {
+	if s == nil || s.config == nil {
+		return false
+	}
+	cfg, ok := s.config.Active()
+	return ok && cfg.fastModeActive()
+}
+
 func (s *PromptService) EffectiveMode() Mode {
 	if s == nil || s.config == nil {
 		return ModeOff
@@ -121,7 +129,7 @@ func (s *PromptService) IncludesGroup(groupID *int64) bool {
 }
 
 func (s *PromptService) Enqueue(_ context.Context, req Request) error {
-	if s == nil || s.enqueuer == nil || s.EffectiveMode() != ModeAsync {
+	if s == nil || s.enqueuer == nil || (s.EffectiveMode() != ModeAsync && !s.fastModeActive()) {
 		return nil
 	}
 	if !s.IncludesGroup(req.GroupID) {
@@ -180,7 +188,7 @@ func (s *PromptService) Evaluate(ctx context.Context, req Request) (decision *Pr
 		return &PromptDecision{Kind: DecisionAllow, AllowNextStage: true}, nil
 	}
 	if s.config.BlockingActivationDegraded() {
-		return nil, &GuardError{Code: ErrorCodeUnavailable}
+		return nil, &GuardError{Code: ErrorCodeConfigUnavailable}
 	}
 	cfg, ok := s.config.Active()
 	if !ok {
@@ -203,6 +211,15 @@ func (s *PromptService) Evaluate(ctx context.Context, req Request) (decision *Pr
 	}
 	if err != nil {
 		return nil, &GuardError{Code: ErrorCodeInvalidResponse, Cause: err}
+	}
+	if cfg.fastModeActive() {
+		local := cfg
+		local.Engine = PromptEngineLocalRules
+		decision, err := s.evaluator.Evaluate(ctx, local, snapshot)
+		if err == nil && decision != nil && decision.AllowNextStage {
+			_ = s.Enqueue(ctx, req)
+		}
+		return decision, err
 	}
 	return s.evaluator.Evaluate(ctx, cfg, snapshot)
 }
@@ -246,6 +263,8 @@ func (s *PromptService) Runtime(ctx context.Context) RuntimeSnapshot {
 	}
 	activeWorkers, processed, failed, heartbeat, lastProcessed, workerCode, workerMessage := s.runner.Snapshot()
 	runtime.WorkerActive, runtime.ProcessedTotal, runtime.FailedTotal = activeWorkers, processed, failed
+	runtime.LastErrorAt, runtime.LastRecoveredAt = s.runner.recoveryTimes()
+	runtime.FastMode = hasConfig && cfg.fastModeActive()
 	if s.metrics != nil {
 		auditMetrics := s.metrics.AuditSnapshot()
 		runtime.EnqueuedTotal, runtime.DroppedTotal = auditMetrics.Enqueued, auditMetrics.Dropped
@@ -253,6 +272,16 @@ func (s *PromptService) Runtime(ctx context.Context) RuntimeSnapshot {
 	runtime.WorkerHeartbeatAt, runtime.LastProcessedAt = heartbeat, lastProcessed
 	if workerCode != "" {
 		runtime.LastErrorCode, runtime.LastErrorMessage = workerCode, workerMessage
+	}
+	guardCode, guardAt, guardRecovered := s.evaluator.dependencyState()
+	if !guardAt.IsZero() && (runtime.LastErrorAt == nil || guardAt.After(*runtime.LastErrorAt)) {
+		runtime.LastErrorAt = &guardAt
+		if guardCode != "" {
+			runtime.LastErrorCode, runtime.LastErrorMessage = sanitizeStoredError(guardCode)
+		}
+	}
+	if !guardRecovered.IsZero() && (runtime.LastRecoveredAt == nil || guardRecovered.After(*runtime.LastRecoveredAt)) {
+		runtime.LastRecoveredAt = &guardRecovered
 	}
 	if mode != ModeOff {
 		runtime.ProcessStatus = "running"
@@ -307,7 +336,7 @@ func (s *PromptService) Probe(ctx context.Context, request ProbeRequest) ProbeRe
 		return s.finishProbe(endpoint.ID, started, ProbeResult{Status: "failed", ErrorCode: "response_too_large", Message: "审计节点响应无效", HTTPStatus: resp.StatusCode, TokenApplied: tokenApplied})
 	}
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 && modelsResponseReady(responseBody, endpoint.Model) {
-		return s.finishProbe(endpoint.ID, started, ProbeResult{OK: true, Status: "healthy", Message: "审计节点连接正常", HTTPStatus: resp.StatusCode, TokenApplied: tokenApplied})
+		return s.finishProbe(endpoint.ID, started, ProbeResult{OK: true, Status: "healthy", Message: "节点模型目录可访问；实际审计调用状态请查看最近任务", HTTPStatus: resp.StatusCode, TokenApplied: tokenApplied})
 	}
 	if (resp.StatusCode >= 200 && resp.StatusCode < 300) || resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusMethodNotAllowed {
 		result, scanErr := s.scanner.Scan(ctx, endpoint, "Hello", AllScannerIDs)
@@ -322,7 +351,7 @@ func (s *PromptService) Probe(ctx context.Context, request ProbeRequest) ProbeRe
 		if code == "" {
 			code = ErrorCodeInvalidResponse
 		}
-		return s.finishProbe(endpoint.ID, started, ProbeResult{Status: "failed", ErrorCode: code, Message: "审计节点模型调用失败", HTTPStatus: status, Retryable: retryable, TokenApplied: tokenApplied})
+		return s.finishProbe(endpoint.ID, started, ProbeResult{Status: "failed", ErrorCode: code, Message: stableErrorMessage(code), HTTPStatus: status, Retryable: retryable, TokenApplied: tokenApplied})
 	}
 	code, retryable := "probe_http_error", resp.StatusCode == 429 || resp.StatusCode >= 500
 	if resp.StatusCode == 401 || resp.StatusCode == 403 {

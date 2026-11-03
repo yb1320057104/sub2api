@@ -2,11 +2,13 @@ package service
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/domain"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 func TestCanonicalRequestedReasoningEffort(t *testing.T) {
@@ -47,12 +49,190 @@ func TestNormalizeMaxReasoningEffort(t *testing.T) {
 		{name: "separator", in: "x-high", want: "xhigh"},
 		{name: "max is distinct", in: "max", want: "max"},
 		{name: "none is unsupported", in: "none", want: ""},
+		{name: "ultra does not change billing normalization", in: "ultra", want: ""},
+		{name: "persistent does not change billing normalization", in: "persistent", want: ""},
 		{name: "invalid", in: "banana", want: ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			require.Equal(t, tt.want, NormalizeMaxReasoningEffort(tt.in))
 		})
+	}
+}
+
+func TestAdvancedGroupReasoningEffortConfiguration(t *testing.T) {
+	for _, platform := range []string{PlatformOpenAI, PlatformComposite} {
+		for _, effort := range []string{"ultra", "persistent"} {
+			value, err := normalizeMaxReasoningEffortForPlatform(platform, " "+strings.ToUpper(effort)+" ")
+			require.NoError(t, err)
+			require.Equal(t, effort, value)
+		}
+		group := &Group{Platform: platform, MaxReasoningEffort: "persistent", ReasoningEffortMappings: []ReasoningEffortMapping{
+			{From: "ULTRA", To: "persistent", MatchType: "exact", Model: "gpt-6-astra"},
+			{From: "persistent", To: "deny"},
+		}}
+		sanitizeGroupReasoningEffortPolicy(group)
+		require.Equal(t, "persistent", group.MaxReasoningEffort)
+		require.Len(t, group.ReasoningEffortMappings, 2)
+		require.Equal(t, "ultra", group.ReasoningEffortMappings[0].From)
+	}
+	for _, effort := range []string{"ultra", "persistent"} {
+		_, err := normalizeMaxReasoningEffortForPlatform(PlatformAnthropic, effort)
+		require.ErrorContains(t, err, "not supported")
+		_, err = NormalizeReasoningEffortMappings(PlatformAnthropic, []ReasoningEffortMapping{{From: effort, To: "max"}})
+		require.ErrorContains(t, err, "not supported")
+		_, err = NormalizeReasoningEffortMappings(PlatformAnthropic, []ReasoningEffortMapping{{From: "max", To: effort}})
+		require.ErrorContains(t, err, "not supported")
+	}
+}
+
+func TestAdvancedGroupReasoningEffortPolicy(t *testing.T) {
+	for _, path := range []string{"reasoning.effort", "reasoning_effort", "output_config.effort"} {
+		t.Run(path, func(t *testing.T) {
+			body, err := sjson.Set(`{"model":"gpt-6-astra"}`, path, "persistent")
+			require.NoError(t, err)
+			got, changed, err := ApplyReasoningEffortPolicy([]byte(body), "ultra", nil, "")
+			require.NoError(t, err)
+			require.True(t, changed)
+			require.Equal(t, "ultra", gjson.GetBytes(got, path).String())
+			_, _, err = ApplyReasoningEffortPolicy([]byte(body), "max", nil, ReasoningEffortOverLimitDeny)
+			require.True(t, IsReasoningEffortPolicyDenied(err))
+
+			mappings := []ReasoningEffortMapping{{From: "persistent", To: "high"}, {From: "high", To: "low"}}
+			got, _, err = ApplyReasoningEffortPolicy([]byte(body), "ultra", mappings, "")
+			require.NoError(t, err)
+			require.Equal(t, "high", gjson.GetBytes(got, path).String(), "mapping must run only once")
+			got, _, err = ApplyReasoningEffortPolicy([]byte(body), "medium", mappings, "")
+			require.NoError(t, err)
+			require.Equal(t, "medium", gjson.GetBytes(got, path).String(), "ceiling applies after mapping")
+			_, _, err = ApplyReasoningEffortPolicy([]byte(body), "", []ReasoningEffortMapping{{From: "persistent", To: "deny"}}, "")
+			require.True(t, IsReasoningEffortPolicyDenied(err))
+		})
+	}
+	for _, body := range []string{`{"model":"gpt-6-astra"}`, `{"reasoning":{"effort":""}}`, `{"reasoning":{"effort":"future-effort"}}`} {
+		got, changed, err := ApplyReasoningEffortPolicy([]byte(body), "ultra", []ReasoningEffortMapping{{From: "high", To: "persistent"}}, ReasoningEffortOverLimitDeny)
+		require.NoError(t, err)
+		require.False(t, changed)
+		require.Equal(t, body, string(got))
+	}
+	// A model-specific rule wins over a global advanced-level rule.
+	got, _, err := ApplyReasoningEffortPolicy([]byte(`{"model":"gpt-6-astra","reasoning":{"effort":"ultra"}}`), "persistent", []ReasoningEffortMapping{
+		{From: "ultra", To: "low"},
+		{From: "ultra", To: "persistent", MatchType: "exact", Model: "gpt-6-astra"},
+	}, "")
+	require.NoError(t, err)
+	require.Equal(t, "persistent", gjson.GetBytes(got, "reasoning.effort").String())
+}
+
+func TestKiloAdvancedGroupPolicyDoesNotChainIngressMappings(t *testing.T) {
+	account := &Account{Platform: PlatformOpenAI, Extra: map[string]any{AccountExtraKiloBridgeEnabled: true}}
+	mappings := []ReasoningEffortMapping{{From: "high", To: "ultra"}, {From: "ultra", To: "persistent"}, {From: "max", To: "low"}}
+	ctx := WithOpenAIReasoningEffortPolicy(context.Background(), "persistent", mappings, "")
+	ctx = WithRequestedReasoningEffort(ctx, "high")
+	ctx = WithAppliedOpenAIReasoningEffortPolicy(ctx, []byte(`{"reasoning":{"effort":"high"}}`))
+	got, _, err := ApplyReasoningEffortPolicy([]byte(`{"reasoning":{"effort":"high"}}`), "persistent", mappings, "")
+	require.NoError(t, err)
+	require.Equal(t, "ultra", gjson.GetBytes(got, "reasoning.effort").String())
+	got, changed, err := applyKiloReasoningEffortPolicyFromContext(ctx, account, got)
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.Equal(t, "max", gjson.GetBytes(got, "reasoning.effort").String())
+	require.Equal(t, "high", *RequestedReasoningEffortFromContext(ctx))
+	second, changed, err := applyKiloReasoningEffortPolicyFromContext(ctx, account, got)
+	require.NoError(t, err)
+	require.False(t, changed)
+	require.Equal(t, got, second)
+
+	// Messages has no ingress policy pass: map the client alias before converting
+	// it to Kilo's max, then let the caller skip its later policy pass.
+	ctx = WithOpenAIReasoningEffortPolicy(context.Background(), "persistent", mappings, "")
+	got, changed, err = applyKiloReasoningEffortPolicyFromContext(ctx, account, []byte(`{"output_config":{"effort":"ultra"}}`), "output_config.effort")
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.Equal(t, "max", gjson.GetBytes(got, "output_config.effort").String())
+}
+
+func TestKiloAdvancedGroupPolicyPreservesLegacyAliasRulesAtIngress(t *testing.T) {
+	account := &Account{Platform: PlatformOpenAI, Extra: map[string]any{AccountExtraKiloBridgeEnabled: true}}
+	for _, effort := range []string{"ultra", "persistent"} {
+		for _, tc := range []struct {
+			name     string
+			max      string
+			mappings []ReasoningEffortMapping
+			want     string
+			denied   bool
+		}{
+			{name: "legacy deny", mappings: []ReasoningEffortMapping{{From: "max", To: "deny"}}, denied: true},
+			{name: "legacy deny after ingress ceiling", max: "high", mappings: []ReasoningEffortMapping{{From: "max", To: "deny"}}, denied: true},
+			{name: "legacy mapping", max: "medium", mappings: []ReasoningEffortMapping{{From: "max", To: "high"}}, want: "medium"},
+			{name: "explicit rule beats legacy deny", mappings: []ReasoningEffortMapping{{From: effort, To: "high"}, {From: "max", To: "deny"}}, want: "high"},
+			{name: "explicit identity beats legacy deny", mappings: []ReasoningEffortMapping{{From: effort, To: effort}, {From: "max", To: "deny"}}, want: "max"},
+			{name: "explicit advanced mapping obeys ceiling", max: "max", mappings: []ReasoningEffortMapping{{From: effort, To: "persistent"}, {From: "max", To: "low"}}, want: "max"},
+		} {
+			t.Run(effort+"/"+tc.name, func(t *testing.T) {
+				original := []byte(`{"model":"client-model","reasoning":{"effort":"` + effort + `"}}`)
+				ctx := WithOpenAIReasoningEffortPolicy(context.Background(), tc.max, tc.mappings, "")
+				ctx = WithAppliedOpenAIReasoningEffortPolicy(ctx, original)
+				body, _, err := ApplyOpenAIReasoningEffortPolicyAtIngress(ctx, original)
+				require.NoError(t, err)
+				got, _, err := applyKiloReasoningEffortPolicyFromContext(ctx, account, body)
+				if tc.denied {
+					require.True(t, IsReasoningEffortPolicyDenied(err))
+					var denied *ReasoningEffortMappingDeniedError
+					require.ErrorAs(t, err, &denied)
+					require.Equal(t, effort, denied.Requested)
+					return
+				}
+				require.NoError(t, err)
+				require.Equal(t, tc.want, gjson.GetBytes(got, "reasoning.effort").String())
+			})
+		}
+	}
+}
+
+func TestAdvancedGroupReasoningPendingRunsBeforeAccountDispatch(t *testing.T) {
+	for _, path := range []string{"reasoning.effort", "reasoning_effort", "output_config.effort"} {
+		original, err := sjson.SetBytes([]byte(`{"model":"client-model"}`), path, "ultra")
+		require.NoError(t, err)
+		mappings := []ReasoningEffortMapping{{From: "max", To: "low", Model: "client-model", MatchType: "exact"}}
+		baseCtx := WithOpenAIReasoningEffortPolicy(context.Background(), "high", mappings, ReasoningEffortOverLimitDeny)
+		ctx := WithReasoningEffortRequestModel(baseCtx, "client-model")
+		ctx = WithAppliedOpenAIReasoningEffortPolicy(ctx, original)
+		body, changed, err := ApplyOpenAIReasoningEffortPolicyAtIngress(ctx, original)
+		require.NoError(t, err)
+		require.False(t, changed)
+		require.Equal(t, original, body)
+		// Model remapping cannot bypass the original client-scoped policy.
+		body, err = sjson.SetBytes(body, "model", "upstream/model")
+		require.NoError(t, err)
+		ordinary := &Account{Platform: PlatformOpenAI}
+		_, _, err = applyKiloReasoningEffortPolicyFromContext(ctx, ordinary, body)
+		require.True(t, IsReasoningEffortPolicyDenied(err), "normal accounts must not bypass the deferred ceiling")
+		kilo := &Account{Platform: PlatformOpenAI, Extra: map[string]any{AccountExtraKiloBridgeEnabled: true}}
+		got, _, err := applyKiloReasoningEffortPolicyFromContext(ctx, kilo, body)
+		require.NoError(t, err)
+		require.Equal(t, "low", gjson.GetBytes(got, path).String())
+		// Deriving another request cannot mutate the first request or its parent.
+		another := WithAppliedOpenAIReasoningEffortPolicy(baseCtx, []byte(`{"reasoning_effort":"high"}`))
+		_, _, err = ApplyOpenAIReasoningEffortPolicyAtIngress(another, original)
+		require.True(t, IsReasoningEffortPolicyDenied(err))
+		_, _, err = ApplyOpenAIReasoningEffortPolicyAtIngress(baseCtx, original)
+		require.True(t, IsReasoningEffortPolicyDenied(err))
+		_, _, err = ApplyOpenAIReasoningEffortPolicyAtIngress(ctx, original)
+		require.NoError(t, err)
+
+		// Re-entering a normal account must resolve the original pending value,
+		// never chain a rule against the first pass's downgraded result.
+		mappings = append(mappings, ReasoningEffortMapping{From: "high", To: "medium"})
+		retryCtx := WithOpenAIReasoningEffortPolicy(context.Background(), "high", mappings, "")
+		retryCtx = WithAppliedOpenAIReasoningEffortPolicy(retryCtx, original)
+		first, _, err := applyKiloReasoningEffortPolicyFromContext(retryCtx, ordinary, original)
+		require.NoError(t, err)
+		require.Equal(t, "high", gjson.GetBytes(first, path).String())
+		second, changed, err := applyKiloReasoningEffortPolicyFromContext(retryCtx, ordinary, first)
+		require.NoError(t, err)
+		require.False(t, changed)
+		require.Equal(t, first, second)
 	}
 }
 
@@ -152,7 +332,7 @@ func TestNormalizeReasoningEffortMappings(t *testing.T) {
 			require.ErrorContains(t, err, "only supported for platforms")
 		}
 
-		_, err := NormalizeReasoningEffortMappings(PlatformOpenAI, []ReasoningEffortMapping{{From: "ultra", To: "high"}})
+		_, err := NormalizeReasoningEffortMappings(PlatformOpenAI, []ReasoningEffortMapping{{From: "future-effort", To: "high"}})
 		require.ErrorContains(t, err, "empty or unknown")
 	})
 

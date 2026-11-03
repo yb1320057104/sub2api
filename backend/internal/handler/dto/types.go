@@ -213,12 +213,21 @@ type AdminGroup struct {
 	SortOrder int `json:"sort_order"`
 }
 
+type AccountProxyBinding struct {
+	ProxyID            int64  `json:"proxy_id"`
+	Proxy              *Proxy `json:"proxy"`
+	MaxConcurrency     int    `json:"max_concurrency"`
+	MaxAccounts        int    `json:"max_accounts"`
+	CurrentConcurrency *int   `json:"current_concurrency"`
+}
+
 type Account struct {
-	ID       int64   `json:"id"`
-	Name     string  `json:"name"`
-	Notes    *string `json:"notes"`
-	Platform string  `json:"platform"`
-	Type     string  `json:"type"`
+	ProxyBindings []AccountProxyBinding `json:"proxy_bindings"`
+	ID            int64                 `json:"id"`
+	Name          string                `json:"name"`
+	Notes         *string               `json:"notes"`
+	Platform      string                `json:"platform"`
+	Type          string                `json:"type"`
 	// Credentials 经 RedactCredentials 处理后只含非敏感子键；敏感 token / api_key / 私钥
 	// 的存在性通过 CredentialsStatus（has_<key>）暴露，原始值不返回前端。
 	Credentials             map[string]any                 `json:"credentials"`
@@ -343,11 +352,12 @@ type Account struct {
 // repeated account_groups and groups object graphs. Fetch /admin/accounts/:id
 // for the complete Account DTO when editing or inspecting an account.
 type AccountListItem struct {
-	ID       int64   `json:"id"`
-	Name     string  `json:"name"`
-	Notes    *string `json:"notes"`
-	Platform string  `json:"platform"`
-	Type     string  `json:"type"`
+	ProxyBindings []AccountProxyBinding `json:"proxy_bindings"`
+	ID            int64                 `json:"id"`
+	Name          string                `json:"name"`
+	Notes         *string               `json:"notes"`
+	Platform      string                `json:"platform"`
+	Type          string                `json:"type"`
 
 	Credentials       map[string]any                 `json:"credentials,omitempty"`
 	CredentialsStatus map[string]bool                `json:"credentials_status,omitempty"`
@@ -445,16 +455,18 @@ type AccountGroup struct {
 }
 
 type Proxy struct {
-	ID        int64     `json:"id"`
-	Name      string    `json:"name"`
-	Protocol  string    `json:"protocol"`
-	Host      string    `json:"host"`
-	Port      int       `json:"port"`
-	Username  string    `json:"username"`
-	Password  string    `json:"-"`
-	Status    string    `json:"status"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	MaxConcurrency int       `json:"max_concurrency"`
+	MaxAccounts    int       `json:"max_accounts"`
+	ID             int64     `json:"id"`
+	Name           string    `json:"name"`
+	Protocol       string    `json:"protocol"`
+	Host           string    `json:"host"`
+	Port           int       `json:"port"`
+	Username       string    `json:"username"`
+	Password       string    `json:"-"`
+	Status         string    `json:"status"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 
 	ExpiresAt      *time.Time `json:"expires_at"`
 	FallbackMode   string     `json:"fallback_mode"`

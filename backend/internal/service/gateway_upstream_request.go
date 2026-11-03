@@ -78,6 +78,7 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 			return nil, nil, err
 		}
 		targetURL = s.buildCustomRelayURL(validatedURL, "/v1/messages", account)
+		ctx = WithAccountProxyRelay(ctx, resolveAccountProxyURL(account))
 	}
 
 	clientHeaders := http.Header{}

@@ -23,6 +23,9 @@ func (s *adminServiceImpl) ListProxies(ctx context.Context, page, pageSize int, 
 	if err != nil {
 		return nil, 0, err
 	}
+	if err := s.attachPlainProxyLimits(ctx, proxies); err != nil {
+		return nil, 0, err
+	}
 	return proxies, result.Total, nil
 }
 
@@ -32,12 +35,22 @@ func (s *adminServiceImpl) ListProxiesWithAccountCount(ctx context.Context, page
 	if err != nil {
 		return nil, 0, err
 	}
+	if err := s.attachCountedProxyLimits(ctx, proxies); err != nil {
+		return nil, 0, err
+	}
 	s.attachProxyLatency(ctx, proxies)
 	return proxies, result.Total, nil
 }
 
 func (s *adminServiceImpl) GetAllProxies(ctx context.Context) ([]Proxy, error) {
-	return s.proxyRepo.ListActive(ctx)
+	proxies, err := s.proxyRepo.ListActive(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err = s.attachPlainProxyLimits(ctx, proxies); err != nil {
+		return nil, err
+	}
+	return proxies, nil
 }
 
 func (s *adminServiceImpl) GetAllProxiesWithAccountCount(ctx context.Context) ([]ProxyWithAccountCount, error) {
@@ -45,16 +58,33 @@ func (s *adminServiceImpl) GetAllProxiesWithAccountCount(ctx context.Context) ([
 	if err != nil {
 		return nil, err
 	}
+	if err := s.attachCountedProxyLimits(ctx, proxies); err != nil {
+		return nil, err
+	}
 	s.attachProxyLatency(ctx, proxies)
 	return proxies, nil
 }
 
 func (s *adminServiceImpl) GetProxy(ctx context.Context, id int64) (*Proxy, error) {
-	return s.proxyRepo.GetByID(ctx, id)
+	proxy, err := s.proxyRepo.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if err = s.attachProxyLimits(ctx, []*Proxy{proxy}); err != nil {
+		return nil, err
+	}
+	return proxy, nil
 }
 
 func (s *adminServiceImpl) GetProxiesByIDs(ctx context.Context, ids []int64) ([]Proxy, error) {
-	return s.proxyRepo.ListByIDs(ctx, ids)
+	proxies, err := s.proxyRepo.ListByIDs(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	if err = s.attachPlainProxyLimits(ctx, proxies); err != nil {
+		return nil, err
+	}
+	return proxies, nil
 }
 
 func (s *adminServiceImpl) CreateProxy(ctx context.Context, input *CreateProxyInput) (*Proxy, error) {

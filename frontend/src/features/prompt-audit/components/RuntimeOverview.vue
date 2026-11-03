@@ -60,6 +60,9 @@
           <p v-if="runtime.last_error_code" class="mt-1 break-words text-sm text-red-600 dark:text-red-300">
             {{ runtime.last_error_code }}<span v-if="runtime.last_error_message"> · {{ runtime.last_error_message }}</span>
           </p>
+          <p v-if="runtime.last_error_at && runtime.last_error_code" class="mt-1 text-xs text-gray-500">{{ formatDate(runtime.last_error_at) }}</p>
+          <p v-if="!runtime.last_error_code && runtime.last_recovered_at" data-test="audit-recovered" class="mt-2 text-sm text-emerald-600">{{ t('admin.promptAudit.fastMode.recovered', { time: formatDate(runtime.last_recovered_at) }) }}</p>
+          <p v-if="runtime.fast_mode" class="mt-2 text-sm text-primary-600">{{ t('admin.promptAudit.fastMode.title') }}</p>
           <div v-if="Object.keys(runtime.endpoints).length" class="mt-3 flex flex-wrap gap-2">
             <span v-for="(probe, id) in runtime.endpoints" :key="id" class="rounded-md px-2 py-1 text-xs" :class="probe.ok ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300' : 'bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-300'">
               {{ id }} · {{ probe.status }} · {{ probe.latency_ms }} ms

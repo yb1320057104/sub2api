@@ -93,14 +93,20 @@ func anthropicReasoningEffortPolicyForRequest(c *gin.Context, apiKey *service.AP
 }
 
 func anthropicCompatibleReasoningEffortPolicy(maxEffort string, mappings []service.ReasoningEffortMapping) (string, []service.ReasoningEffortMapping) {
-	if service.NormalizeMaxReasoningEffort(maxEffort) == "minimal" {
-		maxEffort = "low"
+	compatibleEffort := func(effort string) string {
+		switch strings.ToLower(strings.TrimSpace(effort)) {
+		case "ultra", "persistent":
+			return "max"
+		}
+		if service.NormalizeMaxReasoningEffort(effort) == "minimal" {
+			return "low"
+		}
+		return effort
 	}
+	maxEffort = compatibleEffort(maxEffort)
 	normalizedMappings := append([]service.ReasoningEffortMapping(nil), mappings...)
 	for i := range normalizedMappings {
-		if service.NormalizeMaxReasoningEffort(normalizedMappings[i].To) == "minimal" {
-			normalizedMappings[i].To = "low"
-		}
+		normalizedMappings[i].To = compatibleEffort(normalizedMappings[i].To)
 	}
 	return maxEffort, normalizedMappings
 }
@@ -140,12 +146,13 @@ func applyOpenAIReasoningEffortPolicyForRequest(c *gin.Context, apiKey *service.
 		return body, false, nil
 	}
 	if c != nil && c.Request != nil {
-		// Account selection happens later. Keep the policy available for a
-		// Kilo account's provider-only effort aliases, which the generic
-		// policy deliberately leaves unchanged at ingress.
+		// Account selection happens later. Preserve the policy and its applied
+		// state so Kilo adaptation cannot chain a second mapping.
 		ctx := service.WithOpenAIReasoningEffortPolicy(c.Request.Context(), maxEffort, mappings, overLimit)
 		ctx = service.WithReasoningEffortRequestModel(ctx, gjson.GetBytes(body, "model").String())
+		ctx = service.WithAppliedOpenAIReasoningEffortPolicy(ctx, body)
 		c.Request = c.Request.WithContext(ctx)
+		return service.ApplyOpenAIReasoningEffortPolicyAtIngress(ctx, body)
 	}
 	return service.ApplyOpenAIReasoningEffortPolicy(body, maxEffort, mappings, overLimit)
 }

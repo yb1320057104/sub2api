@@ -205,9 +205,15 @@ func (s *OpenAIGatewayService) CreateLiveCall(
 			return nil, ErrLiveConcurrencyFull
 		}
 
-		created, createErr := s.createUpstreamLiveCall(ctx, account, request, attestation)
+		sessionExpiresAt := time.Now().Add(s.liveMaxSessionDuration())
+		proxyRoute, createErr := s.accountProxyRouter().AcquirePersistent(WithAccountProxyRouting(ctx), account.ID, resolveAccountProxyURL(account), 0, time.Until(sessionExpiresAt))
+		var created *LiveCallCreated
+		if createErr == nil {
+			created, createErr = s.createUpstreamLiveCall(withBorrowedAccountProxyRoute(ctx, account.ID, proxyRoute), account, request, attestation)
+		}
 		selection.ReleaseFunc()
 		if createErr != nil {
+			proxyRoute.Close()
 			s.releaseLiveLease(account.ID, identity.UserID, identity.APIKeyID, leaseID)
 			if !s.shouldFailoverLiveCreateError(account, createErr) {
 				return nil, createErr
@@ -227,6 +233,9 @@ func (s *OpenAIGatewayService) CreateLiveCall(
 			CallID:                created.CallID,
 			CallHash:              hashLiveCallID(created.CallID),
 			AccountID:             account.ID,
+			ProxyID:               proxyRoute.ProxyID,
+			ProxyLeaseID:          proxyRoute.LeaseID,
+			ProxyLeaseManaged:     true,
 			APIKeyID:              identity.APIKeyID,
 			UserID:                identity.UserID,
 			GroupID:               liveGroupID(identity.GroupID),
@@ -234,7 +243,7 @@ func (s *OpenAIGatewayService) CreateLiveCall(
 			LeaseID:               leaseID,
 			Model:                 model,
 			CreatedAt:             now,
-			ExpiresAt:             now.Add(s.liveMaxSessionDuration()),
+			ExpiresAt:             sessionExpiresAt,
 			Controller:            LiveControllerPending,
 			UserAgent:             identity.UserAgent,
 			IPAddress:             identity.IPAddress,
@@ -243,8 +252,13 @@ func (s *OpenAIGatewayService) CreateLiveCall(
 		}
 		mappingTTL := s.liveMaxSessionDuration() + 5*time.Minute
 		if saveErr := store.SaveLiveCall(ctx, record, mappingTTL); saveErr != nil {
+			proxyRoute.Close()
 			s.releaseLiveLease(account.ID, identity.UserID, identity.APIKeyID, leaseID)
 			return nil, fmt.Errorf("save live call mapping: %w", saveErr)
+		}
+		if !proxyRoute.Handoff() {
+			s.finalizeLiveCall(record)
+			return nil, ErrLiveUnavailable
 		}
 		created.Account = account
 		go s.observeLiveCall(record)
@@ -462,16 +476,61 @@ func (s *OpenAIGatewayService) dialLiveSideband(ctx context.Context, record *Liv
 		return nil, err
 	}
 	target := strings.TrimRight(chatGPTLiveSidebandBaseURL, "/") + "/" + url.PathEscape(record.CallID)
-	conn, status, _, err := s.getOpenAIWSPassthroughDialer().Dial(ctx, target, headers, resolveAccountProxyURL(account))
+	if err := s.ensureLiveProxyLease(ctx, record, account); err != nil {
+		return nil, err
+	}
+	var proxyRoute *AccountProxyRoute
+	if s.accountProxyRouter() == nil {
+		proxyRoute = &AccountProxyRoute{Context: ctx, URL: resolveAccountProxyURL(account)}
+	} else {
+		proxyRoute, err = s.accountProxyRouter().ResumePersistent(ctx, account.ID, record.ProxyID, record.ProxyLeaseID)
+	}
 	if err != nil {
+		return nil, err
+	}
+	dialCtx, cancelDial := context.WithTimeout(proxyRoute.Context, s.openAIWSDialTimeout())
+	conn, status, _, err := s.getOpenAIWSPassthroughDialer().Dial(dialCtx, target, headers, proxyRoute.URL)
+	cancelDial()
+	if err != nil {
+		proxyRoute.Close()
 		return nil, fmt.Errorf("dial live sideband (status %d): %w", status, err)
 	}
 	raw, ok := conn.(liveFrameConn)
 	if !ok {
 		_ = conn.Close()
+		proxyRoute.Close()
 		return nil, errors.New("live sideband transport does not support raw frames")
 	}
-	return raw, nil
+	return &proxyLiveFrameConn{liveFrameConn: raw, route: proxyRoute}, nil
+}
+
+type proxyLiveFrameConn struct {
+	liveFrameConn
+	route *AccountProxyRoute
+}
+
+func (c *proxyLiveFrameConn) Close() error {
+	c.route.Close()
+	return c.liveFrameConn.Close()
+}
+func (c *proxyLiveFrameConn) ReadFrame(ctx context.Context) (coderws.MessageType, []byte, error) {
+	readCtx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(c.route.Context, cancel)
+	defer func() { stop(); cancel() }()
+	return c.liveFrameConn.ReadFrame(readCtx)
+}
+
+func (c *proxyLiveFrameConn) WriteFrame(ctx context.Context, messageType coderws.MessageType, payload []byte) error {
+	writeCtx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(c.route.Context, cancel)
+	defer func() { stop(); cancel() }()
+	return c.liveFrameConn.WriteFrame(writeCtx, messageType, payload)
+}
+
+func closeLiveUpstreamSession(upstream liveFrameConn) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = upstream.WriteFrame(ctx, coderws.MessageText, []byte(`{"type":"session.close"}`))
 }
 
 func (s *OpenAIGatewayService) GetLiveCallForIdentity(
@@ -598,6 +657,10 @@ func (s *OpenAIGatewayService) runLiveController(
 	upstream liveFrameConn,
 	errCh <-chan error,
 ) error {
+	if record.ProxyLeaseManaged && time.Now().Before(record.ExpiresAt) && !s.refreshLiveLease(record) {
+		closeLiveUpstreamSession(upstream)
+		return ErrLiveUnavailable
+	}
 	refreshTicker := time.NewTicker(liveLeaseRefreshInterval)
 	defer refreshTicker.Stop()
 	maxTimer := time.NewTimer(time.Until(record.ExpiresAt))
@@ -615,6 +678,7 @@ func (s *OpenAIGatewayService) runLiveController(
 			return context.DeadlineExceeded
 		case <-refreshTicker.C:
 			if !s.refreshLiveLease(record) {
+				closeLiveUpstreamSession(upstream)
 				return ErrLiveUnavailable
 			}
 		}
@@ -670,6 +734,10 @@ func (s *OpenAIGatewayService) observeLiveCall(record *LiveCallRecord) {
 		}
 		upstream, dialErr := s.dialLiveSideband(context.Background(), record)
 		if dialErr != nil {
+			if record.ProxyLeaseManaged && (errors.Is(dialErr, ErrProxyLeaseUnavailable) || errors.Is(dialErr, ErrProxyUnavailable)) {
+				s.finalizeLiveCall(record)
+				return
+			}
 			if !s.waitForLiveObserverRetry(record) {
 				return
 			}
@@ -691,6 +759,10 @@ func (s *OpenAIGatewayService) observeLiveCall(record *LiveCallRecord) {
 }
 
 func (s *OpenAIGatewayService) runLiveObserverConnection(record *LiveCallRecord, upstream liveFrameConn) error {
+	if record.ProxyLeaseManaged && time.Now().Before(record.ExpiresAt) && !s.refreshLiveLease(record) {
+		closeLiveUpstreamSession(upstream)
+		return ErrLiveUnavailable
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	frameCh := make(chan []byte, 1)
@@ -740,6 +812,7 @@ func (s *OpenAIGatewayService) runLiveObserverConnection(record *LiveCallRecord,
 			}
 		case <-refreshTicker.C:
 			if !s.refreshLiveLease(record) {
+				closeLiveUpstreamSession(upstream)
 				return ErrLiveUnavailable
 			}
 		case <-maxTimer.C:
@@ -768,6 +841,10 @@ func (s *OpenAIGatewayService) waitForLiveObserverRetry(record *LiveCallRecord) 
 	}
 	// 过期不在此处判定：返回 true 让调用方回到循环顶部的过期分支，由它 finalize
 	// （写 usage log + 释放租约）。在这里直接返回 false 会让会话静默结束、不留记录。
+	if record.ProxyLeaseManaged && time.Now().Before(record.ExpiresAt) && getErr == nil && controller == LiveControllerObserver && !s.refreshLiveLease(record) {
+		s.finalizeLiveCall(record)
+		return false
+	}
 	return getErr == nil && controller == LiveControllerObserver
 }
 
@@ -792,7 +869,14 @@ func (s *OpenAIGatewayService) refreshLiveLease(record *LiveCallRecord) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), liveRedisOperationTimeout)
 	defer cancel()
 	refreshed, err := cache.RefreshLiveLease(ctx, record.AccountID, record.UserID, record.APIKeyID, record.LeaseID)
-	return err == nil && refreshed
+	if err != nil || !refreshed {
+		return false
+	}
+	if record.ProxyLeaseManaged {
+		_, err = s.accountProxyRouter().ResumePersistent(ctx, record.AccountID, record.ProxyID, record.ProxyLeaseID)
+		return err == nil
+	}
+	return true
 }
 
 func (s *OpenAIGatewayService) releaseLiveLease(accountID, userID, apiKeyID int64, leaseID string) {
@@ -824,6 +908,20 @@ func (s *OpenAIGatewayService) finalizeLiveCallWithAudit(record *LiveCallRecord,
 		return
 	}
 	s.releaseLiveLease(record.AccountID, record.UserID, record.APIKeyID, record.LeaseID)
+	// A legacy call may have been upgraded by the new controller after this
+	// observer loaded its record. Closed state fences further upgrades; reload
+	// the private lease fields so finalization releases the winner's slot.
+	if !record.ProxyLeaseManaged {
+		loadCtx, loadCancel := context.WithTimeout(context.Background(), liveRedisOperationTimeout)
+		latest, loadErr := store.GetLiveCall(loadCtx, record.CallHash)
+		loadCancel()
+		if loadErr == nil && latest != nil && latest.ProxyLeaseManaged {
+			copyRecord := *record
+			copyRecord.ProxyID, copyRecord.ProxyLeaseID, copyRecord.ProxyLeaseManaged = latest.ProxyID, latest.ProxyLeaseID, true
+			record = &copyRecord
+		}
+	}
+	s.releaseLiveProxyLease(record)
 	if s.usageLogRepo == nil {
 		return
 	}

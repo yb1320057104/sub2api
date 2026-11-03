@@ -707,12 +707,14 @@ const (
 	// OpenAIFastPolicyActionForcePriority 会保留 service_tier 字段并强制写成
 	// priority，用于把 flex/auto/default/scale 等已识别 tier 收敛为 fast。
 	OpenAIFastPolicyActionForcePriority = "force_priority"
+	// OpenAIFastPolicyActionForceUltrafast 显式请求 ultrafast，保持独立计费档位。
+	OpenAIFastPolicyActionForceUltrafast = "force_ultrafast"
 )
 
 // OpenAIFastPolicyRule 单条 OpenAI fast/flex 策略规则
 type OpenAIFastPolicyRule struct {
 	ServiceTier          string   `json:"service_tier"`                     // "priority" | "ultrafast" | "flex" | "missing" | "all"
-	Action               string   `json:"action"`                           // "pass" | "filter" | "block" | "force_priority"
+	Action               string   `json:"action"`                           // "pass" | "filter" | "block" | "force_priority" | "force_ultrafast"
 	Scope                string   `json:"scope"`                            // "all" | "oauth" | "apikey" | "bedrock"
 	UserIDs              []int64  `json:"user_ids,omitempty"`               // 空=所有 Sub2API 用户；非空=仅指定 API Key 所属用户
 	ErrorMessage         string   `json:"error_message,omitempty"`          // 自定义错误消息 (action=block 时生效)

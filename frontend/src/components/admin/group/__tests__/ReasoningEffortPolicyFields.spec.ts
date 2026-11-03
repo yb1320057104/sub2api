@@ -62,6 +62,13 @@ describe("ReasoningEffortPolicyFields", () => {
     expect(
       optionValues(`edit-group-reasoning-${mapping.pairs[0].id}-to`),
     ).toContain("deny");
+    for (const id of [
+      "edit-group-reasoning-max-effort",
+      `edit-group-reasoning-${mapping.pairs[0].id}-from`,
+      `edit-group-reasoning-${mapping.pairs[0].id}-to`,
+    ]) {
+      expect(optionValues(id)).toEqual(expect.arrayContaining(["ultra", "persistent"]));
+    }
   });
 
   it("renders model scope fields for each mapping", () => {

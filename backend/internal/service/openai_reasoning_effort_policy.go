@@ -25,21 +25,21 @@ const (
 	ReasoningEffortMappingDeny = "deny"
 )
 
-var openAIReasoningEffortValues = []string{"minimal", "low", "medium", "high", "xhigh", "max"}
+var openAIReasoningEffortValues = []string{"minimal", "low", "medium", "high", "xhigh", "max", "ultra", "persistent"}
 var anthropicReasoningEffortValues = []string{"low", "medium", "high", "xhigh", "max"}
 
 func normalizeReasoningEffortMappingSource(raw string) string {
 	if strings.EqualFold(strings.TrimSpace(raw), "none") {
 		return "none"
 	}
-	return NormalizeMaxReasoningEffort(raw)
+	return normalizeGroupReasoningEffort(raw)
 }
 
 func normalizeReasoningEffortMappingTarget(raw string) string {
 	if isReasoningEffortMappingDeny(raw) {
 		return ReasoningEffortMappingDeny
 	}
-	return NormalizeMaxReasoningEffort(raw)
+	return normalizeGroupReasoningEffort(raw)
 }
 
 func isReasoningEffortMappingDeny(raw string) bool {
@@ -51,9 +51,12 @@ type requestedReasoningEffortContextKey struct{}
 type reasoningEffortRequestModelContextKey struct{}
 
 type openAIReasoningEffortPolicy struct {
-	maxEffort string
-	overLimit string
-	mappings  []ReasoningEffortMapping
+	maxEffort      string
+	overLimit      string
+	mappings       []ReasoningEffortMapping
+	ingressApplied bool
+	ingressEfforts map[string]string
+	accountPending map[string]bool
 }
 
 // ReasoningEffortOverLimitError is returned when a group policy is set to deny
@@ -112,8 +115,9 @@ func IsReasoningEffortPolicyDenied(err error) bool {
 	return errors.As(err, &mappingDenied)
 }
 
-// NormalizeMaxReasoningEffort validates and canonicalizes a group policy value.
-// Empty means that the group does not impose a ceiling.
+// NormalizeMaxReasoningEffort canonicalizes the legacy effort vocabulary also
+// used by usage/pricing. Group policy extends it in normalizeGroupReasoningEffort
+// without changing those callers. Empty means that no ceiling is imposed.
 func NormalizeMaxReasoningEffort(raw string) string {
 	value := strings.ToLower(strings.TrimSpace(raw))
 	value = strings.NewReplacer("-", "", "_", "", " ", "").Replace(value)
@@ -134,6 +138,18 @@ func NormalizeMaxReasoningEffort(raw string) string {
 		return "max"
 	default:
 		return ""
+	}
+}
+
+// Keep the group policy vocabulary separate from usage/pricing normalization.
+// Client orchestration levels are configurable here without implying that an
+// upstream model accepts them or changing historical billing metadata.
+func normalizeGroupReasoningEffort(raw string) string {
+	switch value := strings.ToLower(strings.TrimSpace(raw)); value {
+	case "ultra", "persistent":
+		return value
+	default:
+		return NormalizeMaxReasoningEffort(raw)
 	}
 }
 
@@ -163,7 +179,7 @@ func normalizeMaxReasoningEffortForPlatform(platform, raw string) (string, error
 		)
 	}
 
-	value := NormalizeMaxReasoningEffort(raw)
+	value := normalizeGroupReasoningEffort(raw)
 	for _, allowed := range allowedValues {
 		if value == allowed {
 			return value, nil
@@ -215,7 +231,7 @@ func normalizeMaxReasoningEffortOverLimitForPlatform(platform, raw string) (stri
 }
 
 func reasoningEffortRank(raw string) (int, bool) {
-	switch NormalizeMaxReasoningEffort(raw) {
+	switch normalizeGroupReasoningEffort(raw) {
 	case "minimal":
 		return 1, true
 	case "low":
@@ -228,6 +244,10 @@ func reasoningEffortRank(raw string) (int, bool) {
 		return 5, true
 	case "max":
 		return 6, true
+	case "ultra":
+		return 7, true
+	case "persistent":
+		return 8, true
 	default:
 		return 0, false
 	}
@@ -446,6 +466,46 @@ func WithOpenAIReasoningEffortPolicy(ctx context.Context, maxEffort string, mapp
 	return context.WithValue(ctx, openAIReasoningEffortPolicyContextKey{}, policy)
 }
 
+// WithAppliedOpenAIReasoningEffortPolicy marks the bound policy as evaluated at
+// ingress. Account-specific wire adaptation must not chain another mapping.
+func WithAppliedOpenAIReasoningEffortPolicy(ctx context.Context, originalBody []byte) context.Context {
+	if ctx == nil {
+		return ctx
+	}
+	policy, ok := ctx.Value(openAIReasoningEffortPolicyContextKey{}).(openAIReasoningEffortPolicy)
+	if !ok {
+		return ctx
+	}
+	policy.ingressApplied = true
+	policy.ingressEfforts = make(map[string]string, 3)
+	policy.accountPending = make(map[string]bool, 3)
+	requestModel := gjson.GetBytes(originalBody, "model").String()
+	_, hasLegacyMapping := selectReasoningEffortMapping(policy.mappings, "max", requestModel)
+	for _, path := range []string{"reasoning.effort", "reasoning_effort", "output_config.effort"} {
+		if field := gjson.GetBytes(originalBody, path); field.Type == gjson.String {
+			effort := normalizeGroupReasoningEffort(field.String())
+			policy.ingressEfforts[path] = effort
+			_, explicitAliasMapping := selectReasoningEffortMapping(policy.mappings, effort, requestModel)
+			policy.accountPending[path] = kiloUpstreamReasoningEffort(effort) != effort && !explicitAliasMapping && hasLegacyMapping
+		}
+	}
+	return context.WithValue(ctx, openAIReasoningEffortPolicyContextKey{}, policy)
+}
+
+// ApplyOpenAIReasoningEffortPolicyAtIngress delays only an ambiguous Kilo alias
+// with a legacy max mapping until account selection. Every other field follows
+// the ordinary one-mapping-then-ceiling policy immediately.
+func ApplyOpenAIReasoningEffortPolicyAtIngress(ctx context.Context, body []byte) ([]byte, bool, error) {
+	if ctx == nil {
+		return body, false, nil
+	}
+	policy, ok := ctx.Value(openAIReasoningEffortPolicyContextKey{}).(openAIReasoningEffortPolicy)
+	if !ok {
+		return body, false, nil
+	}
+	return applyReasoningEffortPolicy(body, policy.maxEffort, policy.mappings, policy.overLimit, policy.accountPending)
+}
+
 // WithReasoningEffortRequestModel preserves the client model for account-time
 // policy checks, before channel or account model mapping changes the body.
 func WithReasoningEffortRequestModel(ctx context.Context, model string) context.Context {
@@ -468,13 +528,12 @@ func ApplyOpenAIReasoningEffortPolicyFromContext(ctx context.Context, body []byt
 	return ApplyOpenAIReasoningEffortPolicy(body, policy.maxEffort, policy.mappings, policy.overLimit)
 }
 
-// applyKiloReasoningEffortPolicyFromContext applies the bound group policy only
-// to provider aliases that the ingress policy could not recognize. Other effort
-// values were already mapped at ingress, so applying the full policy again would
-// incorrectly chain mappings. Messages callers invoke this before their normal
-// policy pass and skip that pass when an alias was handled here.
+// applyKiloReasoningEffortPolicyFromContext adapts Kilo's client orchestration
+// levels after group policy. Responses/Chat already evaluated the policy at
+// ingress; Messages evaluates explicit aliases here before conversion and skips
+// its later policy pass. In either case, mappings are applied only once.
 func applyKiloReasoningEffortPolicyFromContext(ctx context.Context, account *Account, body []byte, paths ...string) ([]byte, bool, error) {
-	if !account.IsKiloBridgeEnabled() || ctx == nil {
+	if ctx == nil {
 		return body, false, nil
 	}
 	policy, ok := ctx.Value(openAIReasoningEffortPolicyContextKey{}).(openAIReasoningEffortPolicy)
@@ -492,8 +551,72 @@ func applyKiloReasoningEffortPolicyFromContext(ctx context.Context, account *Acc
 	}
 	for _, path := range paths {
 		field := gjson.GetBytes(body, path)
-		if field.Type != gjson.String || kiloUpstreamReasoningEffort(field.String()) == field.String() {
+		if field.Type != gjson.String {
 			continue
+		}
+		if !account.IsKiloBridgeEnabled() {
+			if !policy.accountPending[path] {
+				continue
+			}
+			// A normal account must evaluate the deferred original value before
+			// any protocol conversion or network dispatch; it never uses Kilo's
+			// max fallback. Recreate only this field with the client model scope.
+			pendingBody, err := sjson.SetBytes([]byte(`{}`), "model", requestModel)
+			if err != nil {
+				return body, false, err
+			}
+			pendingBody, err = sjson.SetBytes(pendingBody, path, policy.ingressEfforts[path])
+			if err != nil {
+				return body, false, err
+			}
+			pendingBody, _, err = ApplyReasoningEffortPolicy(pendingBody, policy.maxEffort, policy.mappings, policy.overLimit)
+			if err != nil {
+				return body, false, err
+			}
+			forwarded := gjson.GetBytes(pendingBody, path).String()
+			if forwarded != field.String() {
+				result, err = sjson.SetBytes(result, path, forwarded)
+				if err != nil {
+					return body, false, err
+				}
+				changed = true
+			}
+			continue
+		}
+		effort := normalizeGroupReasoningEffort(field.String())
+		original := effort
+		if policy.ingressApplied {
+			original = policy.ingressEfforts[path]
+		}
+		_, explicitAliasMapping := selectReasoningEffortMapping(policy.mappings, original, requestModel)
+		_, hasLegacyMapping := selectReasoningEffortMapping(policy.mappings, "max", requestModel)
+		legacyAlias := kiloUpstreamReasoningEffort(original) != original && !explicitAliasMapping
+		if field.Type != gjson.String || (!legacyAlias && kiloUpstreamReasoningEffort(effort) == effort) {
+			continue
+		}
+		if policy.ingressApplied && !legacyAlias {
+			var err error
+			result, err = sjson.SetBytes(result, path, kiloUpstreamReasoningEffort(effort))
+			if err != nil {
+				return body, false, err
+			}
+			changed = true
+			continue
+		}
+		// Messages has not had an ingress pass. Apply the same explicit-client
+		// ceiling before falling back to legacy max mappings.
+		if !policy.ingressApplied && legacyAlias && !hasLegacyMapping && NormalizeMaxReasoningEffortOverLimit(policy.overLimit) == ReasoningEffortOverLimitDeny {
+			maxRank, hasMax := reasoningEffortRank(policy.maxEffort)
+			requestedRank, _ := reasoningEffortRank(original)
+			if hasMax && requestedRank > maxRank {
+				return body, false, &ReasoningEffortOverLimitError{Requested: original, Max: normalizeGroupReasoningEffort(policy.maxEffort)}
+			}
+		}
+		// Existing Kilo policies used max for both client-only aliases. Keep
+		// that fallback until an explicit rule matches the original alias;
+		// never apply it to an alias produced by a different ingress mapping.
+		if legacyAlias {
+			effort = kiloUpstreamReasoningEffort(original)
 		}
 		// Preserve the incoming model for model-scoped rules. A one-field
 		// payload prevents reapplying mappings to other already handled fields.
@@ -501,7 +624,7 @@ func applyKiloReasoningEffortPolicyFromContext(ctx context.Context, account *Acc
 		if err != nil {
 			return body, false, err
 		}
-		aliasBody, err = sjson.SetBytes(aliasBody, path, kiloUpstreamReasoningEffort(field.String()))
+		aliasBody, err = sjson.SetBytes(aliasBody, path, effort)
 		if err != nil {
 			return body, false, err
 		}
@@ -511,14 +634,22 @@ func applyKiloReasoningEffortPolicyFromContext(ctx context.Context, account *Acc
 			// internal alias. Keep the typed error for the existing 403 handling.
 			var overLimitErr *ReasoningEffortOverLimitError
 			var mappingErr *ReasoningEffortMappingDeniedError
+			requested := field.String()
+			if legacyAlias {
+				requested = original
+			}
 			if errors.As(err, &overLimitErr) {
-				err = &ReasoningEffortOverLimitError{Requested: field.String(), Max: overLimitErr.Max}
+				err = &ReasoningEffortOverLimitError{Requested: requested, Max: overLimitErr.Max}
 			} else if errors.As(err, &mappingErr) {
-				err = &ReasoningEffortMappingDeniedError{Requested: field.String()}
+				err = &ReasoningEffortMappingDeniedError{Requested: requested}
 			}
 			return body, false, err
 		}
-		result, err = sjson.SetBytes(result, path, gjson.GetBytes(policyBody, path).String())
+		forwarded := kiloUpstreamReasoningEffort(gjson.GetBytes(policyBody, path).String())
+		if forwarded == field.String() {
+			continue
+		}
+		result, err = sjson.SetBytes(result, path, forwarded)
 		if err != nil {
 			return body, false, err
 		}
@@ -569,17 +700,24 @@ func sanitizeGroupReasoningEffortPolicy(group *Group) {
 // so upstream defaults stay in control. It understands both OpenAI and
 // Anthropic request field shapes.
 func ApplyReasoningEffortPolicy(body []byte, maxEffort string, mappings []ReasoningEffortMapping, overLimit string) ([]byte, bool, error) {
+	return applyReasoningEffortPolicy(body, maxEffort, mappings, overLimit, nil)
+}
+
+func applyReasoningEffortPolicy(body []byte, maxEffort string, mappings []ReasoningEffortMapping, overLimit string, skipPaths map[string]bool) ([]byte, bool, error) {
 	maxRank, hasMax := reasoningEffortRank(maxEffort)
 	if len(body) == 0 || (!hasMax && len(mappings) == 0) {
 		return body, false, nil
 	}
 	deny := hasMax && NormalizeMaxReasoningEffortOverLimit(overLimit) == ReasoningEffortOverLimitDeny
-	canonicalMax := NormalizeMaxReasoningEffort(maxEffort)
+	canonicalMax := normalizeGroupReasoningEffort(maxEffort)
 
 	requestModel := strings.TrimSpace(gjson.GetBytes(body, "model").String())
 	result := body
 	changed := false
 	for _, path := range []string{"reasoning.effort", "reasoning_effort", "output_config.effort"} {
+		if skipPaths[path] {
+			continue
+		}
 		field := gjson.GetBytes(result, path)
 		if !field.Exists() || field.Type != gjson.String {
 			continue
@@ -598,7 +736,7 @@ func ApplyReasoningEffortPolicy(body []byte, maxEffort string, mappings []Reason
 			return body, false, &ReasoningEffortMappingDeniedError{Requested: requested}
 		}
 		if currentRank, recognized := reasoningEffortRank(effective); recognized {
-			effective = NormalizeMaxReasoningEffort(effective)
+			effective = normalizeGroupReasoningEffort(effective)
 			if hasMax && currentRank > maxRank {
 				if deny {
 					return body, false, &ReasoningEffortOverLimitError{Requested: effective, Max: canonicalMax}

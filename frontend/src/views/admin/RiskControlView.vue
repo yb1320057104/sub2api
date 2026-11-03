@@ -1407,6 +1407,11 @@ const modeOptions = computed<SelectOption[]>(() => [
 
 const keywordBlockingModeOptions = computed<Array<{ value: KeywordBlockingMode; label: string; description: string }>>(() => [
   {
+    value: 'keyword_async_api',
+    label: t('admin.promptAudit.fastMode.contentTitle'),
+    description: t('admin.promptAudit.fastMode.contentHint'),
+  },
+  {
     value: 'keyword_and_api',
     label: t('admin.riskControl.keywordModeKeywordAndApi'),
     description: t(configForm.risk_policy ? 'admin.promptAudit.riskPolicy.keywordAndApi' : 'admin.riskControl.keywordModeKeywordAndApiDesc'),
@@ -1467,6 +1472,7 @@ const keywordNoticeTones = {
 
 const keywordNotice = computed<KeywordNoticeView>(() => {
   const strategy = configForm.keyword_blocking_mode
+  if (strategy === 'keyword_async_api') { return { ...keywordNoticeTones.info, title: t('admin.promptAudit.fastMode.contentTitle'), description: t('admin.promptAudit.fastMode.contentHint') } }
   if (strategy === 'api_only') {
     return {
       ...keywordNoticeTones.info,
@@ -2404,7 +2410,7 @@ function parseApiKeys(value: string): string[] {
 }
 
 function normalizeKeywordBlockingMode(value: unknown): KeywordBlockingMode {
-  if (value === 'keyword_only' || value === 'api_only' || value === 'keyword_and_api') {
+  if (value === 'keyword_async_api' || value === 'keyword_only' || value === 'api_only' || value === 'keyword_and_api') {
     return value
   }
   return 'keyword_and_api'

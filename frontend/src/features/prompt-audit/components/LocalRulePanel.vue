@@ -9,7 +9,11 @@
     </div>
     <p class="mt-3 text-sm text-gray-500 dark:text-dark-300">{{ t(draft.engine === 'local_rules' ? 'admin.promptAudit.local.localHint' : 'admin.promptAudit.local.remoteHint') }}</p>
 
-    <div v-if="draft.engine === 'local_rules'" class="mt-5">
+    <div v-if="draft.engine === 'remote'" class="mt-4 rounded-xl bg-primary-50 p-4 dark:bg-primary-950/30">
+      <label class="flex items-center gap-2 text-sm font-medium"><input type="checkbox" :checked="draft.fast_mode" data-test="prompt-fast-mode" @change="patch({ fast_mode: ($event.target as HTMLInputElement).checked })" />{{ t('admin.promptAudit.fastMode.title') }}</label>
+      <p class="mt-2 text-sm text-gray-600 dark:text-gray-300">{{ t('admin.promptAudit.fastMode.hint') }}</p>
+    </div>
+    <div v-if="draft.engine === 'local_rules' || draft.fast_mode" class="mt-5">
       <div class="flex flex-wrap items-center justify-between gap-3">
         <h3 class="text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.promptAudit.local.rules') }}</h3>
         <div class="flex gap-2">

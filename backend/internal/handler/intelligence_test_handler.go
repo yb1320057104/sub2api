@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/adminaccess"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -112,6 +113,24 @@ func (h *IntelligenceTestHandler) GetConfig(c *gin.Context) {
 		return
 	}
 	response.Success(c, config)
+}
+
+func (h *IntelligenceTestHandler) GetModels(c *gin.Context) {
+	if _, ok := intelligenceTestSubject(c, true); !ok {
+		return
+	}
+	if adminaccess.FromContext(c.Request.Context()) != nil {
+		response.Forbidden(c, "仅完整权限的管理员可以读取智商测试模型候选")
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+	defer cancel()
+	catalog, err := h.service.ModelCandidates(ctx)
+	if err != nil {
+		response.InternalError(c, "读取智商测试模型候选失败")
+		return
+	}
+	response.Success(c, catalog)
 }
 
 func (h *IntelligenceTestHandler) Artifact(c *gin.Context) {

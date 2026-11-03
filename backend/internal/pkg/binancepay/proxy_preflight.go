@@ -61,10 +61,7 @@ func (c *Client) preflight(ctx context.Context) (string, error) {
 	req.Header.Set("Accept", "application/json")
 	response, err := c.preflightHTTP.Do(req)
 	if err != nil {
-		if ctx.Err() != nil {
-			return "", ctx.Err()
-		}
-		return "", ErrProxyPreflight
+		return "", errors.Join(ErrProxyPreflight, transportRequestError("proxy_preflight", ctx, err))
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
@@ -72,10 +69,7 @@ func (c *Client) preflight(ctx context.Context) (string, error) {
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, maxPreflightResponse+1))
 	if err != nil {
-		if ctx.Err() != nil {
-			return "", ctx.Err()
-		}
-		return "", ErrProxyPreflight
+		return "", errors.Join(ErrProxyPreflight, transportRequestError("proxy_preflight", ctx, err))
 	}
 	var result struct {
 		RouteToken string `json:"route_token"`

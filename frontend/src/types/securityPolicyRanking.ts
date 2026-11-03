@@ -11,6 +11,10 @@ export interface SecurityPolicyRankingUser {
   email?: string
   username?: string
   balance?: string
+  auto_charged_count?: number
+  auto_charged_amount?: string
+  trigger_groups?: string
+  observation_count?: number
   trigger_count: number
   deducted_count?: number
   pending_count?: number
@@ -62,7 +66,7 @@ export interface SecurityPolicyTriggerRecord {
   linked_usage_id?: number | null
   usage_id: number
   record_key?: string
-  source?: 'upstream_policy' | 'content_audit' | 'prompt_audit' | 'combined_audit'
+  source?: 'upstream_policy' | 'content_audit' | 'prompt_audit' | 'combined_audit' | 'content_observation' | 'prompt_observation'
   audit_id?: number | null
   occurred_at: string
   group_id: number | null

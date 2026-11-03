@@ -260,7 +260,8 @@ func pkBinanceAccountRows(proxy string, preflight bool, states ...BinanceRecharg
 	if len(states) > 0 {
 		state = states[0]
 	}
-	return sqlmock.NewRows([]string{"id", "name", "recipient_uid", "enabled", "ttl", "multiplier", "key", "secret", "proxy", "preflight", "checked", "error", "created", "updated", "has_orders", "next_poll_at", "api_locked_until", "bills_next_query_at", "failure_count", "has_poll_token"}).AddRow(1, "fixture", "12345", true, 30, "1.000000", "cipher:key", "cipher:secret", proxy, preflight, nil, state.LastError, time.Now(), time.Now(), true, state.nextPollAt, state.apiLockedUntil, state.billsNextQueryAt, state.failureCount, state.hasPollToken)
+	status, _ := json.Marshal(state.QueryStatus)
+	return sqlmock.NewRows([]string{"id", "name", "recipient_uid", "enabled", "ttl", "multiplier", "key", "secret", "proxy", "preflight", "checked", "error", "created", "updated", "has_orders", "next_poll_at", "api_locked_until", "bills_next_query_at", "failure_count", "has_poll_token", "backup", "backup_preflight", "query_status"}).AddRow(1, "fixture", "12345", true, 30, "1.000000", "cipher:key", "cipher:secret", proxy, preflight, nil, state.LastError, time.Now(), time.Now(), true, state.nextPollAt, state.apiLockedUntil, state.billsNextQueryAt, state.failureCount, state.hasPollToken, state.backupProxyURLCiphertext, state.BackupProxyPreflight, status)
 }
 
 func TestPKBinanceAccountProxySavePreflightHints(t *testing.T) {
@@ -304,7 +305,7 @@ func TestPKBinanceAccountProxySavePreflightHints(t *testing.T) {
 				}
 			} else {
 				mock.ExpectQuery(`SELECT poll_token<>'' AND api_locked_until>NOW\(\)`).WithArgs(id).WillReturnRows(sqlmock.NewRows([]string{"polling"}).AddRow(false))
-				mock.ExpectExec(`UPDATE binance_recharge_accounts SET name=\$2`).WithArgs(id, "fixture", "12345", "cipher:key", "cipher:secret", proxyCiphertext, tc.preflight, true, 30, "1.000000").WillReturnResult(sqlmock.NewResult(0, 1))
+				mock.ExpectExec(`UPDATE binance_recharge_accounts SET name=\$2`).WithArgs(id, "fixture", "12345", "cipher:key", "cipher:secret", proxyCiphertext, tc.preflight, true, 30, "1.000000", "", false).WillReturnResult(sqlmock.NewResult(0, 1))
 				mock.ExpectQuery(`SELECT a.id, a.name, a.recipient_uid`).WithArgs(id).WillReturnRows(pkBinanceAccountRows(proxyCiphertext, tc.preflight))
 				mock.ExpectCommit()
 			}
@@ -357,7 +358,7 @@ func TestPKBinanceAccountProxySavePreserveClearAndMask(t *testing.T) {
 			if tc.reject {
 				mock.ExpectRollback()
 			} else {
-				mock.ExpectExec(`UPDATE binance_recharge_accounts SET name=\$2`).WithArgs(int64(1), "fixture", "12345", "cipher:key", "cipher:secret", tc.wantProxy, false, true, 30, "1.000000").WillReturnResult(sqlmock.NewResult(0, 1))
+				mock.ExpectExec(`UPDATE binance_recharge_accounts SET name=\$2`).WithArgs(int64(1), "fixture", "12345", "cipher:key", "cipher:secret", tc.wantProxy, false, true, 30, "1.000000", "", false).WillReturnResult(sqlmock.NewResult(0, 1))
 				mock.ExpectQuery(`SELECT a.id, a.name, a.recipient_uid`).WillReturnRows(pkBinanceAccountRows(tc.wantProxy, false))
 				mock.ExpectCommit()
 			}
@@ -458,7 +459,7 @@ func TestPKBinanceSaveRecoversOnlyChangedConnectionAndKnownFailure(t *testing.T)
 				if tc.clear {
 					proxy = ""
 				}
-				mock.ExpectExec(`UPDATE binance_recharge_accounts SET name=\$2`).WithArgs(int64(1), "fixture", "12345", key, secret, proxy, false, true, 30, "1.000000").WillReturnResult(sqlmock.NewResult(0, 1))
+				mock.ExpectExec(`UPDATE binance_recharge_accounts SET name=\$2`).WithArgs(int64(1), "fixture", "12345", key, secret, proxy, false, true, 30, "1.000000", "", false).WillReturnResult(sqlmock.NewResult(0, 1))
 				if tc.reset {
 					mock.ExpectExec(`UPDATE binance_recharge_accounts SET next_poll_at=NOW\(\),bills_next_query_at=NOW\(\),failure_count=0,last_error='',poll_token='' WHERE id=\$1 AND api_locked_until<=NOW\(\) AND failure_count>0 AND last_error=\$2`).WithArgs(int64(1), tc.lastError).WillReturnResult(sqlmock.NewResult(0, 1))
 					state = BinanceRechargeAccount{}

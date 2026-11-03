@@ -51,7 +51,7 @@ func binanceRequestErrorMessage(err *binancepay.RequestError) string {
 		message = "查询失败，未取得可确认的失败类别"
 	}
 	stages := map[string]string{"time_sync": "校时", "permission_check": "读取权限", "pay_history": "Pay账单",
-		"credentials": "凭据校验", "local_validation": "参数校验", "request": "查询"}
+		"credentials": "凭据校验", "local_validation": "参数校验", "request": "查询", "proxy_preflight": "代理预探测"}
 	diagnostic := "阶段=" + stages[stage]
 	if status != 0 {
 		diagnostic += fmt.Sprintf("; HTTP=%d", status)

@@ -3,6 +3,10 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import BulkEditAccountModal from '../BulkEditAccountModal.vue'
 import ModelWhitelistSelector from '../ModelWhitelistSelector.vue'
+import AccountProxyBindingsEditor from '../AccountProxyBindingsEditor.vue'
+import AccountProxyBindingsCell from '../AccountProxyBindingsCell.vue'
+import AccountAssignProxiesDialog from '@/components/admin/account/AccountAssignProxiesDialog.vue'
+import { assignProxies } from '@/api/admin/accounts'
 import { adminAPI } from '@/api/admin'
 
 const { showError, showSuccess, translate } = vi.hoisted(() => ({
@@ -29,7 +33,8 @@ vi.mock('@/api/admin', () => ({
 }))
 
 vi.mock('@/api/admin/accounts', () => ({
-  getAntigravityDefaultModelMapping: vi.fn()
+  getAntigravityDefaultModelMapping: vi.fn(),
+  assignProxies: vi.fn()
 }))
 
 vi.mock('vue-i18n', async () => {
@@ -82,6 +87,7 @@ function mountModal(extraProps: Record<string, unknown> = {}) {
 
 describe('BulkEditAccountModal', () => {
   beforeEach(() => {
+    vi.mocked(assignProxies).mockReset()
     vi.mocked(adminAPI.accounts.bulkUpdate).mockReset()
     vi.mocked(adminAPI.accounts.checkMixedChannelRisk).mockReset()
     showError.mockReset()
@@ -96,6 +102,70 @@ describe('BulkEditAccountModal', () => {
     vi.mocked(adminAPI.accounts.checkMixedChannelRisk).mockResolvedValue({
       has_risk: false
     } as any)
+  })
+
+  it('only replaces proxy pools when enabled and supports explicit direct access', async () => {
+    const wrapper = mountModal()
+    await wrapper.get('#bulk-edit-proxy-enabled').setValue(true)
+    const bindings = [{ proxy_id: 2, max_concurrency: 4, max_accounts: 1 }, { proxy_id: 3, max_concurrency: 0, max_accounts: 0 }]
+    wrapper.getComponent(AccountProxyBindingsEditor).vm.$emit('update:modelValue', bindings)
+    await wrapper.get('#bulk-edit-account-form').trigger('submit')
+    await flushPromises()
+    expect(vi.mocked(adminAPI.accounts.bulkUpdate).mock.calls.at(-1)?.[1]).toMatchObject({ proxy_bindings: bindings })
+    expect(vi.mocked(adminAPI.accounts.bulkUpdate).mock.calls.at(-1)?.[1]).not.toHaveProperty('proxy_id')
+    wrapper.getComponent(AccountProxyBindingsEditor).vm.$emit('update:modelValue', [])
+    await wrapper.get('#bulk-edit-account-form').trigger('submit')
+    await flushPromises()
+    expect(vi.mocked(adminAPI.accounts.bulkUpdate).mock.calls.at(-1)?.[1]).toMatchObject({ proxy_bindings: [] })
+    wrapper.unmount()
+  })
+
+  it('inherits shared proxy limits and shows unknown concurrency separately from zero', async () => {
+    const proxies = [{ id: 2, name: 'Proxy B', status: 'active', max_accounts: 2, max_concurrency: 7, account_count: 1 }] as any
+    const wrapper = mount(AccountProxyBindingsEditor, { props: { modelValue: [], proxies }, global: { stubs: { Select: true } } })
+    wrapper.findComponent({ name: 'Select' }).vm.$emit('update:modelValue', 2)
+    expect(wrapper.emitted('update:modelValue')?.[0]?.[0]).toEqual([{ proxy_id: 2, max_accounts: 2, max_concurrency: 7 }])
+    const cell = mount(AccountProxyBindingsCell, { props: { account: { proxy_bindings: [
+      { proxy_id: 2, proxy: proxies[0], max_concurrency: 7, max_accounts: 2, current_concurrency: null },
+      { proxy_id: 3, proxy: { name: 'Proxy C' }, max_concurrency: 0, max_accounts: 0, current_concurrency: 0 },
+    ] } as any } })
+    expect(cell.get('[data-testid="proxy-concurrency-2"]').text()).toContain('— / 7')
+    expect(cell.get('[data-testid="proxy-concurrency-3"]').text()).toContain('0 / ∞')
+    wrapper.unmount(); cell.unmount()
+  })
+
+  it('assigns a frozen selection once using the requested proxy and account capacities', async () => {
+    vi.mocked(assignProxies).mockResolvedValue({ account_count: 2, binding_count: 4, proxy_count: 4 })
+    const wrapper = mount(AccountAssignProxiesDialog, { props: { show: true, accountIds: [1,2,2] }, global: { stubs: { BaseDialog: { template: '<div><slot/><slot name="footer"/></div>' } } } })
+    await wrapper.setProps({ accountIds: [8,9] })
+    await wrapper.get('[data-testid="assign-proxies-per-account"]').setValue(2)
+    await wrapper.get('[data-testid="assign-proxy-max-accounts"]').setValue(1)
+    await wrapper.get('[data-testid="assign-proxy-concurrency"]').setValue(5)
+    await wrapper.get('#assign-account-proxies').trigger('submit')
+    await flushPromises()
+    expect(assignProxies).toHaveBeenCalledTimes(1)
+    expect(assignProxies).toHaveBeenCalledWith({ account_ids: [1,2], proxies_per_account: 2, max_accounts_per_proxy: 1, proxy_concurrency: 5 })
+    expect(wrapper.emitted('assigned')).toHaveLength(1)
+    wrapper.unmount()
+  })
+
+  it('keeps failed assignments open, rejects invalid limits and prevents duplicate submissions', async () => {
+    let rejectAssignment!: (error: Error) => void
+    vi.mocked(assignProxies).mockImplementation(() => new Promise((_, reject) => { rejectAssignment = reject }))
+    const wrapper = mount(AccountAssignProxiesDialog, { props: { show: true, accountIds: [1] }, global: { stubs: { BaseDialog: { template: '<div><slot/><slot name="footer"/></div>' } } } })
+    await wrapper.get('[data-testid="assign-proxy-concurrency"]').setValue(0)
+    await wrapper.get('#assign-account-proxies').trigger('submit')
+    expect(assignProxies).not.toHaveBeenCalled()
+    await wrapper.get('[data-testid="assign-proxy-concurrency"]').setValue(3)
+    await wrapper.get('#assign-account-proxies').trigger('submit')
+    await wrapper.get('#assign-account-proxies').trigger('submit')
+    expect(assignProxies).toHaveBeenCalledTimes(1)
+    rejectAssignment(new Error('Insufficient free proxies'))
+    await flushPromises()
+    expect(wrapper.get('[role="alert"]').text()).toContain('Insufficient free proxies')
+    expect(wrapper.emitted('assigned')).toBeUndefined()
+    expect(wrapper.emitted('close')).toBeUndefined()
+    wrapper.unmount()
   })
 
   it('批量修改倍率时提示自动同步账号需要先关闭同步', async () => {

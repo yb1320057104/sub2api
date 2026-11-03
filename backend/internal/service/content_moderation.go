@@ -44,9 +44,10 @@ const (
 
 	contentModerationKeywordCategory = "keyword"
 
-	ContentModerationKeywordModeKeywordOnly   = "keyword_only"
-	ContentModerationKeywordModeKeywordAndAPI = "keyword_and_api"
-	ContentModerationKeywordModeAPIOnly       = "api_only"
+	ContentModerationKeywordModeKeywordOnly     = "keyword_only"
+	ContentModerationKeywordModeKeywordAndAPI   = "keyword_and_api"
+	ContentModerationKeywordModeAPIOnly         = "api_only"
+	ContentModerationKeywordModeKeywordAsyncAPI = "keyword_async_api"
 
 	ContentModerationModelFilterAll     = "all"
 	ContentModerationModelFilterInclude = "include"
@@ -511,7 +512,7 @@ type ContentModerationClearHashesResult struct {
 type ContentModerationRepository interface {
 	CreateLog(ctx context.Context, log *ContentModerationLog) error
 	ListLogs(ctx context.Context, filter ContentModerationLogFilter) ([]ContentModerationLog, *pagination.PaginationResult, error)
-	// CountFlaggedByUserSince 统计窗口内计入封号的违规次数（排除 hash_block；
+	// CountFlaggedByUserSince 统计窗口内计入封号的违规次数（排除观察/放行、hash_block；
 	// excludeCyberPolicy 为 true 时额外排除 cyber_policy 行）。
 	CountFlaggedByUserSince(ctx context.Context, userID int64, since time.Time, excludeCyberPolicy bool) (int, error)
 	CleanupExpiredLogs(ctx context.Context, hitBefore time.Time, nonHitBefore time.Time) (*ContentModerationCleanupResult, error)
@@ -1111,7 +1112,7 @@ func (s *ContentModerationService) Check(ctx context.Context, input ContentModer
 			"protocol", input.Protocol)
 		return allow, nil
 	}
-	if cfg.Mode == ContentModerationModeObserve {
+	if cfg.Mode == ContentModerationModeObserve || cfg.KeywordBlockingMode == ContentModerationKeywordModeKeywordAsyncAPI {
 		slog.Info("content_moderation.enqueue_observe",
 			"user_id", input.UserID,
 			"api_key_id", input.APIKeyID,
@@ -1196,9 +1197,9 @@ func (s *ContentModerationService) checkSync(ctx context.Context, input ContentM
 		log := s.buildLog(input, cfg, action, flagged, highestCategory, highestScore, result.CategoryScores, content.ExcerptText(), &latency, queueDelay, "")
 		log.EngineMeta = result.EngineMeta
 		if queueDelay == nil && cfg.Mode == ContentModerationModePreBlock {
-			s.enqueueRecord(input, cfg, log, hashText, flagged, flagged)
+			s.enqueueRecord(input, cfg, log, hashText, blocked, blocked)
 		} else {
-			s.persistContentModerationLog(ctx, cfg, log, hashText, flagged, flagged)
+			s.persistContentModerationLog(ctx, cfg, log, hashText, blocked, blocked)
 		}
 	}
 	if blocked {
@@ -2933,6 +2934,8 @@ func normalizeBlockedKeywords(in []string) []string {
 
 func normalizeKeywordBlockingMode(mode string) string {
 	switch strings.TrimSpace(mode) {
+	case ContentModerationKeywordModeKeywordAsyncAPI:
+		return ContentModerationKeywordModeKeywordAsyncAPI
 	case ContentModerationKeywordModeKeywordOnly:
 		return ContentModerationKeywordModeKeywordOnly
 	case ContentModerationKeywordModeAPIOnly:

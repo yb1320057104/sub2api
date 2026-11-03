@@ -685,9 +685,10 @@
           />
         </div>
         <div id="bulk-edit-proxy-body" :class="!enableProxy && 'pointer-events-none opacity-50'">
-          <ProxySelector
-            v-model="proxyId"
+          <AccountProxyBindingsEditor
+            v-model="proxyBindings"
             :proxies="proxies"
+            :disabled="!enableProxy || submitting"
             aria-labelledby="bulk-edit-proxy-label"
           />
         </div>
@@ -1480,6 +1481,7 @@ import { useAppStore } from '@/stores/app'
 import { adminAPI } from '@/api/admin'
 import type {
   Proxy as ProxyConfig,
+  AccountProxyBindingInput,
   AdminGroup,
   AccountPlatform,
   AccountType,
@@ -1490,7 +1492,8 @@ import type {
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import Select from '@/components/common/Select.vue'
-import ProxySelector from '@/components/common/ProxySelector.vue'
+import AccountProxyBindingsEditor from '@/components/account/AccountProxyBindingsEditor.vue'
+import { validProxyBindings } from '@/components/account/proxyBindings'
 import GroupSelector from '@/components/common/GroupSelector.vue'
 import ModelWhitelistSelector from '@/components/account/ModelWhitelistSelector.vue'
 import Icon from '@/components/icons/Icon.vue'
@@ -1686,7 +1689,7 @@ const customErrorCodeInput = ref<number | null>(null)
 const interceptWarmupRequests = ref(false)
 const headerOverrideEnabled = ref(false)
 const headerOverrideRows = ref<HeaderOverrideRow[]>([])
-const proxyId = ref<number | null>(null)
+const proxyBindings = ref<AccountProxyBindingInput[]>([])
 const concurrency = ref(1)
 const loadFactor = ref<number | null>(null)
 const priority = ref(1)
@@ -1939,8 +1942,8 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
   }
 
   if (enableProxy.value) {
-    // 后端期望 proxy_id: 0 表示清除代理，而不是 null
-    updates.proxy_id = proxyId.value === null ? 0 : proxyId.value
+    if (!validProxyBindings(proxyBindings.value)) { appStore.showError(t('admin.accounts.multiProxy.invalid')); return null }
+    updates.proxy_bindings = proxyBindings.value.map(binding => ({ ...binding }))
   }
 
   if (enableConcurrency.value) {
@@ -2107,7 +2110,7 @@ const buildUpdatePayload = (): Record<string, unknown> | null => {
     // ForExtraUpdates 同样只在 device/session/full 时要种子，off 不会触发。
     //
     // 与本函数里其它"关闭/清除"字段的写法一致：codex_cli_only 直接落 false，
-    // load_factor 落 0，proxy_id 落 0 —— 批量路径一律用显式哨兵值，不用省略。
+    // load_factor 落 0，proxy_bindings 落 [] —— 批量清除用显式值，不用省略。
     extra.codex_fingerprint_mode = codexFingerprintMode.value
   }
 
@@ -2196,6 +2199,10 @@ const preCheckMixedChannelRisk = async (built: Record<string, unknown>): Promise
 }
 
 const handleSubmit = async () => {
+  if (enableProxy.value && !validProxyBindings(proxyBindings.value)) {
+    appStore.showError(t('admin.accounts.multiProxy.invalid'))
+    return
+  }
   if (targetMode.value === 'selected' && props.accountIds.length === 0) {
     appStore.showError(t('admin.accounts.bulkEdit.noSelection'))
     return
@@ -2396,7 +2403,7 @@ watch(
       interceptWarmupRequests.value = false
       headerOverrideEnabled.value = false
       headerOverrideRows.value = []
-      proxyId.value = null
+      proxyBindings.value = []
       concurrency.value = 1
       loadFactor.value = null
       priority.value = 1

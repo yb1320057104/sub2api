@@ -32,6 +32,11 @@ export interface IntelligenceTestConfig {
   candy: IntelligenceTestTaskConfig
 }
 
+export interface IntelligenceTestModelCatalog {
+  models: string[]
+  excluded_models: string[]
+}
+
 export interface IntelligenceTestResult {
   id: number
   group_id: number
@@ -76,8 +81,11 @@ export const intelligenceTestAPI = {
       params: { group_id: groupID, id }, signal,
     })).data
   },
-  async config() {
-    return (await apiClient.get<IntelligenceTestConfig>('/admin/intelligence-test/config')).data
+  async config(signal?: AbortSignal) {
+    return (await apiClient.get<IntelligenceTestConfig>('/admin/intelligence-test/config', { signal })).data
+  },
+  async models(signal?: AbortSignal) {
+    return (await apiClient.get<IntelligenceTestModelCatalog>('/admin/intelligence-test/models', { signal })).data
   },
   async saveConfig(config: IntelligenceTestConfig) {
     return (await apiClient.put<IntelligenceTestConfig>('/admin/intelligence-test/config', config)).data

@@ -809,6 +809,39 @@ func activeCodexFingerprintPoolAccountForTest(id int64) *Account {
 	}
 }
 
+func TestOpenAIWSConnPool_AcquireSeparatesProxyEgress(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.OpenAIWS.MaxConnsPerAccount = 2
+	cfg.Gateway.OpenAIWS.MinIdlePerAccount = 0
+	cfg.Gateway.OpenAIWS.MaxIdlePerAccount = 2
+	pool := newOpenAIWSConnPool(cfg)
+	dialer := &openAIWSCountingDialer{}
+	pool.setClientDialerForTest(dialer)
+	account := &Account{ID: 129, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+	first := openAIWSAcquireRequest{Account: account, WSURL: "wss://example.com/responses", ProxyID: 1, ProxyURL: "http://first.invalid:8080"}
+	a, err := pool.Acquire(context.Background(), first)
+	require.NoError(t, err)
+	firstID := a.ConnID()
+	require.Equal(t, int64(1), a.conn.proxyID)
+	a.Release()
+	second := first
+	second.ProxyID, second.ProxyURL = 2, "http://second.invalid:8080"
+	b, err := pool.Acquire(context.Background(), second)
+	require.NoError(t, err)
+	require.False(t, b.Reused())
+	require.NotEqual(t, firstID, b.ConnID())
+	b.Release()
+	c, err := pool.Acquire(context.Background(), first)
+	require.NoError(t, err)
+	require.Equal(t, firstID, c.ConnID())
+	c.Release()
+	second.ForcePreferredConn = true
+	second.PreferredConnID = firstID
+	_, err = pool.Acquire(context.Background(), second)
+	require.ErrorIs(t, err, errOpenAIWSPreferredConnUnavailable)
+	pool.Close()
+}
+
 func stableOpenAIWSIdentityHeadersForTest() http.Header {
 	headers := make(http.Header)
 	headers.Set("X-Codex-Beta-Features", "remote_compaction_v2,responses_websockets_v2")

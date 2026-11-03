@@ -1170,8 +1170,8 @@ export default {
         commonPatterns: 'Common patterns'
       },
       openaiFastPolicy: {
-        title: 'OpenAI Fast/Flex Policy',
-        description: 'Intercept, filter, or pass OpenAI fast(priority), ultrafast, or flex requests based on the request body service_tier field. Applies to the OpenAI gateway only. "All tier values" includes explicitly sent tiers only.',
+        title: 'OpenAI Fast/Ultrafast/Flex Policy',
+        description: 'Block, filter, pass, or force priority / ultrafast based on the request body service_tier. Applies to the OpenAI gateway only. "All tier values" matches explicitly sent tiers only; select "Omitted tier" to set a speed when none is sent. Available tiers depend on the upstream model and account; billing follows the corresponding tier rules.',
         empty: 'No rules configured. Click the button below to add one.',
         ruleHeader: 'Rule #{index}',
         removeRule: 'Remove rule',
@@ -1187,6 +1187,7 @@ export default {
         actionPass: 'Pass (keep service_tier)',
         actionFilter: 'Filter (remove service_tier)',
         actionForcePriority: 'Force priority (fast)',
+        actionForceUltrafast: 'Force ultrafast',
         actionBlock: 'Block (reject request)',
         scope: 'Scope',
         scopeAll: 'All accounts',
@@ -1217,7 +1218,8 @@ export default {
           pass: 'Pass',
           filter: 'Filter',
           block: 'Block',
-          force_priority: 'Force priority'
+          force_priority: 'Force priority',
+          force_ultrafast: 'Force ultrafast'
         }
       },
       wechatConnect: {

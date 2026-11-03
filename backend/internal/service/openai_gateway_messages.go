@@ -34,6 +34,9 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	promptCacheKey string,
 	defaultMappedModel string,
 ) (kiloResult *OpenAIForwardResult, forwardErr error) {
+	// Recovery re-enters this method, so retain the client body before policy
+	// mapping and conversion. Reusing a mapped effort could apply a second rule.
+	originalBody := body
 	bindKiloBridgeResponseEffort(ctx, c, account, body)
 	defer func(inbound []byte) {
 		usageCtx := ctx
@@ -494,7 +497,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 			if err := s.recoverAgentIdentityTask(ctx, account, expectedTaskID); err != nil {
 				return nil, fmt.Errorf("agent identity task recovery failed: %w", err)
 			}
-			return s.ForwardAsAnthropic(markAgentIdentityTaskRecoveryTried(ctx), c, account, body, promptCacheKey, defaultMappedModel)
+			return s.ForwardAsAnthropic(markAgentIdentityTaskRecoveryTried(ctx), c, account, originalBody, promptCacheKey, defaultMappedModel)
 		}
 		if previousResponseID != "" && (isOpenAICompatPreviousResponseNotFound(resp.StatusCode, upstreamMsg, respBody) || isOpenAICompatPreviousResponseUnsupported(resp.StatusCode, upstreamMsg, respBody)) {
 			if isOpenAICompatPreviousResponseUnsupported(resp.StatusCode, upstreamMsg, respBody) {
@@ -507,7 +510,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 				zap.String("previous_response_id", truncateOpenAIWSLogValue(previousResponseID, openAIWSIDValueMaxLen)),
 				zap.String("upstream_model", upstreamModel),
 			)
-			return s.ForwardAsAnthropic(ctx, c, account, body, promptCacheKey, defaultMappedModel)
+			return s.ForwardAsAnthropic(ctx, c, account, originalBody, promptCacheKey, defaultMappedModel)
 		}
 		// Grok account-switched history often fails decrypt; strip encrypted
 		// reasoning once at the client-body level so failover accounts can accept
@@ -515,7 +518,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 		if account.Platform == PlatformGrok &&
 			isGrokInvalidEncryptedContentResponse(resp.StatusCode, respBody) &&
 			!grokEncryptedContentStripRetried(ctx) {
-			if strippedBody, ok := stripAnthropicThinkingSignatures(body); ok {
+			if strippedBody, ok := stripAnthropicThinkingSignatures(originalBody); ok {
 				logger.L().Info("openai messages: stripping thinking signatures for Grok failover retry",
 					zap.Int64("account_id", account.ID),
 				)

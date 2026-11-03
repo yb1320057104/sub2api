@@ -17,6 +17,24 @@ type fixedClock struct{ now time.Time }
 
 func (c fixedClock) Now() time.Time { return c.now }
 
+func TestPromptWorkerRecoveryCannotHideNewerConcurrentFailure(t *testing.T) {
+	now := time.Now().UTC()
+	r := &Runner{clock: fixedClock{now}}
+	r.setLastError("audit_node_authentication_failed", "unsafe raw response")
+	r.clearLastErrorAfter(now.Add(-time.Second))
+	_, _, _, _, _, code, message := r.Snapshot()
+	require.Equal(t, "audit_node_authentication_failed", code)
+	require.NotContains(t, message, "unsafe")
+	r.clock = fixedClock{now.Add(2 * time.Second)}
+	r.clearLastErrorAfter(now.Add(time.Second))
+	_, _, _, _, _, code, message = r.Snapshot()
+	require.Empty(t, code)
+	require.Empty(t, message)
+	failed, recovered := r.recoveryTimes()
+	require.Equal(t, now, *failed)
+	require.Equal(t, now.Add(2*time.Second), *recovered)
+}
+
 type advancingClock struct {
 	mu   sync.Mutex
 	now  time.Time

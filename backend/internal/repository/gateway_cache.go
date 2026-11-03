@@ -406,23 +406,26 @@ func (c *gatewayCache) SaveLiveCall(ctx context.Context, record *service.LiveCal
 		return fmt.Errorf("invalid live call record")
 	}
 	values := map[string]any{
-		"call_id":          record.CallID,
-		"account_id":       record.AccountID,
-		"api_key_id":       record.APIKeyID,
-		"user_id":          record.UserID,
-		"group_id":         record.GroupID,
-		"subscription_id":  record.SubscriptionID,
-		"lease_id":         record.LeaseID,
-		"model":            record.Model,
-		"created_at":       record.CreatedAt.UnixMilli(),
-		"expires_at":       record.ExpiresAt.UnixMilli(),
-		"controller":       record.Controller,
-		"controller_owner": record.ControllerOwner,
-		"user_agent":       record.UserAgent,
-		"ip_address":       record.IPAddress,
-		"inbound_endpoint": record.InboundEndpoint,
-		"attestation":      record.AttestationCiphertext,
-		"audit_action":     "",
+		"call_id":             record.CallID,
+		"account_id":          record.AccountID,
+		"proxy_id":            record.ProxyID,
+		"proxy_lease_id":      record.ProxyLeaseID,
+		"proxy_lease_managed": record.ProxyLeaseManaged,
+		"api_key_id":          record.APIKeyID,
+		"user_id":             record.UserID,
+		"group_id":            record.GroupID,
+		"subscription_id":     record.SubscriptionID,
+		"lease_id":            record.LeaseID,
+		"model":               record.Model,
+		"created_at":          record.CreatedAt.UnixMilli(),
+		"expires_at":          record.ExpiresAt.UnixMilli(),
+		"controller":          record.Controller,
+		"controller_owner":    record.ControllerOwner,
+		"user_agent":          record.UserAgent,
+		"ip_address":          record.IPAddress,
+		"inbound_endpoint":    record.InboundEndpoint,
+		"attestation":         record.AttestationCiphertext,
+		"audit_action":        "",
 	}
 	if record.AuditAction != nil {
 		encoded, err := json.Marshal(record.AuditAction)
@@ -465,6 +468,9 @@ func (c *gatewayCache) GetLiveCall(ctx context.Context, callHash string) (*servi
 		CallID:                values["call_id"],
 		CallHash:              callHash,
 		AccountID:             parseInt("account_id"),
+		ProxyID:               parseInt("proxy_id"),
+		ProxyLeaseID:          values["proxy_lease_id"],
+		ProxyLeaseManaged:     values["proxy_lease_managed"] == "1",
 		APIKeyID:              parseInt("api_key_id"),
 		UserID:                parseInt("user_id"),
 		GroupID:               parseInt("group_id"),
@@ -480,6 +486,16 @@ func (c *gatewayCache) GetLiveCall(ctx context.Context, callHash string) (*servi
 		InboundEndpoint:       values["inbound_endpoint"],
 		AttestationCiphertext: values["attestation"],
 	}, nil
+}
+
+func (c *gatewayCache) AttachLiveProxyLease(ctx context.Context, callHash string, proxyID int64, leaseID string) (bool, error) {
+	result, err := c.rdb.Eval(ctx, `
+if redis.call('EXISTS', KEYS[1]) == 0 then return 0 end
+if redis.call('HGET', KEYS[1], 'controller') == 'closed' then return 0 end
+if redis.call('HGET', KEYS[1], 'proxy_lease_managed') == '1' then return 0 end
+redis.call('HSET', KEYS[1], 'proxy_id', ARGV[1], 'proxy_lease_id', ARGV[2], 'proxy_lease_managed', '1')
+return 1`, []string{liveCallKey(callHash)}, proxyID, leaseID).Int()
+	return result == 1, err
 }
 
 func (c *gatewayCache) ClaimLiveController(ctx context.Context, callHash, controller, owner string) (bool, error) {

@@ -43,6 +43,7 @@ export interface PromptAuditConfig {
   default_local_rules?: PromptLocalRule[]
   default_audit_instructions?: string
   enabled: boolean
+  fast_mode?: boolean
   blocking_enabled: boolean
   blocking_latest_turn_only: boolean
   store_pass_events: boolean
@@ -75,6 +76,7 @@ export interface PromptAuditUpdateRequest {
   local_rules: PromptLocalRule[]
   expected_config_version: number
   enabled: boolean
+  fast_mode?: boolean
   blocking_enabled: boolean
   blocking_latest_turn_only: boolean
   store_pass_events: boolean
@@ -156,6 +158,9 @@ export interface PromptAuditRuntime {
   enqueued_total: number
   dropped_total: number
   last_processed_at?: string
+  fast_mode?: boolean
+  last_error_at?: string
+  last_recovered_at?: string
   last_error_code?: string
   last_error_message?: string
   database_status: string

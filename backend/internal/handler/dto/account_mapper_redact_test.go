@@ -155,3 +155,16 @@ func TestAccountFromService_RedactsGrokModelDiagnostics(t *testing.T) {
 	require.NotContains(t, string(listRaw), "grok_model_diagnostics")
 	require.NotContains(t, string(listRaw), "access-secret")
 }
+
+func TestPK50ProxyBindingsDTOHidesCredentialsAndKeepsLimits(t *testing.T) {
+	src := &service.Account{ID: 1, ProxyBindings: []service.AccountProxyBinding{{ProxyID: 7, MaxConcurrency: 4, MaxAccounts: 2, Proxy: &service.Proxy{ID: 7, Name: "egress", Username: "secret-user", Password: "secret-pass"}}}}
+	full := AccountFromService(src)
+	compact := AccountListItemFromAccount(full)
+	require.Len(t, compact.ProxyBindings, 1)
+	require.Equal(t, 4, compact.ProxyBindings[0].MaxConcurrency)
+	require.Nil(t, compact.ProxyBindings[0].CurrentConcurrency)
+	encoded, err := json.Marshal(compact)
+	require.NoError(t, err)
+	require.NotContains(t, string(encoded), "secret-user")
+	require.NotContains(t, string(encoded), "secret-pass")
+}

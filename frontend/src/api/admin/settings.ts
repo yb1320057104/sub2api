@@ -1473,12 +1473,12 @@ export async function updateRectifierSettings(
  */
 export interface OpenAIFastPolicyRule {
   service_tier: "all" | "priority" | "flex" | "ultrafast" | "missing";
-  action: "pass" | "filter" | "block" | "force_priority";
+  action: "pass" | "filter" | "block" | "force_priority" | "force_ultrafast";
   scope: "all" | "oauth" | "apikey" | "bedrock";
   user_ids?: number[];
   error_message?: string;
   model_whitelist?: string[];
-  fallback_action?: "pass" | "filter" | "block" | "force_priority";
+  fallback_action?: "pass" | "filter" | "block" | "force_priority" | "force_ultrafast";
   fallback_error_message?: string;
 }
 

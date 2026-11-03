@@ -205,7 +205,7 @@ func TestConfigManagerUndecryptableTokenStillFailsClosedForBlockingIntent(t *tes
 	require.Nil(t, decision)
 	var guardErr *GuardError
 	require.ErrorAs(t, err, &guardErr)
-	require.Equal(t, ErrorCodeUnavailable, guardErr.Code)
+	require.Equal(t, "audit_token_invalid", guardErr.Code)
 }
 
 func TestBuildNextStoragePreserveReplaceAndClearToken(t *testing.T) {
@@ -311,7 +311,7 @@ func TestConfigManagerStaleWeakerSnapshotFailsClosedWhenBlockingExpected(t *test
 	require.Nil(t, decision)
 	var guardErr *GuardError
 	require.ErrorAs(t, err, &guardErr)
-	require.Equal(t, ErrorCodeUnavailable, guardErr.Code)
+	require.Equal(t, ErrorCodeConfigUnavailable, guardErr.Code)
 }
 
 type errorSettingRepository struct{ staticSettingRepository }
@@ -371,7 +371,7 @@ func TestConfigManagerStartupLoadFailureFailsClosedWhenBlockingIntended(t *testi
 	require.Nil(t, decision)
 	var guardErr *GuardError
 	require.ErrorAs(t, err, &guardErr)
-	require.Equal(t, ErrorCodeUnavailable, guardErr.Code)
+	require.Equal(t, ErrorCodeConfigUnavailable, guardErr.Code)
 }
 
 func TestConfigManagerUntrustedClearsOnSuccessfulDisable(t *testing.T) {

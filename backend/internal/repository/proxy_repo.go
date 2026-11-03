@@ -143,6 +143,9 @@ func (r *proxyRepository) UpdateProtocol(ctx context.Context, id int64, protocol
 		}
 	}
 
+	if _, err := client.ExecContext(ctx, "SELECT pg_advisory_xact_lock($1)", accountProxyAssignmentLock); err != nil {
+		return err
+	}
 	current, err := lockProxyProbeIdentity(ctx, client, id)
 	if err != nil {
 		return err
@@ -156,7 +159,7 @@ func (r *proxyRepository) UpdateProtocol(ctx context.Context, id int64, protocol
 		}
 		// Every bound account may have a cached proxy URL, even without a
 		// persisted billing probe snapshot. Refresh all of them after commit.
-		rows, err := client.QueryContext(ctx, `SELECT id FROM accounts WHERE proxy_id = $1 AND deleted_at IS NULL`, id)
+		rows, err := client.QueryContext(ctx, `SELECT account_id FROM pk_effective_account_proxy_bindings WHERE proxy_id = $1`, id)
 		if err != nil {
 			return err
 		}
@@ -208,6 +211,9 @@ func proxyProbeIdentityFromService(proxyIn *service.Proxy) proxyProbeIdentity {
 }
 
 func updateProxyAndInvalidateProbeSnapshots(ctx context.Context, client *dbent.Client, proxyIn *service.Proxy) (*dbent.Proxy, error) {
+	if _, err := client.ExecContext(ctx, "SELECT pg_advisory_xact_lock($1)", accountProxyAssignmentLock); err != nil {
+		return nil, err
+	}
 	currentIdentity, err := lockProxyProbeIdentity(ctx, client, proxyIn.ID)
 	if err != nil {
 		return nil, err
@@ -287,13 +293,13 @@ func lockProxyProbeIdentity(ctx context.Context, client *dbent.Client, proxyID i
 
 func invalidateProxyProbeSnapshots(ctx context.Context, exec sqlExecutor, proxyID int64) ([]int64, error) {
 	rows, err := exec.QueryContext(ctx, `
-		UPDATE accounts
+		WITH invalidated AS (UPDATE accounts
 		SET extra = COALESCE(extra, '{}'::jsonb)
 				- 'upstream_billing_probe'
 				- 'ollama_cloud_usage_snapshot'
 				- 'opencode_go_usage_snapshot',
 			updated_at = NOW()
-		WHERE proxy_id = $1
+		WHERE id IN (SELECT account_id FROM pk_effective_account_proxy_bindings WHERE proxy_id = $1)
 			AND type = 'apikey'
 			AND (
 				(extra ? 'upstream_billing_probe'
@@ -307,7 +313,8 @@ func invalidateProxyProbeSnapshots(ctx context.Context, exec sqlExecutor, proxyI
 					AND extra -> 'opencode_go_usage_snapshot' <> 'null'::jsonb)
 			)
 			AND deleted_at IS NULL
-		RETURNING id
+		RETURNING id)
+		SELECT account_id FROM pk_effective_account_proxy_bindings WHERE proxy_id=$1
 	`, proxyID)
 	if err != nil {
 		return nil, err
@@ -343,8 +350,37 @@ func enqueueProxyProbeAccountChanges(ctx context.Context, exec sqlExecutor, acco
 }
 
 func (r *proxyRepository) Delete(ctx context.Context, id int64) error {
-	_, err := r.client.Proxy.Delete().Where(proxy.IDEQ(id)).Exec(ctx)
-	return err
+	client := r.client
+	var ownedTx *dbent.Tx
+	if tx := dbent.TxFromContext(ctx); tx != nil {
+		client = tx.Client()
+	} else {
+		tx, err := client.Tx(ctx)
+		if err != nil && err != dbent.ErrTxStarted {
+			return err
+		}
+		if tx != nil {
+			ownedTx, client = tx, tx.Client()
+			defer func() { _ = tx.Rollback() }()
+		}
+	}
+	if _, err := client.ExecContext(ctx, "SELECT pg_advisory_xact_lock($1)", accountProxyAssignmentLock); err != nil {
+		return err
+	}
+	var used int64
+	if err := scanSingleRow(ctx, client, "SELECT COUNT(*) FROM pk_effective_account_proxy_bindings WHERE proxy_id=$1", []any{id}, &used); err != nil {
+		return err
+	}
+	if used > 0 {
+		return service.ErrProxyInUse
+	}
+	if _, err := client.Proxy.Delete().Where(proxy.IDEQ(id)).Exec(ctx); err != nil {
+		return err
+	}
+	if ownedTx != nil {
+		return ownedTx.Commit()
+	}
+	return nil
 }
 
 func (r *proxyRepository) List(ctx context.Context, params pagination.PaginationParams) ([]service.Proxy, *pagination.PaginationResult, error) {
@@ -541,7 +577,7 @@ func (r *proxyRepository) ExistsByHostPortAuth(ctx context.Context, host string,
 // CountAccountsByProxyID returns the number of accounts using a specific proxy
 func (r *proxyRepository) CountAccountsByProxyID(ctx context.Context, proxyID int64) (int64, error) {
 	var count int64
-	if err := scanSingleRow(ctx, r.sql, "SELECT COUNT(*) FROM accounts WHERE proxy_id = $1 AND deleted_at IS NULL", []any{proxyID}, &count); err != nil {
+	if err := scanSingleRow(ctx, r.sql, "SELECT COUNT(*) FROM pk_effective_account_proxy_bindings b JOIN accounts a ON a.id=b.account_id AND a.parent_account_id IS NULL WHERE b.proxy_id = $1", []any{proxyID}, &count); err != nil {
 		return 0, err
 	}
 	return count, nil
@@ -551,7 +587,7 @@ func (r *proxyRepository) ListAccountSummariesByProxyID(ctx context.Context, pro
 	rows, err := r.sql.QueryContext(ctx, `
 		SELECT id, name, platform, type, notes
 		FROM accounts
-		WHERE proxy_id = $1 AND deleted_at IS NULL
+		WHERE id IN (SELECT account_id FROM pk_effective_account_proxy_bindings WHERE proxy_id=$1) AND parent_account_id IS NULL AND deleted_at IS NULL
 		ORDER BY id DESC
 	`, proxyID)
 	if err != nil {
@@ -591,7 +627,7 @@ func (r *proxyRepository) ListAccountSummariesByProxyID(ctx context.Context, pro
 
 // GetAccountCountsForProxies returns a map of proxy ID to account count for all proxies
 func (r *proxyRepository) GetAccountCountsForProxies(ctx context.Context) (counts map[int64]int64, err error) {
-	rows, err := r.sql.QueryContext(ctx, "SELECT proxy_id, COUNT(*) AS count FROM accounts WHERE proxy_id IS NOT NULL AND deleted_at IS NULL GROUP BY proxy_id")
+	rows, err := r.sql.QueryContext(ctx, "SELECT b.proxy_id, COUNT(*) AS count FROM pk_effective_account_proxy_bindings b JOIN accounts a ON a.id=b.account_id AND a.parent_account_id IS NULL GROUP BY b.proxy_id")
 	if err != nil {
 		return nil, err
 	}
@@ -792,6 +828,9 @@ func (r *proxyRepository) sweepOneExpiredProxy(ctx context.Context, snapshot ser
 
 // sweepOneExpiredProxyOnExec 在给定的 sqlExecutor 上执行：标记 expired + 改投账号。
 func (r *proxyRepository) sweepOneExpiredProxyOnExec(ctx context.Context, exec sqlExecutor, snapshot service.Proxy, now time.Time, target *int64, change bool) ([]int64, error) {
+	if _, err := exec.ExecContext(ctx, "SELECT pg_advisory_xact_lock($1)", accountProxyAssignmentLock); err != nil {
+		return nil, err
+	}
 	proxyID := snapshot.ID
 	// The UPDATE locks the row and rechecks its predicates after concurrent writes.
 	// If an administrator renewed, disabled or reconfigured the proxy after the
@@ -823,54 +862,15 @@ func (r *proxyRepository) sweepOneExpiredProxyOnExec(ctx context.Context, exec s
 		}
 		return nil, nil
 	}
-	var rows *sql.Rows
-	// Match the current proxy even after an earlier fallback. Keep the first
-	// origin so manual revert still restores the originally assigned proxy.
-	if target == nil {
-		rows, err = exec.QueryContext(ctx, `
-			UPDATE accounts SET proxy_id=NULL, proxy_fallback_origin_id=COALESCE(proxy_fallback_origin_id,$1),
-				extra=CASE
-					WHEN type='apikey' AND extra ? 'upstream_billing_probe'
-					THEN extra - 'upstream_billing_probe'
-					ELSE extra
-				END,
-				updated_at=NOW()
-			WHERE proxy_id=$1 AND deleted_at IS NULL
-			RETURNING id`, proxyID)
-	} else {
-		rows, err = exec.QueryContext(ctx, `
-			UPDATE accounts SET proxy_id=$2, proxy_fallback_origin_id=COALESCE(proxy_fallback_origin_id,$1),
-				extra=CASE
-					WHEN type='apikey' AND extra ? 'upstream_billing_probe'
-					THEN extra - 'upstream_billing_probe'
-					ELSE extra
-				END,
-				updated_at=NOW()
-			WHERE proxy_id=$1 AND deleted_at IS NULL
-			RETURNING id`, proxyID, *target)
-	}
+	multiChanged, err := applyMultiProxyExpiry(ctx, exec, proxyID, target)
 	if err != nil {
 		return nil, err
 	}
-
-	// 必须在提交子事务前读完并关闭 RETURNING 结果集，否则连接仍可能处于 busy 状态。
-	accountIDs := make([]int64, 0)
-	for rows.Next() {
-		var accountID int64
-		if err := rows.Scan(&accountID); err != nil {
-			_ = rows.Close()
-			return nil, err
-		}
-		accountIDs = append(accountIDs, accountID)
-	}
-	if err := rows.Err(); err != nil {
-		_ = rows.Close()
+	legacyChanged, err := applyLegacyProxyExpiry(ctx, exec, proxyID, target)
+	if err != nil {
 		return nil, err
 	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	return accountIDs, nil
+	return append(legacyChanged, multiChanged...), nil
 }
 
 // CountExpired 返回已过期（status=expired）的代理数量。

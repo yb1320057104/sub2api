@@ -286,6 +286,9 @@ func (r *accountRepository) GetByID(ctx context.Context, id int64) (*service.Acc
 }
 
 func (r *accountRepository) GetByIDs(ctx context.Context, ids []int64) ([]*service.Account, error) {
+	if scoped := r.accountTransactionScope(ctx); scoped != r {
+		return scoped.GetByIDs(ctx, ids)
+	}
 	if len(ids) == 0 {
 		return []*service.Account{}, nil
 	}
@@ -366,6 +369,9 @@ func (r *accountRepository) GetByIDs(ctx context.Context, ids []int64) ([]*servi
 		}
 	}
 
+	if err := r.hydrateAccountProxyBindings(ctx, out); err != nil {
+		return nil, err
+	}
 	return out, nil
 }
 
@@ -495,6 +501,9 @@ func (r *accountRepository) updateAccount(
 		}
 	}
 
+	if _, err := client.ExecContext(ctx, "SELECT pg_advisory_xact_lock($1)", accountProxyAssignmentLock); err != nil {
+		return err
+	}
 	updated, err := r.updateLockedAccount(
 		ctx,
 		client,
@@ -3312,6 +3321,11 @@ func (r *accountRepository) BulkUpdate(ctx context.Context, ids []int64, updates
 		}
 	}
 
+	if updates.ProxyID != nil {
+		if _, err := exec.ExecContext(ctx, "SELECT pg_advisory_xact_lock($1)", accountProxyAssignmentLock); err != nil {
+			return 0, err
+		}
+	}
 	result, err := exec.ExecContext(ctx, query, args...)
 	if err != nil {
 		return 0, err
@@ -3487,6 +3501,13 @@ func (r *accountRepository) accountsToService(ctx context.Context, accounts []*d
 		outAccounts = append(outAccounts, *out)
 	}
 
+	proxyAccounts := make([]*service.Account, 0, len(outAccounts))
+	for i := range outAccounts {
+		proxyAccounts = append(proxyAccounts, &outAccounts[i])
+	}
+	if err := r.hydrateAccountProxyBindings(ctx, proxyAccounts); err != nil {
+		return nil, err
+	}
 	return outAccounts, nil
 }
 
@@ -4111,8 +4132,32 @@ func (r *accountRepository) ResetQuotaUsedAndClearRateLimitCooldown(ctx context.
 // 仅当 proxy_fallback_origin_id IS NOT NULL 时执行更新；
 // 若影响行数为 0，则返回 ErrAccountNotInFallback（账号存在但不在 fallback 状态）。
 func (r *accountRepository) RevertProxyFallback(ctx context.Context, accountID int64) error {
+	if dbent.TxFromContext(ctx) == nil && r.client != nil {
+		tx, err := r.client.Tx(ctx)
+		if err != nil && !errors.Is(err, dbent.ErrTxStarted) {
+			return err
+		}
+		if tx != nil {
+			defer func() { _ = tx.Rollback() }()
+			if err = r.RevertProxyFallback(dbent.NewTxContext(ctx, tx), accountID); err != nil {
+				return err
+			}
+			if err = tx.Commit(); err != nil {
+				return err
+			}
+			r.syncSchedulerAccountSnapshot(ctx, accountID)
+			return nil
+		}
+	}
+	exec := r.accountTransactionScope(ctx).sql
+	if _, err := exec.ExecContext(ctx, "SELECT pg_advisory_xact_lock($1)", accountProxyAssignmentLock); err != nil {
+		return err
+	}
+	if handled, err := r.tryRevertMultiProxyFallback(ctx, accountID); handled || err != nil {
+		return err
+	}
 	// Probe snapshots belong to the network identity; invalidate only on a real proxy change.
-	res, err := r.sql.ExecContext(ctx, `
+	res, err := exec.ExecContext(ctx, `
 		UPDATE accounts SET
 			extra=CASE WHEN type='apikey' AND proxy_id IS DISTINCT FROM proxy_fallback_origin_id
 				THEN extra - 'upstream_billing_probe' ELSE extra END,
@@ -4125,8 +4170,8 @@ func (r *accountRepository) RevertProxyFallback(ctx context.Context, accountID i
 	if n == 0 {
 		return service.ErrAccountNotInFallback
 	}
-	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &accountID, nil, nil); err != nil {
-		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] revert fallback enqueue failed: account=%d err=%v", accountID, err)
+	if err := enqueueSchedulerOutbox(ctx, exec, service.SchedulerOutboxEventAccountChanged, &accountID, nil, nil); err != nil {
+		return err
 	}
 	return nil
 }

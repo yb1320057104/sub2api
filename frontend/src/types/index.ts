@@ -977,6 +977,8 @@ export interface Proxy {
   password?: string | null
   status: 'active' | 'inactive' | 'expired'
   account_count?: number // Number of accounts using this proxy
+  max_concurrency?: number // Shared across all accounts; 0 means unlimited.
+  max_accounts?: number // Shared binding limit; 0 means unlimited.
   latency_ms?: number
   latency_status?: 'success' | 'failed'
   latency_message?: string
@@ -1269,6 +1271,17 @@ export interface GrokModelDiagnostics {
   mappings: GrokModelDiagnosticItem[]
 }
 
+export interface AccountProxyBindingInput {
+  proxy_id: number
+  max_concurrency: number
+  max_accounts: number
+}
+
+export interface AccountProxyBinding extends AccountProxyBindingInput {
+  proxy?: Proxy | null
+  current_concurrency: number | null
+}
+
 export interface Account {
   id: number
   name: string
@@ -1315,6 +1328,7 @@ export interface Account {
     }
   } & Record<string, unknown>)
   proxy_id: number | null
+  proxy_bindings?: AccountProxyBinding[]
   proxy_fallback_origin_id?: number | null
   proxy_fallback_origin_name?: string | null
   concurrency: number
@@ -1628,6 +1642,7 @@ export interface UpdateAccountRequest {
   credentials?: Record<string, unknown>
   extra?: Record<string, unknown>
   proxy_id?: number | null
+  proxy_bindings?: AccountProxyBindingInput[]
   concurrency?: number
   load_factor?: number | null
   priority?: number

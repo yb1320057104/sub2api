@@ -9,7 +9,7 @@ export interface ModerationEngineMeta {
   rules_version: string
   skipped_images: number
 }
-export type KeywordBlockingMode = 'keyword_only' | 'keyword_and_api' | 'api_only'
+export type KeywordBlockingMode = 'keyword_only' | 'keyword_and_api' | 'api_only' | 'keyword_async_api'
 export type ContentModerationModelFilterType = 'all' | 'include' | 'exclude'
 
 export interface ContentModerationModelFilter {

@@ -238,6 +238,9 @@ type QueueStats struct {
 }
 
 type RuntimeSnapshot struct {
+	FastMode              bool                   `json:"fast_mode"`
+	LastErrorAt           *time.Time             `json:"last_error_at,omitempty"`
+	LastRecoveredAt       *time.Time             `json:"last_recovered_at,omitempty"`
 	ProcessStatus         string                 `json:"process_status"`
 	EffectiveMode         Mode                   `json:"effective_mode"`
 	ExpectedConfigVersion int64                  `json:"expected_config_version"`

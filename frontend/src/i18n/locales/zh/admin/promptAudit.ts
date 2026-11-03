@@ -1,5 +1,6 @@
 export default {
   promptAudit: {
+    fastMode: { title: '快速模式：本地前置 + 节点异步复核', hint: '需开启前置拦截。本地规则仍按分级放行、拦截或扣费放行；远端节点在后台检查，命中仅入榜展示，不阻断、不计封禁、不额外扣款。关闭此选项恢复严格节点前置检查。', contentTitle: '快速模式：关键词前置 + API 异步', contentHint: '关键词按分级动作执行；未命中时正常生成，API 在后台复核，命中仅展示。前置实际拦截没有生成费用；扣费放行仍按完成请求的真实费用和分组设置结算。', recovered: '后续审计已恢复：{time}' },
     title: '提示词审计',
     description: '只审计选中的分组，可使用无需节点的本地规则或远端 Qwen3Guard；事件的完整提示词会入库保存，仅供管理员复核。',
     configVersion: '配置版本 v{version}',

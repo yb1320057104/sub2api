@@ -127,11 +127,12 @@ func (s *BinanceRechargeService) checkAccountWindow(ctx context.Context, account
 	if s.client == nil || s.encryptor == nil {
 		return nil, infraerrors.ServiceUnavailable("BINANCE_UNAVAILABLE", "币安查收服务不可用")
 	}
+	started := time.Now()
 	ctx, cancel := context.WithTimeout(ctx, binanceRechargePollTimeout)
 	defer cancel()
 	token := uuid.NewString()
 	var failures int
-	err := s.db.QueryRowContext(ctx, `UPDATE binance_recharge_accounts SET next_poll_at=NOW()+INTERVAL '120 seconds',api_locked_until=NOW()+INTERVAL '120 seconds',poll_token=$2
+	err := s.db.QueryRowContext(ctx, `UPDATE binance_recharge_accounts SET next_poll_at=NOW()+INTERVAL '120 seconds'+CASE WHEN backup_proxy_url_encrypted<>'' THEN INTERVAL '390 seconds' ELSE INTERVAL '0 seconds' END,api_locked_until=NOW()+INTERVAL '120 seconds'+CASE WHEN backup_proxy_url_encrypted<>'' THEN INTERVAL '390 seconds' ELSE INTERVAL '0 seconds' END,poll_token=$2
 WHERE id=$1 AND next_poll_at<=NOW() AND api_locked_until<=NOW() RETURNING failure_count`, accountID, token).Scan(&failures)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, s.binanceCooldownError(ctx, accountID, false)
@@ -142,6 +143,11 @@ WHERE id=$1 AND next_poll_at<=NOW() AND api_locked_until<=NOW() RETURNING failur
 	result := &BinanceRechargeCheckResult{}
 	a, err := scanBinanceRechargeAccount(s.db.QueryRowContext(ctx, `SELECT `+binanceAccountColumns+` FROM binance_recharge_accounts a WHERE a.id=$1`, accountID))
 	if err == nil {
+		if a.backupProxyURLCiphertext == "" {
+			var legacyCancel context.CancelFunc
+			ctx, legacyCancel = context.WithDeadline(ctx, started.Add(100*time.Second))
+			defer legacyCancel()
+		}
 		var apiKey, secret string
 		apiKey, err = s.encryptor.Decrypt(a.apiKeyEncrypted)
 		if err == nil {
@@ -152,13 +158,14 @@ WHERE id=$1 AND next_poll_at<=NOW() AND api_locked_until<=NOW() RETURNING failur
 		}
 		if err == nil {
 			var receipts []binancepay.Receipt
-			var client BinanceRechargeClient
-			var finish func()
-			client, finish, err = s.accountClient(a)
-			if err == nil {
-				receipts, err = client.History(ctx, apiKey, secret, a.RecipientUID, from, to)
-				finish()
-			}
+			err = s.withBinanceAccountRoutes(ctx, a, token, func(client BinanceRechargeClient) error {
+				var queryErr error
+				receipts, queryErr = client.History(ctx, apiKey, secret, a.RecipientUID, from, to)
+				if queryErr != nil {
+					receipts = nil
+				}
+				return queryErr
+			})
 			if err == nil {
 				for _, receipt := range receipts {
 					var matched, review bool

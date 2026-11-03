@@ -24,6 +24,15 @@ export interface BinanceRechargeAccount extends BinanceRechargeAccountOption {
   api_secret_configured: boolean
   proxy_configured: boolean
   proxy_preflight: boolean
+  backup_proxy_configured?: boolean
+  backup_proxy_preflight?: boolean
+  query_status?: {
+    route?: 'primary' | 'backup'
+    attempt?: number
+    state?: 'running' | 'waiting' | 'succeeded' | 'failed'
+    retry_at?: string
+    updated_at?: string
+  }
   has_orders: boolean
   check_state: BinanceRechargeCheckState
   retry_after_seconds: number
@@ -43,6 +52,9 @@ export interface BinanceRechargeAccountInput {
   proxy_url?: string
   clear_proxy?: boolean
   proxy_preflight?: boolean
+  backup_proxy_url?: string
+  clear_backup_proxy?: boolean
+  backup_proxy_preflight?: boolean
   enabled: boolean
   order_ttl_minutes: number
   credit_multiplier?: string

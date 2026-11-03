@@ -126,8 +126,7 @@ func TestOpenAIReasoningEffortPolicyForCompositeTarget(t *testing.T) {
 	requested := service.RequestedReasoningEffortFromContext(openAICtx.Request.Context())
 	require.NotNil(t, requested)
 	require.Equal(t, "max", *requested)
-	// Account selection has not happened yet; retain the policy for Kilo-only
-	// aliases that become max only after a Kilo account has been selected.
+	// Keep the bound policy for later account adaptation and Messages conversion.
 	boundAtIngress, changed, err := service.ApplyOpenAIReasoningEffortPolicyFromContext(openAICtx.Request.Context(), body)
 	require.NoError(t, err)
 	require.True(t, changed)
@@ -137,8 +136,10 @@ func TestOpenAIReasoningEffortPolicyForCompositeTarget(t *testing.T) {
 		aliasCtx.Request = httptest.NewRequest("POST", "/v1/responses", nil)
 		aliasCtx.Request = aliasCtx.Request.WithContext(service.WithResolvedTargetPlatform(aliasCtx.Request.Context(), service.PlatformOpenAI))
 		aliasBody := []byte(`{"model":"client-model","reasoning":{"effort":"` + effort + `"}}`)
-		_, _, err := applyOpenAIReasoningEffortPolicyForRequest(aliasCtx, apiKey, aliasBody)
+		mapped, changed, err := applyOpenAIReasoningEffortPolicyForRequest(aliasCtx, apiKey, aliasBody)
 		require.NoError(t, err)
+		require.False(t, changed, "legacy max mapping needs the selected account before applying the ceiling")
+		require.Equal(t, effort, gjson.GetBytes(mapped, "reasoning.effort").String())
 		original := service.RequestedReasoningEffortFromContext(aliasCtx.Request.Context())
 		require.NotNil(t, original)
 		require.Equal(t, effort, *original)
@@ -263,6 +264,21 @@ func TestAnthropicCompositePolicyClampsUnsupportedMinimalToLow(t *testing.T) {
 	maxEffort, mappings := anthropicCompatibleReasoningEffortPolicy("minimal", []service.ReasoningEffortMapping{{From: "max", To: "minimal"}})
 	require.Equal(t, "low", maxEffort)
 	require.Equal(t, []service.ReasoningEffortMapping{{From: "max", To: "low"}}, mappings)
+}
+
+func TestAnthropicCompositePolicyKeepsAdvancedTargetsWithinAnthropicScale(t *testing.T) {
+	for _, effort := range []string{"ultra", "persistent"} {
+		original := []service.ReasoningEffortMapping{{From: "high", To: effort}, {From: effort, To: "deny"}}
+		maxEffort, mappings := anthropicCompatibleReasoningEffortPolicy(effort, original)
+		require.Equal(t, "max", maxEffort)
+		require.Equal(t, "max", mappings[0].To)
+		require.Equal(t, effort, original[0].To, "must not mutate the shared composite policy")
+		require.Equal(t, "deny", mappings[1].To)
+		body, changed, err := service.ApplyReasoningEffortPolicy([]byte(`{"output_config":{"effort":"high"}}`), maxEffort, mappings, "")
+		require.NoError(t, err)
+		require.True(t, changed)
+		require.Equal(t, "max", gjson.GetBytes(body, "output_config.effort").String())
+	}
 }
 
 func TestClientRequestedModelUsesCompositePublicModel(t *testing.T) {

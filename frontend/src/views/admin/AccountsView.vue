@@ -185,6 +185,7 @@
           :selecting-all="selectingAllResults"
           :all-results-selected="allResultsSelected"
           @delete="handleBulkDelete"
+          @assign-proxies="openAssignProxies"
           @reset-status="handleBulkResetStatus"
           @refresh-token="handleBulkRefreshToken"
           @query-reset-credits="handleBulkQueryResetCredits"
@@ -367,17 +368,7 @@
           </template>
           <template #cell-proxy="{ row }">
             <div class="flex flex-col gap-1">
-              <div v-if="row.proxy" class="flex items-center gap-2">
-                <span class="text-sm text-gray-700 dark:text-gray-300">{{ row.proxy.name }}</span>
-                <span v-if="row.proxy.country_code" class="text-xs text-gray-500 dark:text-gray-400">
-                  ({{ row.proxy.country_code }})
-                </span>
-              </div>
-              <span v-else class="text-sm text-gray-400 dark:text-dark-500">-</span>
-              <div v-if="row.proxy && row.proxy.expires_at" class="flex items-center gap-2 text-xs">
-                <span class="text-gray-600 dark:text-gray-300">{{ formatDateTime(row.proxy.expires_at) }}</span>
-                <span :class="proxyExpiryBadge(row.proxy)">{{ proxyExpiryText(row.proxy) }}</span>
-              </div>
+              <AccountProxyBindingsCell :account="row" />
               <div v-if="row.proxy_fallback_origin_id" class="flex items-center gap-1">
                 <span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200" :title="t('admin.accounts.fallbackActiveTip', { origin: row.proxy_fallback_origin_name })">
                   {{ t('admin.accounts.fallbackActive') }}
@@ -495,6 +486,7 @@
     </TablePageLayout>
     <CreateAccountModal :show="showCreate" :proxies="proxies" :groups="groups" @close="showCreate = false" @created="reload" />
     <EditAccountModal :show="showEdit" :account="edAcc" :proxies="proxies" :groups="groups" @close="showEdit = false" @updated="handleAccountUpdated" />
+    <AccountAssignProxiesDialog :show="showAssignProxies" :account-ids="assignProxyIDs" @close="showAssignProxies = false" @assigned="handleProxiesAssigned" />
     <ReAuthAccountModal :show="showReAuth" :account="reAuthAcc" @close="closeReAuthModal" @reauthorized="handleAccountUpdated" />
     <AccountTestModal :show="showTest" :account="testingAcc" @close="closeTestModal" />
     <AccountResetCreditBatchDialog :show="showResetCreditBatch" :account-ids="resetCreditBatchIDs" @close="showResetCreditBatch = false" @results="applyResetCreditBatchResults" />
@@ -585,7 +577,8 @@ import TLSFingerprintProfilesModal from '@/components/admin/TLSFingerprintProfil
 import { fetchAllAccountIds } from '@/utils/accountSelection'
 import { buildGrokUsageRefreshKey, buildOpenAIUsageRefreshKey } from '@/utils/accountUsageRefresh'
 import { formatDateTime, formatRelativeTime } from '@/utils/format'
-import { proxyExpiryBadgeClass, proxyExpiryLabelKey } from '@/utils/proxyExpiry'
+import AccountProxyBindingsCell from '@/components/account/AccountProxyBindingsCell.vue'
+import AccountAssignProxiesDialog from '@/components/admin/account/AccountAssignProxiesDialog.vue'
 import { extractApiErrorMessage } from '@/utils/apiError'
 import { sanitizeUrl } from '@/utils/url'
 import { getFloatingPanelPosition } from '@/utils/floatingPanel'
@@ -652,6 +645,8 @@ const showImportData = ref(false)
 const showExportDataDialog = ref(false)
 const includeProxyOnExport = ref(true)
 const showBulkEdit = ref(false)
+const showAssignProxies = ref(false)
+const assignProxyIDs = ref<number[]>([])
 const bulkEditTarget = ref<AccountBulkEditTarget | null>(null)
 const showTempUnsched = ref(false)
 const showDeleteDialog = ref(false)
@@ -1509,6 +1504,7 @@ const isAnyModalOpen = computed(() => {
     showImportData.value ||
     showExportDataDialog.value ||
     showBulkEdit.value ||
+    showAssignProxies.value ||
     showTempUnsched.value ||
     showDeleteDialog.value ||
     showReAuth.value ||
@@ -1536,6 +1532,7 @@ const shouldReplaceAutoRefreshRow = (current: Account, next: Account) => {
   return (
     current.updated_at !== next.updated_at ||
     current.current_concurrency !== next.current_concurrency ||
+    JSON.stringify(current.proxy_bindings) !== JSON.stringify(next.proxy_bindings) ||
     current.current_window_cost !== next.current_window_cost ||
     current.active_sessions !== next.active_sessions ||
     current.schedulable !== next.schedulable ||
@@ -1994,6 +1991,7 @@ const loadAccountDetails = async (account: Pick<AccountListItem, 'id'>): Promise
 const handleEdit = async (a: AccountListItem) => {
   const account = await loadAccountDetails(a)
   if (!account) return
+  await refreshBindingProxies()
   edAcc.value = account
   showEdit.value = true
 }
@@ -2256,14 +2254,29 @@ const collectSelectionMetadata = (rows: Account[]) => {
   return { selectedPlatforms, selectedTypes }
 }
 
-const openBulkEditSelected = () => {
+const refreshBindingProxies = async () => {
+  try { proxies.value = await adminAPI.proxies.getAll({ withCount: true }) }
+  catch (error) { proxies.value = []; appStore.showError(extractApiErrorMessage(error, t('common.error'))) }
+}
+const openBulkEditSelected = async () => {
   bulkEditTarget.value = {
     mode: 'selected',
     accountIds: [...selIds.value],
     selectedPlatforms: [...selPlatforms.value],
     selectedTypes: [...selTypes.value]
   }
+  await refreshBindingProxies()
   showBulkEdit.value = true
+}
+
+const openAssignProxies = () => {
+  if (!selIds.value.length) return
+  assignProxyIDs.value = [...new Set(selIds.value)]
+  showAssignProxies.value = true
+}
+const handleProxiesAssigned = async () => {
+  showAssignProxies.value = false
+  await reload()
 }
 
 const openBulkEditFiltered = async () => {
@@ -2277,6 +2290,7 @@ const openBulkEditFiltered = async () => {
     selectedPlatforms,
     selectedTypes
   }
+  await refreshBindingProxies()
   showBulkEdit.value = true
 }
 
@@ -2344,6 +2358,7 @@ const accountMatchesCurrentFilters = (account: Account) => {
 }
 const mergeRuntimeFields = (oldAccount: Account, updatedAccount: Account): Account => ({
   ...updatedAccount,
+  proxy_bindings: updatedAccount.proxy_bindings ?? oldAccount.proxy_bindings,
   current_concurrency: updatedAccount.current_concurrency ?? oldAccount.current_concurrency,
   current_window_cost: updatedAccount.current_window_cost ?? oldAccount.current_window_cost,
   active_sessions: updatedAccount.active_sessions ?? oldAccount.active_sessions
@@ -2655,13 +2670,6 @@ const isExpired = (value: number | null) => {
   if (!value) return false
   return value * 1000 <= Date.now()
 }
-// 所绑定代理的有效期(逻辑同 /admin/proxies,见 utils/proxyExpiry)
-const proxyExpiryBadge = (p: AccountProxy): string => proxyExpiryBadgeClass(p.expires_at, p.status)
-const proxyExpiryText = (p: AccountProxy): string => {
-  const { key, params } = proxyExpiryLabelKey(p.expires_at, p.status)
-  return params ? t(key, params) : t(key)
-}
-
 // 表格滚动时关闭行操作菜单，并让顶部工具菜单继续贴紧触发按钮。
 const handleScroll = (event: Event) => {
   if (event.target instanceof Element && event.target.closest('.action-menu-content')) return
@@ -2701,7 +2709,7 @@ onMounted(async () => {
   load()
   loadUpstreamBillingProbeGlobalState()
   const [proxiesResult, groupsResult] = await Promise.allSettled([
-    adminAPI.proxies.getAll(),
+    adminAPI.proxies.getAll({ withCount: true }),
     adminAPI.groups.getAll()
   ])
   if (proxiesResult.status === 'fulfilled') {

@@ -33,7 +33,7 @@ func (e *RequestError) Error() string {
 func (e *RequestError) SafeDiagnostic() (stage, reason string, status int, code string) {
 	stage = "request"
 	switch e.Stage {
-	case "time_sync", "permission_check", "pay_history", "request", "credentials", "local_validation":
+	case "time_sync", "permission_check", "pay_history", "request", "credentials", "local_validation", "proxy_preflight":
 		stage = e.Stage
 	}
 	reason = "unknown"
@@ -178,4 +178,20 @@ func transportRequestError(stage string, ctx context.Context, err error) *Reques
 func negativeProviderCode(code string) bool {
 	value, err := strconv.ParseInt(code, 10, 32)
 	return err == nil && value < 0
+}
+
+// Only transport failures may rotate the configured route. A provider
+// rejection, permission/allowlist failure or rate limit is never bypassed.
+func IsRetryableNetworkError(err error) bool {
+	var request *RequestError
+	if !errors.As(err, &request) {
+		return false
+	}
+	_, reason, status, _ := request.SafeDiagnostic()
+	switch reason {
+	case "dns", "connection_refused", "connection_reset", "network", "timeout", "response_read":
+		return status == 0 || (reason == "response_read" && status == http.StatusOK)
+	default:
+		return false
+	}
 }

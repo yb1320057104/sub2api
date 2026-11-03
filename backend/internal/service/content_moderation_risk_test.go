@@ -95,6 +95,47 @@ func moderationRiskTestInput(prompt string) ContentModerationCheckInput {
 	return ContentModerationCheckInput{UserID: 8, GroupID: contentModerationTestGroupID(), Protocol: ContentModerationProtocolOpenAIChat, Body: body}
 }
 
+func TestContentModerationPreflightRiskActionsAndQuickMode(t *testing.T) {
+	for _, strategy := range []string{ContentModerationKeywordModeKeywordOnly, ContentModerationKeywordModeKeywordAndAPI, ContentModerationKeywordModeKeywordAsyncAPI} {
+		for _, action := range []string{auditrisk.Allow, auditrisk.ChargeAllow, auditrisk.Block} {
+			t.Run(strategy+"/"+action, func(t *testing.T) {
+				cfg := defaultContentModerationConfig()
+				cfg.Mode, cfg.KeywordBlockingMode = ContentModerationModePreBlock, strategy
+				cfg.BlockedKeywords, cfg.KeywordScores = []string{"fixture"}, map[string]int{"fixture": 70}
+				svc, transport, _, _ := moderationRiskTestService(t, cfg)
+				stored, err := svc.loadRuntimeSnapshot(context.Background())
+				require.NoError(t, err)
+				stored.config.RiskPolicy.HighAction = action
+				d, err := svc.Check(context.Background(), moderationRiskTestInput("fixture"))
+				require.NoError(t, err)
+				require.Equal(t, action, d.PolicyAction)
+				require.Equal(t, action == auditrisk.Block, d.Blocked)
+				require.Equal(t, action != auditrisk.Block, d.Allowed)
+				require.Zero(t, transport.calls, "local graded hit must never fall into an API/legacy boolean block")
+			})
+		}
+	}
+	cfg := defaultContentModerationConfig()
+	cfg.Mode, cfg.KeywordBlockingMode = ContentModerationModePreBlock, ContentModerationKeywordModeKeywordAsyncAPI
+	cfg.BlockedKeywords = []string{"fixture"}
+	svc, transport, repo, hashes := moderationRiskTestService(t, cfg)
+	d, err := svc.Check(context.Background(), moderationRiskTestInput("normal hello"))
+	require.NoError(t, err)
+	require.True(t, d.Allowed)
+	require.Zero(t, transport.calls, "first token must not wait for remote review")
+	require.Len(t, svc.asyncQueue, 1)
+	task := <-svc.asyncQueue
+	delay := 0
+	snapshot, err := svc.loadRuntimeSnapshot(context.Background())
+	require.NoError(t, err)
+	d = svc.checkSync(context.Background(), task.input, snapshot.config, task.content, task.inputHash, &delay, false)
+	require.True(t, d.Allowed)
+	require.Equal(t, auditrisk.Allow, d.PolicyAction)
+	require.Equal(t, 1, transport.calls)
+	require.Zero(t, repo.countCalls)
+	require.Empty(t, hashes.snapshotRecorded())
+}
+
 func TestContentModerationRiskKeywordsHighestScoreZeroAndBoundaries(t *testing.T) {
 	for _, tc := range []struct {
 		name, prompt, keyword, action string

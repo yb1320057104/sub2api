@@ -15,6 +15,11 @@ import (
 type pluginRoutingHTTPUpstream struct {
 	doCalls        int
 	doWithTLSCalls int
+	proxyRouter    *AccountProxyRouter
+}
+
+func (u *pluginRoutingHTTPUpstream) AccountProxyRouter() *AccountProxyRouter {
+	return u.proxyRouter
 }
 
 func (u *pluginRoutingHTTPUpstream) Do(*http.Request, string, int64, int) (*http.Response, error) {
@@ -103,6 +108,35 @@ func TestOpenAIGatewayPluginRoutingPreservesAPIKeyAndFailsClosedForOAuth(t *test
 	assert.Nil(t, oauthResponse)
 	assert.Contains(t, err.Error(), "插件不可用")
 	assert.Equal(t, 1, upstream.doCalls)
+}
+
+func TestOpenAIGatewayUnselectedPluginDoesNotAcquireProxyAdmission(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		route   *pluginRoute
+		account *Account
+	}{
+		{name: "no binding", account: &Account{ID: 7, Platform: PlatformOpenAI, Type: AccountTypeOAuth}},
+		{name: "disabled rollout", route: &pluginRoute{pluginID: 1}, account: &Account{ID: 7, Platform: PlatformOpenAI, Type: AccountTypeOAuth}},
+		{name: "API key", route: &pluginRoute{pluginID: 1, rolloutPercent: 100}, account: &Account{ID: 7, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			manager := &PluginManager{}
+			manager.route.Store(tt.route)
+			// This router cannot acquire a lease. An unselected plugin must leave
+			// admission entirely to the normal HTTP transport instead of taking
+			// and releasing a second slot before the transport runs.
+			upstream := &pluginRoutingHTTPUpstream{proxyRouter: NewAccountProxyRouter(nil, nil)}
+			gateway := &OpenAIGatewayService{pluginManager: manager, httpUpstream: upstream}
+			request, err := http.NewRequestWithContext(WithAccountProxyRouting(context.Background()), http.MethodPost, "https://example.com/v1/responses", nil)
+			require.NoError(t, err)
+			response, err := gateway.doOpenAIUpstream(request, "", tt.account)
+			require.NoError(t, err)
+			require.NotNil(t, response)
+			require.NoError(t, response.Body.Close())
+			assert.Equal(t, 1, upstream.doCalls)
+		})
+	}
 }
 
 func TestStablePluginBucketIsDeterministicAndBounded(t *testing.T) {

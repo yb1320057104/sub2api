@@ -64,7 +64,20 @@ func ProvideSchedulerCache(rdb *redis.Client, cfg *config.Config) service.Schedu
 }
 
 // ProviderSet is the Wire provider set for all repositories
+func ProvideAccountProxyRouter(repo service.AccountRepository, cache service.ProxyConcurrencyCache) *service.AccountProxyRouter {
+	reader, _ := repo.(service.AccountProxyBindingReader)
+	return service.NewAccountProxyRouter(reader, cache)
+}
+
+func ProvideHTTPUpstream(cfg *config.Config, router *service.AccountProxyRouter) service.HTTPUpstream {
+	upstream := NewHTTPUpstream(cfg).(*httpUpstreamService)
+	upstream.proxyRouter = router
+	return upstream
+}
+
 var ProviderSet = wire.NewSet(
+	NewProxyConcurrencyCache,
+	ProvideAccountProxyRouter,
 	NewUserRepository,
 	NewAPIKeyRepository,
 	NewGroupRepository,
@@ -162,7 +175,7 @@ var ProviderSet = wire.NewSet(
 	NewProxyExitInfoProber,
 	NewClaudeUsageFetcher,
 	NewClaudeOAuthClient,
-	NewHTTPUpstream,
+	ProvideHTTPUpstream,
 	NewOpenAIOAuthClient,
 	NewOpenAIReferralClient,
 	NewGrokOAuthClient,

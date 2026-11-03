@@ -17,10 +17,16 @@ type moderationEngineSettings struct {
 	value string
 }
 
-func (r *moderationEngineSettings) GetValue(context.Context, string) (string, error) {
-	return r.value, nil
+func (r *moderationEngineSettings) GetValue(_ context.Context, key string) (string, error) {
+	if key == service.SettingKeyContentModerationConfig {
+		return r.value, nil
+	}
+	return "", service.ErrSettingNotFound
 }
-func (r *moderationEngineSettings) Set(_ context.Context, _ string, value string) error {
+func (r *moderationEngineSettings) Set(_ context.Context, key string, value string) error {
+	if key != service.SettingKeyContentModerationConfig {
+		return service.ErrSettingNotFound
+	}
 	r.value = value
 	return nil
 }

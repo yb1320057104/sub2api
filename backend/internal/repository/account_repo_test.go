@@ -156,3 +156,37 @@ func (parameterLimitRows) Close() error {
 func (parameterLimitRows) Next([]driver.Value) error {
 	return io.EOF
 }
+
+func TestPK50ProxyBindingsPlannerCapacityAndStableRetry(t *testing.T) {
+	input := service.AccountProxyAssignmentInput{ProxiesPerAccount: 2, MaxAccountsPerProxy: 2, ProxyConcurrency: 5}
+	ids := []int64{10, 11}
+	proxies := []int64{1, 2, 3}
+	// Partially preserving account 10's two scarce proxies would strand account 11.
+	existing := map[int64][]service.AccountProxyBinding{10: {{ProxyID: 1}, {ProxyID: 2}}}
+	plan, _, err := planAccountProxyAssignments(ids, proxies, map[int64]int{1: 1, 2: 1}, existing, input)
+	require.NoError(t, err)
+	counts := map[int64]int{1: 1, 2: 1}
+	for _, rows := range plan {
+		require.Len(t, rows, 2)
+		require.NotEqual(t, rows[0].ProxyID, rows[1].ProxyID)
+		for _, row := range rows {
+			counts[row.ProxyID]++
+		}
+	}
+	for _, n := range counts {
+		require.LessOrEqual(t, n, 2)
+	}
+	saved := map[int64][]service.AccountProxyBinding{}
+	for id, rows := range plan {
+		for _, row := range rows {
+			saved[id] = append(saved[id], service.AccountProxyBinding{ProxyID: row.ProxyID})
+		}
+	}
+	repeated, _, err := planAccountProxyAssignments(ids, proxies, map[int64]int{1: 1, 2: 1}, saved, input)
+	require.NoError(t, err)
+	require.Equal(t, plan, repeated)
+	input.MaxAccountsPerProxy = 1
+	failed, _, err := planAccountProxyAssignments(ids, proxies, nil, nil, input)
+	require.Error(t, err)
+	require.Nil(t, failed)
+}

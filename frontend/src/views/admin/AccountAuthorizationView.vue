@@ -26,7 +26,14 @@
             <label class="block"><span class="input-label">{{ t('authorization.priority') }}</span><input v-model.number="form.account_priority" class="input" type="number" min="0" max="1000" step="1" required /></label>
             <div class="space-y-3 rounded-xl border border-gray-200 p-3 dark:border-dark-600">
               <label class="block"><span class="input-label">{{ t('authorization.accountProxyMode') }}</span><Select :model-value="form.account_proxy_mode" @update:model-value="form.account_proxy_mode = $event === 'managed' ? 'managed' : 'direct'" :aria-label="t('authorization.accountProxyMode')" :disabled="busy || !ready" :options="[{ value: 'direct', label: t('authorization.accountDirect') }, { value: 'managed', label: t('authorization.accountManaged') }]" /></label>
-              <label v-if="form.account_proxy_mode === 'managed'" class="block"><span class="input-label">{{ t('authorization.maxAccountsPerProxy') }}</span><input v-model.number="form.max_accounts_per_proxy" class="input" type="number" min="1" max="1000" step="1" required /></label>
+              <div v-if="form.account_proxy_mode === 'managed'" class="space-y-3" data-testid="authorization-managed-proxy-settings">
+                <div class="grid grid-cols-2 gap-3">
+                  <label class="block"><span class="input-label">{{ t('authorization.proxiesPerAccount') }}</span><input v-model.number="form.proxies_per_account" class="input" type="number" min="1" max="100" step="1" :aria-label="t('authorization.proxiesPerAccount')" required /></label>
+                  <label class="block"><span class="input-label">{{ t('authorization.proxyConcurrency') }}</span><input v-model.number="form.proxy_concurrency" class="input" type="number" min="1" max="10000" step="1" :aria-label="t('authorization.proxyConcurrency')" required /></label>
+                </div>
+                <label class="block"><span class="input-label">{{ t('authorization.maxAccountsPerProxy') }}</span><input v-model.number="form.max_accounts_per_proxy" class="input" type="number" min="1" max="10000" step="1" :aria-label="t('authorization.maxAccountsPerProxy')" required /></label>
+                <p class="rounded-lg bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800 dark:bg-amber-950/30 dark:text-amber-200">{{ t('authorization.proxyGlobalLimitsHint') }}</p>
+              </div>
               <p class="text-xs leading-5 text-gray-500 dark:text-dark-400">{{ t('authorization.accountProxyHint') }}</p>
             </div>
             <fieldset class="min-w-0"><legend class="input-label">{{ t('authorization.passGroups') }}</legend><div class="max-h-36 space-y-2 overflow-y-auto rounded-xl border border-gray-200 p-3 dark:border-dark-600"><label v-for="group in groups" :key="group.id" class="flex cursor-pointer items-center gap-2 text-sm"><input v-model="form.pass_group_ids" type="checkbox" :value="group.id" class="rounded border-gray-300 text-primary-600" /><span class="break-all">{{ group.name }}</span></label><p v-if="!groups.length" class="text-xs text-gray-500">{{ t('authorization.noGroups') }}</p></div></fieldset>
@@ -93,10 +100,10 @@ const showCandySettings = ref(false)
 const gateModels = computed(() => config.value?.intelligence_models ?? (config.value?.intelligence_model ? [{ model: config.value.intelligence_model, effort: config.value.intelligence_effort, enabled: true }] : []))
 const gateRules = computed(() => config.value?.intelligence_group_rules ?? [])
 const groupName = (id: number) => groups.value.find(group => group.id === id)?.name ?? t('accountCandy.unavailableGroup', { id })
-const form = ref<AuthorizationSubmission>({ accounts: '', intelligence_gate: false, workbench_revision: '', authorization_concurrency: 3, account_concurrency: 20, account_priority: 1, account_proxy_mode: 'direct', max_accounts_per_proxy: 3, group_ids: [], pass_group_ids: [] })
+const form = ref<AuthorizationSubmission>({ accounts: '', intelligence_gate: false, workbench_revision: '', authorization_concurrency: 3, account_concurrency: 20, account_priority: 1, account_proxy_mode: 'direct', max_accounts_per_proxy: 3, proxies_per_account: 1, proxy_concurrency: 3, group_ids: [], pass_group_ids: [] })
 
 function applyWorkbench(value: AuthorizationConfig) {
-  form.value = { ...form.value, intelligence_gate: value.intelligence_gate, workbench_revision: value.workbench_revision, authorization_concurrency: value.workbench_authorization_concurrency ?? 3, account_concurrency: value.workbench_account_concurrency ?? 20, account_priority: value.workbench_account_priority ?? 1, account_proxy_mode: value.account_proxy_mode || 'direct', max_accounts_per_proxy: value.max_accounts_per_proxy || 3, group_ids: [], pass_group_ids: [...(value.pass_group_ids || [])] }
+  form.value = { ...form.value, intelligence_gate: value.intelligence_gate, workbench_revision: value.workbench_revision, authorization_concurrency: value.workbench_authorization_concurrency ?? 3, account_concurrency: value.workbench_account_concurrency ?? 20, account_priority: value.workbench_account_priority ?? 1, account_proxy_mode: value.account_proxy_mode || 'direct', max_accounts_per_proxy: value.max_accounts_per_proxy ?? 3, proxies_per_account: value.proxies_per_account ?? 1, proxy_concurrency: value.proxy_concurrency ?? 3, group_ids: [], pass_group_ids: [...(value.pass_group_ids || [])] }
   workbenchConflict.value = false
 }
 
@@ -136,9 +143,10 @@ async function refreshWorkbench() {
 
 function validWorkbench(): boolean {
   const value = form.value
-  if (![value.authorization_concurrency, value.account_concurrency, value.account_priority, value.max_accounts_per_proxy].every(Number.isInteger) ||
+  if (![value.authorization_concurrency, value.account_concurrency, value.account_priority, value.max_accounts_per_proxy, value.proxies_per_account, value.proxy_concurrency].every(Number.isInteger) ||
     value.authorization_concurrency < 1 || value.authorization_concurrency > 50 || value.account_concurrency < 1 || value.account_concurrency > 1000 ||
-    value.account_priority < 0 || value.account_priority > 1000 || (value.max_accounts_per_proxy ?? 0) < 1 || (value.max_accounts_per_proxy ?? 0) > 1000) {
+    value.account_priority < 0 || value.account_priority > 1000 || (value.max_accounts_per_proxy ?? 0) < 1 || (value.max_accounts_per_proxy ?? 0) > 10000 ||
+    (value.proxies_per_account ?? 0) < 1 || (value.proxies_per_account ?? 0) > 100 || (value.proxy_concurrency ?? 0) < 1 || (value.proxy_concurrency ?? 0) > 10000) {
     app.showError(t('authorization.invalidWorkbench'))
     return false
   }

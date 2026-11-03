@@ -23,6 +23,44 @@ import (
 
 type binanceFixtureTransport func(*http.Request) (*http.Response, error)
 
+func TestBinanceBackupOnlyRetriesNetworkFailures(t *testing.T) {
+	for _, reason := range []string{"dns", "connection_refused", "connection_reset", "network", "timeout", "response_read"} {
+		t.Run(reason, func(t *testing.T) {
+			if !IsRetryableNetworkError(&RequestError{Reason: reason}) {
+				t.Fatal("network error not retryable")
+			}
+		})
+	}
+	for _, failure := range []error{
+		context.Canceled, context.DeadlineExceeded, ErrProxyPreflight, ErrProxyPreflightConfiguration,
+		&RateLimitError{StatusCode: 429}, &RateLimitError{StatusCode: 418},
+		&RequestError{Reason: "network", HTTPStatus: 403}, &RequestError{Reason: "proxy_connect", HTTPStatus: 502},
+		&RequestError{Reason: "api_key_ip_permission", HTTPStatus: 403, ProviderCode: "-2015"},
+		&RequestError{Reason: "proxy_auth", HTTPStatus: 407}, &RequestError{Reason: "signature"},
+		&RequestError{Reason: "tls"}, &RequestError{Reason: "response_invalid"}, &RequestError{Reason: "cancelled"},
+	} {
+		if IsRetryableNetworkError(failure) {
+			t.Fatalf("non-network error classified for retry: %T", failure)
+		}
+	}
+	if !IsRetryableNetworkError(errors.Join(ErrProxyPreflight, &RequestError{Stage: "proxy_preflight", Reason: "network"})) {
+		t.Fatal("safe preflight network cause lost")
+	}
+}
+
+func TestBinancePreflightNetworkFailuresRemainSafeAndClassified(t *testing.T) {
+	client := &Client{preflightHTTP: newHTTPClient(binanceFixtureTransport(func(*http.Request) (*http.Response, error) {
+		return nil, &net.OpError{Op: "dial", Err: syscall.ECONNRESET}
+	})), proxyURL: &url.URL{Scheme: "http", Host: "fixture.invalid:3128", User: url.UserPassword("fixture-user", "private-secret")}}
+	_, err := client.preflight(context.Background())
+	if !errors.Is(err, ErrProxyPreflight) || !IsRetryableNetworkError(err) {
+		t.Fatal("preflight cause not retained")
+	}
+	if strings.Contains(err.Error(), "private-secret") || strings.Contains(err.Error(), "fixture.invalid") {
+		t.Fatal("proxy secret leaked")
+	}
+}
+
 type binanceUnreadErrorBody struct{ reads int }
 
 func (body *binanceUnreadErrorBody) Read([]byte) (int, error) {

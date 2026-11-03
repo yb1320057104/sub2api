@@ -12,7 +12,7 @@ import (
 const authorizationWorkbenchLockID int64 = 70360006
 
 func authorizationWorkbenchDefaults() AuthorizationSubmit {
-	return AuthorizationSubmit{AuthorizationConcurrency: 3, AccountConcurrency: 20, AccountPriority: 1, AccountProxyMode: "direct", MaxAccountsPerProxy: 3, PassGroupIDs: []int64{}, GroupIDs: []int64{}}
+	return AuthorizationSubmit{AuthorizationConcurrency: 3, AccountConcurrency: 20, AccountPriority: 1, AccountProxyMode: "direct", MaxAccountsPerProxy: 3, ProxiesPerAccount: 1, PassGroupIDs: []int64{}, GroupIDs: []int64{}}
 }
 
 func authorizationWorkbenchTx(ctx context.Context, tx *sql.Tx) (AuthorizationSubmit, error) {
@@ -42,6 +42,8 @@ func (s *AccountAuthorizationService) normalizeAuthorizationWorkbench(ctx contex
 		AccountPriority:          input.AccountPriority,
 		AccountProxyMode:         input.AccountProxyMode,
 		MaxAccountsPerProxy:      input.MaxAccountsPerProxy,
+		ProxiesPerAccount:        input.ProxiesPerAccount,
+		ProxyConcurrency:         input.ProxyConcurrency,
 		IntelligenceGate:         input.IntelligenceGate,
 		PassGroupIDs:             append([]int64{}, input.PassGroupIDs...),
 		GroupIDs:                 append([]int64{}, input.PassGroupIDs...),

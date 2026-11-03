@@ -14,6 +14,8 @@ const (
 )
 
 type Proxy struct {
+	MaxConcurrency int
+	MaxAccounts    int
 	ID             int64
 	Name           string
 	Protocol       string

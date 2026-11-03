@@ -403,6 +403,11 @@ func (s *AccountAuthorizationService) applyAuthorization(ctx context.Context, cf
 	}
 	var account *Account
 	if before != nil {
+		// Credential refresh retains the latest complete proxy set. Match the
+		// allocator's lock order before locking the account row.
+		if _, err = tx.Client().ExecContext(txctx, `SELECT pg_advisory_xact_lock(70440001)`); err != nil {
+			return err
+		}
 		if _, err = tx.Client().ExecContext(txctx, `SELECT id FROM accounts WHERE id=$1 AND deleted_at IS NULL FOR UPDATE`, before.ID); err != nil {
 			return err
 		}
@@ -464,7 +469,7 @@ func (s *AccountAuthorizationService) applyAuthorization(ctx context.Context, cf
 				return authorizationBrowserFailure("account_changed", "授权期间出现同邮箱账号，请重新提交以更新原账号")
 			}
 		}
-		proxyID, proxyErr := authorizationImportProxy(txctx, tx, &job.settings)
+		proxyPlan, proxyErr := authorizationImportProxy(txctx, tx, &job.settings)
 		if proxyErr != nil {
 			return proxyErr
 		}
@@ -479,9 +484,18 @@ func (s *AccountAuthorizationService) applyAuthorization(ctx context.Context, cf
 		} else if len(groups) == 0 {
 			return authorizationBrowserFailure("admission_failed", "未配置入库分组，请在授权工作台选择分组后重新提交")
 		}
-		account, err = s.admin.CreateAccount(txctx, &CreateAccountInput{Name: string(name), Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: credentials, Concurrency: load, LoadFactor: &load, Priority: job.settings.AccountPriority, ProxyID: proxyID, GroupIDs: groups, SkipDefaultGroupBind: true})
+		account, err = s.admin.CreateAccount(txctx, &CreateAccountInput{Name: string(name), Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: credentials, Concurrency: load, LoadFactor: &load, Priority: job.settings.AccountPriority, ProxyID: proxyPlan.PrimaryID, GroupIDs: groups, SkipDefaultGroupBind: true})
 		if err != nil {
 			return authorizationBrowserFailure("admission_failed", "入库被拒绝，请检查分组有效性及准入要求")
+		}
+		if err = applyAuthorizationImportProxyPlan(txctx, s.accounts, account.ID, proxyPlan); err != nil {
+			return err
+		}
+		if proxyPlan.ApplyBindings {
+			account, err = s.accounts.GetByID(txctx, account.ID)
+			if err != nil {
+				return err
+			}
 		}
 	}
 	if job.settings.IntelligenceGate {
@@ -503,6 +517,15 @@ func (s *AccountAuthorizationService) applyAuthorization(ctx context.Context, cf
 	}
 	status, stage, message := "completed", "completed", "授权成功，凭据已写入账号"
 	metadata := map[string]any{"authorization_completed": true, "account_proxy_id": account.ProxyID, "intelligence_gate": job.settings.IntelligenceGate, "pass_group_ids": job.settings.PassGroupIDs, "fail_group_ids": job.settings.FailGroupIDs}
+	proxyIDs := make([]int64, 0, len(account.ProxyBindings))
+	proxyBindings := make([]AccountProxyBindingInput, 0, len(account.ProxyBindings))
+	for _, binding := range account.ProxyBindings {
+		proxyIDs = append(proxyIDs, binding.ProxyID)
+		proxyBindings = append(proxyBindings, AccountProxyBindingInput{ProxyID: binding.ProxyID, MaxConcurrency: binding.MaxConcurrency, MaxAccounts: binding.MaxAccounts})
+	}
+	metadata["account_proxy_ids"] = proxyIDs
+	metadata["account_proxy_bindings"] = proxyBindings
+	metadata["account_proxy_preserved"] = before != nil
 	if !job.settings.IntelligenceGate {
 		message = "授权成功，凭据已写入账号；本次不进行糖果测试"
 	}
