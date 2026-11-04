@@ -35,6 +35,7 @@ export async function list(
     protocol?: string
     status?: 'active' | 'inactive' | 'expired'
     search?: string
+    proxy_group_id?: number
     sort_by?: string
     sort_order?: 'asc' | 'desc'
   },

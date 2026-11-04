@@ -88,7 +88,12 @@ func (s *OpenAIGatewayService) ensureLiveProxyLease(ctx context.Context, record 
 	if pinned == 0 && account.ProxyID != nil {
 		pinned = *account.ProxyID
 	}
-	route, err := s.accountProxyRouter().AcquirePersistent(WithAccountProxyRouting(ctx), account.ID, resolveAccountProxyURL(account), pinned, time.Until(record.ExpiresAt))
+	ctx = WithAccountProxyRouting(ctx)
+	ctx, _, err = s.prepareOpenAIProxyPriority(ctx, OpenAIAccountScheduleRequest{GroupID: liveOptionalID(record.GroupID), Platform: account.Platform, RequiredTransport: OpenAIUpstreamTransportHTTPSSE, RequiredCapability: OpenAIEndpointCapabilityLive})
+	if err != nil {
+		return err
+	}
+	route, err := s.accountProxyRouter().AcquirePersistent(ctx, account.ID, resolveAccountProxyURL(account), pinned, time.Until(record.ExpiresAt))
 	if err != nil {
 		// At capacity one, a concurrent upgrade may have consumed the only slot
 		// between our stale record read and admission. Reuse its persisted lease.

@@ -389,7 +389,7 @@ func (r *proxyRepository) List(ctx context.Context, params pagination.Pagination
 
 // ListWithFilters lists proxies with optional filtering by protocol, status, and search query
 func (r *proxyRepository) ListWithFilters(ctx context.Context, params pagination.PaginationParams, protocol, status, search string) ([]service.Proxy, *pagination.PaginationResult, error) {
-	q := r.client.Proxy.Query()
+	q := applyProxyGroupFilter(ctx, r.client.Proxy.Query())
 	if protocol != "" {
 		q = q.Where(proxy.ProtocolEQ(protocol))
 	}
@@ -427,7 +427,7 @@ func (r *proxyRepository) ListWithFilters(ctx context.Context, params pagination
 
 // ListWithFiltersAndAccountCount lists proxies with filters and includes account count per proxy
 func (r *proxyRepository) ListWithFiltersAndAccountCount(ctx context.Context, params pagination.PaginationParams, protocol, status, search string) ([]service.ProxyWithAccountCount, *pagination.PaginationResult, error) {
-	q := r.client.Proxy.Query()
+	q := applyProxyGroupFilter(ctx, r.client.Proxy.Query())
 	if protocol != "" {
 		q = q.Where(proxy.ProtocolEQ(protocol))
 	}
@@ -541,7 +541,7 @@ func proxyListOrder(params pagination.PaginationParams) []func(*entsql.Selector)
 }
 
 func (r *proxyRepository) ListActive(ctx context.Context) ([]service.Proxy, error) {
-	proxies, err := r.client.Proxy.Query().
+	proxies, err := applyProxyGroupFilter(ctx, r.client.Proxy.Query()).
 		Where(proxy.StatusEQ(service.StatusActive)).
 		All(ctx)
 	if err != nil {
@@ -654,7 +654,7 @@ func (r *proxyRepository) GetAccountCountsForProxies(ctx context.Context) (count
 
 // ListActiveWithAccountCount returns all active proxies with account count, sorted by creation time descending
 func (r *proxyRepository) ListActiveWithAccountCount(ctx context.Context) ([]service.ProxyWithAccountCount, error) {
-	proxies, err := r.client.Proxy.Query().
+	proxies, err := applyProxyGroupFilter(ctx, r.client.Proxy.Query()).
 		Where(proxy.StatusEQ(service.StatusActive)).
 		Order(dbent.Desc(proxy.FieldCreatedAt)).
 		All(ctx)

@@ -37,7 +37,12 @@
           </div>
 
           <!-- Right: All action buttons -->
+          <div class="w-full sm:w-44">
+            <Select v-model="filters.proxy_group_id" :options="proxyGroupFilterOptions" :placeholder="t('admin.proxyGroups.all')" @change="handleFilterChange" />
+          </div>
           <div class="flex flex-1 flex-wrap items-center justify-end gap-2">
+            <button class="btn btn-secondary" @click="showProxyGroups = true">{{ t('admin.proxyGroups.manage') }}</button>
+            <button class="btn btn-secondary" :disabled="selectedCount === 0" @click="showProxyGroupMembers = true">{{ t('admin.proxyGroups.move') }}</button>
             <button
               @click="loadProxies"
               :disabled="loading"
@@ -148,6 +153,10 @@
               {{ value.toUpperCase() }}
             </span>
             <span v-else class="text-sm text-gray-400">-</span>
+          </template>
+
+          <template #cell-proxy_group="{ row }">
+            <span class="text-sm text-gray-600 dark:text-gray-300">{{ proxyGroupName(row) }}</span>
           </template>
 
           <template #cell-address="{ row }">
@@ -995,6 +1004,8 @@
         </div>
       </template>
     </BaseDialog>
+    <ProxyGroupsDialog :show="showProxyGroups" @close="showProxyGroups = false" @changed="handleProxyGroupsChanged" />
+    <ProxyGroupMembersDialog :show="showProxyGroupMembers" :proxy-ids="Array.from(selectedProxyIds)" @close="showProxyGroupMembers = false" @assigned="handleProxyGroupMembersAssigned" />
   </AppLayout>
 </template>
 
@@ -1013,6 +1024,9 @@ import BaseDialog from '@/components/common/BaseDialog.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import ImportDataModal from '@/components/admin/proxy/ImportDataModal.vue'
+import ProxyGroupsDialog from '@/components/admin/proxy/ProxyGroupsDialog.vue'
+import ProxyGroupMembersDialog from '@/components/admin/proxy/ProxyGroupMembersDialog.vue'
+import { listProxyGroups, type ProxyGroup } from '@/api/admin/proxyGroups'
 import Select from '@/components/common/Select.vue'
 import ProxyAdBanner from '@/components/common/ProxyAdBanner.vue'
 import Icon from '@/components/icons/Icon.vue'
@@ -1031,6 +1045,7 @@ const { copyToClipboard } = useClipboard()
 const columns = computed<Column[]>(() => [
   { key: 'select', label: '', sortable: false },
   { key: 'name', label: t('admin.proxies.columns.name'), sortable: true },
+  { key: 'proxy_group', label: t('admin.proxyGroups.group'), sortable: false },
   { key: 'protocol', label: t('admin.proxies.columns.protocol'), sortable: true },
   { key: 'address', label: t('admin.proxies.columns.address'), sortable: false },
   { key: 'auth', label: t('admin.proxies.columns.auth'), sortable: false },
@@ -1073,13 +1088,39 @@ const editStatusOptions = computed(() => [
 ])
 
 const proxies = ref<Proxy[]>([])
+const proxyGroups = ref<ProxyGroup[]>([])
+const showProxyGroups = ref(false)
+const showProxyGroupMembers = ref(false)
+const proxyGroupFilterOptions = computed(() => [
+  { value: '', label: t('admin.proxyGroups.all') },
+  { value: '0', label: t('admin.proxyGroups.ungrouped') },
+  ...proxyGroups.value.map(group => ({ value: String(group.id), label: group.name }))
+])
+const proxyGroupName = (proxy: Proxy) => {
+  const group = proxyGroups.value.find(item => proxy.proxy_group_id != null ? item.id === proxy.proxy_group_id : item.proxy_ids.includes(proxy.id))
+  return group?.name ?? (proxy.proxy_group_id ? `#${proxy.proxy_group_id}` : t('admin.proxyGroups.ungrouped'))
+}
+const loadProxyGroups = async () => {
+  try { proxyGroups.value = await listProxyGroups() }
+  catch { appStore.showError(t('admin.proxyGroups.loadFailed')) }
+}
+const handleProxyGroupsChanged = async () => {
+  await loadProxyGroups()
+  if (filters.proxy_group_id && filters.proxy_group_id !== '0' && !proxyGroups.value.some(group => String(group.id) === filters.proxy_group_id)) filters.proxy_group_id = ''
+  await loadProxies()
+}
+const handleProxyGroupMembersAssigned = async (ids: number[]) => {
+  removeSelectedProxies(ids)
+  await handleProxyGroupsChanged()
+}
 const visiblePasswordIds = reactive(new Set<number>())
 const copyMenuProxyId = ref<number | null>(null)
 const loading = ref(false)
 const searchQuery = ref('')
 const filters = reactive({
   protocol: '',
-  status: ''
+  status: '',
+  proxy_group_id: ''
 })
 const pagination = reactive({
   page: 1,
@@ -1219,6 +1260,7 @@ const toggleSelectAllVisible = (event: Event) => {
 
 const buildProxyQueryFilters = () => ({
   protocol: filters.protocol || undefined,
+  ...(filters.proxy_group_id !== '' ? { proxy_group_id: Number(filters.proxy_group_id) } : {}),
   status: (filters.status || undefined) as 'active' | 'inactive' | 'expired' | undefined,
   search: searchQuery.value || undefined,
   sort_by: sortState.sort_by,
@@ -2154,6 +2196,7 @@ function closeCopyMenu() {
 
 onMounted(() => {
   loadProxies()
+  loadProxyGroups()
   loadBackupProxyOptions()
   document.addEventListener('click', closeCopyMenu)
 })

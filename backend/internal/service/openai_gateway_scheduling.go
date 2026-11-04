@@ -387,6 +387,9 @@ func isOpenAICompatibleAccountEligibleForRequestBeforeProfit(ctx context.Context
 }
 
 func openAICompatibleAccountEligibilityFailureReasonBeforeProfit(ctx context.Context, account *Account, platform string, requestedModel string, requireCompact bool, requiredCapability OpenAIEndpointCapability) string {
+	if account != nil && !proxyPriorityAllowed(ctx, account.ID) {
+		return "strict_proxy_priority"
+	}
 	platform = NormalizeOpenAICompatiblePlatform(platform)
 	if account == nil {
 		return "account_nil"
@@ -903,6 +906,11 @@ func (s *OpenAIGatewayService) selectAccountForModelWithExclusions(ctx context.C
 // selectAccountForModelWithExclusionsStickyHit 与 selectAccountForModelWithExclusions 相同，
 // 另返回账号是否来自粘性会话命中。
 func (s *OpenAIGatewayService) selectAccountForModelWithExclusionsStickyHit(ctx context.Context, groupID *int64, platform string, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}, requireCompact bool, stickyAccountID int64, requiredCapability OpenAIEndpointCapability, preferLowUpstreamRate bool) (*Account, bool, error) {
+	var priorityErr error
+	ctx, excludedIDs, priorityErr = s.prepareOpenAIProxyPriority(ctx, OpenAIAccountScheduleRequest{GroupID: groupID, Platform: platform, RequestedModel: requestedModel, ExcludedIDs: excludedIDs, RequireCompact: requireCompact, RequiredCapability: requiredCapability, RequiredTransport: OpenAIUpstreamTransportAny, RequirePrivacySet: s.openAIGroupRequiresPrivacySet(ctx, groupID)})
+	if priorityErr != nil {
+		return nil, false, priorityErr
+	}
 	platform = NormalizeOpenAICompatiblePlatform(platform)
 	if s.checkChannelPricingRestriction(ctx, groupID, requestedModel) {
 		slog.Warn("channel pricing restriction blocked request",
@@ -1136,6 +1144,11 @@ func (s *OpenAIGatewayService) SelectAccountWithLoadAwareness(ctx context.Contex
 }
 
 func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Context, groupID *int64, platform string, sessionHash string, requestedModel string, excludedIDs map[int64]struct{}, requireCompact bool, requiredCapability OpenAIEndpointCapability, useUpstreamTokenCost bool) (*AccountSelectionResult, error) {
+	var priorityErr error
+	ctx, excludedIDs, priorityErr = s.prepareOpenAIProxyPriority(ctx, OpenAIAccountScheduleRequest{GroupID: groupID, Platform: platform, RequestedModel: requestedModel, ExcludedIDs: excludedIDs, RequireCompact: requireCompact, RequiredCapability: requiredCapability, RequiredTransport: OpenAIUpstreamTransportAny, RequirePrivacySet: s.openAIGroupRequiresPrivacySet(ctx, groupID)})
+	if priorityErr != nil {
+		return nil, priorityErr
+	}
 	platform = NormalizeOpenAICompatiblePlatform(platform)
 	if s.checkChannelPricingRestriction(ctx, groupID, requestedModel) {
 		slog.Warn("channel pricing restriction blocked request",

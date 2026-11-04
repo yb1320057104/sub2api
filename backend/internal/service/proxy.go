@@ -14,6 +14,7 @@ const (
 )
 
 type Proxy struct {
+	ProxyGroupID   *int64
 	MaxConcurrency int
 	MaxAccounts    int
 	ID             int64

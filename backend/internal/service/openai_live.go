@@ -137,6 +137,7 @@ func (s *OpenAIGatewayService) CreateLiveCall(
 	identity LiveCallIdentity,
 	userMaxConcurrency int,
 ) (*LiveCallCreated, error) {
+	ctx = WithAccountProxyRouting(ctx)
 	if err := ValidateLiveCallRequest(request); err != nil {
 		return nil, err
 	}

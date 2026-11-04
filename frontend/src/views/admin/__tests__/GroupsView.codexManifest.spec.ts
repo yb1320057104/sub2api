@@ -1,3 +1,4 @@
+vi.mock('@/api/admin/proxyGroups', () => ({ listGroupProxyPolicies: vi.fn().mockResolvedValue([]), listProxyGroups: vi.fn().mockResolvedValue([]), updateGroupProxyPolicy: vi.fn() }))
 import { defineComponent, h, type PropType } from "vue";
 import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia } from "pinia";

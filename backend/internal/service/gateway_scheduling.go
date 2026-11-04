@@ -65,6 +65,11 @@ func (s *GatewayService) SelectAccountForModelWithExclusions(ctx context.Context
 		platform = PlatformAnthropic
 	}
 	ctx = s.withGatewayProfitControlGate(ctx, groupID)
+	var priorityErr error
+	ctx, excludedIDs, priorityErr = s.prepareGatewayProxyPriority(ctx, groupID, sessionHash, requestedModel, excludedIDs)
+	if priorityErr != nil {
+		return nil, priorityErr
+	}
 
 	// Claude Code 限制可能已将 groupID 解析为 fallback group，
 	// 渠道限制预检查必须使用解析后的分组。
@@ -118,6 +123,11 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 	}
 	ctx = s.withGroupContext(ctx, group)
 	ctx = s.withGatewayProfitControlGate(ctx, groupID)
+	var priorityErr error
+	ctx, excludedIDs, priorityErr = s.prepareGatewayProxyPriority(ctx, groupID, sessionHash, requestedModel, excludedIDs)
+	if priorityErr != nil {
+		return nil, priorityErr
+	}
 
 	// Claude Code 限制可能已将 groupID 解析为 fallback group，
 	// 渠道限制预检查必须使用解析后的分组。
@@ -1166,6 +1176,9 @@ func (s *GatewayService) isAccountSchedulableForSelection(account *Account) bool
 }
 
 func (s *GatewayService) isAccountSchedulableForModelSelection(ctx context.Context, account *Account, requestedModel string) bool {
+	if account != nil && !proxyPriorityAllowed(ctx, account.ID) {
+		return false
+	}
 	if account == nil {
 		return false
 	}

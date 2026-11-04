@@ -387,6 +387,8 @@ func registerUserManagementRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 
 func registerGroupRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 	groups := admin.Group("/groups")
+	groups.GET("/proxy-policies", h.Admin.Group.ListProxyPolicies)
+	groups.POST("/proxy-policy", h.Admin.Group.UpdateProxyPolicies)
 	groups.Use(h.Admin.Group.ScopedAdminKeyGroupModels)
 	{
 		groups.GET("", h.Admin.Group.List)
@@ -481,6 +483,7 @@ func registerAccountRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUpAu
 		accounts.POST("/batch-refresh-tier", h.Admin.Account.BatchRefreshTier)
 		accounts.POST("/bulk-update", h.Admin.Account.BulkUpdate)
 		accounts.POST("/assign-proxies", h.Admin.Account.AssignProxies)
+		accounts.POST("/assign-proxy-group", h.Admin.Account.AssignProxyGroup)
 		accounts.POST("/batch-delete", h.Admin.Account.BatchDelete)
 		accounts.POST("/batch-clear-error", h.Admin.Account.BatchClearError)
 		accounts.POST("/batch-refresh", h.Admin.Account.BatchRefresh)
@@ -580,6 +583,11 @@ func registerCNProviderRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 }
 
 func registerProxyRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUpAuth middleware.StepUpAuthMiddleware) {
+	proxyGroups := admin.Group("/proxy-groups")
+	proxyGroups.GET("", h.Admin.Proxy.ListGroups)
+	proxyGroups.POST("", h.Admin.Proxy.CreateGroup)
+	proxyGroups.PUT("/:id", h.Admin.Proxy.UpdateGroup)
+	proxyGroups.DELETE("/:id", h.Admin.Proxy.DeleteGroup)
 	proxies := admin.Group("/proxies")
 	{
 		proxies.GET("", h.Admin.Proxy.List)
@@ -590,6 +598,7 @@ func registerProxyRoutes(admin *gin.RouterGroup, h *handler.Handlers, stepUpAuth
 		proxies.GET("/:id", h.Admin.Proxy.GetByID)
 		proxies.POST("", h.Admin.Proxy.Create)
 		proxies.POST("/batch-protocol", h.Admin.Proxy.BatchUpdateProtocol)
+		proxies.POST("/batch-group", h.Admin.Proxy.SetGroupMembers)
 		proxies.PUT("/:id", h.Admin.Proxy.Update)
 		proxies.DELETE("/:id", h.Admin.Proxy.Delete)
 		proxies.POST("/:id/test", h.Admin.Proxy.Test)

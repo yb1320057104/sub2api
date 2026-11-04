@@ -39,9 +39,9 @@ func (r *accountRepository) loadAccountProxyBindings(ctx context.Context, ids []
 		return result, nil
 	}
 	scoped := r.accountTransactionScope(ctx)
-	rows, err := scoped.sql.QueryContext(ctx, `SELECT b.account_id,p.id,p.name,p.protocol,p.host,p.port,COALESCE(p.username,''),COALESCE(p.password,''),CASE WHEN p.deleted_at IS NULL THEN p.status ELSE 'deleted' END,p.expires_at,COALESCE(l.max_concurrency,0),COALESCE(l.max_accounts,0)
+	rows, err := scoped.sql.QueryContext(ctx, `SELECT b.account_id,p.id,p.name,p.protocol,p.host,p.port,COALESCE(p.username,''),COALESCE(p.password,''),CASE WHEN p.deleted_at IS NULL THEN p.status ELSE 'deleted' END,p.expires_at,COALESCE(l.max_concurrency,0),COALESCE(l.max_accounts,0),COALESCE(m.proxy_group_id,0)
 FROM pk_effective_account_proxy_bindings b JOIN proxies p ON p.id=b.proxy_id
-LEFT JOIN pk_proxy_limits l ON l.proxy_id=p.id WHERE b.account_id=ANY($1) ORDER BY b.account_id,b.position,p.id`, pq.Array(ids))
+LEFT JOIN pk_proxy_limits l ON l.proxy_id=p.id LEFT JOIN pk_proxy_group_members m ON m.proxy_id=p.id WHERE b.account_id=ANY($1) ORDER BY b.account_id,b.position,p.id`, pq.Array(ids))
 	if err != nil {
 		return nil, err
 	}
@@ -50,10 +50,14 @@ LEFT JOIN pk_proxy_limits l ON l.proxy_id=p.id WHERE b.account_id=ANY($1) ORDER 
 		var accountID int64
 		var p service.Proxy
 		var b service.AccountProxyBinding
-		if err = rows.Scan(&accountID, &p.ID, &p.Name, &p.Protocol, &p.Host, &p.Port, &p.Username, &p.Password, &p.Status, &p.ExpiresAt, &b.MaxConcurrency, &b.MaxAccounts); err != nil {
+		if err = rows.Scan(&accountID, &p.ID, &p.Name, &p.Protocol, &p.Host, &p.Port, &p.Username, &p.Password, &p.Status, &p.ExpiresAt, &b.MaxConcurrency, &b.MaxAccounts, &b.ProxyGroupID); err != nil {
 			return nil, err
 		}
 		p.MaxConcurrency, p.MaxAccounts = b.MaxConcurrency, b.MaxAccounts
+		if b.ProxyGroupID > 0 {
+			id := b.ProxyGroupID
+			p.ProxyGroupID = &id
+		}
 		b.ProxyID, b.Proxy = p.ID, &p
 		result[accountID] = append(result[accountID], b)
 	}

@@ -11,6 +11,7 @@ import (
 // AccountProxyBinding describes an account's effective egress. Limits are global
 // per proxy, never multiplied by the number of accounts using that proxy.
 type AccountProxyBinding struct {
+	ProxyGroupID   int64
 	ProxyID        int64
 	Proxy          *Proxy
 	MaxConcurrency int

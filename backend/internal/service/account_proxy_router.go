@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/google/uuid"
 )
 
@@ -24,6 +25,13 @@ type ProxyConcurrencyCache interface {
 	RefreshProxy(context.Context, int64, string) (bool, error)
 	ReleaseProxy(context.Context, int64, string) error
 	GetProxyConcurrencyBatch(context.Context, []int64) (map[int64]int, error)
+}
+
+// Reservations cover physical proxy IDs, so overlapping pools and changes to
+// group membership cannot bypass the draining owner. Legacy cache test doubles
+// remain usable for non-strict requests only.
+type AccountProxyPriorityCache interface {
+	AcquireAccountProxy(context.Context, int64, int, string, int64, []int64, bool) (bool, error)
 }
 
 type AccountProxyRouter struct {
@@ -44,8 +52,10 @@ func (r *AccountProxyRouter) GetProxyConcurrencyBatch(ctx context.Context, ids [
 
 type accountProxyContextKey struct{}
 type accountProxyRequest struct {
-	mu       sync.Mutex
-	selected map[int64]int64
+	mu              sync.Mutex
+	selected        map[int64]int64
+	priority        *proxyPriorityGate
+	priorityGroupID int64
 }
 
 // Enabled only on authenticated gateway requests. Authorization, radar and
@@ -112,8 +122,47 @@ func (r *AccountProxyRouter) acquire(ctx, routeParent context.Context, accountID
 	if err != nil {
 		return nil, ErrProxyLeaseUnavailable
 	}
+	gate := state.priority
+	policyGroupID := state.priorityGroupID
+	if policyGroupID == 0 {
+		if group, ok := ctx.Value(ctxkey.Group).(*Group); ok && group != nil {
+			policyGroupID = group.ID
+		}
+	}
+	if policyGroupID > 0 {
+		if reader, ok := r.reader.(GroupProxyPriorityPolicyReader); ok {
+			policy, readErr := reader.GetGroupProxyPriorityPolicy(ctx, policyGroupID)
+			if readErr != nil {
+				return nil, ErrProxyLeaseUnavailable
+			}
+			if policy != nil && policy.StrictPriority && (gate == nil || gate.groupID != policyGroupID) {
+				return nil, ErrProxyLeaseUnavailable
+			}
+		}
+	}
+	if gate != nil && gate.validate != nil {
+		gate, err = gate.validate(ctx)
+		if err != nil {
+			return nil, ErrProxyLeaseUnavailable
+		}
+		if gate != nil && gate.winner != accountID {
+			return nil, ErrProxyCapacity
+		}
+	}
+	resources := make([]int64, 0, len(bindings))
+	for _, binding := range bindings {
+		resources = append(resources, binding.ProxyID)
+	}
+	if gate != nil {
+		resources = append(resources, gate.resources...)
+	}
+	resources = uniqueProxyResourceIDs(resources)
+	priorityCache, managed := r.cache.(AccountProxyPriorityCache)
+	if gate != nil && !managed {
+		return nil, ErrProxyLeaseUnavailable
+	}
 	if len(bindings) == 0 {
-		if pinned > 0 || state.selected[accountID] > 0 {
+		if gate != nil || pinned > 0 || state.selected[accountID] > 0 {
 			return nil, ErrProxyUnavailable
 		}
 		return &AccountProxyRoute{Context: ctx}, nil
@@ -127,8 +176,14 @@ func (r *AccountProxyRouter) acquire(ctx, routeParent context.Context, accountID
 	}
 	available := false
 	leaseID := uuid.NewString()
+	if managed {
+		leaseID = NewAccountProxyLeaseID(accountID, resources, gate != nil, leaseID)
+	}
 	for _, i := range rand.Perm(len(bindings)) {
 		binding := bindings[i]
+		if gate != nil && !containsInt64(gate.egress, binding.ProxyID) {
+			continue
+		}
 		if selected > 0 && binding.ProxyID != selected {
 			continue
 		}
@@ -137,7 +192,13 @@ func (r *AccountProxyRouter) acquire(ctx, routeParent context.Context, accountID
 		}
 		available = true
 		operationCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-		acquired, acquireErr := r.cache.AcquireProxy(operationCtx, binding.ProxyID, binding.MaxConcurrency, leaseID)
+		var acquired bool
+		var acquireErr error
+		if managed {
+			acquired, acquireErr = priorityCache.AcquireAccountProxy(operationCtx, binding.ProxyID, binding.MaxConcurrency, leaseID, accountID, resources, gate != nil)
+		} else {
+			acquired, acquireErr = r.cache.AcquireProxy(operationCtx, binding.ProxyID, binding.MaxConcurrency, leaseID)
+		}
 		cancel()
 		if acquireErr != nil {
 			return nil, ErrProxyLeaseUnavailable

@@ -1,3 +1,4 @@
+vi.mock('@/api/admin/proxyGroups', () => ({ listProxyGroups: vi.fn().mockResolvedValue([{ id: 7, name: 'Static', proxy_ids: [1], proxy_count: 1, active_proxy_count: 1 }]) }))
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, shallowMount } from '@vue/test-utils'
 import ProxiesView from '../ProxiesView.vue'
@@ -142,6 +143,17 @@ describe('proxy protocol batch selection', () => {
 afterEach(() => wrapper?.unmount())
 
 describe('proxy list filter pagination', () => {
+  it.each([['7', 7], ['0', 0]])('sends IP group filter %s to the server and resets pagination', async (selected, expected) => {
+    wrapper = mountView()
+    await flushPromises()
+    await wrapper.get('[data-test="page"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('select[data-filter="admin.proxyGroups.all"]').setValue(selected)
+    await flushPromises()
+    expect(listProxies.mock.lastCall?.[0]).toBe(1)
+    expect(listProxies.mock.lastCall?.[2].proxy_group_id).toBe(expected)
+  })
+
   it.each([
     ['protocol', 'admin.proxies.allProtocols', 'socks5', ''],
     ['protocol', 'admin.proxies.allProtocols', '', 'http'],

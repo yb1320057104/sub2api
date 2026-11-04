@@ -1,3 +1,4 @@
+vi.mock('@/api/admin/proxyGroups', () => ({ listGroupProxyPolicies: vi.fn().mockResolvedValue([]), listProxyGroups: vi.fn().mockResolvedValue([]), updateGroupProxyPolicy: vi.fn() }))
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 
@@ -291,6 +292,8 @@ describe('admin GroupsView column settings', () => {
     const wrapper = await mountView()
 
     expect(columnKeys(wrapper)).toEqual([
+      'select',
+      'strict_priority',
       'name',
       'platform',
       'billing_type',
@@ -316,6 +319,8 @@ describe('admin GroupsView column settings', () => {
     const wrapper = await mountView()
 
     expect(columnKeys(wrapper)).toEqual([
+      'select',
+      'strict_priority',
       'name',
       'id',
       'platform',
@@ -335,6 +340,8 @@ describe('admin GroupsView column settings', () => {
     const wrapper = await mountView()
 
     expect(columnKeys(wrapper)).toEqual([
+      'select',
+      'strict_priority',
       'name',
       'platform',
       'billing_type',
@@ -358,6 +365,8 @@ describe('admin GroupsView column settings', () => {
     await clickColumnToggle(wrapper, 'Usage')
 
     expect(columnKeys(wrapper)).toEqual([
+      'select',
+      'strict_priority',
       'name',
       'platform',
       'billing_type',
@@ -380,6 +389,8 @@ describe('admin GroupsView column settings', () => {
     await clickColumnToggle(wrapper, 'ID')
 
     expect(columnKeys(wrapper)).toEqual([
+      'select',
+      'strict_priority',
       'name',
       'id',
       'platform',

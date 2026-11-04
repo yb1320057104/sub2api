@@ -1,3 +1,4 @@
+vi.mock('@/api/admin/proxyGroups', () => ({ listGroupProxyPolicies: vi.fn().mockResolvedValue([]), listProxyGroups: vi.fn().mockResolvedValue([]), updateGroupProxyPolicy: vi.fn() }))
 import { defineComponent } from 'vue'
 import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'

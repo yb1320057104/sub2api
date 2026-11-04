@@ -543,6 +543,7 @@ func ProxyFromService(p *service.Proxy) *Proxy {
 		return nil
 	}
 	return &Proxy{
+		ProxyGroupID:   p.ProxyGroupID,
 		MaxConcurrency: p.MaxConcurrency, MaxAccounts: p.MaxAccounts,
 		ID:             p.ID,
 		Name:           p.Name,

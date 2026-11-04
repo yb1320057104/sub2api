@@ -26,8 +26,19 @@ func (s *adminServiceImpl) attachProxyLimits(ctx context.Context, proxies []*Pro
 	if err != nil {
 		return err
 	}
+	groups := map[int64]int64{}
+	if groupReader, ok := s.proxyRepo.(ProxyGroupRepository); ok {
+		groups, err = groupReader.GetProxyGroupMemberships(ctx, ids)
+		if err != nil {
+			return err
+		}
+	}
 	for _, p := range proxies {
 		if p != nil {
+			p.ProxyGroupID = nil
+			if id := groups[p.ID]; id > 0 {
+				p.ProxyGroupID = &id
+			}
 			p.MaxConcurrency = limits[p.ID].MaxConcurrency
 			p.MaxAccounts = limits[p.ID].MaxAccounts
 		}

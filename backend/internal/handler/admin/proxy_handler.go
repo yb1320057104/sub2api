@@ -58,6 +58,9 @@ type UpdateProxyRequest struct {
 // List handles listing all proxies with pagination
 // GET /api/v1/admin/proxies
 func (h *ProxyHandler) List(c *gin.Context) {
+	if !applyProxyGroupRequestFilter(c) {
+		return
+	}
 	if h.scopedAdminProxyRead(c) {
 		return
 	}
@@ -90,6 +93,9 @@ func (h *ProxyHandler) List(c *gin.Context) {
 // GET /api/v1/admin/proxies/all
 // Optional query param: with_count=true to include account count per proxy
 func (h *ProxyHandler) GetAll(c *gin.Context) {
+	if !applyProxyGroupRequestFilter(c) {
+		return
+	}
 	if h.scopedAdminProxyRead(c) {
 		return
 	}

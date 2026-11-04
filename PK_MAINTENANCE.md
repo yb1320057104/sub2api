@@ -1,5 +1,7 @@
 # PK出版：源码、发布与上游更新
 
+2026-11-04 当前目标 v0.2.19-pk.51：从私库 main `a6f37609b51b4f788143ec1f1cacbcb6a4d5b83d` / 已发布 pk.50 继续。新增 PK-045 静态 IP 分组与分组严格账号优先级，扩展 PK-044 多代理分配。IP 单一分组管理及服务端筛选，账号或业务分组按 IP 分组一键替换完整代理集合并设置每 IP 全局并发，保留原 max_accounts 容量约束、事务原子性和影子继承边界。业务分组开关默认关闭，开启后同池按账号 Priority 升序、同值 ID 升序选择唯一可调度账号；并发满不切换低优先级，真实不可调度才切换，已有请求排空后才允许不同账号使用池。候选选择及实际出站均检查，覆盖 sticky/续链/HTTP/WS/Live；全局互斥不能按业务分组拆成独立限额。新增兼容迁移264，不重写旧迁移、历史用量或首字计时。此为实施中记录，测试/构建/发布均按实际结果补录。沿用本机定向模拟、隔离数据库/Redis及同制品验收、私库 Release 交付；不部署或重启生产、不发布 GHCR、不发送真实模型/授权/币安请求、不运行全套源码回归。详见 docs/PK_STATIC_PROXY_PRIORITY_PK51_REVIEW.md。
+
 2026-11-04 pk.50 发布完成：私库 Release `v0.2.19-pk.50` 已为 latest/非draft/非prerelease，9项附件长度及SHA256核验通过；正式提交 `080e6513dcdf08ecfc0f4d6f2eca5ddfd4b6f014`、package `1793726324-080e6513dcdf`。前后端构建、定向模拟及最终隔离制品/升级回退/API/SQL验证全部通过，最终证据见 docs/PK_RELEASE_PK50_REVIEW.md。正式分支、标签、制品不移动；最终文档只在main补录。生产仍由用户手动切换，本次未部署或重启生产、未发布GHCR。旧版回退读取主代理，不执行新版多代理全局限额，也不撤销已完成业务操作。
 
 pk.50 合并模型档位补丁前核验 `.runtime/pk50-models-handoff/manifest.json` 中的基线、完整补丁及源 SHA256。`admin.go`、`openai_gateway_forward.go`、`openai_gateway_request_body.go`、settings 与 locale 的交叉改动须按局部保留两侧。重新构建前端，先前 before-auth-egress 构建不作为最终证据。执行交接定向选择器，并在最终隔离 PostgreSQL 增加IQ候选真实SQL及管理员API检查；原11项同制品、7项升级回退及7项多代理API验收保持。仅单一版本分支/标签/Release，由集成会话统一发布，不部署生产。

@@ -386,6 +386,13 @@ func (s *defaultOpenAIAccountScheduler) Select(
 	if s != nil && s.service != nil && s.service.openAIGroupRequiresPrivacySet(ctx, req.GroupID) {
 		req.RequirePrivacySet = true
 	}
+	ctx, req.ExcludedIDs, err = s.service.prepareOpenAIProxyPriority(ctx, req)
+	if err != nil {
+		return nil, decision, err
+	}
+	if err := s.service.checkProxyPriorityPrevious(ctx, req.GroupID, req.PreviousResponseID); err != nil {
+		return nil, decision, err
+	}
 	start := time.Now()
 	// 命名返回值保证 defer 写入的耗时同时返回给调用方。
 	defer func() {
@@ -1773,6 +1780,9 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatible(ctx context.C
 // openAISelectionFilterStats so that "no available accounts" errors state why
 // each candidate was dropped instead of failing silently (#4599).
 func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatibleReason(ctx context.Context, account *Account, req OpenAIAccountScheduleRequest) (bool, string) {
+	if account != nil && !proxyPriorityAllowed(ctx, account.ID) {
+		return false, "strict_proxy_priority"
+	}
 	if account == nil {
 		return false, "account_nil"
 	}
@@ -2323,6 +2333,14 @@ func (s *OpenAIGatewayService) selectAccountWithSchedulerOnce(
 	}
 	platform = NormalizeOpenAICompatiblePlatform(platform)
 	decision := OpenAIAccountScheduleDecision{}
+	var priorityErr error
+	ctx, excludedIDs, priorityErr = s.prepareOpenAIProxyPriority(ctx, OpenAIAccountScheduleRequest{GroupID: groupID, Platform: platform, RequestedModel: requestedModel, ExcludedIDs: excludedIDs, RequireCompact: requireCompact, RequiredTransport: requiredTransport, RequiredCapability: requiredCapability, RequiredImageCapability: requiredImageCapability, RequirePrivacySet: s.openAIGroupRequiresPrivacySet(ctx, groupID)})
+	if priorityErr != nil {
+		return nil, decision, priorityErr
+	}
+	if err := s.checkProxyPriorityPrevious(ctx, groupID, previousResponseID); err != nil {
+		return nil, decision, err
+	}
 	preserveGuardianParentBinding := preserveOpenAIGuardianParentBinding(ctx, sessionHash)
 	guardianParentAccountID := int64(0)
 	if strings.TrimSpace(previousResponseID) == "" {

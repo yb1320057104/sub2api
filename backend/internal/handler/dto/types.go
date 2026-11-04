@@ -455,6 +455,7 @@ type AccountGroup struct {
 }
 
 type Proxy struct {
+	ProxyGroupID   *int64    `json:"proxy_group_id"`
 	MaxConcurrency int       `json:"max_concurrency"`
 	MaxAccounts    int       `json:"max_accounts"`
 	ID             int64     `json:"id"`

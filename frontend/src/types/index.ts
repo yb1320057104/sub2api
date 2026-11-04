@@ -969,6 +969,7 @@ export interface ClaudeModel {
 
 export interface Proxy {
   id: number
+  proxy_group_id?: number | null
   name: string
   protocol: ProxyProtocol
   host: string

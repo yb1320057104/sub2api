@@ -49,6 +49,11 @@
           <div
             class="flex w-full flex-shrink-0 flex-wrap items-center justify-end gap-3 lg:w-auto"
           >
+            <template v-if="selectedGroupIDs.length > 0">
+              <span class="text-xs text-gray-500">{{ t('admin.proxyGroups.selected', { count: selectedGroupIDs.length }) }}</span>
+              <button class="btn btn-secondary" :disabled="proxyPoliciesLoading || !proxyPoliciesLoaded" @click="openGroupProxyPolicy(selectedGroupIDs)">{{ t('admin.proxyGroups.configure') }}</button>
+              <button class="btn btn-secondary" @click="clearSelectedGroups">{{ t('admin.proxyGroups.clearSelection') }}</button>
+            </template>
             <button
               @click="loadGroups"
               :disabled="loading"
@@ -124,6 +129,21 @@
           default-sort-order="asc"
           @sort="handleSort"
         >
+          <template #header-select>
+            <input type="checkbox" class="h-4 w-4 rounded border-gray-300 text-primary-600" :checked="allVisibleGroupsSelected" :aria-label="t('admin.proxyGroups.selectAllVisible')" @change="toggleVisibleGroups(($event.target as HTMLInputElement).checked)" />
+          </template>
+          <template #cell-select="{ row }">
+            <input type="checkbox" class="h-4 w-4 rounded border-gray-300 text-primary-600" :checked="selectedGroupSet.has(row.id)" :aria-label="t('admin.proxyGroups.selectGroup', { name: row.name })" @change="toggleSelectedGroup(row.id)" />
+          </template>
+          <template #cell-strict_priority="{ row }">
+            <div class="space-y-1">
+              <div class="flex items-center gap-2">
+                <Toggle :model-value="proxyPolicies.get(row.id)?.strict_priority ?? false" :disabled="proxyPoliciesLoading || !proxyPoliciesLoaded || proxyPolicyBusy.has(row.id)" :aria-label="t('admin.proxyGroups.toggleGroup', { name: row.name })" @update:model-value="toggleGroupProxyPolicy(row, $event)" />
+                <span class="text-xs text-gray-500">{{ t(!proxyPoliciesLoaded ? 'admin.proxyGroups.unknown' : proxyPolicies.get(row.id)?.strict_priority ? 'admin.proxyGroups.enabled' : 'admin.proxyGroups.disabled') }}</span>
+              </div>
+              <button class="text-xs text-primary-600 hover:underline dark:text-primary-400" :disabled="proxyPoliciesLoading || !proxyPoliciesLoaded || proxyPolicyBusy.has(row.id)" @click="openGroupProxyPolicy([row.id])">{{ t('admin.proxyGroups.configure') }}</button>
+            </div>
+          </template>
           <template #cell-name="{ value }">
             <span class="font-medium text-gray-900 dark:text-white">{{
               value
@@ -4289,6 +4309,7 @@
       @close="showRPMOverridesModal = false"
       @success="loadGroups"
     />
+    <GroupProxyPolicyDialog :show="showGroupProxyPolicy" :group-ids="proxyPolicyGroupIDs" :initial-policy="initialProxyPolicy" @close="showGroupProxyPolicy = false" @saved="handleGroupProxyPolicySaved" />
   </AppLayout>
 </template>
 
@@ -4331,6 +4352,9 @@ import Icon from "@/components/icons/Icon.vue";
 import GroupI18nField from "@/components/admin/group/GroupI18nField.vue";
 import GroupRateMultipliersModal from "@/components/admin/group/GroupRateMultipliersModal.vue";
 import GroupRPMOverridesModal from "@/components/admin/group/GroupRPMOverridesModal.vue";
+import GroupProxyPolicyDialog from "@/components/admin/group/GroupProxyPolicyDialog.vue";
+import { listGroupProxyPolicies, updateGroupProxyPolicy, type GroupProxyPolicy } from "@/api/admin/proxyGroups";
+import { useTableSelection } from "@/composables/useTableSelection";
 import GroupCapacityBadge from "@/components/common/GroupCapacityBadge.vue";
 import ReasoningEffortPolicyFields from "@/components/admin/group/ReasoningEffortPolicyFields.vue";
 import CodexManifestAccountsField from "@/components/admin/group/CodexManifestAccountsField.vue";
@@ -4485,7 +4509,7 @@ const appStore = useAppStore();
 const authStore = useAuthStore();
 const onboardingStore = useOnboardingStore();
 
-const ALWAYS_VISIBLE_COLUMNS = new Set(["name", "actions"]);
+const ALWAYS_VISIBLE_COLUMNS = new Set(["select", "name", "actions"]);
 // Default hidden columns (hidden on first load / after schema bumps).
 const DEFAULT_HIDDEN_COLUMNS = ["id"];
 const HIDDEN_COLUMNS_KEY = "group-hidden-columns";
@@ -4621,9 +4645,9 @@ const toggleColumn = (key: string) => {
 };
 
 const columns = computed<Column[]>(() =>
-  allColumns.value.filter(
+  [{ key: "select", label: "", sortable: false }, { key: "strict_priority", label: t("admin.proxyGroups.strictPriority"), sortable: false }, ...allColumns.value.filter(
     (col) => ALWAYS_VISIBLE_COLUMNS.has(col.key) || !hiddenColumns.has(col.key),
-  ),
+  )],
 );
 
 if (typeof window !== "undefined") {
@@ -4811,6 +4835,46 @@ const copyAccountsGroupOptionsForEdit = computed(() => {
 });
 
 const groups = ref<AdminGroup[]>([]);
+const { selectedSet: selectedGroupSet, selectedIds: selectedGroupIDs, allVisibleSelected: allVisibleGroupsSelected, toggle: toggleSelectedGroup, toggleVisible: toggleVisibleGroups, clear: clearSelectedGroups, removeMany: removeSelectedGroups } = useTableSelection({ rows: groups, getId: (group: AdminGroup) => group.id });
+const proxyPolicies = ref(new Map<number, GroupProxyPolicy>());
+const proxyPoliciesLoading = ref(false);
+const proxyPoliciesLoaded = ref(false);
+const proxyPolicyBusy = reactive(new Set<number>());
+const showGroupProxyPolicy = ref(false);
+const proxyPolicyGroupIDs = ref<number[]>([]);
+const initialProxyPolicy = ref<GroupProxyPolicy>();
+let proxyPolicyLoadVersion = 0;
+const loadProxyPolicies = async () => {
+  const version = ++proxyPolicyLoadVersion;
+  proxyPoliciesLoading.value = true;
+  try {
+    const result = await listGroupProxyPolicies();
+    if (version !== proxyPolicyLoadVersion) return;
+    proxyPolicies.value = new Map(result.map(policy => [policy.group_id, policy]));
+    proxyPoliciesLoaded.value = true;
+  } catch {
+    if (version === proxyPolicyLoadVersion) { proxyPoliciesLoaded.value = false; appStore.showError(t("admin.proxyGroups.policiesLoadFailed")); }
+  } finally { if (version === proxyPolicyLoadVersion) proxyPoliciesLoading.value = false; }
+};
+const openGroupProxyPolicy = (ids: number[], enable?: boolean) => {
+  if (!proxyPoliciesLoaded.value || proxyPoliciesLoading.value || ids.some(id => proxyPolicyBusy.has(id))) return;
+  proxyPolicyGroupIDs.value = [...ids];
+  const policy = ids.length === 1 ? proxyPolicies.value.get(ids[0]) : undefined;
+  initialProxyPolicy.value = policy ? { ...policy, ...(enable === undefined ? {} : { strict_priority: enable }) } : undefined;
+  showGroupProxyPolicy.value = true;
+};
+const handleGroupProxyPolicySaved = async (ids: number[]) => { removeSelectedGroups(ids); await loadProxyPolicies(); await loadGroups(); };
+const toggleGroupProxyPolicy = async (group: AdminGroup, enabled: boolean) => {
+  if (proxyPolicyBusy.has(group.id) || proxyPoliciesLoading.value || !proxyPoliciesLoaded.value) return;
+  if (enabled) { openGroupProxyPolicy([group.id], true); return; }
+  proxyPolicyBusy.add(group.id);
+  try {
+    await updateGroupProxyPolicy({ group_ids: [group.id], strict_priority: false, assign_proxies: false });
+    await loadProxyPolicies();
+    appStore.showSuccess(t("admin.proxyGroups.policySaved", { groups: 1 }));
+  } catch { appStore.showError(t("admin.proxyGroups.policyFailed")); }
+  finally { proxyPolicyBusy.delete(group.id); }
+};
 const loading = ref(false);
 type GroupUsageSummary = {
   today_cost: number;
@@ -5640,6 +5704,7 @@ const cancelUnsupportedLive = () => {
 };
 
 const loadGroups = async () => {
+  void loadProxyPolicies();
   if (abortController) {
     abortController.abort();
   }
@@ -6935,6 +7000,7 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  proxyPolicyLoadVersion++;
   document.removeEventListener("click", handleClickOutside);
   accountSearchRunner.clearAll();
   clearAllAccountSearchState();

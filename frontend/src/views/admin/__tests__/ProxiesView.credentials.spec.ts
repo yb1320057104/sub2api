@@ -1,3 +1,4 @@
+vi.mock('@/api/admin/proxyGroups', () => ({ listProxyGroups: vi.fn().mockResolvedValue([{ id: 7, name: 'Static', proxy_ids: [1], proxy_count: 1, active_proxy_count: 1 }]) }))
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, shallowMount } from '@vue/test-utils'
 import ProxiesView from '../ProxiesView.vue'
