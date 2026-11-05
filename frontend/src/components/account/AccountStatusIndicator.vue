@@ -1,7 +1,8 @@
 <template>
   <div class="flex items-center gap-2">
+    <span v-if="hasError" class="badge text-xs badge-danger">{{ t('admin.accounts.status.error') }}</span>
     <!-- Rate Limit Display (429) - Two-line layout -->
-    <div v-if="isRateLimited" class="flex flex-col items-center gap-1">
+    <div v-else-if="isRateLimited" class="flex flex-col items-center gap-1">
       <span class="badge text-xs badge-warning">{{ t('admin.accounts.status.rateLimited') }}</span>
       <span class="text-[11px] text-gray-400 dark:text-gray-500">{{ rateLimitResumeText }}</span>
     </div>

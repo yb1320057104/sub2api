@@ -61,12 +61,13 @@ type GroupProxyPriorityPolicyReader interface {
 }
 
 type GroupProxyPriorityUpdateInput struct {
-	GroupIDs         []int64 `json:"group_ids"`
-	StrictPriority   bool    `json:"strict_priority"`
-	ProxyGroupID     *int64  `json:"proxy_group_id,omitempty"`
-	ProxyGroupIDSet  bool    `json:"-"`
-	ProxyConcurrency int     `json:"proxy_concurrency,omitempty"`
-	AssignProxies    bool    `json:"assign_proxies"`
+	GroupIDs           []int64 `json:"group_ids"`
+	StrictPriority     bool    `json:"strict_priority"`
+	ProxyGroupID       *int64  `json:"proxy_group_id,omitempty"`
+	ProxyGroupIDSet    bool    `json:"-"`
+	ProxyConcurrency   int     `json:"proxy_concurrency,omitempty"`
+	AccountConcurrency *int    `json:"account_concurrency,omitempty"`
+	AssignProxies      bool    `json:"assign_proxies"`
 }
 
 func (in *GroupProxyPriorityUpdateInput) UnmarshalJSON(data []byte) error {
@@ -88,9 +89,10 @@ func (in *GroupProxyPriorityUpdateInput) UnmarshalJSON(data []byte) error {
 }
 
 type AccountProxyGroupAssignmentInput struct {
-	AccountIDs       []int64 `json:"account_ids"`
-	ProxyGroupID     int64   `json:"proxy_group_id"`
-	ProxyConcurrency int     `json:"proxy_concurrency"`
+	AccountIDs         []int64 `json:"account_ids"`
+	ProxyGroupID       int64   `json:"proxy_group_id"`
+	ProxyConcurrency   int     `json:"proxy_concurrency"`
+	AccountConcurrency *int    `json:"account_concurrency,omitempty"`
 }
 
 type GroupProxyPriorityUpdateResult struct {
@@ -156,6 +158,21 @@ func validateProxyGroupIDs(ids []int64, maximum int) error {
 	return nil
 }
 
+// Omission preserves existing account limits for older clients and policy-only
+// edits. A supplied value is saved atomically with the proxy assignment.
+func ValidateProxyGroupAccountConcurrency(value *int, assign bool) error {
+	if value == nil {
+		return nil
+	}
+	if !assign {
+		return infraerrors.BadRequest("PROXY_GROUP_ASSIGNMENT_INVALID", "修改账号总并发时请同时勾选配置账号IP")
+	}
+	if *value < 1 || *value > 10000 {
+		return infraerrors.BadRequest("PROXY_GROUP_ASSIGNMENT_INVALID", "账号总并发须为1至10000的整数")
+	}
+	return nil
+}
+
 func (s *adminServiceImpl) ListProxyGroups(ctx context.Context) ([]ProxyGroup, error) {
 	repo, ok := s.proxyRepo.(ProxyGroupRepository)
 	if !ok {
@@ -201,6 +218,9 @@ func (s *adminServiceImpl) ListGroupProxyPriorityPolicies(ctx context.Context) (
 	return repo.ListGroupProxyPriorityPolicies(ctx)
 }
 func (s *adminServiceImpl) UpdateGroupProxyPriorityPolicies(ctx context.Context, input GroupProxyPriorityUpdateInput) (*GroupProxyPriorityUpdateResult, error) {
+	if err := ValidateProxyGroupAccountConcurrency(input.AccountConcurrency, input.AssignProxies); err != nil {
+		return nil, err
+	}
 	if err := validateProxyGroupIDs(input.GroupIDs, 500); err != nil {
 		return nil, err
 	}
@@ -217,6 +237,9 @@ func (s *adminServiceImpl) UpdateGroupProxyPriorityPolicies(ctx context.Context,
 	return repo.UpdateGroupProxyPriorityPolicies(ctx, input)
 }
 func (s *adminServiceImpl) AssignAccountProxyGroup(ctx context.Context, input AccountProxyGroupAssignmentInput) (*AccountProxyAssignmentResult, error) {
+	if err := ValidateProxyGroupAccountConcurrency(input.AccountConcurrency, true); err != nil {
+		return nil, err
+	}
 	if err := validateProxyGroupIDs(input.AccountIDs, 5000); err != nil {
 		return nil, err
 	}

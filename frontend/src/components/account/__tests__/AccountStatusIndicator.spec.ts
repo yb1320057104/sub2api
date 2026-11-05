@@ -51,6 +51,18 @@ function makeAccount(overrides: Partial<Account>): Account {
 }
 
 describe('AccountStatusIndicator', () => {
+  it.each(['rate_limit_reset_at', 'overload_until', 'temp_unschedulable_until'] as const)('keeps permanent account error ahead of old %s cooldown', field => {
+    const wrapper = mount(AccountStatusIndicator, {
+      props: { account: makeAccount({ status: 'error', schedulable: false, error_message: 'OAuth credential invalidated', [field]: '2099-01-01T00:00:00Z' }) },
+      global: { stubs: { Icon: true } }
+    })
+    expect(wrapper.find('.badge').text()).toBe('admin.accounts.status.error')
+    expect(wrapper.text()).toContain('OAuth credential invalidated')
+    expect(wrapper.text()).not.toContain('admin.accounts.status.rateLimitedAutoResume')
+    expect(wrapper.find('button').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
   it('Claude 5 系列模型限流时显示 Opus 和 Sonnet 的短别名', () => {
     const wrapper = mount(AccountStatusIndicator, {
       props: {

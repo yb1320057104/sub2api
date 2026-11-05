@@ -48,6 +48,7 @@
         <h4 class="mb-2 text-sm font-medium text-gray-800 dark:text-dark-100">{{ t('accountCandy.response') }}</h4>
         <p class="max-h-96 overflow-y-auto whitespace-pre-wrap break-words rounded-lg border border-gray-200 p-4 text-sm leading-6 text-gray-700 dark:border-dark-700 dark:text-dark-200">{{ details.response_text || t(details.status === 'running' ? 'accountCandy.waiting' : 'accountCandy.noResponse') }}</p>
       </section>
+      <p class="text-xs leading-5 text-gray-500">{{ t('accountCandy.recoveryHint') }}</p>
       <section v-if="details.error_message">
         <h4 class="mb-2 text-sm font-medium text-gray-800 dark:text-dark-100">{{ t('accountCandy.error') }}</h4>
         <p class="whitespace-pre-wrap break-words text-sm text-amber-700 dark:text-amber-300">{{ details.error_message }}</p>

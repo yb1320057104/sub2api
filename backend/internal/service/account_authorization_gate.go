@@ -112,7 +112,7 @@ func (snapshot *authorizationGateSnapshot) matches(account *Account) bool {
 
 func (job *authorizationJob) intelligenceAccountDisposition() string {
 	if job.preserveAccount {
-		return "已有账号保留分组及授权恢复后的调度设置"
+		return "已有账号保留分组，实际调度状态以账号列表为准；HTTP 401 会在凭据快照一致时标错并停调"
 	}
 	return "新账号保持未分组、暂停调度"
 }

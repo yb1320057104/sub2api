@@ -9,22 +9,21 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 )
 
-// A strict pool picks one account before sticky, cost and load ordering. The
-// choice deliberately ignores request-local exclusions and concurrency: those
-// are reasons to wait/fail this request, never permission to spill to a standby.
+// A strict pool assigns disjoint subsets in account priority order before sticky,
+// cost and load ordering. Occupancy and request-local exclusions do not change
+// those assignments; only an unavailable account releases its place in the pool.
 type proxyPriorityGate struct {
-	groupID   int64
-	winner    int64
-	resources []int64
-	egress    []int64
-	validate  func(context.Context) (*proxyPriorityGate, error)
+	groupID  int64
+	winner   int64 // first admitted account; retained for diagnostics
+	subsets  map[int64][]int64
+	validate func(context.Context) (*proxyPriorityGate, error)
 }
 
 type proxyPriorityGateKey struct{}
 
 func proxyPriorityAllowed(ctx context.Context, accountID int64) bool {
 	gate, _ := ctx.Value(proxyPriorityGateKey{}).(*proxyPriorityGate)
-	return gate == nil || gate.winner == accountID
+	return gate == nil || len(gate.subsets[accountID]) > 0
 }
 
 func buildProxyPriorityGate(ctx context.Context, repo AccountRepository, groupID int64, eligible func(context.Context, *Account) bool) (*proxyPriorityGate, []Account, error) {
@@ -50,39 +49,50 @@ func buildProxyPriorityGate(ctx context.Context, repo AccountRepository, groupID
 	for _, id := range policy.ProxyIDs {
 		pool[id] = true
 	}
-	gate := &proxyPriorityGate{groupID: groupID, resources: append([]int64(nil), policy.ProxyIDs...)}
-	var winner *Account
+	gate := &proxyPriorityGate{groupID: groupID, subsets: make(map[int64][]int64)}
+	sort.Slice(accounts, func(i, j int) bool {
+		if accounts[i].Priority != accounts[j].Priority {
+			return accounts[i].Priority < accounts[j].Priority
+		}
+		return accounts[i].ID < accounts[j].ID
+	})
+	assigned := make(map[int64]bool, len(pool))
+	now := time.Now()
 	for i := range accounts {
 		account := &accounts[i]
 		if !account.IsSchedulable() || !eligible(ctx, account) {
 			continue
 		}
-		bound := false
+		bindings := make(map[int64]AccountProxyBinding)
+		var candidates []int64
+		unlimited := false
 		for _, binding := range account.ProxyBindings {
-			if pool[binding.ProxyID] && binding.Proxy != nil && binding.Proxy.IsActive() && !binding.Proxy.IsExpired(time.Now()) {
-				bound = true
-				break
+			if pool[binding.ProxyID] && !assigned[binding.ProxyID] && binding.Proxy != nil && binding.Proxy.IsActive() && !binding.Proxy.IsExpired(now) {
+				bindings[binding.ProxyID] = binding
+				candidates = append(candidates, binding.ProxyID)
+				unlimited = unlimited || binding.MaxConcurrency <= 0
 			}
 		}
-		if !bound {
+		if len(candidates) == 0 {
 			continue
 		}
-		if winner == nil || account.Priority < winner.Priority || (account.Priority == winner.Priority && account.ID < winner.ID) {
-			winner = account
-		}
-	}
-	if winner != nil {
-		gate.winner = winner.ID
-		// Lock physical resources, including any manually overlapping bindings.
-		// Moving a proxy between groups cannot evade an in-flight reservation.
-		for _, binding := range winner.ProxyBindings {
-			gate.resources = append(gate.resources, binding.ProxyID)
-			if pool[binding.ProxyID] {
-				gate.egress = append(gate.egress, binding.ProxyID)
+		candidates = uniqueProxyResourceIDs(candidates)
+		remaining := account.Concurrency
+		for _, id := range candidates {
+			// A pool with legacy unlimited proxy limits has no finite ratio;
+			// preserve its single-owner behavior until explicit limits are saved.
+			limit := bindings[id].MaxConcurrency
+			if !unlimited && len(gate.subsets[account.ID]) > 0 && limit > remaining {
+				break
 			}
+			gate.subsets[account.ID] = append(gate.subsets[account.ID], id)
+			assigned[id] = true
+			remaining -= limit
+		}
+		if gate.winner == 0 && len(gate.subsets[account.ID]) > 0 {
+			gate.winner = account.ID
 		}
 	}
-	gate.resources = uniqueProxyResourceIDs(gate.resources)
 	return gate, accounts, nil
 }
 
@@ -141,7 +151,7 @@ func prepareProxyPriority(ctx context.Context, repo AccountRepository, groupID *
 		result[id] = struct{}{}
 	}
 	for i := range accounts {
-		if accounts[i].ID != gate.winner {
+		if len(gate.subsets[accounts[i].ID]) == 0 {
 			result[accounts[i].ID] = struct{}{}
 		}
 	}
@@ -191,7 +201,7 @@ func (s *OpenAIGatewayService) checkProxyPriorityPrevious(ctx context.Context, g
 	if err != nil {
 		return ErrProxyLeaseUnavailable
 	}
-	if owner > 0 && owner != gate.winner {
+	if owner > 0 && len(gate.subsets[owner]) == 0 {
 		return fmt.Errorf("%w: response owner is waiting for its strict proxy pool", ErrNoAvailableAccounts)
 	}
 	return nil

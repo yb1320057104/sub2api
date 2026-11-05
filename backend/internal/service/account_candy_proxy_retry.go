@@ -40,6 +40,10 @@ func runAccountCandyWithProxyRetry(
 	if session.limit == 0 {
 		ctx = context.WithValue(ctx, radarCandyProxyRetryKey{}, true)
 	}
+	recovery, _ := ctx.Value(accountCandyRecoveryKey{}).(*accountCandyRecovery)
+	if recovery == nil {
+		ctx, recovery = withAccountCandyRecovery(ctx, nil)
+	}
 	var rejected *accountCandyProxyAttempt
 	for {
 		if err := ctx.Err(); err != nil {
@@ -64,14 +68,42 @@ func runAccountCandyWithProxyRetry(
 			err = session.checkAttempt(ctx, selected)
 		}
 		text := ""
+		requested := false
 		if err == nil {
-			text, err = tests.runAccountCandyProbe(ctx, &routeAccount, credential, cfg)
+			err = recovery.begin(ctx)
+			if err == nil {
+				requested = true
+				text, err = tests.runAccountCandyProbe(ctx, &routeAccount, credential, cfg)
+			}
 		}
 		if err == nil && strings.TrimSpace(text) != "" {
 			session.succeeded(selected)
 		}
-		if err == nil || !accountCandyCanChangeProxy(err) {
+		if err == nil || ctx.Err() != nil {
 			return text, err
+		}
+		var unsent *accountCandyRetryableNetworkError
+		if requested && errors.As(err, &unsent) {
+			// Preflight and provably unsent connections retain their existing
+			// route budget and do not consume response-recovery attempts.
+			recovery.attempts--
+		}
+		if requested && accountCandyResponseCanRecover(err) {
+			if err = recovery.pause(ctx, err); err != nil {
+				return "", err
+			}
+			// A body interruption may be transient on a static route. Keep the
+			// same route, but repeat all identity/lease/config checks above.
+			rejected = nil
+			continue
+		}
+		if !accountCandyCanChangeProxy(err) {
+			return text, err
+		}
+		if requested && !errors.As(err, &unsent) {
+			if err = recovery.pause(ctx, err); err != nil {
+				return "", err
+			}
 		}
 		rejected = selected
 	}

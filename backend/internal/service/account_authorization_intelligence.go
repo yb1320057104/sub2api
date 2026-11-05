@@ -113,6 +113,15 @@ func (s *AccountAuthorizationService) executeAuthorizationIntelligence(ctx conte
 	result = AuthorizationIntelligenceResult{Model: model.Model, Effort: model.Effort, Status: "failed"}
 	started := time.Now()
 	result.StartedAt = &started
+	ctx, recovery := withAccountCandyRecovery(ctx, func(progressCtx context.Context, message string) error {
+		result.ErrorMessage = message
+		if update, _ := progressCtx.Value(authorizationCandyProgressKey{}).(func(AuthorizationIntelligenceResult) error); update != nil {
+			snapshot := result
+			snapshot.Status = "running"
+			return update(snapshot)
+		}
+		return nil
+	})
 	defer func() {
 		finished := time.Now()
 		result.FinishedAt = &finished
@@ -120,6 +129,13 @@ func (s *AccountAuthorizationService) executeAuthorizationIntelligence(ctx conte
 		if recover() != nil {
 			result.Status, result.ErrorMessage = "failed", "模型测智异常中断，此错误不作为不及格依据"
 			result.Passed, result.Answer = nil, nil
+		}
+		if message := recovery.message(); message != "" {
+			result.ErrorMessage = strings.TrimSpace(strings.TrimSuffix(result.ErrorMessage, message))
+			if result.ErrorMessage != "" {
+				result.ErrorMessage += "；"
+			}
+			result.ErrorMessage += message
 		}
 	}()
 	// Account model-mapping caches are mutable. Each concurrent probe loads
@@ -207,11 +223,27 @@ func (s *AccountAuthorizationService) runAuthorizationIntelligenceModels(ctx con
 	type completion struct {
 		index  int
 		result AuthorizationIntelligenceResult
+		ack    chan error
 	}
 	completed := make(chan completion, len(models))
+	updates := make(chan completion)
 	for i, model := range models {
 		go func(index int, current RadarModel) {
-			completed <- completion{index: index, result: s.executeAuthorizationIntelligence(probeCtx, account.ID, job.settings.IntelligenceSourceGroupID, snapshot, current, proxies)}
+			currentCtx := context.WithValue(probeCtx, authorizationCandyProgressKey{}, func(result AuthorizationIntelligenceResult) error {
+				ack := make(chan error, 1)
+				select {
+				case updates <- completion{index: index, result: result, ack: ack}:
+				case <-probeCtx.Done():
+					return probeCtx.Err()
+				}
+				select {
+				case err := <-ack:
+					return err
+				case <-probeCtx.Done():
+					return probeCtx.Err()
+				}
+			})
+			completed <- completion{index: index, result: s.executeAuthorizationIntelligence(currentCtx, account.ID, job.settings.IntelligenceSourceGroupID, snapshot, current, proxies)}
 		}(i, model)
 	}
 	ticker := time.NewTicker(time.Second)
@@ -226,6 +258,16 @@ func (s *AccountAuthorizationService) runAuthorizationIntelligenceModels(ctx con
 	}
 	for count := 0; count < len(models); {
 		select {
+		case update := <-updates:
+			results[update.index] = update.result
+			if stopErr == nil {
+				if err := progress("intelligence_testing", update.result.ErrorMessage); err != nil {
+					stop(err)
+				} else if err = s.saveAuthorizationIntelligence(ctx, job, results, false); err != nil {
+					stop(err)
+				}
+			}
+			update.ack <- stopErr
 		case result := <-completed:
 			results[result.index] = result.result
 			count++
@@ -261,3 +303,5 @@ func (s *AccountAuthorizationService) runAuthorizationIntelligenceModels(ctx con
 	}
 	return results, nil
 }
+
+type authorizationCandyProgressKey struct{}

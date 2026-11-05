@@ -34,7 +34,7 @@ describe('IP group account assignment', () => {
     await wrapper.get('form').trigger('submit')
     await wrapper.get('form').trigger('submit')
     expect(api.assignAccountProxyGroup).toHaveBeenCalledTimes(1)
-    expect(api.assignAccountProxyGroup).toHaveBeenCalledWith({ account_ids: [11, 12], proxy_group_id: 7, proxy_concurrency: 10 })
+    expect(api.assignAccountProxyGroup).toHaveBeenCalledWith({ account_ids: [11, 12], proxy_group_id: 7, proxy_concurrency: 10, account_concurrency: 100 })
     expect(api.assignProxies).not.toHaveBeenCalled()
     resolve({ account_count: 2, proxy_count: 2, binding_count: 4 }); await flushPromises()
     expect(wrapper.emitted('assigned')).toHaveLength(1)
@@ -50,6 +50,17 @@ describe('IP group account assignment', () => {
   it.each([0, 1.5, 10001])('rejects invalid global concurrency %s', async concurrency => {
     const wrapper = await open(); await wrapper.get('select').setValue('7'); await wrapper.get('[data-testid="assign-proxy-concurrency"]').setValue(concurrency); await wrapper.get('form').trigger('submit')
     expect(api.assignAccountProxyGroup).not.toHaveBeenCalled()
+  })
+
+  it.each([0, 1.5, 10001])('rejects invalid account concurrency %s', async concurrency => {
+    const wrapper = await open(); await wrapper.get('select').setValue('7'); await wrapper.get('[data-testid="assign-account-concurrency"]').setValue(concurrency); await wrapper.get('form').trigger('submit')
+    expect(api.assignAccountProxyGroup).not.toHaveBeenCalled()
+  })
+
+  it('sends the edited account concurrency with the IP assignment', async () => {
+    const wrapper = await open(); await wrapper.get('select').setValue('7'); await wrapper.get('[data-testid="assign-account-concurrency"]').setValue(50)
+    await wrapper.get('form').trigger('submit'); await flushPromises()
+    expect(api.assignAccountProxyGroup).toHaveBeenCalledWith({ account_ids: [11, 12], proxy_group_id: 7, proxy_concurrency: 10, account_concurrency: 50 })
   })
 
   it('preserves selected group and concurrency after an atomic rejection', async () => {
@@ -86,7 +97,21 @@ describe('business group priority policy', () => {
     const wrapper = keep(mount(GroupProxyPolicyDialog, { props: { show: true, groupIds: [4, 5] }, global }))
     await flushPromises(); await wrapper.get('select').setValue('7'); await wrapper.setProps({ groupIds: [99] })
     await wrapper.get('form').trigger('submit'); await flushPromises()
-    expect(api.updateGroupProxyPolicy).toHaveBeenCalledWith({ group_ids: [4, 5], strict_priority: true, assign_proxies: true, proxy_group_id: 7, proxy_concurrency: 10 })
+    expect(api.updateGroupProxyPolicy).toHaveBeenCalledWith({ group_ids: [4, 5], strict_priority: true, assign_proxies: true, proxy_group_id: 7, proxy_concurrency: 10, account_concurrency: 100 })
+  })
+
+  it.each([0, 1.5, 10001])('rejects invalid policy account concurrency %s', async concurrency => {
+    const wrapper = keep(mount(GroupProxyPolicyDialog, { props: { show: true, groupIds: [4] }, global }))
+    await flushPromises(); await wrapper.get('select').setValue('7'); await wrapper.get('[data-testid="policy-account-concurrency"]').setValue(concurrency)
+    await wrapper.get('form').trigger('submit')
+    expect(api.updateGroupProxyPolicy).not.toHaveBeenCalled()
+  })
+
+  it('enables a policy without submitting concurrency when assignment is unchecked', async () => {
+    const wrapper = keep(mount(GroupProxyPolicyDialog, { props: { show: true, groupIds: [4] }, global }))
+    await flushPromises(); await wrapper.get('select').setValue('7'); await wrapper.get('[data-testid="policy-account-concurrency"]').setValue(0)
+    await wrapper.get('[data-testid="policy-assign-proxies"]').setValue(false); await wrapper.get('form').trigger('submit'); await flushPromises()
+    expect(api.updateGroupProxyPolicy).toHaveBeenCalledWith({ group_ids: [4], strict_priority: true, assign_proxies: false, proxy_group_id: 7 })
   })
 
   it('disables without requiring an IP group or rewriting bindings', async () => {

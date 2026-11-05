@@ -174,7 +174,7 @@ func TestPKAccountCandyProxyRetryUsesDistinctTemporaryNativeRoutes(t *testing.T)
 	defer func() { _ = db.Close() }()
 	columns := []string{"id", "protocol", "host", "port", "username", "password", "status", "expires_at"}
 	// Skip the original route even if a second database ID points at it.
-	mock.ExpectQuery("SELECT p.id,p.protocol,p.host,p.port.*NOT EXISTS.*a.deleted_at IS NULL").WithArgs(int64(0)).WillReturnRows(sqlmock.NewRows(columns).AddRow(8, "http", "original.example.test", 8080, "", "", "active", nil))
+	mock.ExpectQuery("SELECT p.id,p.protocol,p.host,p.port.*NOT EXISTS.*pk_effective_account_proxy_bindings").WithArgs(int64(0)).WillReturnRows(sqlmock.NewRows(columns).AddRow(8, "http", "original.example.test", 8080, "", "", "active", nil))
 	pkCandyExpectFreeCandidate(mock, 8, 9, "backup.example.test")
 	pkCandyExpectFreeCheck(mock, 9, "backup.example.test", true)
 	pkCandyExpectUnlock(mock, 9)
@@ -206,11 +206,11 @@ func TestPKAccountCandyProxyRetryUsesDistinctTemporaryNativeRoutes(t *testing.T)
 }
 
 func pkCandyExpectFreeCheck(mock sqlmock.Sqlmock, id int64, host string, free bool) {
-	mock.ExpectQuery("SELECT pg_backend_pid\\(\\),EXISTS.*NOT EXISTS.*a.deleted_at IS NULL").WithArgs(id, "http", host, 8080, "", "").WillReturnRows(sqlmock.NewRows([]string{"pid", "free"}).AddRow(9001, free))
+	mock.ExpectQuery("SELECT pg_backend_pid\\(\\),EXISTS.*NOT EXISTS.*pk_effective_account_proxy_bindings").WithArgs(id, "http", host, 8080, "", "").WillReturnRows(sqlmock.NewRows([]string{"pid", "free"}).AddRow(9001, free))
 }
 
 func pkCandyExpectFreeCandidate(mock sqlmock.Sqlmock, after, id int64, host string) {
-	mock.ExpectQuery("SELECT p.id,p.protocol,p.host,p.port.*NOT EXISTS.*a.deleted_at IS NULL").WithArgs(after).WillReturnRows(sqlmock.NewRows([]string{"id", "protocol", "host", "port", "username", "password", "status", "expires_at"}).AddRow(id, "http", host, 8080, "", "", "active", nil))
+	mock.ExpectQuery("SELECT p.id,p.protocol,p.host,p.port.*NOT EXISTS.*pk_effective_account_proxy_bindings").WithArgs(after).WillReturnRows(sqlmock.NewRows([]string{"id", "protocol", "host", "port", "username", "password", "status", "expires_at"}).AddRow(id, "http", host, 8080, "", "", "active", nil))
 	mock.ExpectQuery("SELECT pg_try_advisory_lock").WithArgs(id).WillReturnRows(sqlmock.NewRows([]string{"locked", "pid"}).AddRow(true, 9001))
 	pkCandyExpectFreeCheck(mock, id, host, true)
 }
@@ -267,7 +267,7 @@ func TestPKAccountCandyProxyUnknownReservationDropsPhysicalConnection(t *testing
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	defer db.Close()
-	mock.ExpectQuery("SELECT p.id,p.protocol,p.host,p.port.*NOT EXISTS.*a.deleted_at IS NULL").WithArgs(int64(0)).WillReturnRows(sqlmock.NewRows([]string{"id", "protocol", "host", "port", "username", "password", "status", "expires_at"}).AddRow(9, "http", "backup.example.test", 8080, "", "", "active", nil))
+	mock.ExpectQuery("SELECT p.id,p.protocol,p.host,p.port.*NOT EXISTS.*pk_effective_account_proxy_bindings").WithArgs(int64(0)).WillReturnRows(sqlmock.NewRows([]string{"id", "protocol", "host", "port", "username", "password", "status", "expires_at"}).AddRow(9, "http", "backup.example.test", 8080, "", "", "active", nil))
 	// PostgreSQL could already have acquired the lock when decoding the
 	// response fails. A missing reservation entry must not keep that session.
 	mock.ExpectQuery("SELECT pg_try_advisory_lock").WithArgs(int64(9)).WillReturnRows(sqlmock.NewRows([]string{"locked", "pid"}).AddRow(true, "invalid-pid"))
@@ -375,7 +375,7 @@ func TestPKAccountCandyProxyOccupiedBeforeSendIsNeverUsed(t *testing.T) {
 	defer db.Close()
 	pkCandyExpectFreeCandidate(mock, 0, 9, "backup.example.test")
 	pkCandyExpectFreeCheck(mock, 9, "backup.example.test", false)
-	mock.ExpectQuery("SELECT p.id,p.protocol,p.host,p.port.*NOT EXISTS.*a.deleted_at IS NULL").WithArgs(int64(9)).WillReturnRows(sqlmock.NewRows([]string{"id", "protocol", "host", "port", "username", "password", "status", "expires_at"}))
+	mock.ExpectQuery("SELECT p.id,p.protocol,p.host,p.port.*NOT EXISTS.*pk_effective_account_proxy_bindings").WithArgs(int64(9)).WillReturnRows(sqlmock.NewRows([]string{"id", "protocol", "host", "port", "username", "password", "status", "expires_at"}))
 	pkCandyExpectUnlock(mock, 9)
 	upstream := &queuedHTTPUpstream{}
 	tests := &AccountTestService{httpUpstream: upstream, cfg: &config.Config{}}

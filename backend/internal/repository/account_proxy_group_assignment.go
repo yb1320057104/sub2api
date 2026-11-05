@@ -58,7 +58,7 @@ LEFT JOIN pk_proxy_limits l ON l.proxy_id=p.id WHERE m.proxy_group_id=$1 ORDER B
 	return items, nil
 }
 
-func assignWholeProxyGroup(ctx context.Context, c *dbent.Client, ids []int64, items []service.AccountProxyBindingInput) error {
+func assignWholeProxyGroup(ctx context.Context, c *dbent.Client, ids []int64, items []service.AccountProxyBindingInput, concurrency *int) error {
 	if err := lockProxyBindingAccounts(ctx, c, ids); err != nil {
 		return err
 	}
@@ -66,10 +66,22 @@ func assignWholeProxyGroup(ctx context.Context, c *dbent.Client, ids []int64, it
 	for _, id := range ids {
 		assignments[id] = items
 	}
-	return persistProxyAssignments(ctx, c, ids, assignments)
+	if err := persistProxyAssignments(ctx, c, ids, assignments); err != nil {
+		return err
+	}
+	if concurrency != nil {
+		// Binding persistence emits the account outbox events in this same
+		// transaction. Subscribers can only observe the complete configuration.
+		_, err := c.ExecContext(ctx, `UPDATE accounts SET concurrency=$2,updated_at=NOW() WHERE id=ANY($1) AND deleted_at IS NULL`, pq.Array(ids), *concurrency)
+		return err
+	}
+	return nil
 }
 
 func (r *accountRepository) AssignAccountProxyGroup(ctx context.Context, input service.AccountProxyGroupAssignmentInput) (*service.AccountProxyAssignmentResult, error) {
+	if err := service.ValidateProxyGroupAccountConcurrency(input.AccountConcurrency, true); err != nil {
+		return nil, err
+	}
 	ids, err := normalizeProxyAccountIDs(input.AccountIDs)
 	if err != nil {
 		return nil, err
@@ -89,7 +101,7 @@ func (r *accountRepository) AssignAccountProxyGroup(ctx context.Context, input s
 		if err != nil {
 			return err
 		}
-		if err = assignWholeProxyGroup(ctx, c, ids, items); err != nil {
+		if err = assignWholeProxyGroup(ctx, c, ids, items, input.AccountConcurrency); err != nil {
 			return err
 		}
 		result.AccountCount, result.ProxyCount, result.BindingCount = len(ids), len(items), len(ids)*len(items)
@@ -158,6 +170,9 @@ WHERE ag.group_id=ANY($1) ORDER BY a.id,ag.group_id FOR SHARE OF ag,a`, pq.Array
 }
 
 func (r *accountRepository) UpdateGroupProxyPriorityPolicies(ctx context.Context, input service.GroupProxyPriorityUpdateInput) (*service.GroupProxyPriorityUpdateResult, error) {
+	if err := service.ValidateProxyGroupAccountConcurrency(input.AccountConcurrency, input.AssignProxies); err != nil {
+		return nil, err
+	}
 	ids := uniqueProxyGroupIDs(input.GroupIDs)
 	if len(ids) == 0 || len(ids) > 500 {
 		return nil, infraerrors.BadRequest("PROXY_GROUP_SELECTION_INVALID", "请选择1至500个业务分组")
@@ -227,7 +242,7 @@ func (r *accountRepository) UpdateGroupProxyPriorityPolicies(ctx context.Context
 				items[i].MaxConcurrency = input.ProxyConcurrency
 			}
 			if len(roots) > 0 {
-				if err = assignWholeProxyGroup(ctx, c, roots, items); err != nil {
+				if err = assignWholeProxyGroup(ctx, c, roots, items, input.AccountConcurrency); err != nil {
 					return err
 				}
 			} else {

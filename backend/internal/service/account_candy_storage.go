@@ -188,6 +188,12 @@ func (s *AccountCandyTestService) finish(ctx context.Context, result *AccountCan
 		ok := answer != nil && *answer == 21
 		passed = &ok
 	}
+	if result.recoveryMessage != "" {
+		if failure != "" {
+			failure += "；"
+		}
+		failure += result.recoveryMessage
+	}
 	if status == "completed" && passed != nil && !*passed && cfg.TargetGroupID != nil {
 		moved, moveFailure, err = s.moveAccount(ctx, tx, result, *cfg.TargetGroupID)
 		if err != nil {

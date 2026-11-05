@@ -138,22 +138,23 @@ func normalizeGrokAccountTestMode(mode string) string {
 
 // AccountTestService handles account testing operations
 type AccountTestService struct {
-	accountRepo               AccountRepository
-	geminiTokenProvider       *GeminiTokenProvider
-	claudeTokenProvider       *ClaudeTokenProvider
-	grokTokenProvider         *GrokTokenProvider
-	antigravityGatewayService *AntigravityGatewayService
-	httpUpstream              HTTPUpstream
-	cfg                       *config.Config
-	settingService            *SettingService
-	tlsFPProfileService       *TLSFingerprintProfileService
-	modelMetadataRegistryMu   sync.Mutex
-	modelMetadataRegistry     map[string]modelsDevProvider
-	modelMetadataRegistryAt   time.Time
-	pluginManager             *PluginManager
-	openaiGatewayService      *OpenAIGatewayService
-	agentIdentityTaskMu       sync.Mutex
-	agentIdentityWS           agentIdentityWSConnectionInvalidator
+	accountRepo                AccountRepository
+	candyTokenCacheInvalidator TokenCacheInvalidator
+	geminiTokenProvider        *GeminiTokenProvider
+	claudeTokenProvider        *ClaudeTokenProvider
+	grokTokenProvider          *GrokTokenProvider
+	antigravityGatewayService  *AntigravityGatewayService
+	httpUpstream               HTTPUpstream
+	cfg                        *config.Config
+	settingService             *SettingService
+	tlsFPProfileService        *TLSFingerprintProfileService
+	modelMetadataRegistryMu    sync.Mutex
+	modelMetadataRegistry      map[string]modelsDevProvider
+	modelMetadataRegistryAt    time.Time
+	pluginManager              *PluginManager
+	openaiGatewayService       *OpenAIGatewayService
+	agentIdentityTaskMu        sync.Mutex
+	agentIdentityWS            agentIdentityWSConnectionInvalidator
 	// grokWSDialer is optional; realtime account tests use the default OpenAI-style
 	// WS dialer when nil (supports proxy + coder/websocket handshake).
 	grokWSDialer openAIWSClientDialer
@@ -1003,6 +1004,12 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 		}
 		body, _ := io.ReadAll(errorBody)
 		body = redactAgentIdentitySensitiveBodyForAccount(ctx, s.accountRepo, credentialAccount, body)
+		// A candy HTTP business failure is final for this attempt, including
+		// task-invalid identities. Task re-registration would otherwise issue
+		// another model POST outside the model's bounded recovery budget.
+		if candy != nil {
+			return accountCandyHTTPFailure(resp.StatusCode, body)
+		}
 		if !agentIdentityTaskRecoveryWasTried(ctx) && credentialAccount.IsOpenAIAgentIdentity() && isAgentIdentityTaskInvalidHTTPResponse(resp.StatusCode, body) {
 			expectedTaskID := credentialAccount.GetCredential("task_id")
 			if err := ensureAgentIdentityTaskForAccount(ctx, s.accountRepo, s.agentIdentityWS, &s.agentIdentityTaskMu, credentialAccount, expectedTaskID); err != nil {
@@ -1010,9 +1017,6 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 			}
 			c.Request = c.Request.WithContext(markAgentIdentityTaskRecoveryTried(ctx))
 			return s.testOpenAIAccountConnection(c, account, modelID, prompt, mode)
-		}
-		if candy != nil {
-			return accountCandyHTTPFailure(resp.StatusCode, body)
 		}
 		if resp.StatusCode == http.StatusTooManyRequests {
 			s.reconcileOpenAI429State(ctx, account, resp.Header, body)

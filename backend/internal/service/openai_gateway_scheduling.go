@@ -1166,7 +1166,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 			stickyAccountID = accountID
 		}
 	}
-	if s.concurrencyService == nil || !cfg.LoadBatchEnabled {
+	if s.concurrencyService == nil || (!cfg.LoadBatchEnabled && !proxyPriorityHasPartitions(ctx)) {
 		account, stickyHit, err := s.selectAccountForModelWithExclusionsStickyHit(ctx, groupID, platform, sessionHash, requestedModel, excludedIDs, requireCompact, stickyAccountID, requiredCapability, preferLowUpstreamRate)
 		if err != nil {
 			return nil, err
@@ -1252,7 +1252,7 @@ func (s *OpenAIGatewayService) selectAccountWithLoadAwareness(ctx context.Contex
 						}
 
 						waitingCount, _ := s.concurrencyService.GetAccountWaitingCount(ctx, accountID)
-						if waitingCount < cfg.StickySessionMaxWaiting {
+						if waitingCount < cfg.StickySessionMaxWaiting && !proxyPriorityHasAlternative(ctx, accountID) {
 							selection, selectErr := s.newSelectionResult(ctx, account, false, nil, &AccountWaitPlan{
 								AccountID:      accountID,
 								MaxConcurrency: account.Concurrency,

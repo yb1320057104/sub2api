@@ -149,6 +149,7 @@ docs/*
 !docs/PK_RADAR_0.2.19_PK6_REVIEW.md
 !docs/PK_RADAR_EMAIL_PK38_REVIEW.md
 !docs/PK_CANDY_GROUP_RULES_PK42_REVIEW.md
+!docs/PK_CANDY_PROXY_PK52_REVIEW.md
 !docs/PK_REPOSITORY_MIGRATION_PK42_REVIEW.md
 !docs/PK_OPERATIONS_PK43_REVIEW.md
 !docs/PK_AUTHORIZATION_GATE_REVIEW.md
@@ -163,6 +164,7 @@ docs/screenshots/*
 !docs/screenshots/codex-referral-success.png
 .serena/
 .codex/
+.runtime/
 frontend/coverage/
 aicodex
 output/

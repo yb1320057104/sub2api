@@ -48,6 +48,9 @@ func (s *AccountCandyTestService) executeRadarModel(ctx context.Context, run *Ra
 		result.err = err
 		return result
 	}
+	// All model goroutines share the claim-time baseline. A late-starting
+	// model must not accept a sibling's newly recorded 401 as its initial state.
+	accountState, credentialState, stateErr := radarCandyClaimStates(run)
 	now := time.Now()
 	m.StartedAt, m.Status = &now, "running"
 	if result.err = s.writeRadarModel(ctx, run, m); result.err != nil {
@@ -55,8 +58,18 @@ func (s *AccountCandyTestService) executeRadarModel(ctx context.Context, run *Ra
 	}
 	modelCtx, modelCancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer modelCancel()
+	modelCtx, recovery := withAccountCandyRecovery(modelCtx, func(progressCtx context.Context, message string) error {
+		m.ErrorMessage = message
+		return s.writeRadarModel(progressCtx, run, m)
+	})
 	text, callErr := runAccountCandyWithProxyRetry(modelCtx, s.db, s.testService, account, credential, &AccountCandyTestConfig{Model: m.Model, Effort: m.Effort}, func(attemptCtx context.Context, route *Account, attempt int) error {
+		if stateErr != nil {
+			return stateErr
+		}
 		if err := s.checkRadarIdentity(attemptCtx, run); err != nil {
+			return err
+		}
+		if err := s.checkRadarRequestState(attemptCtx, accountState, credentialState); err != nil {
 			return err
 		}
 		m.egressMode = "direct"
@@ -72,6 +85,9 @@ func (s *AccountCandyTestService) executeRadarModel(ctx context.Context, run *Ra
 			return err
 		}
 		if err := s.checkRadarIdentity(attemptCtx, run); err != nil {
+			return err
+		}
+		if err := s.checkRadarRequestState(attemptCtx, accountState, credentialState); err != nil {
 			return err
 		}
 		if m.EgressError != "" {
@@ -90,6 +106,12 @@ func (s *AccountCandyTestService) executeRadarModel(ctx context.Context, run *Ra
 		m.Answer = intelligenceExtractAnswer(text)
 		passed := m.Answer != nil && *m.Answer == 21
 		m.Passed = &passed
+	}
+	if message := recovery.message(); message != "" {
+		if m.ErrorMessage != "" {
+			m.ErrorMessage += "；"
+		}
+		m.ErrorMessage += message
 	}
 	// Persist the first complete wrong answer and its group move atomically;
 	// another model's network completion is never a prerequisite.

@@ -94,6 +94,9 @@ func doAccountCandyTLSHandshakeRetry(
 			return nil, ctx.Err()
 		}
 		if enabled, _ := ctx.Value(accountCandyProxyRetryKey{}).(bool); enabled {
+			if _, recovering := ctx.Value(accountCandyRecoveryKey{}).(*accountCandyRecovery); recovering && !requestWritten.Load() && isAccountCandyConnectFailure(err) {
+				return nil, &accountCandyRetryableNetworkError{}
+			}
 			if radar, _ := ctx.Value(radarCandyProxyRetryKey{}).(bool); radar && isRadarCandyNetworkFailure(err) {
 				return nil, &radarCandyRetryableNetworkError{}
 			}

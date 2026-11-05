@@ -9,7 +9,7 @@ export function supportsAccountCandyTest(account: AccountListItem): boolean {
 
 export function useAccountCandyTests(
   accounts: Ref<AccountListItem[]>,
-  onAccountsMoved: () => void,
+  onAccountsChanged: () => void,
 ) {
   const results = ref<Record<number, AccountCandyResult>>({})
   const startingIDs = ref<Set<number>>(new Set())
@@ -20,6 +20,7 @@ export function useAccountCandyTests(
   let controller: AbortController | null = null
   let generation = 0
   let disposed = false
+  const terminalRuns = new Map<number, string>()
 
   async function refresh() {
     if (disposed || loading.value) return
@@ -46,10 +47,18 @@ export function useAccountCandyTests(
         return targets.length > 0 && (previous?.id !== result.id || previous?.origin !== result.origin ||
           getCandyMovedGroupIDs(previous).join(',') !== targets.join(','))
       })
+      let finished = false
+      for (const result of latest) {
+        if (result.status === 'running') continue
+        const identity = `${result.origin ?? 'radar'}:${result.id}`
+        if (loaded.value && terminalRuns.get(result.account_id) !== identity) finished = true
+        terminalRuns.set(result.account_id, identity)
+      }
       results.value = Object.fromEntries(latest.map(result => [result.account_id, result]))
       loadError.value = false
       loaded.value = true
-      if (moved) onAccountsMoved()
+      // Failed tests may update account status without moving it to another group.
+      if (moved || finished) onAccountsChanged()
     } catch {
       if (!request.signal.aborted && currentGeneration === generation) loadError.value = true
     } finally {
@@ -68,6 +77,7 @@ export function useAccountCandyTests(
     loadError.value = false
     loaded.value = false
     const visibleIDs = new Set(accountIDs.value)
+    for (const id of terminalRuns.keys()) if (!visibleIDs.has(id)) terminalRuns.delete(id)
     results.value = Object.fromEntries(Object.entries(results.value).filter(([id]) => visibleIDs.has(Number(id))))
     void refresh()
   }, { immediate: true })

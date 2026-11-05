@@ -1,5 +1,6 @@
 export default {
   radar: {
+    accountStatus: 'Account status',
     emails: 'Email settings',
     statistics: "Account statistics",
     authorizationTest: 'Authorization candy test', notRecorded: 'Not recorded', authorizationResponseMissing: 'This authorization record did not retain the full response.', authorizationTimeFallback: 'This historical record has no separate test start time; the authorization job start time is shown.',
@@ -18,12 +19,13 @@ export default {
     reason: { unsupported: 'Unsupported', disabled: 'Schedule disabled', inactive: 'Account inactive or scheduling paused', expired: 'Account expired', running: 'Calculated after this run', target_group: 'Target group: schedule stopped', unconfigured: 'No candy test rule for this account’s groups', unknown: 'Not scheduled' },
   },
   accountCandy: {
+    recoveryHint: 'An interrupted response or missing completion event allows up to 3 test requests for the same model in this run. Each new request generates an answer from the beginning and retains recovery details. Complete answers and explicit account errors are not requested again; cancellation or timeout stops recovery.',
     pending: 'Pending',
     partial_failed: 'Some model requests failed',
     title: 'Account candy test',
     settings: 'Candy test settings',
     description: 'Ask each account the same candy question directly. The expected answer is always 21.',
-    supported: 'Available for OpenAI accounts, independently of group observation. Only accounts matching a source group rule below are tested. Enabling and saving schedules matching accounts immediately, then repeats at this interval. Scheduled tests skip inactive accounts and accounts with scheduling paused. Up to 3 accounts run concurrently. Radar account tests retry egress probe and network failures through unused proxies from Native IP Management until they succeed, exhaust the free pool, time out, or are cancelled. A backup proxy is assigned to the account after its egress probe and a complete model response succeed. Completed answers are not tested again. HTTP status codes and sanitized causes are shown; explicit account or model errors are not retried blindly.',
+    supported: 'Available for OpenAI accounts, independently of group observation. Only accounts matching a source group rule below are tested. Enabling and saving schedules matching accounts immediately, then repeats at this interval. Scheduled tests skip inactive accounts and accounts with scheduling paused. Up to 3 accounts run concurrently. Radar account tests retry egress probe and network failures through unused proxies from Native IP Management until they succeed, exhaust the free pool, time out, or are cancelled; actual model requests remain limited to 3 per model in this run. A backup proxy is assigned to the account after its egress probe and a complete model response succeed. Completed answers are not tested again. HTTP status codes and sanitized causes are shown; explicit account or model errors are not retried blindly.',
     enabled: 'Enable scheduled account tests',
     interval: 'Test interval (minutes)',
     model: 'Test model',

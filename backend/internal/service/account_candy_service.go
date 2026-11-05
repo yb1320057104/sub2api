@@ -38,6 +38,7 @@ type AccountCandyTestResult struct {
 	identity          [32]byte
 	probeAccount      *Account
 	credentialAccount *Account
+	recoveryMessage   string
 	ID                int64      `json:"id"`
 	AccountID         int64      `json:"account_id"`
 	Source            string     `json:"source"`
@@ -355,7 +356,13 @@ func (s *AccountCandyTestService) start(ctx context.Context, accountID int64, so
 		} else if latest.generation != cfg.generation {
 			callErr = context.Canceled
 		} else {
-			text, callErr = s.testService.runAccountCandyProbe(workerCtx, result.probeAccount, result.credentialAccount, cfg)
+			recoveryCtx, recovery := withAccountCandyRecovery(workerCtx, nil)
+			text, callErr = runAccountCandyResponseRecovery(recoveryCtx, func(attemptCtx context.Context) error {
+				return s.checkCandyRecoveryAttempt(attemptCtx, result, cfg, recovery.message())
+			}, func(attemptCtx context.Context) (string, error) {
+				return s.testService.runAccountCandyProbe(attemptCtx, result.probeAccount, result.credentialAccount, cfg)
+			})
+			result.recoveryMessage = recovery.message()
 		}
 		elapsed := time.Since(started).Milliseconds()
 		finishCtx, finishCancel := context.WithTimeout(context.Background(), 10*time.Second)

@@ -212,7 +212,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	pluginHostInfo := providePluginHostInfo(buildInfo)
 	pluginKVStore := repository.NewPluginKVStore(redisClient)
 	pluginManager := service.ProvidePluginManager(pluginRepository, secretEncryptor, configConfig, pluginHostInfo, pluginKVStore, openAIGatewayService)
-	accountTestService := service.ProvideAccountTestService(accountRepository, geminiTokenProvider, claudeTokenProvider, grokTokenProvider, antigravityGatewayService, httpUpstream, configConfig, tlsFingerprintProfileService, openAIGatewayService, settingService, pluginManager)
+	accountTestService := service.ProvideAccountTestService(accountRepository, geminiTokenProvider, claudeTokenProvider, grokTokenProvider, antigravityGatewayService, httpUpstream, configConfig, tlsFingerprintProfileService, openAIGatewayService, settingService, pluginManager, compositeTokenCacheInvalidator)
 	accountCandyTestService := service.ProvideAccountCandyTestService(db, accountRepository, groupRepository, settingRepository, accountTestService, emailService)
 	accountCandyTestHandler := handler.NewAccountCandyTestHandler(accountCandyTestService)
 	accountAuthorizationService := service.ProvideAccountAuthorizationService(db, client, accountRepository, adminService, openAIOAuthService, accountTestService, secretEncryptor, compositeTokenCacheInvalidator, configConfig)

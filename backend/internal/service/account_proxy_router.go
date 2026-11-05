@@ -145,18 +145,17 @@ func (r *AccountProxyRouter) acquire(ctx, routeParent context.Context, accountID
 		if err != nil {
 			return nil, ErrProxyLeaseUnavailable
 		}
-		if gate != nil && gate.winner != accountID {
+		if gate != nil && len(gate.subsets[accountID]) == 0 {
 			return nil, ErrProxyCapacity
 		}
 	}
-	resources := make([]int64, 0, len(bindings))
-	for _, binding := range bindings {
-		resources = append(resources, binding.ProxyID)
-	}
+	var resources []int64
 	if gate != nil {
-		resources = append(resources, gate.resources...)
+		resources = gate.subsets[accountID]
+		if len(resources) == 0 {
+			return nil, ErrProxyCapacity
+		}
 	}
-	resources = uniqueProxyResourceIDs(resources)
 	priorityCache, managed := r.cache.(AccountProxyPriorityCache)
 	if gate != nil && !managed {
 		return nil, ErrProxyLeaseUnavailable
@@ -175,13 +174,10 @@ func (r *AccountProxyRouter) acquire(ctx, routeParent context.Context, accountID
 		selected = pinned
 	}
 	available := false
-	leaseID := uuid.NewString()
-	if managed {
-		leaseID = NewAccountProxyLeaseID(accountID, resources, gate != nil, leaseID)
-	}
+	nonce := uuid.NewString()
 	for _, i := range rand.Perm(len(bindings)) {
 		binding := bindings[i]
-		if gate != nil && !containsInt64(gate.egress, binding.ProxyID) {
+		if gate != nil && !containsInt64(resources, binding.ProxyID) {
 			continue
 		}
 		if selected > 0 && binding.ProxyID != selected {
@@ -191,11 +187,21 @@ func (r *AccountProxyRouter) acquire(ctx, routeParent context.Context, accountID
 			continue
 		}
 		available = true
+		leaseResources := resources
+		if gate == nil {
+			// Ordinary traffic occupies its real proxy, not its whole candidate
+			// list; otherwise it would block disjoint strict partitions.
+			leaseResources = []int64{binding.ProxyID}
+		}
+		leaseID := nonce
+		if managed {
+			leaseID = NewAccountProxyLeaseID(accountID, leaseResources, gate != nil, nonce)
+		}
 		operationCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 		var acquired bool
 		var acquireErr error
 		if managed {
-			acquired, acquireErr = priorityCache.AcquireAccountProxy(operationCtx, binding.ProxyID, binding.MaxConcurrency, leaseID, accountID, resources, gate != nil)
+			acquired, acquireErr = priorityCache.AcquireAccountProxy(operationCtx, binding.ProxyID, binding.MaxConcurrency, leaseID, accountID, leaseResources, gate != nil)
 		} else {
 			acquired, acquireErr = r.cache.AcquireProxy(operationCtx, binding.ProxyID, binding.MaxConcurrency, leaseID)
 		}

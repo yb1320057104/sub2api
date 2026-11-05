@@ -171,7 +171,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 			derefGroupID(groupID), groupPlatform, requestedModel, shortSessionHash(sessionHash), stickyAccountID, cfg.LoadBatchEnabled, s.concurrencyService != nil)
 	}
 
-	if s.concurrencyService == nil || !cfg.LoadBatchEnabled {
+	if s.concurrencyService == nil || (!cfg.LoadBatchEnabled && !proxyPriorityHasPartitions(ctx)) {
 		// 复制排除列表，用于会话限制拒绝时的重试
 		localExcluded := make(map[int64]struct{})
 		for k, v := range excludedIDs {
@@ -398,7 +398,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 
 							if stickyCacheMissReason == "" {
 								waitingCount, _ := s.concurrencyService.GetAccountWaitingCount(ctx, stickyAccountID)
-								if waitingCount < cfg.StickySessionMaxWaiting {
+								if waitingCount < cfg.StickySessionMaxWaiting && !proxyPriorityHasAlternative(ctx, stickyAccountID) {
 									// 会话数量限制检查（等待计划也需要占用会话配额）
 									if !s.checkAndRegisterSession(ctx, stickyAccount, sessionHash) {
 										stickyCacheMissReason = "session_limit"
@@ -605,7 +605,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 					}
 
 					waitingCount, _ := s.concurrencyService.GetAccountWaitingCount(ctx, accountID)
-					if waitingCount < cfg.StickySessionMaxWaiting {
+					if waitingCount < cfg.StickySessionMaxWaiting && !proxyPriorityHasAlternative(ctx, accountID) {
 						// 会话数量限制检查（等待计划也需要占用会话配额）
 						if !s.checkAndRegisterSession(ctx, account, sessionHash) {
 							// 会话限制已满，继续到 Layer 2

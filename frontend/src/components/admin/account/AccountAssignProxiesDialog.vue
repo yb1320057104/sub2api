@@ -12,11 +12,13 @@
         <p v-if="selectedGroup" class="text-xs text-gray-500">{{ t('admin.proxyGroups.counts', { total: selectedGroup.proxy_count, active: selectedGroup.active_proxy_count }) }}</p>
         <p v-if="selectedGroup && !usableGroup" class="text-sm text-amber-700 dark:text-amber-300">{{ t('admin.proxyGroups.unusable') }}</p>
       </div>
-      <div class="grid gap-4" :class="mode === 'available' ? 'sm:grid-cols-3' : ''">
+      <div class="grid gap-4" :class="mode === 'available' ? 'sm:grid-cols-3' : 'sm:grid-cols-2'">
         <label v-if="mode === 'available'" class="input-label">{{ t('admin.accounts.multiProxy.perAccount') }}<input v-model.number="form.proxies_per_account" data-testid="assign-proxies-per-account" type="number" min="1" max="100" step="1" required :disabled="busy" class="input mt-2" /><span class="mt-1 block text-xs font-normal text-gray-500">1–100</span></label>
         <label v-if="mode === 'available'" class="input-label">{{ t('admin.accounts.multiProxy.accountsLimit') }}<input v-model.number="form.max_accounts_per_proxy" data-testid="assign-proxy-max-accounts" type="number" min="1" max="10000" step="1" required :disabled="busy" class="input mt-2" /><span class="mt-1 block text-xs font-normal text-gray-500">{{ t('admin.accounts.multiProxy.onePerProxy') }}</span></label>
         <label class="input-label">{{ t('admin.accounts.multiProxy.concurrency') }}<input v-model.number="form.proxy_concurrency" data-testid="assign-proxy-concurrency" type="number" min="1" max="10000" step="1" required :disabled="busy" class="input mt-2" /><span class="mt-1 block text-xs font-normal text-gray-500">1–10000</span></label>
+        <label v-if="mode === 'group'" class="input-label">{{ t('admin.proxyGroups.accountConcurrency') }}<input v-model.number="accountConcurrency" data-testid="assign-account-concurrency" type="number" min="1" max="10000" step="1" required :disabled="busy" class="input mt-2" /><span class="mt-1 block text-xs font-normal text-gray-500">1–10000</span></label>
       </div>
+      <ProxyPoolCapacityPreview v-if="mode === 'group' && usableGroup" :pool-size="selectedGroup!.proxy_count" :account-concurrency="accountConcurrency" :proxy-concurrency="form.proxy_concurrency" />
       <div class="flex items-center justify-between rounded-lg border border-gray-200 px-4 py-3 text-sm dark:border-dark-600"><span class="text-gray-500">{{ t('admin.accounts.multiProxy.assignBindings') }}</span><strong class="font-mono tabular-nums">{{ valid ? ids.length * (mode === 'group' ? selectedGroup!.proxy_count : form.proxies_per_account) : '—' }}</strong></div>
       <p class="text-xs leading-5 text-gray-500">{{ t('admin.accounts.multiProxy.assignAtomic') }}</p>
       <p v-if="error" role="alert" class="rounded-lg bg-red-50 p-3 text-sm text-red-700 dark:bg-red-900/20 dark:text-red-300">{{ error }}</p>
@@ -29,6 +31,7 @@ import { computed, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import Select from '@/components/common/Select.vue'
+import ProxyPoolCapacityPreview from '@/components/admin/proxy/ProxyPoolCapacityPreview.vue'
 import { assignProxies } from '@/api/admin/accounts'
 import { assignAccountProxyGroup, listProxyGroups, type ProxyGroup } from '@/api/admin/proxyGroups'
 import { extractApiErrorMessage } from '@/utils/apiError'
@@ -44,22 +47,25 @@ const mode = ref<'available' | 'group'>('available')
 const groupID = ref<number | null>(null)
 const groups = ref<ProxyGroup[]>([])
 const groupsLoading = ref(false)
+const accountConcurrency = ref(100)
 let loadVersion = 0
 const groupOptions = computed(() => groups.value.map(group => ({ value: group.id, label: `${group.name} (${group.proxy_count})` })))
 const selectedGroup = computed(() => groups.value.find(group => group.id === groupID.value))
 const usableGroup = computed(() => !!selectedGroup.value && selectedGroup.value.proxy_count > 0 && selectedGroup.value.proxy_count <= 100 && selectedGroup.value.active_proxy_count === selectedGroup.value.proxy_count)
 const form = reactive({ proxies_per_account: 1, max_accounts_per_proxy: 1, proxy_concurrency: 3 })
-const valid = computed(() => ids.value.length > 0 && ids.value.length <= 5000 && Number.isInteger(form.proxy_concurrency) && form.proxy_concurrency >= 1 && form.proxy_concurrency <= 10000 && (mode.value === 'group' ? !groupsLoading.value && usableGroup.value : [form.proxies_per_account, form.max_accounts_per_proxy].every(value => Number.isInteger(value) && value >= 1 && value <= 10000) && form.proxies_per_account <= 100))
+const valid = computed(() => ids.value.length > 0 && ids.value.length <= 5000 && Number.isInteger(form.proxy_concurrency) && form.proxy_concurrency >= 1 && form.proxy_concurrency <= 10000 && (mode.value === 'group' ? !groupsLoading.value && usableGroup.value && Number.isInteger(accountConcurrency.value) && accountConcurrency.value >= 1 && accountConcurrency.value <= 10000 : [form.proxies_per_account, form.max_accounts_per_proxy].every(value => Number.isInteger(value) && value >= 1 && value <= 10000) && form.proxies_per_account <= 100))
 watch(() => props.show, show => {
   loadVersion++
   if (show) {
     ids.value = [...new Set(props.accountIds)]; error.value = ids.value.length > 5000 ? t('admin.accounts.multiProxy.assignTooMany') : ''
     mode.value = 'available'; groupID.value = null; groups.value = []; groupsLoading.value = false
+    accountConcurrency.value = 100
     Object.assign(form, { proxies_per_account: 1, max_accounts_per_proxy: 1, proxy_concurrency: 3 })
   }
 }, { immediate: true })
 watch(mode, async value => {
   if (value !== 'group' || !props.show) return
+  form.proxy_concurrency = 10
   const version = ++loadVersion
   groupsLoading.value = true; error.value = ''
   try { const result = await listProxyGroups(); if (version === loadVersion) groups.value = result }
@@ -72,7 +78,7 @@ async function submit() {
   busy.value = true; error.value = ''
   try {
     const result = mode.value === 'group'
-      ? await assignAccountProxyGroup({ account_ids: [...ids.value], proxy_group_id: groupID.value!, proxy_concurrency: form.proxy_concurrency })
+      ? await assignAccountProxyGroup({ account_ids: [...ids.value], proxy_group_id: groupID.value!, proxy_concurrency: form.proxy_concurrency, account_concurrency: accountConcurrency.value })
       : await assignProxies({ account_ids: [...ids.value], ...form })
     app.showSuccess(t('admin.accounts.multiProxy.assignSuccess', { accounts: result.account_count, proxies: result.proxy_count, bindings: result.binding_count }))
     emit('assigned'); emit('close')

@@ -37,6 +37,7 @@ export interface UpdateGroupProxyPolicyRequest {
   strict_priority: boolean
   proxy_group_id?: number | null
   proxy_concurrency?: number
+  account_concurrency?: number
   assign_proxies?: boolean
 }
 
@@ -71,6 +72,7 @@ export async function assignAccountProxyGroup(payload: {
   account_ids: number[]
   proxy_group_id: number
   proxy_concurrency: number
+  account_concurrency?: number
 }): Promise<ProxyGroupAssignmentResult> {
   const { data } = await apiClient.post<ProxyGroupAssignmentResult>('/admin/accounts/assign-proxy-group', payload)
   return data
