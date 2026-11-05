@@ -32,7 +32,7 @@
 
 2026-11-05 隔离首轮：真实PostgreSQL／Redis共执行11个顶层测试，10个通过，唯一失败为 `TestPK52ProxyAccountConcurrencyAssignment`，退出1；临时容器／卷清理通过。`proxy_group_concurrency_integration_test.go` 原断言按 `scheduler_outbox.account_id` 查批量账号事件，但实现将账号集合保存在 `account_bulk_changed` 事件的 `payload.account_ids` 中，因而读到0。已仅修正测试断言为读取最新批量事件的JSON并核对两个目标账号，未为通过测试修改产品逻辑。保全索引、编译产物身份及原快照位于 `.runtime/pk52-integration-attempt1-evidence`；其中 `preserved.json` 指向原执行目录 `.runtime/pk52-integration-0ad8207cd5ce`，该目录保留原始 `tests.log` 与 `report.json`。本轮失败记录保留，修正断言后重新编译并完成下述复验。
 
-2026-11-05 隔离复验：真实PostgreSQL／Redis的11个顶层测试全部通过，无跳过，退出0，报告中 `status=passed`、`cleanup_passed=true`。覆盖凭据原子状态及影子账号并发刷新、账号总并发配置和容量失败事务回滚、IP分组严格策略、Redis子集分配及旧请求排空、普通请求物理代理互斥、租约生命周期、旧租约及重叠池、多实例竞争。原始证据为 `.runtime/pk52-integration-9d8ef4c675d3/report.json` 与 `tests.log`；该轮验证为真实隔离数据库／Redis集成，不替代最终发行二进制的同制品验收。
+2026-11-05 隔离复验：真实PostgreSQL／Redis的11个顶层测试全部通过，无跳过，退出0，报告中 `status=passed`、`cleanup_passed=true`。覆盖凭据原子状态及影子账号并发刷新、账号总并发配置和容量失败事务回滚、IP分组严格策略、Redis子集分配及旧请求排空、普通请求物理代理互斥、租约生命周期、旧租约及重叠池、多实例竞争。原始证据为 `.runtime/pk52-integration-9d8ef4c675d3/report.json` 与 `tests.log`；该轮验证为真实隔离数据库／Redis集成，不替代最终发行二进制的同制品验收。主线已完成该成功运行远端8个文件的清理并保留空目录，证据位于 `.runtime/pk52-integration-9d8ef4c675d3/cleanup-evidence-1793851121411518200`。
 
 首轮远端残留清理：主线核对哈希、文件归属、无相关活动进程及无所属容器／卷后，仅删除该失败运行固定目录中的8个文件并保留空目录。原失败报告、日志、编译产物和清理证据完整保全于 `.runtime/pk52-integration-attempt1-evidence/failed-run-cleanup-evidence-1793850984096379900`；未清理其他运行或正式环境资源。
 
