@@ -1,8 +1,8 @@
 # pk.52 糖果测试恢复、凭据错误停调与静态IP并发分配
 
-状态：功能实现、前端正式构建及前后端定向模拟完成；隔离PostgreSQL／Redis复验11个顶层测试全部通过，无跳过，临时环境清理通过。首轮测试断言失败及修正记录保留；后端发行构建、同制品11项制品／7项升级回退验收与发布尚未完成。
+状态：功能实现、前后端正式构建、前后端定向模拟、真实隔离PostgreSQL／Redis复验及同一发行二进制制品／升级回退验收均完成。首轮失败及修正记录保留；私库Release已发布为latest，9项附件名称／长度／SHA256全部核对通过。生产由用户手动切换，本轮未部署／重启生产。
 
-基线为私库 `yb1320057104/sub2api` main `35afe33b386dcae18b67d9e14629e2d2537464d6`，已发布pk.51的正式提交和制品保持不变。唯一在途版本为 `v0.2.19-pk.52`。
+基线为私库 `yb1320057104/sub2api` main `35afe33b386dcae18b67d9e14629e2d2537464d6`，已发布pk.51的正式提交和制品保持不变。本次正式版本为 `v0.2.19-pk.52`。
 
 ## 用户问题及目标行为
 
@@ -36,6 +36,35 @@
 
 首轮远端残留清理：主线核对哈希、文件归属、无相关活动进程及无所属容器／卷后，仅删除该失败运行固定目录中的8个文件并保留空目录。原失败报告、日志、编译产物和清理证据完整保全于 `.runtime/pk52-integration-attempt1-evidence/failed-run-cleanup-evidence-1793850984096379900`；未清理其他运行或正式环境资源。
 
-尚待完成后端发行构建、同一发行二进制11项制品／7项升级回退验收及私库Release发布，后续按真实日志补录。当前不宣称实际生产报错已经恢复。
+以上为发行前阶段记录；后端正式构建、同制品验收与发布的最终结果见下节。隔离验证不等于生产问题已经恢复。
 
 本轮不部署/重启生产，不发布GHCR，不调用真实模型/授权/币安接口，不运行全套源码回归。沿用PK-021，扩展PK-034/035/036/044/045；首字计时、正常账务和真实授权浏览器流程保持。
+
+## 最终发行结果
+
+### 正式制品与验证
+
+2026-11-05，正式版本 `v0.2.19-pk.52` 固定提交 `808358995ab8c433a546a42cec7be33e21b0a815`，tree 为 `62999a71725e854c38689c263ff611f7a4cf332a`，包身份为 `1793851391-808358995ab8`。前后端本机构建通过，Go模块校验通过；最终 Linux amd64 发行程序的 SHA256 为 `95633478d07b0cfed811ad5afaafcb081f12c2dc0f96e2de27050bfa57e7459d`。构建证据为 `.runtime/pk52-local-build.json`，服务器独立验收复用该发行程序并核对身份，不将隔离源码测试程序混称为发行程序。
+
+已完成的验证分别记录，不累计重复用例：
+
+- 前端9个文件123项独立检查、类型检查和正式Vite构建通过；1212模块、74秒，构建前后1049个输入一致，最终冻结1051个源文件和201个dist文件。后端三轮定向检查去重71个顶层测试、244个叶场景通过，无跳过。
+- 独立PostgreSQL／Redis复验11个顶层测试全部通过、无跳过，退出0且 `cleanup_passed=true`。覆盖凭据原子状态、并发刷新与影子账号、配置事务及容量回滚、IP子集分配、旧请求排空、物理代理互斥、旧租约／重叠池和多实例竞争。原始证据为 `.runtime/pk52-integration-9d8ef4c675d3/report.json` 和 `tests.log`。
+- 同一发行二进制11项制品检查全部通过，范围含归档／镜像身份、非root运行、同seed保留、中断更新恢复、换seed替换和原镜像回退。独立升级回退7项、多代理API7项、IP分组API7项、智商测试目录API7项全部通过；IP分组专项包括账号总并发保存、非法值拒绝、容量失败原子回滚、重放和仅切换策略保持账号并发。
+- 审计观察计数使用最终源码SQL进行5项断言，全部通过；其范围为临时表事务内执行实际仓库SQL，不冒充运行程序查询验证。升级前后321份既有迁移及其校验和一致，`added_migrations=[]`，同schema回退通过。临时容器／卷和隔离daemon清理均通过。
+
+同制品原始证据为 `.runtime/pk52-release/artifact-validation.json`、`isolated-smoke.json` 和 `review.json`，三份报告均为 `status=passed`；review明确记录 `isolated_daemon_cleanup_passed=true`。本机构建报告中的“runtime_checks pending”是构建阶段记录，后续运行结果由这些独立验收报告补充。
+
+### 失败保全与依赖门禁
+
+首轮真实PostgreSQL／Redis测试11项中10项通过，唯一失败 `TestPK52ProxyAccountConcurrencyAssignment` 是批量outbox断言读取错误：批量事件账号集合位于 `payload.account_ids`，原断言错误读取单行 `account_id`。仅修正测试断言后重新编译、复验11/11通过，产品逻辑未为迎合断言修改。原报告、日志、编译身份及快照保全于 `.runtime/pk52-integration-attempt1-evidence`，原执行日志仍在 `.runtime/pk52-integration-0ad8207cd5ce`。
+
+主线核对哈希、归属、无活动进程及无所属资源后，清理首轮远端固定目录的8个文件并保留空目录；证据为 `.runtime/pk52-integration-attempt1-evidence/failed-run-cleanup-evidence-1793850984096379900`。成功轮远端8个文件也已清理，证据为 `.runtime/pk52-integration-9d8ef4c675d3/cleanup-evidence-1793851121411518200`。前端雷达mock缺default export的首轮采集失败，以及早轮后端编译资源、临时undefined、unit标签、旧SQL mock和分片夹具失败均保留原日志；早轮失败不计作通过证据。
+
+生产依赖审计实际退出1，仍有2 high／12 moderate／2 low、0 critical；现行例外门禁退出0。未新增依赖或修改锁文件，不宣称依赖零漏洞，也不把开发工具依赖审计称为已通过。
+
+### 发布与操作边界
+
+私库 `yb1320057104/sub2api` 的 [v0.2.19-pk.52 Release](https://github.com/yb1320057104/sub2api/releases/tag/v0.2.19-pk.52) 已正式发布为latest，非草稿、非预发布。9项附件的名称、长度及SHA256全部核对通过；正式标签指向本次提交，提交tree一致，私库main包含该正式提交。只读发布核验证据为 `.runtime/pk52-publication.json`，其中 `status=published_and_verified`、`latest=true`、`assets=9`、`asset_digests_verified=true`。本次补录保留全部既有阶段记录和失败证据；正式版本分支、标签及封存制品保持不变。
+
+本次只发布私库Release供用户手动切换，未部署／重启生产、未发布GHCR、未发送真实模型／授权／币安请求、未运行全套源码回归。首字计时、正常账务、真实授权浏览器流程保持。隔离验证不等于生产问题已经恢复；最终文档仅在main补录，不移动正式版本分支／标签或重建封存制品。
