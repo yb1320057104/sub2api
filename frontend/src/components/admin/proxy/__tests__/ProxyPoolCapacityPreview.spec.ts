@@ -8,6 +8,7 @@ const i18n = createI18n({ legacy: false, locale: 'zh', messages: { zh: { admin: 
 
 describe('strict priority capacity preview', () => {
   it.each([
+    [10, 100, 10, 10, 1, 10],
     [20, 100, 10, 10, 2, 10],
     [30, 100, 10, 10, 3, 10],
     [25, 100, 10, 10, 3, 5],

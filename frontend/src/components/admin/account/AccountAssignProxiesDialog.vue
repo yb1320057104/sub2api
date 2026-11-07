@@ -1,7 +1,7 @@
 <template>
   <BaseDialog :show="show" :title="t('admin.accounts.multiProxy.assignTitle')" width="normal" :close-on-escape="!busy" :close-on-click-outside="!busy" @close="close">
     <form id="assign-account-proxies" class="space-y-5" @submit.prevent="submit">
-      <div class="rounded-xl bg-primary-50 p-4 dark:bg-primary-900/20"><p class="text-sm font-medium text-primary-900 dark:text-primary-100">{{ t('admin.accounts.multiProxy.assignSelected', { count: ids.length }) }}</p><p class="mt-1 text-xs leading-5 text-primary-700 dark:text-primary-200">{{ t('admin.accounts.multiProxy.assignHint') }}</p></div>
+      <div class="rounded-xl bg-primary-50 p-4 dark:bg-primary-900/20"><p class="text-sm font-medium text-primary-900 dark:text-primary-100">{{ t('admin.accounts.multiProxy.assignSelected', { count: ids.length }) }}</p><p class="mt-1 text-xs leading-5 text-primary-700 dark:text-primary-200">{{ t(mode === 'group' ? 'admin.proxyGroups.groupAssignHint' : 'admin.accounts.multiProxy.assignHint') }}</p></div>
       <div class="flex gap-4 text-sm">
         <label class="flex items-center gap-2"><input v-model="mode" value="available" type="radio" :disabled="busy" />{{ t('admin.proxyGroups.availableMode') }}</label>
         <label class="flex items-center gap-2"><input v-model="mode" value="group" type="radio" :disabled="busy" />{{ t('admin.proxyGroups.groupMode') }}</label>
@@ -19,8 +19,8 @@
         <label v-if="mode === 'group'" class="input-label">{{ t('admin.proxyGroups.accountConcurrency') }}<input v-model.number="accountConcurrency" data-testid="assign-account-concurrency" type="number" min="1" max="10000" step="1" required :disabled="busy" class="input mt-2" /><span class="mt-1 block text-xs font-normal text-gray-500">1–10000</span></label>
       </div>
       <ProxyPoolCapacityPreview v-if="mode === 'group' && usableGroup" :pool-size="selectedGroup!.proxy_count" :account-concurrency="accountConcurrency" :proxy-concurrency="form.proxy_concurrency" />
-      <div class="flex items-center justify-between rounded-lg border border-gray-200 px-4 py-3 text-sm dark:border-dark-600"><span class="text-gray-500">{{ t('admin.accounts.multiProxy.assignBindings') }}</span><strong class="font-mono tabular-nums">{{ valid ? ids.length * (mode === 'group' ? selectedGroup!.proxy_count : form.proxies_per_account) : '—' }}</strong></div>
-      <p class="text-xs leading-5 text-gray-500">{{ t('admin.accounts.multiProxy.assignAtomic') }}</p>
+      <div class="flex items-center justify-between rounded-lg border border-gray-200 px-4 py-3 text-sm dark:border-dark-600"><span class="text-gray-500">{{ t(mode === 'group' ? 'admin.proxyGroups.candidateBindings' : 'admin.accounts.multiProxy.assignBindings') }}</span><strong class="font-mono tabular-nums">{{ valid ? ids.length * (mode === 'group' ? selectedGroup!.proxy_count : form.proxies_per_account) : '—' }}</strong></div>
+      <p class="text-xs leading-5 text-gray-500">{{ t(mode === 'group' ? 'admin.proxyGroups.groupAssignAtomic' : 'admin.accounts.multiProxy.assignAtomic') }}</p>
       <p v-if="error" role="alert" class="rounded-lg bg-red-50 p-3 text-sm text-red-700 dark:bg-red-900/20 dark:text-red-300">{{ error }}</p>
     </form>
     <template #footer><div class="flex justify-end gap-2"><button class="btn btn-secondary" :disabled="busy" @click="close">{{ t('common.cancel') }}</button><button class="btn btn-primary" type="submit" form="assign-account-proxies" :disabled="busy || !valid">{{ busy ? t('common.processing') : t('admin.accounts.multiProxy.assignSubmit') }}</button></div></template>

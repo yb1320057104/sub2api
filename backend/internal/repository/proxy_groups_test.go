@@ -91,7 +91,7 @@ func TestPK51ProxyGroupShadowOutsideSelectionRejected(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-func TestPK51ProxyGroupAssignmentExhaustionHasNoPartialWrites(t *testing.T) {
+func TestPK53ProxyGroupCandidatePersistenceFailureRollsBack(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
 	defer db.Close()
@@ -102,9 +102,15 @@ func TestPK51ProxyGroupAssignmentExhaustionHasNoPartialWrites(t *testing.T) {
 	mock.ExpectQuery(`(?s)SELECT p.id.*FOR UPDATE OF p`).WillReturnRows(sqlmock.NewRows([]string{"id", "active", "max_accounts", "max_concurrency"}).AddRow(5, true, 1, 7))
 	mock.ExpectExec(`SELECT pg_advisory_xact_lock`).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery(`(?s)SELECT id,parent_account_id.*FOR UPDATE`).WillReturnRows(sqlmock.NewRows([]string{"id", "parent"}).AddRow(2, nil).AddRow(3, nil))
-	mock.ExpectQuery(`(?s)SELECT COUNT.*pk_effective_account_proxy_bindings`).WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectExec(`DELETE FROM pk_account_proxy_fallback_sets`).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`DELETE FROM pk_account_proxy_bindings`).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`UPDATE accounts SET proxy_id=NULL`).WillReturnResult(sqlmock.NewResult(0, 2))
+	// The old limit is replaced before the legacy account trigger sees a new
+	// primary. A later write failure must roll back the entire local transaction.
+	mock.ExpectExec(`INSERT INTO pk_proxy_limits`).WithArgs(int64(5), 10, 0).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`UPDATE accounts SET proxy_id=\$2`).WithArgs(int64(2), int64(5)).WillReturnError(errors.New("injected primary write failure"))
 	mock.ExpectRollback()
 	_, err = newAccountRepositoryWithSQL(client, db, nil).AssignAccountProxyGroup(context.Background(), service.AccountProxyGroupAssignmentInput{AccountIDs: []int64{2, 3}, ProxyGroupID: 9, ProxyConcurrency: 10})
-	require.ErrorContains(t, err, "超过设置的 1")
+	require.ErrorContains(t, err, "injected primary write failure")
 	require.NoError(t, mock.ExpectationsWereMet())
 }

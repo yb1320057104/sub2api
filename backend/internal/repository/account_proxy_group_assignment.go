@@ -14,8 +14,8 @@ func (r *accountRepository) GetGroupProxyPriorityPolicy(ctx context.Context, id 
 	return readGroupProxyPriorityPolicy(ctx, r.accountTransactionScope(ctx).sql, id)
 }
 
-// The common allocator preserves global account capacity, including bindings
-// outside this batch. An absent limit row retains its established unlimited value.
+// Read the group's complete candidate pool. Saving that pool below explicitly
+// clears its account-count limit; runtime concurrency still limits actual use.
 func proxyGroupAssignmentItems(ctx context.Context, exec sqlExecutor, groupID int64, concurrency int) ([]service.AccountProxyBindingInput, error) {
 	var exists bool
 	if err := scanSingleRow(ctx, exec, `SELECT EXISTS(SELECT 1 FROM pk_proxy_groups WHERE id=$1)`, []any{groupID}, &exists); err != nil {
@@ -61,6 +61,14 @@ LEFT JOIN pk_proxy_limits l ON l.proxy_id=p.id WHERE m.proxy_group_id=$1 ORDER B
 func assignWholeProxyGroup(ctx context.Context, c *dbent.Client, ids []int64, items []service.AccountProxyBindingInput, concurrency *int) error {
 	if err := lockProxyBindingAccounts(ctx, c, ids); err != nil {
 		return err
+	}
+	// These bindings are candidate eligibility, not simultaneous IP ownership.
+	// Both group-assignment entries share this path. Keep the requested global
+	// IP concurrency, but do not reject standby accounts against an old binding
+	// count. Ordinary/manual allocation retains its separate capacity checks.
+	items = append([]service.AccountProxyBindingInput(nil), items...)
+	for i := range items {
+		items[i].MaxAccounts = 0
 	}
 	assignments := make(map[int64][]service.AccountProxyBindingInput, len(ids))
 	for _, id := range ids {

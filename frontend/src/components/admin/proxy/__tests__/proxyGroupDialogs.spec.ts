@@ -80,15 +80,32 @@ describe('IP group account assignment', () => {
     expect(api.assignProxies).toHaveBeenCalledWith({ account_ids: [11], proxies_per_account: 1, max_accounts_per_proxy: 1, proxy_concurrency: 3 })
     expect(api.listProxyGroups).not.toHaveBeenCalled()
   })
+
+  it('shows shared candidate bindings for group mode and restores capacity controls in available mode', async () => {
+    api.listProxyGroups.mockResolvedValue([group({ proxy_count: 10, active_proxy_count: 10 })])
+    const wrapper = await open([11, 12, 13, 14, 15])
+    await wrapper.get('select').setValue('7')
+    expect(wrapper.text()).toContain('admin.proxyGroups.groupAssignHint')
+    expect(wrapper.text()).toContain('admin.proxyGroups.candidateBindings')
+    expect(wrapper.text()).toContain('admin.proxyGroups.groupAssignAtomic')
+    expect(wrapper.get('strong').text()).toBe('50')
+    expect(wrapper.find('[data-testid="assign-proxy-max-accounts"]').exists()).toBe(false)
+    await wrapper.get('form').trigger('submit'); await flushPromises()
+    expect(api.assignAccountProxyGroup).toHaveBeenCalledWith({ account_ids: [11, 12, 13, 14, 15], proxy_group_id: 7, proxy_concurrency: 10, account_concurrency: 100 })
+    await wrapper.get('input[value="available"]').setValue(true)
+    expect(wrapper.text()).toContain('admin.accounts.multiProxy.assignAtomic')
+    expect(wrapper.text()).not.toContain('admin.proxyGroups.groupAssignAtomic')
+    expect(wrapper.find('[data-testid="assign-proxy-max-accounts"]').exists()).toBe(true)
+  })
 })
 
 describe('business group priority policy', () => {
-  it('shows a structured capacity rejection and keeps the configuration draft', async () => {
+  it('shows an unavailable proxy rejection and keeps the configuration draft', async () => {
     const wrapper = keep(mount(GroupProxyPolicyDialog, { props: { show: true, groupIds: [4] }, global }))
     await flushPromises(); await wrapper.get('select').setValue('7')
-    api.updateGroupProxyPolicy.mockRejectedValue({ status: 400, reason: 'PROXY_ACCOUNT_CAPACITY', message: '代理 #2 将绑定 3 个账号，超过设置的 2 个；本次未保存' })
+    api.updateGroupProxyPolicy.mockRejectedValue({ status: 400, reason: 'PROXY_GROUP_MEMBER_UNAVAILABLE', message: 'IP分组中的代理 #2 已停用或到期，本次未保存' })
     await wrapper.get('form').trigger('submit'); await flushPromises()
-    expect(wrapper.get('[role="alert"]').text()).toContain('超过设置的 2 个')
+    expect(wrapper.get('[role="alert"]').text()).toContain('已停用或到期')
     expect(wrapper.get<HTMLSelectElement>('select').element.value).toBe('7')
     expect(wrapper.emitted('close')).toBeUndefined()
   })
