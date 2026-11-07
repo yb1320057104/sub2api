@@ -1,6 +1,6 @@
 <template>
   <component :is="embedded ? 'div' : AppLayout">
-    <div class="mx-auto max-w-[1600px]" :class="activeTab === 'config' && draft ? 'pb-28' : 'pb-8'">
+    <div class="mx-auto max-w-[1600px]" :class="!eventsOnly && activeTab === 'config' && draft ? 'pb-28' : 'pb-8'">
       <header v-if="!embedded" class="mb-6 flex flex-wrap items-end justify-between gap-4">
         <div>
           <p class="text-xs font-semibold uppercase tracking-[0.16em] text-primary-600 dark:text-primary-400">{{ t('nav.securityAudit') }}</p>
@@ -13,13 +13,13 @@
         </div>
       </header>
 
-      <div v-if="loadErrors.config && !draft" role="alert" class="rounded-xl border border-red-200 bg-red-50 p-5 dark:border-red-900 dark:bg-red-950/30">
+      <div v-if="!eventsOnly && loadErrors.config && !draft" role="alert" class="rounded-xl border border-red-200 bg-red-50 p-5 dark:border-red-900 dark:bg-red-950/30">
         <p class="text-sm text-red-700 dark:text-red-300">{{ loadErrors.config }}</p>
         <button type="button" class="btn btn-secondary btn-sm mt-3" @click="loadConfig">{{ t('admin.promptAudit.actions.retry') }}</button>
       </div>
 
       <template v-else>
-        <div v-if="!embedded" class="mb-4" role="tablist" :aria-label="t('admin.promptAudit.title')">
+        <div v-if="!embedded && !eventsOnly" class="mb-4" role="tablist" :aria-label="t('admin.promptAudit.title')">
           <div class="tabs inline-flex">
             <button
               v-for="tab in pageTabs"
@@ -38,7 +38,7 @@
         </div>
 
         <main class="card px-4 sm:px-6 lg:px-8">
-          <div v-show="activeTab === 'config'" data-test="tab-panel-config">
+          <div v-if="!eventsOnly" v-show="activeTab === 'config'" data-test="tab-panel-config">
             <RuntimeOverview :runtime="runtime" :loading="loading.runtime" :error="loadErrors.runtime" @refresh="loadRuntime" />
 
             <template v-if="draft">
@@ -57,7 +57,7 @@
             </template>
           </div>
 
-          <div v-show="activeTab === 'events'" data-test="tab-panel-events">
+          <div v-show="eventsOnly || activeTab === 'events'" data-test="tab-panel-events">
             <div
               v-if="draft?.enabled && !draft.store_pass_events"
               data-test="pass-events-disabled-notice"
@@ -65,7 +65,7 @@
               class="mt-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900/70 dark:bg-amber-950/30 dark:text-amber-200"
             >
               <span>{{ t('admin.promptAudit.events.passEventsDisabled') }}</span>
-              <button type="button" class="btn btn-secondary btn-sm" v-if="!embedded" @click="activeTab = 'config'">
+              <button type="button" class="btn btn-secondary btn-sm" v-if="!embedded && !eventsOnly" @click="activeTab = 'config'">
                 {{ t('admin.promptAudit.events.openConfiguration') }}
               </button>
             </div>
@@ -93,7 +93,7 @@
       </template>
     </div>
 
-    <div v-if="!embedded && draft && activeTab === 'config'" class="fixed inset-x-0 bottom-0 z-30 border-t border-gray-200 bg-white/95 px-4 py-3 shadow-[0_-12px_35px_rgba(15,23,42,0.08)] backdrop-blur transition-[left] duration-300 motion-reduce:transition-none dark:border-dark-700/80 dark:bg-dark-900/95 dark:shadow-[0_-12px_35px_rgba(0,0,0,0.35)] lg:left-[var(--app-sidebar-width)]">
+    <div v-if="!embedded && !eventsOnly && draft && activeTab === 'config'" class="fixed inset-x-0 bottom-0 z-30 border-t border-gray-200 bg-white/95 px-4 py-3 shadow-[0_-12px_35px_rgba(15,23,42,0.08)] backdrop-blur transition-[left] duration-300 motion-reduce:transition-none dark:border-dark-700/80 dark:bg-dark-900/95 dark:shadow-[0_-12px_35px_rgba(0,0,0,0.35)] lg:left-[var(--app-sidebar-width)]">
       <div class="mx-auto flex max-w-[1600px] flex-wrap items-center justify-between gap-3">
         <div class="flex flex-wrap items-center gap-x-5 gap-y-2">
           <SaveToggle :label="t('admin.promptAudit.saveBar.enabled')" :model-value="draft.enabled" data-test="enabled-toggle" @update:model-value="setEnabled" />
@@ -177,7 +177,7 @@ import type {
 } from './types'
 import { buildUpdateRequest, cloneData, configToDraft, draftFingerprint, emptyEventFilters } from './viewModel'
 
-defineProps<{ embedded?: boolean }>()
+const props = defineProps<{ embedded?: boolean; eventsOnly?: boolean }>()
 const { t, locale } = useI18n()
 const appStore = useAppStore()
 type PromptAuditPageTab = 'config' | 'events'
@@ -293,6 +293,10 @@ async function loadEvents() {
   }
 }
 async function loadInitial() {
+  if (props.eventsOnly) {
+    await Promise.allSettled([loadConfig(), loadEvents()])
+    return
+  }
   await Promise.allSettled([loadConfig(), loadRuntime(), loadGroups(), loadEvents()])
 }
 

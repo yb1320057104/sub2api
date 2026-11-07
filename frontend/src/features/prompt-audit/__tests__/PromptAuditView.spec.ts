@@ -6,7 +6,6 @@ import { SCANNER_CATALOG } from '../viewModel'
 import PromptAuditView from '../PromptAuditView.vue'
 import LocalRulePanel from '../components/LocalRulePanel.vue'
 import { defaultAuditRiskPolicy } from '@/types/auditRiskPolicy'
-import { defaultAuditRiskPolicy } from '@/types/auditRiskPolicy'
 
 const mocks = vi.hoisted(() => ({
   getConfig: vi.fn(), updateConfig: vi.fn(), probeEndpoint: vi.fn(), getRuntime: vi.fn(), listEvents: vi.fn(),
@@ -55,8 +54,9 @@ const FilterDeleteStub = defineComponent({
   template: '<div v-if="show" data-test="filter-delete-dialog"><button data-test="dialog-preview" @click="$emit(\'preview\', { ...initialFilters, start_at: \'2026-07-15T00:00\', end_at: \'2026-07-16T00:00\' })">run</button><button data-test="dialog-confirm" @click="$emit(\'confirm\', { ...initialFilters, start_at: \'2026-07-15T00:00\', end_at: \'2026-07-16T00:00\' })">confirm</button><span data-test="dialog-preview-state">{{ preview ? preview.matched_count : \'none\' }}</span></div>',
 })
 
-function mountView() {
+function mountView(props: { embedded?: boolean; eventsOnly?: boolean } = {}) {
   return mount(PromptAuditView, {
+    props,
     global: { stubs: { AppLayout: AppLayoutStub, RuntimeOverview: RuntimeStub, EndpointPool: EndpointStub, PolicyPanel: PolicyStub, EventWorkspace: EventsStub, EventDetailDialog: DetailStub, FilterDeleteDialog: FilterDeleteStub, ConfirmDialog: ConfirmStub } },
   })
 }
@@ -76,6 +76,21 @@ describe('PromptAuditView', () => {
     mocks.batchDeleteEvents.mockResolvedValue({ deleted_events: 2, deleted_jobs: 2 })
   })
 
+  it('keeps events available without mounting configuration in the audit center', async () => {
+    mocks.getConfig.mockRejectedValue(new Error('configuration unavailable'))
+    const wrapper = mountView({ embedded: true, eventsOnly: true })
+    await flushPromises()
+    expect(wrapper.find('[data-test="tab-panel-events"]').isVisible()).toBe(true)
+    expect(wrapper.find('[data-test="tab-panel-config"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="tab-config"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="save-config"]').exists()).toBe(false)
+    expect(mocks.listEvents).toHaveBeenCalledOnce()
+    expect(mocks.getRuntime).not.toHaveBeenCalled()
+    expect(mocks.listGroups).not.toHaveBeenCalled()
+    expect(mocks.updateConfig).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
   it('opts into scored policy without changing legacy actions, saves zero scores, and explicitly restores legacy mode', async () => {
     const oldRule = { id: 'one', name: 'Existing', kind: 'keyword' as const, pattern: 'custom phrase', category: 'pii', action: 'block' as const, enabled: true, case_sensitive: false }
     const config = { ...baseConfig(), engine: 'local_rules' as const, local_rules: [oldRule] }
@@ -86,14 +101,14 @@ describe('PromptAuditView', () => {
     await wrapper.get('[data-test="tab-config"]').trigger('click')
     expect(wrapper.find('[data-test="prompt-risk-policy-legacy"]').exists()).toBe(true)
     expect(mocks.updateConfig).not.toHaveBeenCalled()
-    await wrapper.get('[data-test="prompt-risk-policy-enabled"]').setValue(true)
+    await wrapper.get('[data-test="prompt-risk-policy-enabled"]').trigger('click')
     expect(wrapper.get<HTMLInputElement>('[data-test="local-rule-score-0"]').element.value).toBe('100')
     await wrapper.get('[data-test="local-rule-score-0"]').setValue(0)
     await wrapper.get('[data-test="prompt-risk-medium-action"]').setValue('charge_allow')
     await wrapper.get('[data-test="save-config"]').trigger('click')
     await flushPromises()
     expect(mocks.updateConfig).toHaveBeenLastCalledWith(expect.objectContaining({ risk_policy: { ...defaultAuditRiskPolicy(), medium_action: 'charge_allow' }, local_rules: [{ ...oldRule, score: 0 }] }))
-    await wrapper.get('[data-test="prompt-risk-policy-enabled"]').setValue(false)
+    await wrapper.get('[data-test="prompt-risk-policy-enabled"]').trigger('click')
     await wrapper.get('[data-test="save-config"]').trigger('click')
     await flushPromises()
     expect(mocks.updateConfig).toHaveBeenLastCalledWith(expect.objectContaining({ risk_policy: null, local_rules: [{ ...oldRule, score: 0 }] }))
@@ -105,7 +120,7 @@ describe('PromptAuditView', () => {
     const wrapper = mountView()
     await flushPromises()
     await wrapper.get('[data-test="tab-config"]').trigger('click')
-    await wrapper.get('[data-test="prompt-risk-policy-enabled"]').setValue(true)
+    await wrapper.get('[data-test="prompt-risk-policy-enabled"]').trigger('click')
     await wrapper.get('[data-test="prompt-risk-high-threshold"]').setValue(40)
     await wrapper.get('[data-test="save-config"]').trigger('click')
     expect(mocks.updateConfig).not.toHaveBeenCalled()
@@ -123,14 +138,14 @@ describe('PromptAuditView', () => {
     await wrapper.get('[data-test="tab-config"]').trigger('click')
     expect(wrapper.find('[data-test="prompt-risk-policy-legacy"]').exists()).toBe(true)
     expect(mocks.updateConfig).not.toHaveBeenCalled()
-    await wrapper.get('[data-test="prompt-risk-policy-enabled"]').setValue(true)
+    await wrapper.get('[data-test="prompt-risk-policy-enabled"]').trigger('click')
     expect(wrapper.get<HTMLInputElement>('[data-test="local-rule-score-0"]').element.value).toBe('100')
     await wrapper.get('[data-test="local-rule-score-0"]').setValue(0)
     await wrapper.get('[data-test="prompt-risk-medium-action"]').setValue('charge_allow')
     await wrapper.get('[data-test="save-config"]').trigger('click')
     await flushPromises()
     expect(mocks.updateConfig).toHaveBeenLastCalledWith(expect.objectContaining({ risk_policy: { ...defaultAuditRiskPolicy(), medium_action: 'charge_allow' }, local_rules: [{ ...oldRule, score: 0 }] }))
-    await wrapper.get('[data-test="prompt-risk-policy-enabled"]').setValue(false)
+    await wrapper.get('[data-test="prompt-risk-policy-enabled"]').trigger('click')
     await wrapper.get('[data-test="save-config"]').trigger('click')
     await flushPromises()
     expect(mocks.updateConfig).toHaveBeenLastCalledWith(expect.objectContaining({ risk_policy: null, local_rules: [{ ...oldRule, score: 0 }] }))
@@ -142,7 +157,7 @@ describe('PromptAuditView', () => {
     const wrapper = mountView()
     await flushPromises()
     await wrapper.get('[data-test="tab-config"]').trigger('click')
-    await wrapper.get('[data-test="prompt-risk-policy-enabled"]').setValue(true)
+    await wrapper.get('[data-test="prompt-risk-policy-enabled"]').trigger('click')
     await wrapper.get('[data-test="prompt-risk-high-threshold"]').setValue(40)
     await wrapper.get('[data-test="save-config"]').trigger('click')
     expect(mocks.updateConfig).not.toHaveBeenCalled()
@@ -367,7 +382,7 @@ describe('PromptAuditView', () => {
     const wrapper = mountView()
     await flushPromises()
     await wrapper.get('[data-test="tab-config"]').trigger('click')
-    const switches = wrapper.findAll('[role="switch"]')
+    const switches = wrapper.findAll('[data-test$="-toggle"][role="switch"]')
     expect(switches).toHaveLength(4)
     expect(switches.every((item) => Boolean(item.attributes('aria-label')))).toBe(true)
     expect(wrapper.html()).toContain('fixed inset-x-0 bottom-0')

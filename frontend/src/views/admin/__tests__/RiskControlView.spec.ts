@@ -230,7 +230,7 @@ describe('admin RiskControlView', () => {
 
   it('exposes an embedded editor draft without separate saves or shared scope controls', async () => {
     const config = { ...baseConfig(), group_ids: [7], user_allowlist_ids: [42], blocked_keywords: ['preserved-custom'], risk_policy: defaultAuditRiskPolicy() }
-    const wrapper = mount(RiskControlView, { props: { embedded: true, editorOnly: true, initialConfig: config }, global: { stubs: { AppLayout: AppLayoutStub, BaseDialog: BaseDialogStub, Icon: true, Select: true, Toggle: true, Pagination: true, ModelWhitelistSelector: ModelWhitelistSelectorStub, ProxySelector: true } } })
+    const wrapper = mount(RiskControlView, { props: { embedded: true, editorOnly: true, initialConfig: config }, global: { stubs: { AppLayout: AppLayoutStub, BaseDialog: BaseDialogStub, Icon: true, Select: true, Toggle: false, Pagination: true, ModelWhitelistSelector: ModelWhitelistSelectorStub, ProxySelector: true } } })
     await flushPromises()
     expect(getConfig).not.toHaveBeenCalled()
     expect(updateConfig).not.toHaveBeenCalled()
@@ -246,18 +246,57 @@ describe('admin RiskControlView', () => {
     wrapper.unmount()
   })
 
+  it('keeps content and keyword drafts in one editor when switching category menus', async () => {
+    const config = { ...baseConfig(), blocked_keywords: ['original keyword'], keyword_blocking_mode: 'keyword_only' as const }
+    const wrapper = mount(RiskControlView, { props: { embedded: true, editorOnly: true, editorSection: 'content', initialConfig: config }, global: { stubs: { AppLayout: AppLayoutStub, BaseDialog: BaseDialogStub, Icon: true, Select: true, Toggle: false, Pagination: true, ModelWhitelistSelector: ModelWhitelistSelectorStub, ProxySelector: true } } })
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('admin.riskControl.tabs.keywords')
+    await wrapper.setProps({ editorSection: 'keywords' })
+    expect(wrapper.emitted('changed')).toBeUndefined()
+    expect(wrapper.text()).not.toContain('admin.riskControl.tabs.basic')
+    await wrapper.get('textarea').setValue('edited keyword')
+    await wrapper.setProps({ editorSection: 'content' })
+    await wrapper.get('[data-test="audit-base-url"]').setValue('https://audit.example.com')
+    await findButtonByText(wrapper, 'admin.riskControl.tabs.runtime').trigger('click')
+    await wrapper.setProps({ editorSection: 'keywords' })
+    expect(wrapper.get<HTMLTextAreaElement>('textarea').element.value).toBe('edited keyword')
+    await wrapper.setProps({ editorSection: 'content' })
+    expect(wrapper.find('[aria-label="admin.riskControl.recordNonHits"]').exists()).toBe(true)
+    const payload = (wrapper.vm as unknown as { preparePayload(): UpdateContentModerationConfig }).preparePayload()
+    expect(payload).toMatchObject({ base_url: 'https://audit.example.com', blocked_keywords: ['edited keyword'] })
+    expect(getConfig).not.toHaveBeenCalled()
+    expect(updateConfig).not.toHaveBeenCalled()
+    expect(listLogs).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('shows only content events without a configuration editor or runtime polling', async () => {
+    getProxies.mockClear()
+    const wrapper = mount(RiskControlView, { props: { embedded: true, eventsOnly: true }, global: { stubs: { AppLayout: AppLayoutStub, BaseDialog: BaseDialogStub, Icon: true, Select: true, Pagination: true } } })
+    await flushPromises()
+    expect(wrapper.find('[data-test="content-event-workspace"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="active-audit-engine"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="audit-engine-select"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('admin.riskControl.openSettings')
+    expect(listLogs).toHaveBeenCalledOnce()
+    expect(getStatus).not.toHaveBeenCalled()
+    expect(getProxies).not.toHaveBeenCalled()
+    expect(updateConfig).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
   it('keeps old audit policy until enabled, saves keyword scores and clears scored mode explicitly', async () => {
     const config = { ...baseConfig(), blocked_keywords: ['Custom', '忽略之前的所有指令'], keyword_scores: { custom: 0, '忽略之前的所有指令': 7 } }
     getConfig.mockResolvedValue(config)
     updateConfig.mockImplementation(async (payload: UpdateContentModerationConfig) => ({ ...config, ...payload }))
-    const wrapper = mount(RiskControlView, { global: { stubs: { AppLayout: AppLayoutStub, BaseDialog: BaseDialogStub, Icon: true, Select: true, Toggle: true, Pagination: true, ModelWhitelistSelector: ModelWhitelistSelectorStub, ProxySelector: true } } })
+    const wrapper = mount(RiskControlView, { global: { stubs: { AppLayout: AppLayoutStub, BaseDialog: BaseDialogStub, Icon: true, Select: true, Toggle: false, Pagination: true, ModelWhitelistSelector: ModelWhitelistSelectorStub, ProxySelector: true } } })
     await flushPromises()
     await findButtonByText(wrapper, 'admin.riskControl.openSettings').trigger('click')
     await findButtonByText(wrapper, 'admin.riskControl.tabs.riskThresholds').trigger('click')
     expect(wrapper.find('[data-test="content-risk-policy-legacy"]').exists()).toBe(true)
     expect(wrapper.find('[data-test="legacy-category-thresholds"]').exists()).toBe(true)
     expect(updateConfig).not.toHaveBeenCalled()
-    await wrapper.get('[data-test="content-risk-policy-enabled"]').setValue(true)
+    await wrapper.get('[data-test="content-risk-policy-enabled"]').trigger('click')
     await wrapper.get('[data-test="content-risk-medium-action"]').setValue('charge_allow')
     expect(wrapper.find('[data-test="legacy-category-thresholds"]').exists()).toBe(false)
     await findButtonByText(wrapper, 'admin.riskControl.tabs.keywords').trigger('click')
@@ -271,7 +310,7 @@ describe('admin RiskControlView', () => {
     }))
     await findButtonByText(wrapper, 'admin.riskControl.openSettings').trigger('click')
     await findButtonByText(wrapper, 'admin.riskControl.tabs.riskThresholds').trigger('click')
-    await wrapper.get('[data-test="content-risk-policy-enabled"]').setValue(false)
+    await wrapper.get('[data-test="content-risk-policy-enabled"]').trigger('click')
     await findButtonByText(wrapper, 'admin.riskControl.saveConfig').trigger('click')
     await flushPromises()
     expect(updateConfig).toHaveBeenLastCalledWith(expect.objectContaining({ risk_policy: null, keyword_scores: expect.objectContaining({ custom: 0 }) }))
@@ -281,7 +320,7 @@ describe('admin RiskControlView', () => {
 
   it('rejects invalid thresholds and keyword scores before sending any save request', async () => {
     getConfig.mockResolvedValue({ ...baseConfig(), risk_policy: defaultAuditRiskPolicy(), blocked_keywords: ['Custom'] })
-    const wrapper = mount(RiskControlView, { global: { stubs: { AppLayout: AppLayoutStub, BaseDialog: BaseDialogStub, Icon: true, Select: true, Toggle: true, Pagination: true, ModelWhitelistSelector: ModelWhitelistSelectorStub, ProxySelector: true } } })
+    const wrapper = mount(RiskControlView, { global: { stubs: { AppLayout: AppLayoutStub, BaseDialog: BaseDialogStub, Icon: true, Select: true, Toggle: false, Pagination: true, ModelWhitelistSelector: ModelWhitelistSelectorStub, ProxySelector: true } } })
     await flushPromises()
     await findButtonByText(wrapper, 'admin.riskControl.openSettings').trigger('click')
     await findButtonByText(wrapper, 'admin.riskControl.tabs.riskThresholds').trigger('click')
@@ -307,7 +346,7 @@ describe('admin RiskControlView', () => {
     })
     userMocks.list.mockResolvedValue({ items: [selectedUser, searchedUser, { id: 9, email: 'deleted@example.com', deleted_at: '2026-01-01' }], total: 3 })
     getConfig.mockResolvedValue({ ...baseConfig(), user_allowlist_ids: [42, 7], user_allowlist_inherited: true, group_ids: [5], blocked_keywords: ['custom keyword'] })
-    const wrapper = mount(RiskControlView, { global: { stubs: { AppLayout: AppLayoutStub, BaseDialog: BaseDialogStub, Icon: true, Select: true, Toggle: true, Pagination: true, ModelWhitelistSelector: ModelWhitelistSelectorStub, ProxySelector: true } } })
+    const wrapper = mount(RiskControlView, { global: { stubs: { AppLayout: AppLayoutStub, BaseDialog: BaseDialogStub, Icon: true, Select: true, Toggle: false, Pagination: true, ModelWhitelistSelector: ModelWhitelistSelectorStub, ProxySelector: true } } })
     await flushPromises()
     await findButtonByText(wrapper, 'admin.riskControl.openSettings').trigger('click')
     await findButtonByText(wrapper, 'admin.riskControl.tabs.scope').trigger('click')
@@ -362,7 +401,7 @@ describe('admin RiskControlView', () => {
   it('appends bilingual keyword categories and all templates without changing activation, scope or mode', async () => {
     const duplicate = CONTENT_AUDIT_KEYWORD_TEMPLATES[0].keywords[12].toUpperCase()
     getConfig.mockResolvedValue({ ...baseConfig(), enabled: false, mode: 'observe', keyword_blocking_mode: 'api_only', group_ids: [7], blocked_keywords: ['自定义业务词', duplicate, duplicate.toLowerCase()] })
-    const wrapper = mount(RiskControlView, { global: { stubs: { AppLayout: AppLayoutStub, BaseDialog: BaseDialogStub, Icon: true, Select: true, Toggle: true, Pagination: true, ModelWhitelistSelector: ModelWhitelistSelectorStub, ProxySelector: true } } })
+    const wrapper = mount(RiskControlView, { global: { stubs: { AppLayout: AppLayoutStub, BaseDialog: BaseDialogStub, Icon: true, Select: true, Toggle: false, Pagination: true, ModelWhitelistSelector: ModelWhitelistSelectorStub, ProxySelector: true } } })
     await flushPromises()
     await findButtonByText(wrapper, 'admin.riskControl.openSettings').trigger('click')
     expect(wrapper.get('[data-test="audit-no-key-guide"]').text()).toContain('admin.riskControl.noKeyGuide')
@@ -396,7 +435,7 @@ describe('admin RiskControlView', () => {
   it('leaves custom keywords intact when appending would exceed the saved keyword limit', async () => {
     const custom = Array.from({ length: 10000 }, (_, index) => `custom phrase ${index}`)
     getConfig.mockResolvedValue({ ...baseConfig(), blocked_keywords: custom })
-    const wrapper = mount(RiskControlView, { global: { stubs: { AppLayout: AppLayoutStub, BaseDialog: BaseDialogStub, Icon: true, Select: true, Toggle: true, Pagination: true, ModelWhitelistSelector: ModelWhitelistSelectorStub, ProxySelector: true } } })
+    const wrapper = mount(RiskControlView, { global: { stubs: { AppLayout: AppLayoutStub, BaseDialog: BaseDialogStub, Icon: true, Select: true, Toggle: false, Pagination: true, ModelWhitelistSelector: ModelWhitelistSelectorStub, ProxySelector: true } } })
     await flushPromises()
     await findButtonByText(wrapper, 'admin.riskControl.openSettings').trigger('click')
     await findButtonByText(wrapper, 'admin.riskControl.tabs.keywords').trigger('click')
@@ -421,7 +460,7 @@ describe('admin RiskControlView', () => {
     const otherEngine = activeEngine === 'openai' ? 'typesafe' : 'openai'
     getConfig.mockResolvedValue({ ...profiles[activeEngine], engine_configs: profiles })
     getStatus.mockResolvedValue({ ...runtimeStatus(), engine: activeEngine, api_key_statuses: profiles[activeEngine].api_key_statuses })
-    const wrapper = mount(RiskControlView, { global: { stubs: { AppLayout: AppLayoutStub, BaseDialog: BaseDialogStub, Icon: true, Select: true, Toggle: true, Pagination: true, ModelWhitelistSelector: ModelWhitelistSelectorStub, ProxySelector: true } } })
+    const wrapper = mount(RiskControlView, { global: { stubs: { AppLayout: AppLayoutStub, BaseDialog: BaseDialogStub, Icon: true, Select: true, Toggle: false, Pagination: true, ModelWhitelistSelector: ModelWhitelistSelectorStub, ProxySelector: true } } })
     await flushPromises()
     await findButtonByText(wrapper, 'admin.riskControl.openSettings').trigger('click')
     const engine = () => wrapper.findComponent('[data-test="audit-engine-select"]')
@@ -446,7 +485,7 @@ describe('admin RiskControlView', () => {
 
   it('shows an empty key panel for an unconfigured draft engine', async () => {
     getStatus.mockResolvedValue({ ...runtimeStatus(), api_key_statuses: [{ masked: '********oa01', configured: true, status: 'ok' }] })
-    const wrapper = mount(RiskControlView, { global: { stubs: { AppLayout: AppLayoutStub, BaseDialog: BaseDialogStub, Icon: true, Select: true, Toggle: true, Pagination: true, ModelWhitelistSelector: ModelWhitelistSelectorStub, ProxySelector: true } } })
+    const wrapper = mount(RiskControlView, { global: { stubs: { AppLayout: AppLayoutStub, BaseDialog: BaseDialogStub, Icon: true, Select: true, Toggle: false, Pagination: true, ModelWhitelistSelector: ModelWhitelistSelectorStub, ProxySelector: true } } })
     await flushPromises()
     await findButtonByText(wrapper, 'admin.riskControl.openSettings').trigger('click')
     wrapper.findComponent('[data-test="audit-engine-select"]').vm.$emit('update:modelValue', 'typesafe')
@@ -458,7 +497,7 @@ describe('admin RiskControlView', () => {
   })
 
   it('preserves both engine drafts and saves thresholds independently', async () => {
-    const wrapper = mount(RiskControlView, { global: { stubs: { AppLayout: AppLayoutStub, BaseDialog: BaseDialogStub, Icon: true, Select: true, Toggle: true, Pagination: true, ModelWhitelistSelector: ModelWhitelistSelectorStub, ProxySelector: true } } })
+    const wrapper = mount(RiskControlView, { global: { stubs: { AppLayout: AppLayoutStub, BaseDialog: BaseDialogStub, Icon: true, Select: true, Toggle: false, Pagination: true, ModelWhitelistSelector: ModelWhitelistSelectorStub, ProxySelector: true } } })
     await flushPromises()
     await findButtonByText(wrapper, 'admin.riskControl.openSettings').trigger('click')
     await wrapper.get('[data-test="audit-base-url"]').setValue('https://openai-edited.example')
@@ -489,7 +528,7 @@ describe('admin RiskControlView', () => {
 
   it('tests the draft engine without switching the active engine', async () => {
     testAPIKeys.mockResolvedValue({ items: [{ status: 'ok', configured: false }], image_count: 0 })
-    const wrapper = mount(RiskControlView, { global: { stubs: { AppLayout: AppLayoutStub, BaseDialog: BaseDialogStub, Icon: true, Select: true, Toggle: true, Pagination: true, ModelWhitelistSelector: ModelWhitelistSelectorStub, ProxySelector: true } } })
+    const wrapper = mount(RiskControlView, { global: { stubs: { AppLayout: AppLayoutStub, BaseDialog: BaseDialogStub, Icon: true, Select: true, Toggle: false, Pagination: true, ModelWhitelistSelector: ModelWhitelistSelectorStub, ProxySelector: true } } })
     await flushPromises()
     await findButtonByText(wrapper, 'admin.riskControl.openSettings').trigger('click')
     wrapper.findComponent('[data-test="audit-engine-select"]').vm.$emit('update:modelValue', 'typesafe')
@@ -505,7 +544,7 @@ describe('admin RiskControlView', () => {
 
   it.each(['openai', 'typesafe'] as const)('restores the shared defaults for %s without replacing saved thresholds on load', async (engine) => {
     getConfig.mockResolvedValue({ ...baseConfig(), engine, thresholds: { sexual: 0.8, harassment: 0.8 } })
-    const wrapper = mount(RiskControlView, { global: { stubs: { AppLayout: AppLayoutStub, BaseDialog: BaseDialogStub, Icon: true, Select: true, Toggle: true, Pagination: true, ModelWhitelistSelector: ModelWhitelistSelectorStub, ProxySelector: true } } })
+    const wrapper = mount(RiskControlView, { global: { stubs: { AppLayout: AppLayoutStub, BaseDialog: BaseDialogStub, Icon: true, Select: true, Toggle: false, Pagination: true, ModelWhitelistSelector: ModelWhitelistSelectorStub, ProxySelector: true } } })
     await flushPromises()
     await findButtonByText(wrapper, 'admin.riskControl.openSettings').trigger('click')
     await findButtonByText(wrapper, 'admin.riskControl.tabs.riskThresholds').trigger('click')
@@ -531,7 +570,7 @@ describe('admin RiskControlView', () => {
       { id: 8, name: 'Skipped group', platform: 'openai' },
     ])
     const wrapper = mount(RiskControlView, { global: { stubs: {
-      AppLayout: AppLayoutStub, BaseDialog: BaseDialogStub, Icon: true, Select: true, Toggle: true,
+      AppLayout: AppLayoutStub, BaseDialog: BaseDialogStub, Icon: true, Select: true, Toggle: false,
       Pagination: true, ModelWhitelistSelector: ModelWhitelistSelectorStub, ProxySelector: true,
     } } })
     await flushPromises()
@@ -566,7 +605,7 @@ describe('admin RiskControlView', () => {
           BaseDialog: BaseDialogStub,
           Icon: true,
           Select: true,
-          Toggle: true,
+          Toggle: false,
           Pagination: true,
           ModelWhitelistSelector: ModelWhitelistSelectorStub,
           ProxySelector: true,
@@ -600,7 +639,7 @@ describe('admin RiskControlView', () => {
           BaseDialog: BaseDialogStub,
           Icon: true,
           Select: true,
-          Toggle: true,
+          Toggle: false,
           Pagination: true,
           ModelWhitelistSelector: ModelWhitelistSelectorStub,
           ProxySelector: true,
@@ -641,7 +680,7 @@ describe('admin RiskControlView', () => {
           BaseDialog: BaseDialogStub,
           Icon: true,
           Select: true,
-          Toggle: true,
+          Toggle: false,
           Pagination: true,
           ModelWhitelistSelector: ModelWhitelistSelectorStub,
           ProxySelector: true,
@@ -709,7 +748,7 @@ describe('admin RiskControlView', () => {
           BaseDialog: BaseDialogStub,
           Icon: true,
           Select: true,
-          Toggle: true,
+          Toggle: false,
           Pagination: true,
           ModelWhitelistSelector: ModelWhitelistSelectorStub,
           ProxySelector: true,

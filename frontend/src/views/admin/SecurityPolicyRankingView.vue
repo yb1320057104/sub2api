@@ -12,7 +12,7 @@
           <DateRangePicker :start-date="startDate" :end-date="endDate" @change="changeRange" />
           <div class="flex flex-wrap items-center gap-4">
             <label class="flex items-center gap-2 text-sm">
-              <input v-model="autoRefresh" type="checkbox" class="h-4 w-4 rounded" data-testid="ranking-auto-refresh" />
+              <Toggle v-model="autoRefresh" :aria-label="t('securityPolicyRanking.autoRefresh')" data-testid="ranking-auto-refresh" />
               {{ t('securityPolicyRanking.autoRefresh') }}
             </label>
             <label class="flex items-center gap-2 text-sm">
@@ -30,75 +30,11 @@
         <p v-if="rangeError" class="text-sm text-red-600 dark:text-red-400" role="alert">{{ rangeError }}</p>
       </section>
 
-      <section v-if="isAdmin && !embedded" class="card space-y-4 p-4" data-testid="ranking-settings">
-        <form class="space-y-4" @submit.prevent="saveSettings">
-          <div class="flex flex-wrap items-end gap-3">
-            <div class="min-w-48 flex-1">
-              <label for="ranking-multiplier" class="input-label">{{ t('securityPolicyRanking.multiplier') }}</label>
-              <input id="ranking-multiplier" v-model="settings.multiplier" type="text" inputmode="decimal" maxlength="11" class="input mt-1 w-full sm:max-w-60" :disabled="!settingsReady || savingSettings" aria-describedby="ranking-multiplier-hint" />
-            </div>
-            <button class="btn btn-primary" type="submit" :disabled="!settingsReady || savingSettings || deductionBusy" data-testid="ranking-save-settings">{{ savingSettings ? t('common.processing') : t('common.save') }}</button>
-          </div>
-          <p id="ranking-multiplier-hint" class="text-xs text-gray-500 dark:text-gray-400">{{ t('securityPolicyRanking.multiplierHint') }}</p>
-          <div class="flex flex-wrap items-center gap-x-6 gap-y-3 border-t border-gray-200 pt-4 dark:border-dark-700">
-            <label class="flex items-center gap-2 text-sm">
-              <input v-model="settings.auto_disable_enabled" type="checkbox" class="h-4 w-4 rounded" :disabled="!settingsReady || savingSettings" data-testid="ranking-auto-disable" />
-              {{ t('securityPolicyRanking.autoDisable') }}
-            </label>
-            <label class="flex items-center gap-2 text-sm">
-              {{ t('securityPolicyRanking.threshold') }}
-              <input v-model.number="settings.auto_disable_threshold" type="number" min="1" max="1000000000" step="1" class="input w-36" :disabled="!settingsReady || savingSettings" data-testid="ranking-threshold" />
-            </label>
-            <label class="flex items-center gap-2 text-sm">
-              <input v-model="settings.reset_on_manual_enable" type="checkbox" class="h-4 w-4 rounded" :disabled="!settingsReady || savingSettings" data-testid="ranking-reset-on-enable" />
-              {{ t('securityPolicyRanking.resetOnEnable') }}
-            </label>
-          </div>
-          <p class="text-xs text-gray-500 dark:text-gray-400">{{ t('securityPolicyRanking.autoDisableHint') }}</p>
-          <fieldset class="space-y-3 rounded-lg border border-gray-200 p-4 dark:border-dark-700" :disabled="!settingsReady || savingSettings || loadingGroups">
-            <legend class="px-1 text-sm font-medium">{{ t('securityPolicyRanking.detectionGroups') }}</legend>
-            <p class="text-xs text-gray-500 dark:text-gray-400">{{ t('securityPolicyRanking.detectionGroupsHint') }}</p>
-            <input v-model.trim="groupSearch" type="search" class="input w-full" :placeholder="t('securityPolicyRanking.searchGroups')" :aria-label="t('securityPolicyRanking.searchGroups')" data-testid="ranking-group-search" />
-            <p v-if="loadingGroups" class="text-sm text-gray-500">{{ t('common.loading') }}</p>
-            <p class="text-xs text-gray-500 dark:text-gray-400">{{ t('securityPolicyRanking.groupRulesHint') }}</p>
-            <div class="grid max-h-96 gap-3 overflow-y-auto sm:grid-cols-2 lg:grid-cols-3">
-              <div v-for="group in filteredGroups" :key="group.id" class="min-w-0 space-y-3 rounded-md border border-gray-200 px-3 py-3 text-sm dark:border-dark-700">
-                <label class="flex min-w-0 items-center gap-2">
-                  <input v-model="settings.group_ids" type="checkbox" :value="group.id" :disabled="group.status !== 'active' && !settings.group_ids.includes(group.id)" class="h-4 w-4 shrink-0 rounded" :data-testid="`ranking-group-${group.id}`" />
-                  <span class="min-w-0 truncate" :title="group.name">{{ group.name }}</span>
-                  <span class="ml-auto shrink-0 text-xs text-gray-500">#{{ group.id }}<span v-if="group.status !== 'active'"> · {{ t('common.disabled') }}</span></span>
-                </label>
-                <label class="flex items-center justify-between gap-2 text-xs">
-                  <span class="font-semibold text-red-700 dark:text-red-300">{{ t('securityPolicyRanking.groupMultiplier') }}</span>
-                  <input :value="groupRule(group.id).multiplier" type="text" inputmode="decimal" maxlength="11" class="input w-28 font-semibold !text-red-700 dark:!text-red-300" :disabled="group.status !== 'active'" :data-testid="`ranking-group-multiplier-${group.id}`" @input="updateGroupRule(group.id, { multiplier: ($event.target as HTMLInputElement).value })" />
-                </label>
-                <label class="flex items-center gap-2 text-xs">
-                  <input :checked="groupRule(group.id).auto_deduct_enabled" type="checkbox" class="h-4 w-4 rounded" :disabled="group.status !== 'active'" :data-testid="`ranking-group-auto-deduct-${group.id}`" @change="updateGroupRule(group.id, { auto_deduct_enabled: ($event.target as HTMLInputElement).checked })" />
-                  {{ t('securityPolicyRanking.groupAutoDeduct') }}
-                </label>
-                <p v-if="!settings.group_ids.includes(group.id)" class="text-xs text-gray-500">{{ t('securityPolicyRanking.groupRuleInactive') }}</p>
-                <button v-if="settings.group_rules.some(rule => rule.group_id === group.id)" type="button" class="text-xs text-primary-600 hover:underline dark:text-primary-400" :data-testid="`ranking-clear-rule-${group.id}`" @click="removeGroupRule(group.id)">{{ t('securityPolicyRanking.clearGroupRule') }}</button>
-              </div>
-            </div>
-            <p v-if="!loadingGroups && !groupsError && !filteredGroups.length" class="text-sm text-gray-500">{{ t('common.noGroupsAvailable') }}</p>
-            <div v-if="missingGroupIDs.length" class="space-y-2 text-sm text-amber-700 dark:text-amber-300">
-              <p>{{ t('securityPolicyRanking.missingGroups') }}</p>
-              <label v-for="id in missingGroupIDs" :key="id" class="mr-3 inline-flex items-center gap-2"><input v-model="settings.group_ids" type="checkbox" :value="id" :data-testid="`ranking-missing-group-${id}`" />#{{ id }}</label>
-            </div>
-            <div v-if="missingRuleIDs.length" class="space-y-2 text-sm text-amber-700 dark:text-amber-300">
-              <p>{{ t('securityPolicyRanking.missingGroupRules') }}</p>
-              <button v-for="id in missingRuleIDs" :key="id" type="button" class="btn btn-secondary btn-sm mr-2" :data-testid="`ranking-remove-missing-rule-${id}`" @click="removeGroupRule(id)">#{{ id }} · {{ t('common.delete') }}</button>
-            </div>
-            <p v-if="settings.group_ids.length === 0" class="text-sm text-amber-700 dark:text-amber-300" role="status" data-testid="ranking-empty-scope">{{ t('securityPolicyRanking.emptyDetectionGroups') }}</p>
-          </fieldset>
-          <div v-if="groupsError" class="space-y-2 text-sm text-red-600 dark:text-red-400" role="alert"><p>{{ groupsError }}</p><button type="button" class="btn btn-secondary btn-sm" :disabled="loadingGroups" @click="loadGroups">{{ t('common.refresh') }}</button></div>
-          <UserAllowlistSelector v-model="settings.user_allowlist_ids" :title="t('securityPolicyRanking.userAllowlist')" :hint="t('securityPolicyRanking.userAllowlistHint')" :disabled="!settingsReady || savingSettings" test-id="ranking-user-allowlist" />
-          <RouterLink to="/admin/users" class="inline-block text-sm text-primary-600 hover:underline dark:text-primary-400">{{ t('securityPolicyRanking.manageUsers') }}</RouterLink>
-        </form>
-        <p v-if="settingsError" class="text-sm text-red-600 dark:text-red-400" role="alert">{{ settingsError }}</p>
-        <button v-if="!settingsReady && !loadingSettings" class="btn btn-secondary" @click="loadSettings">{{ t('common.refresh') }}</button>
+      <section v-if="isAdmin" class="card space-y-2 p-4" data-testid="ranking-manual-deduction-info">
         <p v-if="savedSettings" class="text-sm text-gray-600 dark:text-gray-300">{{ t('securityPolicyRanking.savedMultiplier', { multiplier: decimal(savedSettings.multiplier) }) }}</p>
         <p class="text-xs text-gray-500 dark:text-gray-400">{{ t('securityPolicyRanking.deductionHint') }}</p>
+        <p v-if="settingsError" class="text-sm text-red-600 dark:text-red-400" role="alert">{{ settingsError }}</p>
+        <button v-if="!settingsReady && !loadingSettings" type="button" class="btn btn-secondary btn-sm" @click="loadSettings">{{ t('common.refresh') }}</button>
       </section>
 
       <div class="grid gap-3" :class="isAdmin ? 'sm:grid-cols-3' : 'sm:grid-cols-2'">
@@ -147,7 +83,7 @@
                   </td>
                   <td class="whitespace-nowrap px-4 py-4 text-right">
                     <button class="btn btn-secondary btn-sm mr-2" :disabled="!row.user_id || !!rangeError || !!rankingError || deductionBusy" :data-testid="`ranking-records-${row.user_id}`" @click="openRecords(row)">{{ t('securityPolicyRanking.records') }}</button>
-                    <button class="btn btn-secondary btn-sm" :disabled="deductionBusy || savingSettings || !settingsReady || row.deleted || !row.pending_count || !!rankingError" :data-testid="`ranking-deduct-${row.user_id}`" @click="openPreview(row)">{{ previewingUser === row.user_id ? t('securityPolicyRanking.previewing') : t('securityPolicyRanking.deduct') }}</button>
+                    <button class="btn btn-secondary btn-sm" :disabled="deductionBusy || !settingsReady || row.deleted || !row.pending_count || !!rankingError" :data-testid="`ranking-deduct-${row.user_id}`" @click="openPreview(row)">{{ previewingUser === row.user_id ? t('securityPolicyRanking.previewing') : t('securityPolicyRanking.deduct') }}</button>
                   </td>
                 </template>
               </tr>
@@ -215,20 +151,18 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { securityPolicyRankingAPI } from '@/api/admin/securityPolicyRanking'
-import groupsAPI from '@/api/admin/groups'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 import { extractApiErrorMessage } from '@/utils/apiError'
-import type { SecurityPolicyDeductionPreview, SecurityPolicyGroupRule, SecurityPolicyRanking, SecurityPolicyRankingRange, SecurityPolicyRankingSettings, SecurityPolicyRankingUser, SecurityPolicyTriggerRecord, SecurityPolicyTriggerRecords } from '@/types/securityPolicyRanking'
-import type { AdminGroup } from '@/types'
+import type { SecurityPolicyDeductionPreview, SecurityPolicyRanking, SecurityPolicyRankingRange, SecurityPolicyRankingSettings, SecurityPolicyRankingUser, SecurityPolicyTriggerRecord, SecurityPolicyTriggerRecords } from '@/types/securityPolicyRanking'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import DateRangePicker from '@/components/common/DateRangePicker.vue'
 import Pagination from '@/components/common/Pagination.vue'
-import UserAllowlistSelector from '@/components/admin/user/UserAllowlistSelector.vue'
+import Toggle from '@/components/common/Toggle.vue'
 
 defineProps<{ embedded?: boolean }>()
 const { t } = useI18n()
@@ -252,46 +186,10 @@ const ranking = ref<SecurityPolicyRanking | null>(null)
 const refreshing = ref(false)
 const rankingError = ref('')
 const rangeError = ref('')
-type RankingSettingsDraft = SecurityPolicyRankingSettings & { user_allowlist_ids: number[]; group_rules: SecurityPolicyGroupRule[] }
-const settings = reactive<RankingSettingsDraft>({ multiplier: '6.7', auto_disable_enabled: false, auto_disable_threshold: 10, reset_on_manual_enable: true, group_ids: [], user_allowlist_ids: [], group_rules: [] })
 const savedSettings = ref<SecurityPolicyRankingSettings | null>(null)
 const settingsReady = ref(false)
 const loadingSettings = ref(false)
-const savingSettings = ref(false)
 const settingsError = ref('')
-const groups = ref<AdminGroup[]>([])
-const groupSearch = ref('')
-const groupsError = ref('')
-const loadingGroups = ref(false)
-const filteredGroups = computed(() => {
-  const query = groupSearch.value.toLowerCase()
-  return groups.value.filter(group => !query || `${group.id} ${group.name} ${group.platform}`.toLowerCase().includes(query))
-})
-const missingGroupIDs = computed(() => {
-  if (loadingGroups.value || groupsError.value) return []
-  const known = new Set(groups.value.map(group => group.id))
-  return settings.group_ids.filter(id => !known.has(id))
-})
-const missingRuleIDs = computed(() => {
-  if (loadingGroups.value || groupsError.value) return []
-  const known = new Set(groups.value.map(group => group.id))
-  return settings.group_rules.filter(rule => !known.has(rule.group_id)).map(rule => rule.group_id)
-})
-function groupRule(id: number): SecurityPolicyGroupRule {
-  return settings.group_rules.find(rule => rule.group_id === id) ?? { group_id: id, multiplier: '1', auto_deduct_enabled: false }
-}
-function updateGroupRule(id: number, patch: Partial<Omit<SecurityPolicyGroupRule, 'group_id'>>) {
-  const rule = { ...groupRule(id), ...patch }
-  const index = settings.group_rules.findIndex(item => item.group_id === id)
-  if (index < 0) settings.group_rules.push(rule)
-  else settings.group_rules[index] = rule
-}
-function removeGroupRule(id: number) {
-  settings.group_rules = settings.group_rules.filter(rule => rule.group_id !== id)
-}
-function normalizeSettings(value: SecurityPolicyRankingSettings): RankingSettingsDraft {
-  return { ...value, group_ids: [...(value.group_ids ?? [])], user_allowlist_ids: [...(value.user_allowlist_ids ?? [])], group_rules: (value.group_rules ?? []).map(rule => ({ ...rule })) }
-}
 const recordsUser = ref<SecurityPolicyRankingUser | null>(null)
 const recordsRange = ref<SecurityPolicyRankingRange | null>(null)
 const records = ref<SecurityPolicyTriggerRecords | null>(null)
@@ -427,55 +325,10 @@ async function loadSettings() {
   try {
     const { data } = await securityPolicyRankingAPI.getSettings()
     if (!mounted || !isAdmin.value || currentAdminRevision !== adminRevision) return
-    const normalized = normalizeSettings(data)
-    savedSettings.value = normalized
-    Object.assign(settings, normalizeSettings(normalized))
+    savedSettings.value = data
     settingsReady.value = true
   } catch (error) { if (mounted && isAdmin.value && currentAdminRevision === adminRevision) settingsError.value = errorMessage(error) }
   finally { if (currentAdminRevision === adminRevision) loadingSettings.value = false }
-}
-
-async function loadGroups() {
-  if (!isAdmin.value || loadingGroups.value) return
-  const currentAdminRevision = adminRevision
-  loadingGroups.value = true
-  groupsError.value = ''
-  try {
-    const data = await groupsAPI.getAllIncludingInactive()
-    if (mounted && isAdmin.value && currentAdminRevision === adminRevision) groups.value = data
-  } catch (error) {
-    if (mounted && isAdmin.value && currentAdminRevision === adminRevision) groupsError.value = errorMessage(error)
-  } finally {
-    if (currentAdminRevision === adminRevision) loadingGroups.value = false
-  }
-}
-async function saveSettings() {
-  if (!isAdmin.value || !settingsReady.value || savingSettings.value || deductionBusy.value) return
-  const multiplier = settings.multiplier.trim()
-  if (!/^\d+(\.\d{1,6})?$/.test(multiplier) || Number(multiplier) < 0.000001 || Number(multiplier) > 1000) {
-    settingsError.value = t('securityPolicyRanking.invalidMultiplier'); return
-  }
-  if (!Number.isInteger(settings.auto_disable_threshold) || settings.auto_disable_threshold < 1 || settings.auto_disable_threshold > 1000000000) {
-    settingsError.value = t('securityPolicyRanking.invalidThreshold'); return
-  }
-  const groupRules = settings.group_rules.map(rule => ({ ...rule, multiplier: rule.multiplier.trim() }))
-  const invalidRule = groupRules.find(rule => !/^\d+(\.\d{1,6})?$/.test(rule.multiplier) || Number(rule.multiplier) < 0.000001 || Number(rule.multiplier) > 1000)
-  if (invalidRule) {
-    settingsError.value = t('securityPolicyRanking.invalidGroupMultiplier', { id: invalidRule.group_id }); return
-  }
-  savingSettings.value = true
-  settingsError.value = ''
-  const currentAdminRevision = adminRevision
-  try {
-    const { data } = await securityPolicyRankingAPI.saveSettings({ ...settings, multiplier, group_ids: [...new Set(settings.group_ids)].sort((a, b) => a - b), user_allowlist_ids: [...new Set(settings.user_allowlist_ids)].sort((a, b) => a - b), group_rules: groupRules })
-    if (!mounted || !isAdmin.value || currentAdminRevision !== adminRevision) return
-    const normalized = normalizeSettings(data)
-    savedSettings.value = normalized
-    Object.assign(settings, normalizeSettings(normalized))
-    appStore.showSuccess(t('securityPolicyRanking.settingsSaved'))
-    resetList()
-  } catch (error) { if (mounted && isAdmin.value && currentAdminRevision === adminRevision) settingsError.value = errorMessage(error) }
-  finally { if (currentAdminRevision === adminRevision) savingSettings.value = false }
 }
 
 function closeRecords() {
@@ -536,7 +389,7 @@ function changeRecordsPage(value: number) {
 }
 
 async function openPreview(row: SecurityPolicyRankingUser) {
-  if (!isAdmin.value || !row.user_id || deductionBusy.value || savingSettings.value || !settingsReady.value || row.deleted || !row.pending_count) return
+  if (!isAdmin.value || !row.user_id || deductionBusy.value || !settingsReady.value || row.deleted || !row.pending_count) return
   closeRecords()
   const controller = new AbortController()
   const currentRevision = revision
@@ -586,25 +439,18 @@ watch([autoRefresh, refreshSeconds], schedule)
 watch(isAdmin, () => {
   adminRevision++
   loadingSettings.value = false
-  savingSettings.value = false
-  loadingGroups.value = false
   settingsReady.value = false
   savedSettings.value = null
-  groups.value = []
-  groupsError.value = ''
   settingsError.value = ''
-  settings.group_ids = []
-  settings.group_rules = []
-  settings.user_allowlist_ids = []
   closePreview()
   resetList()
-  if (isAdmin.value) { void loadSettings(); void loadGroups() }
+  if (isAdmin.value) void loadSettings()
 })
 onMounted(() => {
   mounted = true
   document.addEventListener('visibilitychange', onVisibilityChange)
   void refresh()
-  if (isAdmin.value) { void loadSettings(); void loadGroups() }
+  if (isAdmin.value) void loadSettings()
 })
 onUnmounted(() => {
   mounted = false

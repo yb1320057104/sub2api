@@ -6,6 +6,7 @@
       </div>
 
       <template v-else-if="!editorOnly">
+        <template v-if="!eventsOnly">
         <div v-if="!embedded" class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div>
             <h1 class="text-2xl font-semibold text-gray-900 dark:text-white">{{ t('admin.riskControl.title') }}</h1>
@@ -237,7 +238,8 @@
           </div>
         </div>
 
-        <div class="card">
+        </template>
+        <div class="card" data-test="content-event-workspace">
           <div class="flex flex-col gap-4 border-b border-gray-100 px-6 py-4 dark:border-dark-700">
             <div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
               <div>
@@ -380,11 +382,11 @@
         </div>
       </template>
 
-      <component :is="editorOnly ? 'section' : BaseDialog" :show="settingsOpen" :title="t('admin.riskControl.settingsTitle')" width="extra-wide" @close="settingsOpen = false">
+      <component v-if="!eventsOnly" :is="editorOnly ? 'section' : BaseDialog" :show="settingsOpen" :title="t('admin.riskControl.settingsTitle')" width="extra-wide" @close="settingsOpen = false">
         <div class="space-y-6">
-          <div class="flex gap-2 overflow-x-auto border-b border-gray-100 pb-3 dark:border-dark-700">
+          <div v-if="!editorOnly || editorSection !== 'keywords'" class="flex gap-2 overflow-x-auto border-b border-gray-100 pb-3 dark:border-dark-700">
             <button
-              v-for="tab in settingsTabs"
+              v-for="tab in visibleSettingsTabs"
               :key="tab.id"
               type="button"
               class="inline-flex whitespace-nowrap rounded-lg px-3 py-2 text-sm font-medium transition-colors"
@@ -407,7 +409,7 @@
                   <p class="text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.riskControl.enabled') }}</p>
                   <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.enabledHint') }}</p>
                 </div>
-                <Toggle v-model="configForm.enabled" />
+                <Toggle v-model="configForm.enabled" :disabled="saving" :aria-label="t('admin.riskControl.enabled')" />
               </div>
               <div v-if="!editorOnly">
                 <label class="input-label">{{ t('admin.riskControl.mode') }}</label>
@@ -832,7 +834,7 @@
                 <p class="text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.riskControl.recordNonHits') }}</p>
                 <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.recordNonHitsHint') }}</p>
               </div>
-              <Toggle v-model="configForm.record_non_hits" />
+              <Toggle v-model="configForm.record_non_hits" :disabled="saving" :aria-label="t('admin.riskControl.recordNonHits')" />
             </div>
             <div class="space-y-4 rounded-lg border border-gray-100 p-4 dark:border-dark-700 lg:col-span-2">
               <div class="flex items-center justify-between gap-4">
@@ -840,7 +842,7 @@
                   <p class="text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.riskControl.preHashCheck') }}</p>
                   <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.preHashCheckHint') }}</p>
                 </div>
-                <Toggle v-model="configForm.pre_hash_check_enabled" />
+                <Toggle v-model="configForm.pre_hash_check_enabled" :disabled="saving" :aria-label="t('admin.riskControl.preHashCheck')" />
               </div>
               <div class="rounded-lg bg-gray-50 p-3 dark:bg-dark-900/30">
                 <div class="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
@@ -897,21 +899,21 @@
                   <p class="text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.riskControl.emailOnHit') }}</p>
                   <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.emailOnHitHint') }}</p>
                 </div>
-                <Toggle v-model="configForm.email_on_hit" />
+                <Toggle v-model="configForm.email_on_hit" :disabled="saving" :aria-label="t('admin.riskControl.emailOnHit')" />
               </div>
               <div v-if="!editorOnly" class="flex items-center justify-between rounded-lg border border-gray-100 p-4 dark:border-dark-700">
                 <div>
                   <p class="text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.riskControl.autoBan') }}</p>
                   <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.autoBanHint') }}</p>
                 </div>
-                <Toggle v-model="configForm.auto_ban_enabled" />
+                <Toggle v-model="configForm.auto_ban_enabled" :disabled="saving" :aria-label="t('admin.riskControl.autoBan')" />
               </div>
               <div class="flex items-center justify-between rounded-lg border border-gray-100 p-4 dark:border-dark-700 lg:col-span-2">
                 <div>
                   <p class="text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.riskControl.cyberPolicyExcludeBan') }}</p>
                   <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.cyberPolicyExcludeBanHint') }}</p>
                 </div>
-                <Toggle v-model="configForm.cyber_policy_exclude_from_ban_count" />
+                <Toggle v-model="configForm.cyber_policy_exclude_from_ban_count" :disabled="saving" :aria-label="t('admin.riskControl.cyberPolicyExcludeBan')" />
               </div>
               <div v-if="!editorOnly">
                 <label class="input-label">{{ t('admin.riskControl.banThreshold') }}</label>
@@ -1206,7 +1208,7 @@ import ContentKeywordScores from '@/components/admin/ContentKeywordScores.vue'
 import { auditKeywordKey, auditKeywordScoresPayload, validAuditRiskPolicy, validAuditScore } from '@/types/auditRiskPolicy'
 import type { AuditRiskPolicy } from '@/types/auditRiskPolicy'
 
-const props = defineProps<{ embedded?: boolean; editorOnly?: boolean; initialConfig?: ContentModerationConfig; sharedRiskPolicy?: AuditRiskPolicy | null }>()
+const props = defineProps<{ embedded?: boolean; editorOnly?: boolean; eventsOnly?: boolean; editorSection?: 'content' | 'keywords'; initialConfig?: ContentModerationConfig; sharedRiskPolicy?: AuditRiskPolicy | null }>()
 const emit = defineEmits<{ (event: 'changed', value: boolean): void }>()
 let initialEditorFingerprint = ''
 const editorReady = ref(false)
@@ -1273,6 +1275,16 @@ const hashActionLoading = ref(false)
 const unbanningUserID = ref<number | null>(null)
 const settingsOpen = ref(false)
 const activeSettingsTab = ref<SettingsTab>('basic')
+let lastContentSettingsTab: SettingsTab = 'basic'
+watch(() => props.editorSection, section => {
+  if (!props.editorOnly || !section) return
+  if (section === 'keywords') {
+    if (activeSettingsTab.value !== 'keywords') lastContentSettingsTab = activeSettingsTab.value
+    activeSettingsTab.value = 'keywords'
+  } else {
+    activeSettingsTab.value = lastContentSettingsTab
+  }
+}, { immediate: true })
 const groupSearch = ref('')
 const flaggedHashInput = ref('')
 const groups = ref<AdminGroup[]>([])
@@ -1407,6 +1419,9 @@ const settingsTabs = computed<Array<{ id: SettingsTab; label: string }>>(() => [
   { id: 'keywords', label: t('admin.riskControl.tabs.keywords') },
   { id: 'retention', label: t('admin.riskControl.tabs.retention') },
 ])
+const visibleSettingsTabs = computed(() => props.editorOnly && props.editorSection
+  ? settingsTabs.value.filter(tab => tab.id !== 'keywords')
+  : settingsTabs.value)
 
 const modeOptions = computed<SelectOption[]>(() => [
   { value: 'pre_block', label: t('admin.riskControl.modePreBlock') },
@@ -1893,15 +1908,15 @@ async function loadAll() {
     const [config, groupItems, runtimeStatus, proxyItems] = await Promise.all([
       props.initialConfig ? Promise.resolve(props.initialConfig) : adminAPI.riskControl.getConfig(),
       adminAPI.groups.getAll(),
-      adminAPI.riskControl.getStatus(),
+      props.eventsOnly ? Promise.resolve(null) : adminAPI.riskControl.getStatus(),
       // 代理列表加载失败不阻塞风控页面（仅影响下拉可选项）
-      adminAPI.proxies.getAll().catch(() => [] as Proxy[]),
+      props.eventsOnly ? Promise.resolve([] as Proxy[]) : adminAPI.proxies.getAll().catch(() => [] as Proxy[]),
     ])
     applyConfig(config)
     groups.value = groupItems
     status.value = runtimeStatus
     proxies.value = proxyItems
-    if ((runtimeStatus.engine ?? 'openai') === configForm.engine && Array.isArray(runtimeStatus.api_key_statuses)) {
+    if (runtimeStatus && (runtimeStatus.engine ?? 'openai') === configForm.engine && Array.isArray(runtimeStatus.api_key_statuses)) {
       configForm.api_key_statuses = [...runtimeStatus.api_key_statuses]
       prunePendingDeleteAPIKeyHashes()
     }
@@ -2547,7 +2562,7 @@ defineExpose({ preparePayload })
 
 onMounted(() => {
   void loadAll()
-  if (props.editorOnly) return
+  if (props.editorOnly || props.eventsOnly) return
   statusTimer = window.setInterval(() => {
     void loadStatus(true)
   }, 15000)

@@ -3,7 +3,7 @@
     <div class="flex flex-wrap items-center justify-between gap-3">
       <h3 class="text-base font-semibold text-gray-900 dark:text-white">{{ t('admin.promptAudit.riskPolicy.title') }}</h3>
       <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-200">
-        <input type="checkbox" :checked="modelValue != null" :data-test="`${audit}-risk-policy-enabled`" @change="setEnabled(($event.target as HTMLInputElement).checked)" />
+        <Toggle :model-value="modelValue != null" :aria-label="t('admin.promptAudit.riskPolicy.enabled')" :data-test="`${audit}-risk-policy-enabled`" @update:model-value="setEnabled" />
         {{ t('admin.promptAudit.riskPolicy.enabled') }}
       </label>
     </div>
@@ -38,6 +38,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import Toggle from '@/components/common/Toggle.vue'
 import { defaultAuditRiskPolicy, validAuditRiskPolicy } from '@/types/auditRiskPolicy'
 import type { AuditPolicyAction, AuditRiskLevel, AuditRiskPolicy } from '@/types/auditRiskPolicy'
 

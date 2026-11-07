@@ -12,10 +12,13 @@ const stylePath = resolve(dirname(fileURLToPath(import.meta.url)), '../../../sty
 const styleSource = readFileSync(stylePath, 'utf8')
 
 describe('Unified audit navigation', () => {
-  it('keeps the user ranking while admins have one audit center entry', () => {
+  it('keeps an independent ranking entry for users and admins beside the audit center', () => {
     const shared = componentSource.slice(componentSource.indexOf('function buildSelfNavItems'), componentSource.indexOf('// finalizeNav'))
     const admin = componentSource.slice(componentSource.indexOf('const adminNavItems = computed'))
-    expect(shared).toMatch(/path: '\/security-policy-ranking'[^\n]*featureFlag: \(\) => !authStore.isAdmin/)
+    const rankingEntry = shared.split('\n').find(line => line.includes("path: '/security-policy-ranking'"))
+    expect(rankingEntry).toContain("label: t('securityPolicyRanking.title')")
+    expect(rankingEntry).not.toContain('featureFlag')
+    expect(rankingEntry).not.toContain('hideInSimpleMode')
     expect(admin).toMatch(/path: '\/admin\/audit-center'[^\n]*label: t\('admin.auditCenter.title'\)/)
     expect(admin).not.toContain("path: '/admin/prompt-audit'")
     expect(admin).not.toContain("path: '/admin/risk-control'")

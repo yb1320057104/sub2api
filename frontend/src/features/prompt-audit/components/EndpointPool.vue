@@ -112,7 +112,7 @@
           <span class="block text-xs text-gray-500 dark:text-dark-400">{{ t('admin.promptAudit.pool.secretHint') }}</span>
         </label>
         <label v-if="editing.has_token" class="flex items-center gap-2 text-sm text-red-600 dark:text-red-300 sm:col-span-2">
-          <input v-model="editing.clear_token" type="checkbox" :aria-label="t('admin.promptAudit.pool.clearSecret')" />
+          <Toggle v-model="editing.clear_token" :aria-label="t('admin.promptAudit.pool.clearSecret')" />
           {{ t('admin.promptAudit.pool.clearSecret') }}
         </label>
         <label class="space-y-1 text-sm text-gray-700 dark:text-dark-200 sm:col-span-2">
@@ -142,6 +142,7 @@
 import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import BaseDialog from '@/components/common/BaseDialog.vue'
+import Toggle from '@/components/common/Toggle.vue'
 import type { PromptAuditEndpointDraft, PromptProbeResult } from '../types'
 import { cloneData, createDefaultEndpoint } from '../viewModel'
 

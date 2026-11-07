@@ -110,7 +110,7 @@ describe('Prompt Audit components', () => {
     await wrapper.get('input[value="local_rules"]').setValue()
     await applyEmitted()
     expect(draft.local_rules[0].pattern).toBe('custom.*pattern')
-    await wrapper.get('[data-test="local-rule-0"] button').trigger('click')
+    await wrapper.get('[data-test="local-rule-0"] button[aria-label="admin.promptAudit.local.remove"]').trigger('click')
     await applyEmitted()
     expect(draft.local_rules).toEqual([])
     expect(wrapper.text()).toContain('admin.promptAudit.local.empty')
@@ -154,7 +154,7 @@ describe('Prompt Audit components', () => {
     expect(token.element.value).toBe('')
     expect(token.attributes('placeholder')).toContain('admin.promptAudit.pool.keepSecret')
 
-    await wrapper.get<HTMLInputElement>('[aria-label="admin.promptAudit.pool.clearSecret"]').setValue(true)
+    await wrapper.get('[aria-label="admin.promptAudit.pool.clearSecret"]').trigger('click')
     await token.setValue('replacement-canary')
     await wrapper.get('[data-test="save-endpoint"]').trigger('click')
     const updated = wrapper.emitted('update:endpoints')?.at(-1)?.[0] as PromptAuditEndpointDraft[]

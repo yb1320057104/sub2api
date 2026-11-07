@@ -8,7 +8,7 @@ type NavigationGuard = (
 
 const routerHarness = vi.hoisted(() => ({
   guard: null as NavigationGuard | null,
-  routes: [] as Array<{ path: string; meta?: Record<string, unknown> }>,
+  routes: [] as Array<{ path: string; meta?: Record<string, unknown>; redirect?: unknown }>,
 }))
 
 const authStore = vi.hoisted(() => ({
@@ -34,7 +34,7 @@ const appStore = vi.hoisted(() => ({
 
 vi.mock('vue-router', () => ({
   createWebHistory: vi.fn(() => ({})),
-  createRouter: vi.fn((options: { routes: Array<{ path: string; meta?: Record<string, unknown> }> }) => {
+  createRouter: vi.fn((options: { routes: Array<{ path: string; meta?: Record<string, unknown>; redirect?: unknown }> }) => {
     routerHarness.routes = options.routes
     return {
       beforeEach: vi.fn((guard: NavigationGuard) => {
@@ -189,15 +189,36 @@ describe('PKSecurityPolicyRanking route access', () => {
     authStore.isSimpleMode = false
   })
 
-  it.each([false, true])('keeps user ranking and sends admins to the audit center (admin=%s)', async (admin) => {
+  it.each([false, true])('opens the ranking directly without redirecting to audit settings (admin=%s)', async (admin) => {
     authStore.isAuthenticated = true
     authStore.isAdmin = admin
     const route = routerHarness.routes.find(item => item.path === '/security-policy-ranking')
     expect(route?.meta).toMatchObject({ requiresAuth: true, requiresAdmin: false, titleKey: 'securityPolicyRanking.title' })
     const { navigation, next } = runGuard(route!.meta!, route!.path)
     await navigation
-    if (admin) expect(next).toHaveBeenCalledWith({ path: '/admin/audit-center', hash: '#audit-evidence' })
-    else expect(next).toHaveBeenCalledWith()
+    expect(next).toHaveBeenCalledOnce()
+    expect(next).toHaveBeenCalledWith()
+  })
+
+  it.each([
+    ['/admin/risk-control', 'content'],
+    ['/admin/prompt-audit', 'prompt'],
+  ])('opens the matching audit menu for the legacy URL %s', (path, section) => {
+    const route = routerHarness.routes.find(item => item.path === path)
+    expect(route?.redirect).toEqual({ path: '/admin/audit-center', query: { section } })
+  })
+
+  it.each([false, true])('keeps the ranking accessible with risk control off and simple mode on (admin=%s)', async (admin) => {
+    authStore.isAuthenticated = true
+    authStore.isAdmin = admin
+    authStore.isSimpleMode = true
+    appStore.publicSettingsLoaded = true
+    appStore.cachedPublicSettings = { risk_control_enabled: false }
+    const route = routerHarness.routes.find(item => item.path === '/security-policy-ranking')!
+    const { navigation, next } = runGuard(route.meta!, route.path)
+    await navigation
+    expect(next).toHaveBeenCalledOnce()
+    expect(next).toHaveBeenCalledWith()
   })
 
   it('keeps audit diagnostics accessible to admins while global risk control is off', async () => {

@@ -1,18 +1,20 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
-import { defineComponent } from 'vue'
+import { defineComponent, ref } from 'vue'
 import SecurityPolicyRankingView from '../SecurityPolicyRankingView.vue'
 import AuditCenterView from '../AuditCenterView.vue'
 import type { AuditCenterConfig } from '@/api/admin/auditCenter'
 
-const mocks = vi.hoisted(() => ({ getRanking: vi.fn(), getSettings: vi.fn(), getRecords: vi.fn(), preview: vi.fn(), deduct: vi.fn(), centerGet: vi.fn(), centerUpdate: vi.fn(), showError: vi.fn() }))
+const mocks = vi.hoisted(() => ({ getRanking: vi.fn(), getPublicRanking: vi.fn(), getSettings: vi.fn(), getRecords: vi.fn(), preview: vi.fn(), deduct: vi.fn(), centerGet: vi.fn(), centerUpdate: vi.fn(), showError: vi.fn() }))
+const auth = vi.hoisted(() => ({ isAdmin: true }))
+const route = vi.hoisted(() => ({ query: {} as Record<string, string>, hash: '' }))
 vi.mock('@/api/admin/securityPolicyRanking', () => ({ securityPolicyRankingAPI: mocks }))
 vi.mock('@/api/admin/auditCenter', () => ({ auditCenterAPI: { getConfig: mocks.centerGet, updateConfig: mocks.centerUpdate } }))
 vi.mock('@/features/prompt-audit/api', () => ({ default: { listGroups: vi.fn().mockResolvedValue([]) } }))
-vi.mock('vue-router', () => ({ useRoute: () => ({ query: {} }) }))
+vi.mock('vue-router', () => ({ useRoute: () => route }))
 vi.mock('@/api/admin/groups', () => ({ default: { getAllIncludingInactive: vi.fn().mockResolvedValue([]) } }))
 vi.mock('@/stores/app', () => ({ useAppStore: () => ({ showSuccess: vi.fn(), showError: mocks.showError }) }))
-vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ isAdmin: true }) }))
+vi.mock('@/stores/auth', () => ({ useAuthStore: () => auth }))
 vi.mock('vue-i18n', async () => {
   const actual = await vi.importActual<typeof import('vue-i18n')>('vue-i18n')
   return { ...actual, useI18n: () => ({ t: (key: string, params?: Record<string, unknown>) => `${key}${params ? ` ${JSON.stringify(params)}` : ''}`, te: () => true }) }
@@ -22,8 +24,42 @@ const DialogStub = defineComponent({ props: ['show'], template: '<div v-if="show
 describe('audit charge records in the ranking', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    auth.isAdmin = true
     mocks.getSettings.mockResolvedValue({ data: { multiplier: '6.7', auto_disable_enabled: false, auto_disable_threshold: 10, reset_on_manual_enable: true, group_ids: [], group_rules: [], user_allowlist_ids: [] } })
     mocks.getRanking.mockResolvedValue({ data: { items: [{ rank: 1, user_id: 8, display_name: 'user', trigger_count: 1, pending_count: 0 }], total: 1, total_triggers: 1, start_date: '2026-11-03', end_date: '2026-11-03', timezone: 'UTC' } })
+  })
+
+  it('keeps the masked public ranking visible without loading administrator settings or actions', async () => {
+    auth.isAdmin = false
+    mocks.getPublicRanking.mockResolvedValue({ data: { items: [{ rank: 1, display_name: 'a***z', trigger_count: 2 }], total: 1, total_triggers: 2 } })
+    const wrapper = mount(SecurityPolicyRankingView, { global: { stubs: { AppLayout: { template: '<div><slot /></div>' }, BaseDialog: DialogStub, DateRangePicker: true, Pagination: true } } })
+    await flushPromises()
+    expect(wrapper.get('[data-testid="ranking-table"]').text()).toContain('a***z')
+    expect(wrapper.find('[data-testid="ranking-manual-deduction-info"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid^="ranking-deduct-"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid^="ranking-records-"]').exists()).toBe(false)
+    expect(mocks.getPublicRanking).toHaveBeenCalledOnce()
+    expect(mocks.getRanking).not.toHaveBeenCalled()
+    expect(mocks.getSettings).not.toHaveBeenCalled()
+    expect(mocks.getRecords).not.toHaveBeenCalled()
+    expect(mocks.preview).not.toHaveBeenCalled()
+    expect(mocks.deduct).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('keeps the administrator ranking focused on records and manual deduction preview', async () => {
+    mocks.getRanking.mockResolvedValue({ data: { items: [{ rank: 1, user_id: 8, trigger_count: 1, pending_count: 1 }], total: 1, total_triggers: 1 } })
+    mocks.preview.mockResolvedValue({ data: { user_id: 8, username: 'user', email: 'user@example.test', trigger_count: 1, multiplier: '6.7', amount: '6.7', balance: '100', expires_at: '2099-01-01T00:00:00Z' } })
+    const wrapper = mount(SecurityPolicyRankingView, { global: { stubs: { AppLayout: { template: '<div><slot /></div>' }, BaseDialog: DialogStub, DateRangePicker: true, Pagination: true } } })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="ranking-settings"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="ranking-auto-refresh"]').attributes('role')).toBe('switch')
+    await wrapper.get('[data-testid="ranking-deduct-8"]').trigger('click')
+    await flushPromises()
+    expect(mocks.preview).toHaveBeenCalledOnce()
+    expect(wrapper.get('[data-testid="ranking-deduction-preview"]').text()).toContain('6.7')
+    expect(mocks.deduct).not.toHaveBeenCalled()
+    wrapper.unmount()
   })
 
   it('shows actual automatic charges and groups while observations and disabled group charging hide the multiplier', async () => {
@@ -90,20 +126,31 @@ describe('audit center upstream policy minimum', () => {
     return {
       revision: 'revision-minimum', risk_control_enabled: true, differences: [], groups: [], charge_summary: [],
       content: { enabled: false, mode: 'off', engine: 'openai', group_ids: [], user_allowlist_ids: [], blocked_keywords: [], risk_policy: null },
-      prompt: { enabled: false, blocking_enabled: false, engine: 'local_rules', group_ids: [], user_allowlist_ids: [], local_rules: [], audit_instructions: '', endpoints: [], scanners: [], risk_policy: null },
+      prompt: { enabled: false, blocking_enabled: false, blocking_latest_turn_only: false, store_pass_events: false, engine: 'local_rules', group_ids: [], user_allowlist_ids: [], local_rules: [], audit_instructions: '', endpoints: [], scanners: [], risk_policy: null },
       ranking: { multiplier: '6.7', auto_disable_enabled: false, auto_disable_threshold: 10, reset_on_manual_enable: true, group_ids: [3], group_rules: [{ group_id: 3, multiplier: '2', auto_deduct_enabled: true }], user_allowlist_ids: [] },
     } as AuditCenterConfig
   }
-  function center() {
-    return mount(AuditCenterView, { global: { stubs: { RouterLink: true, AppLayout: { template: '<div><slot /></div>' }, RiskControlView: true, LocalRulePanel: true, AuditRiskPolicyPanel: true, UserAllowlistSelector: true, EndpointPool: true, PolicyPanel: true, SecurityPolicyRankingView: true, PromptAuditView: true } } })
+  const ContentEditorStub = defineComponent({
+    props: ['editorSection'], emits: ['changed'],
+    setup(_, { expose }) {
+      const keywords = ref('preserved custom keyword')
+      expose({ preparePayload: () => ({ blocked_keywords: [keywords.value] }) })
+      return { keywords }
+    },
+    template: '<div><input data-test="editor-keywords" v-model="keywords" @input="$emit(\'changed\', true)" /></div>',
+  })
+  function center(editor = false) {
+    return mount(AuditCenterView, { global: { stubs: { RouterLink: true, AppLayout: { template: '<div><slot /></div>' }, RiskControlView: editor ? ContentEditorStub : true, LocalRulePanel: true, AuditRiskPolicyPanel: true, UserAllowlistSelector: true, EndpointPool: true, PolicyPanel: true, SecurityPolicyRankingView: true, PromptAuditView: true } } })
   }
   beforeEach(() => {
     vi.clearAllMocks()
+    route.query = {}; route.hash = ''
     mocks.centerGet.mockResolvedValue(centerConfig())
     mocks.centerUpdate.mockResolvedValue({ ...centerConfig(), revision: 'saved' })
   })
   it('shows the existing amount and saves it atomically without adding a second setting', async () => {
     const wrapper = center(); await flushPromises()
+    await wrapper.get('[data-test="audit-menu-penalties"]').trigger('click')
     expect((wrapper.get('[data-test="audit-upstream-minimum-input"]').element as HTMLInputElement).value).toBe('6.7')
     expect(wrapper.get('[data-test="audit-upstream-minimum"]').text()).toContain('securityPolicyRanking.multiplier')
     expect(mocks.centerUpdate).not.toHaveBeenCalled()
@@ -114,10 +161,64 @@ describe('audit center upstream policy minimum', () => {
   })
   it.each(['0', '-1', '1e2', '1000.000001', '0.0000001'])('rejects invalid minimum %s without submitting financial settings', async amount => {
     const wrapper = center(); await flushPromises()
+    await wrapper.get('[data-test="audit-menu-penalties"]').trigger('click')
     await wrapper.get('[data-test="audit-upstream-minimum-input"]').setValue(amount)
     await wrapper.get('[data-test="audit-save-all"]').trigger('click'); await flushPromises()
     expect(mocks.centerUpdate).not.toHaveBeenCalled()
     expect(mocks.showError).toHaveBeenCalledWith('securityPolicyRanking.invalidMultiplier')
+    wrapper.unmount()
+  })
+
+  it('shows one category at a time without navigating and retains edits across menus for one atomic save', async () => {
+    const wrapper = center(true); await flushPromises()
+    const visiblePanels = () => wrapper.findAll('[role="tabpanel"]').filter(panel => panel.isVisible())
+    expect(visiblePanels()).toHaveLength(1)
+    expect(visiblePanels()[0].attributes('id')).toBe('audit-panel-scope')
+    expect(wrapper.find('nav a[href^="#"]').exists()).toBe(false)
+    expect(wrapper.find('prompt-audit-view-stub').exists()).toBe(false)
+    await wrapper.get('[data-test="audit-menu-content"]').trigger('click')
+    const enabled = wrapper.get('[data-test="audit-content-enabled"]')
+    expect(enabled.attributes('role')).toBe('switch')
+    await enabled.trigger('click')
+    await wrapper.get('[data-test="audit-menu-keywords"]').trigger('click')
+    await wrapper.get('[data-test="editor-keywords"]').setValue('edited custom keyword')
+    await wrapper.get('[data-test="audit-menu-penalties"]').trigger('click')
+    await wrapper.get('[data-test="audit-upstream-minimum-input"]').setValue('8')
+    await wrapper.get('[data-test="audit-charge-group-3"]').trigger('click')
+    await wrapper.get('[data-test="audit-menu-keywords"]').trigger('click')
+    expect(visiblePanels()).toHaveLength(1)
+    expect((wrapper.get('[data-test="editor-keywords"]').element as HTMLInputElement).value).toBe('edited custom keyword')
+    expect(mocks.centerGet).toHaveBeenCalledOnce()
+    expect(mocks.centerUpdate).not.toHaveBeenCalled()
+    expect(route.query).toEqual({})
+    await wrapper.get('[data-test="audit-save-all"]').trigger('click'); await flushPromises()
+    expect(mocks.centerUpdate).toHaveBeenCalledWith({
+      expected_revision: 'revision-minimum',
+      content: { blocked_keywords: ['edited custom keyword'], enabled: true, mode: 'off' },
+      ranking: { ...centerConfig().ranking, multiplier: '8', group_rules: [{ group_id: 3, multiplier: '2', auto_deduct_enabled: false }] },
+    })
+    wrapper.unmount()
+  })
+
+  it.each(['content', 'keywords', 'prompt', 'penalties', 'diagnostics'])('opens a requested category directly: %s', async section => {
+    route.query = { section }
+    const wrapper = center(); await flushPromises()
+    const panels = wrapper.findAll('[role="tabpanel"]').filter(panel => panel.isVisible())
+    expect(panels).toHaveLength(1)
+    expect(panels[0].attributes('id')).toBe(`audit-panel-${section}`)
+    wrapper.unmount()
+  })
+
+  it('supports keyboard menu selection and respects disabled prompt switches', async () => {
+    const wrapper = center(); await flushPromises()
+    await wrapper.get('[data-test="audit-menu-scope"]').trigger('keydown', { key: 'ArrowRight' })
+    expect(wrapper.get('[data-test="audit-menu-content"]').attributes('aria-selected')).toBe('true')
+    await wrapper.get('[data-test="audit-menu-prompt"]').trigger('click')
+    expect(wrapper.get('[data-test="audit-prompt-blocking"]').attributes()).toHaveProperty('disabled')
+    await wrapper.get('[data-test="audit-prompt-enabled"]').trigger('click')
+    expect(wrapper.get('[data-test="audit-prompt-blocking"]').attributes()).not.toHaveProperty('disabled')
+    await wrapper.get('[data-test="audit-prompt-blocking"]').trigger('click')
+    expect(wrapper.get('[data-test="audit-prompt-latest"]').attributes()).not.toHaveProperty('disabled')
     wrapper.unmount()
   })
 })

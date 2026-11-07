@@ -10,7 +10,7 @@
     <p class="mt-3 text-sm text-gray-500 dark:text-dark-300">{{ t(draft.engine === 'local_rules' ? 'admin.promptAudit.local.localHint' : 'admin.promptAudit.local.remoteHint') }}</p>
 
     <div v-if="draft.engine === 'remote'" class="mt-4 rounded-xl bg-primary-50 p-4 dark:bg-primary-950/30">
-      <label class="flex items-center gap-2 text-sm font-medium"><input type="checkbox" :checked="draft.fast_mode" data-test="prompt-fast-mode" @change="patch({ fast_mode: ($event.target as HTMLInputElement).checked })" />{{ t('admin.promptAudit.fastMode.title') }}</label>
+      <label class="flex items-center gap-2 text-sm font-medium"><Toggle :model-value="!!draft.fast_mode" :aria-label="t('admin.promptAudit.fastMode.title')" data-test="prompt-fast-mode" @update:model-value="patch({ fast_mode: $event })" />{{ t('admin.promptAudit.fastMode.title') }}</label>
       <p class="mt-2 text-sm text-gray-600 dark:text-gray-300">{{ t('admin.promptAudit.fastMode.hint') }}</p>
     </div>
     <div v-if="draft.engine === 'local_rules' || draft.fast_mode" class="mt-5">
@@ -27,7 +27,7 @@
       <div class="mt-4 space-y-3">
         <article v-for="(rule, index) in draft.local_rules" :key="rule.id" class="rounded-xl border border-gray-200 p-4 dark:border-dark-700" :data-test="`local-rule-${index}`">
           <div class="flex flex-wrap items-center gap-3">
-            <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-dark-200"><input type="checkbox" :checked="rule.enabled" @change="updateRule(index, { enabled: ($event.target as HTMLInputElement).checked })" />{{ t('admin.promptAudit.local.enabled') }}</label>
+            <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-dark-200"><Toggle :model-value="rule.enabled" :aria-label="`${t('admin.promptAudit.local.enabled')} · ${rule.name}`" @update:model-value="updateRule(index, { enabled: $event })" />{{ t('admin.promptAudit.local.enabled') }}</label>
             <input :value="rule.name" class="input min-w-0 flex-1" maxlength="100" :aria-label="t('admin.promptAudit.local.name')" @input="updateRule(index, { name: ($event.target as HTMLInputElement).value })" />
             <button type="button" class="btn btn-secondary btn-sm" :aria-label="t('admin.promptAudit.local.remove', { name: rule.name })" @click="removeRule(index)">{{ t('common.delete') }}</button>
           </div>
@@ -48,7 +48,7 @@
           <label class="mt-3 block text-sm text-gray-700 dark:text-dark-200">{{ t('admin.promptAudit.local.pattern') }}
             <textarea :value="rule.pattern" rows="2" maxlength="2000" class="input mt-1 w-full font-mono text-xs" :aria-label="t('admin.promptAudit.local.pattern')" @input="updateRule(index, { pattern: ($event.target as HTMLTextAreaElement).value })" />
           </label>
-          <label class="mt-2 flex items-center gap-2 text-xs text-gray-600 dark:text-dark-300"><input type="checkbox" :checked="rule.case_sensitive" @change="updateRule(index, { case_sensitive: ($event.target as HTMLInputElement).checked })" />{{ t('admin.promptAudit.local.caseSensitive') }}</label>
+          <label class="mt-2 flex items-center gap-2 text-xs text-gray-600 dark:text-dark-300"><Toggle :model-value="rule.case_sensitive" :aria-label="`${t('admin.promptAudit.local.caseSensitive')} · ${rule.name}`" @update:model-value="updateRule(index, { case_sensitive: $event })" />{{ t('admin.promptAudit.local.caseSensitive') }}</label>
         </article>
       </div>
     </div>
@@ -66,6 +66,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
+import Toggle from '@/components/common/Toggle.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import type { PromptAuditDraft, PromptLocalRule } from '../types'
 import { cloneData, SCANNER_CATALOG } from '../viewModel'

@@ -652,8 +652,8 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/admin/AuditCenterView.vue'),
     meta: { requiresAuth: true, requiresAdmin: true, title: 'Audit center', titleKey: 'admin.auditCenter.title', descriptionKey: 'admin.auditCenter.description' }
   },
-  { path: '/admin/risk-control', name: 'AdminRiskControl', redirect: { path: '/admin/audit-center', query: { source: 'content' }, hash: '#audit-engines' } },
-  { path: '/admin/prompt-audit', name: 'AdminPromptAudit', redirect: { path: '/admin/audit-center', query: { source: 'prompt' }, hash: '#audit-engines' } },
+  { path: '/admin/risk-control', name: 'AdminRiskControl', redirect: { path: '/admin/audit-center', query: { section: 'content' } } },
+  { path: '/admin/prompt-audit', name: 'AdminPromptAudit', redirect: { path: '/admin/audit-center', query: { section: 'prompt' } } },
   { path: '/admin/security-audit', redirect: '/admin/audit-center' },
   {
     path: '/security-policy-ranking',
@@ -965,11 +965,6 @@ router.beforeEach(async (to, _from, next) => {
     } catch (error) {
       console.warn('Failed to load public settings in route guard', error)
     }
-  }
-
-  if (to.path === '/security-policy-ranking' && authStore.isAdmin) {
-    next({ path: '/admin/audit-center', hash: '#audit-evidence' })
-    return
   }
 
   // Only an explicit value from successfully loaded settings can disable a route.
