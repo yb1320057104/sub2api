@@ -81,3 +81,45 @@
 首轮前端测试桩Boolean定义、中心默认模型夹具、并行字段落地前的编译失败以及第一次集成编译期间源变更触发的快照拒绝均保留原证据；修正后按最终代码复验。临时新增前端测试文件与提供端测试文件已归档至Git忽略目录并从源码清理，原有测试文件扩展保留。原有首字计时、普通计费、审计豁免与风险判定、代理并发和授权流程作为保护边界核对。本轮不运行全套源码回归，不发送真实模型/授权/币安请求，不部署或重启生产。
 
 新增PK-046，扩展PK-026/027/041/043并沿用PK-021/044/045。正式源码提交 `cefb1f806bc371eebb8d2177fe4e961a0f97f293` 已原子推送私库main、版本分支和唯一正式标签 `v0.2.19-pk.54`，远端剥离标签身份及main归属核对通过；此段仅main补录，正式标签不移动；本轮未发布安装包、未部署或重启生产，生产自动扣费设置仍是只读检查时的原配置。
+
+## 最终发行结果
+
+以上各节保留源码交付阶段、首次失败和修正的原始记录。后续用户明确授权发布安装包，以下为实际发行结果；此前仅源码交接及未发布的描述不再代表本版最终发行状态。
+
+正式源码为 `cefb1f806bc371eebb8d2177fe4e961a0f97f293`，tree为 `8bdf8feec777b392a140f1a033d010055032817e`；唯一版本分支与正式标签均为 `v0.2.19-pk.54`，私库main包含该正式提交。本次补录在main进行，main相对正式源码只允许五份交付文档变化，正式版本分支、标签及制品保持不变。
+
+[私库GitHub Release](https://github.com/yb1320057104/sub2api/releases/tag/v0.2.19-pk.54) 已发布为latest，非草稿、非预发布。包身份为 `1794056827-cefb1f806bc3`，发行二进制SHA256为 `04303b02bc6478e4af0142036b35649d3048a0ef48ddf30079bb08813b4f48bc`。9项资产的名称、长度和SHA256已逐项核对，并以 `.runtime/pk54-publication.json` 的 `asset_manifest` 再次核对本地封存字节；不以构建成功代替上传验证。
+
+| 验证层 | 最终结果及边界 |
+| --- | --- |
+| 前后端正式构建 | 正式标签输入下重新构建前端，i18n3项与类型检查通过，Vite处理1219模块、dist共199文件；后端发行构建通过。SQL嵌入以正式Git LF字节构建并核对二进制内嵌字节，不修改旧迁移。 |
+| 同一发行二进制 | 11项制品检查全部通过；服务器隔离daemon及容器／卷清理通过。 |
+| 空库升级／回退 | 7项全部通过，核对实际观测基线、既有迁移校验和、原数据及回退保留。 |
+| 制品服务API | 多代理7项、IP分组7项、模型目录7项全部通过，各自测试夹具已移除。 |
+| 审计SQL与金融迁移 | 实际仓库SQL提取后6项断言通过，仅SQL执行，不冒充编译后查询调用；金融迁移函数8项检查通过，测试行事务回滚，绑定发行二进制与正式迁移。 |
+| 真实本机隔离PostgreSQL／Redis | 最终9个仓库顶层测试加1个中心配置事务顶层通过；仓库含子项19个pass事件不作为额外独立测试累计。进程与临时目录清理通过，原执行日志、测试二进制、归档测试源及最终Go／SQL／模块输入重新绑定；这些测试二进制不是发行二进制。 |
+| 生产依赖审计 | 0 critical／2 high／12 moderate／2 low；审计退出1，沿用已有依赖例外门禁退出0，未宣称依赖漏洞全部消除。 |
+
+九项资产为 `manifest.json`、`checksums.txt`、`artifact-validation.json`、`isolated-smoke.json`、`review.json`、`local-build.json`、`migrations-validation.json`、`sub2api_0.2.19-pk.54_linux_amd64.tar.gz` 及 `sub2api_0.2.19-pk.54_linux_amd64.docker.tar.gz`。制品证据见 `.runtime/pk54-release/`；本地构建证据为 `.runtime/pk54-local-build.json`，前端证据为 `.runtime/pk54-frontend-build.json`，原最终隔离数据库执行证据为 `.runtime/pk54-minimum-local-integration-20261107T125132Z/result.json`。
+
+保留先前定向测试轮次重叠、TestContentModerationTypeSafeLive按边界跳过及初次失败记录，不把这些轮次相加为独立总数，不把本次发行验收描述成全套源码回归或真实外部联调。Release发布阶段仅供用户手动切换，当时未部署／重启生产；用户随后自行网页更新并另行授权修复502，实际生产操作见下节。未发布GHCR，未发送真实模型／授权／币安请求，未改变首字计时，未修改生产自动扣费配置或历史账务。
+
+## 用户更新后502与授权恢复
+
+用户自行安装pk.54并重启后，生产容器在执行应用前被外部HA启动守卫拒绝，日志为 `sub2api: startup guard rejected executable`，退出126并循环重启，公网首页及健康接口502。守卫仅列入pk.52及镜像种子哈希；已安装pk.54与正式Release二进制哈希一致，不是本次诊断已证实的数据库迁移或审计业务异常。发布时的隔离制品验收未覆盖这套生产外置守卫，不能将其冒称已验收。
+
+按用户“更新完重启502了赶紧修复”的明确授权，2026-11-07北京时间22:06:11恢复原应用容器。当前容器尚未bind宿主守卫，因此同时更新宿主 `/data/sub2api/ha-startup-guard/entrypoint.sh` 与原容器 `/app/docker-entrypoint.sh`，只在白名单追加正式pk.54哈希 `04303b02bc6478e4af0142036b35649d3048a0ef48ddf30079bb08813b4f48bc`。保留路径与符号链接检查、FD9执行和文件身份复核，以及 `SUB2API_SKIP_STARTUP_SLOT_CLEANUP=true`；未撤除守卫、未换镜像、未替换数据卷或`.env`。receipt同步两份守卫哈希和许可集合，install-state重新绑定receipt字节哈希；原epoch、容器及Compose身份字段保留，原文件和维修回执保存在 `/data/sub2api/ha-startup-guard/pk54-recovery-20261107T140607Z`。
+
+守卫SHA256由 `f9d8826caf8f48d86e5ece019ec3b9ca1d99cab135122ed705e22fdea5bb2e34` 更新为 `fc296b85908d1585d0dc05f6d879c6cb9718623df34c4054cd832e352b476ad3`。应用实际进程 `/proc/PID/exe` 哈希与正式pk.54相符，版本为 `0.2.19-pk.54`／提交 `cefb1f806bc371eebb8d2177fe4e961a0f97f293`。复核原容器healthy、重启计数0且启动epoch保持；本机18081的`/health`和首页、公网`/health`和首页及`/api/v1/settings/public`均为HTTP200。这里确认应用访问恢复，不替代真实模型或金融交易验证。
+
+HA状态另记：恢复前后的 `sub2api-evidence-monitor.service` 均为failed；`sub2api-project-guardian.service`、`sub2api-project-guardian-armed.service`、`sub2api-project-fence.service`均inactive。旧checker及其上层封存清单仍固定旧守卫／二进制身份，需要重新协调完整HA证据链；本次不冒称监测、仲裁或集群恢复。未来版本更新仍须同步维护守卫允许的正式制品和HA证据，本次仅放行已验证的pk.54，不自动信任任意后续二进制。
+
+故障与修复证据位于外层工作区`.runtime/`，仅摘录脱敏字段，未将连接配置、环境变量或私密诊断内容纳入本记录：
+
+| 证据 | SHA256 |
+| --- | --- |
+| `pk54-guard-recovery-plan.json` | `16aa2f401a610caaf6d46227faaa45d652e1263562d515c336c33eeca8ce575b` |
+| `pk54-guard-recovery-apply.json` | `966e5ddeed952831791647ec59dbdabf36f6a8ab351ffd46dbe8d8bf6ace2177` |
+| `pk54-guard-recovery-verify.json` | `baf126c6e8583eb5d7a5703f8c8a60939e11ca01a06a8b0a896c7d91f6be8134` |
+
+此次补录仅修改main文档，不移动正式版本分支／标签，不重打包或替换已发布资产。
