@@ -648,6 +648,48 @@ func (s *ContentModerationService) UpdateConfig(ctx context.Context, input Updat
 	if err != nil {
 		return nil, err
 	}
+	current, err := json.Marshal(cfg)
+	if err != nil {
+		return nil, err
+	}
+	prepared, err := s.PrepareAuditCenterConfig(ctx, string(current), input)
+	if err != nil {
+		return nil, err
+	}
+	cfg, raw := prepared.Config, prepared.Raw
+	var saveErr error
+	if writer, ok := s.settingRepo.(interface {
+		SetContentModerationConfig(context.Context, string, []int64) error
+	}); ok {
+		saveErr = writer.SetContentModerationConfig(ctx, string(raw), cfg.GroupIDs)
+		if errors.Is(saveErr, ErrGroupNotFound) {
+			return nil, infraerrors.BadRequest("INVALID_CONTENT_MODERATION_GROUP", "审计分组不存在")
+		}
+	} else {
+		saveErr = s.settingRepo.Set(ctx, SettingKeyContentModerationConfig, string(raw))
+	}
+	if err := saveErr; err != nil {
+		return nil, fmt.Errorf("save content moderation config: %w", err)
+	}
+	s.replaceRuntimeConfig(cfg, raw)
+	// 代理选择可能已变化，丢弃已解析的代理 URL 缓存，下次调用即时生效。
+	s.moderationProxyCache.Store(nil)
+	return s.configViewWithUserAllowlist(ctx, cfg)
+}
+
+// PreparedContentModerationConfig retains the original validation and key update
+// semantics while allowing the audit center to commit all settings atomically.
+// It is an internal persistence value and must never be serialized to clients.
+type PreparedContentModerationConfig struct {
+	Config *ContentModerationConfig `json:"-"`
+	Raw    []byte                   `json:"-"`
+}
+
+func (s *ContentModerationService) PrepareAuditCenterConfig(ctx context.Context, current string, input UpdateContentModerationConfigInput) (*PreparedContentModerationConfig, error) {
+	cfg, err := parseContentModerationConfig(current)
+	if err != nil {
+		return nil, err
+	}
 	cfg.RiskPolicy, err = auditrisk.Update(cfg.RiskPolicy, input.RiskPolicy)
 	if err != nil {
 		return nil, infraerrors.BadRequest("INVALID_CONTENT_MODERATION_RISK_POLICY", err.Error())
@@ -761,24 +803,7 @@ func (s *ContentModerationService) UpdateConfig(ctx context.Context, input Updat
 	if err != nil {
 		return nil, fmt.Errorf("marshal content moderation config: %w", err)
 	}
-	var saveErr error
-	if writer, ok := s.settingRepo.(interface {
-		SetContentModerationConfig(context.Context, string, []int64) error
-	}); ok {
-		saveErr = writer.SetContentModerationConfig(ctx, string(raw), cfg.GroupIDs)
-		if errors.Is(saveErr, ErrGroupNotFound) {
-			return nil, infraerrors.BadRequest("INVALID_CONTENT_MODERATION_GROUP", "审计分组不存在")
-		}
-	} else {
-		saveErr = s.settingRepo.Set(ctx, SettingKeyContentModerationConfig, string(raw))
-	}
-	if err := saveErr; err != nil {
-		return nil, fmt.Errorf("save content moderation config: %w", err)
-	}
-	s.replaceRuntimeConfig(cfg, raw)
-	// 代理选择可能已变化，丢弃已解析的代理 URL 缓存，下次调用即时生效。
-	s.moderationProxyCache.Store(nil)
-	return s.configViewWithUserAllowlist(ctx, cfg)
+	return &PreparedContentModerationConfig{Config: cfg, Raw: raw}, nil
 }
 
 func (s *ContentModerationService) TestAPIKeys(ctx context.Context, input TestContentModerationAPIKeysInput) (*TestContentModerationAPIKeysResult, error) {

@@ -8,6 +8,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
+	"github.com/Wei-Shaw/sub2api/internal/securityaudit"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 )
@@ -18,6 +19,12 @@ type ContentModerationHandler struct {
 
 func NewContentModerationHandler(svc *service.ContentModerationService) *ContentModerationHandler {
 	return &ContentModerationHandler{service: svc}
+}
+
+func (h *ContentModerationHandler) AttachAuditCenter(prompt *securityaudit.PromptAdminHandler, ranking *service.CyberPolicyService) {
+	if h != nil && prompt != nil {
+		prompt.SetAuditCenter(h.service, ranking)
+	}
 }
 
 type contentModerationConfigRequest struct {

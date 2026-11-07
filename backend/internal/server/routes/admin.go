@@ -195,6 +195,8 @@ func registerCyberPolicyRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 }
 
 func registerPromptAuditRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	admin.GET("/audit-center/config", h.Admin.PromptAudit.GetAuditCenter)
+	admin.PUT("/audit-center/config", h.Admin.PromptAudit.UpdateAuditCenter)
 	promptAudit := admin.Group("/prompt-audit")
 	{
 		promptAudit.GET("/config", h.Admin.PromptAudit.GetConfig)

@@ -409,6 +409,9 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 			})
 		}
 
+		if refused, handled := s.consumeGatewayAuditPolicyError(c, resp, account, originalModel, reqModel, reqStream, startTime); handled {
+			return refused, errOpenAICyberPolicyForwarded
+		}
 		// 优先检测thinking block签名错误（400）并重试一次
 		if resp.StatusCode == 400 {
 			respBody, readErr := s.readUpstreamErrorBody(resp)
@@ -820,6 +823,12 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 	if reqStream {
 		writerSizeBeforeStream := c.Writer.Size()
 		streamResult, err := s.handleStreamingResponse(ctx, resp, c, account, startTime, originalModel, reqModel, shouldMimicClaudeCode)
+		if refused := gatewayAuditPolicyResult(c, resp, originalModel, reqModel, true, startTime); refused != nil {
+			if streamResult != nil && streamResult.usage != nil {
+				refused.Usage, refused.FirstTokenMs, refused.ClientDisconnect = *streamResult.usage, streamResult.firstTokenMs, streamResult.clientDisconnect
+			}
+			return refused, errOpenAICyberPolicyForwarded
+		}
 		if err != nil {
 			var sseErr *sseStreamErrorEventError
 			if errors.As(err, &sseErr) {
@@ -837,6 +846,12 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		clientDisconnect = streamResult.clientDisconnect
 	} else {
 		usage, err = s.handleNonStreamingResponse(ctx, resp, c, account, originalModel, reqModel)
+		if refused := gatewayAuditPolicyResult(c, resp, originalModel, reqModel, false, startTime); refused != nil {
+			if usage != nil {
+				refused.Usage = *usage
+			}
+			return refused, errOpenAICyberPolicyForwarded
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -844,6 +859,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 
 	return &ForwardResult{
 		RequestID:                     resp.Header.Get("x-request-id"),
+		AuditSettlementNegotiated:     auditSettlementWasNegotiated(resp),
 		UpstreamHeaders:               resp.Header,
 		Usage:                         *usage,
 		Model:                         originalModel, // 使用原始模型用于计费和日志

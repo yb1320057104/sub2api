@@ -537,6 +537,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 
 	forwardResult := &OpenAIForwardResult{
 		RequestID:                     resp.Header.Get("x-request-id"),
+		AuditSettlementNegotiated:     auditSettlementWasNegotiated(resp),
 		UpstreamHeaders:               resp.Header,
 		ResponseID:                    responseID,
 		Usage:                         *usage,
@@ -748,6 +749,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 
 	// 账号级请求头覆写（仅 openai api_key 账号启用时生效；OAuth 路径 no-op）
 	account.ApplyHeaderOverrides(req.Header)
+	prepareAuditSettlementRequest(req, account)
 	applyOpenCodeSessionHeader(c, account, targetURL, req.Header, body)
 	// x-codex-beta-features：按真实 Codex 的会话级行为补注（在账号级覆写之后，
 	// 保证不被覆盖丢失）。
@@ -889,10 +891,7 @@ func writeOpenAIPassthroughErrorEnvelope(c *gin.Context, downstreamStatus int, u
 	}
 	message = sanitizeKiloBridgeClientErrorMessage(c, message)
 	body, _ := json.Marshal(gin.H{
-		"error": gin.H{
-			"type":    "upstream_error",
-			"message": message,
-		},
+		"error": auditSettlementClientError(c, "upstream_error", message),
 	})
 	if writeOpenAICompactSSEBridge(c, downstreamStatus, body) {
 		return
@@ -968,10 +967,12 @@ func (s *OpenAIGatewayService) handleErrorResponsePassthrough(
 	cyberHit, cyberCode, cyberMsg := detectOpenAICyberPolicy(body)
 	if cyberHit {
 		MarkOpsCyberPolicy(c, CyberPolicyMark{
-			Code:           cyberCode,
-			Message:        cyberMsg,
-			Body:           truncateString(string(body), 4096),
-			UpstreamStatus: resp.StatusCode,
+			AuditSettlementNegotiated: auditSettlementWasNegotiated(resp),
+			UpstreamHeaders:           auditSettlementResponseHeaders(resp.Header),
+			Code:                      cyberCode,
+			Message:                   cyberMsg,
+			Body:                      truncateString(string(body), 4096),
+			UpstreamStatus:            resp.StatusCode,
 		})
 	}
 
@@ -2133,12 +2134,14 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 				if hit, code, msg := detectOpenAICyberPolicy(dataBytes); hit {
 					cyberHit = true
 					MarkOpsCyberPolicy(c, CyberPolicyMark{
-						Code:           code,
-						Message:        msg,
-						Body:           truncateString(string(dataBytes), 4096),
-						UpstreamStatus: http.StatusOK,
-						UpstreamInTok:  usage.InputTokens,
-						UpstreamOutTok: usage.OutputTokens,
+						AuditSettlementNegotiated: auditSettlementWasNegotiated(resp),
+						UpstreamHeaders:           auditSettlementResponseHeaders(resp.Header),
+						Code:                      code,
+						Message:                   msg,
+						Body:                      truncateString(string(dataBytes), 4096),
+						UpstreamStatus:            http.StatusOK,
+						UpstreamInTok:             usage.InputTokens,
+						UpstreamOutTok:            usage.OutputTokens,
 					})
 				}
 				outputStarted := openAIStreamClientOutputStarted(c, clientOutputStarted)
@@ -2214,6 +2217,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 				eventType,
 				openAIStreamClientOutputStarted(c, clientOutputStarted),
 			); sanitized {
+				sanitizedData = auditSettlementCyberEvent(c, sanitizedData, eventType)
 				dataBytes = sanitizedData
 				trimmedData = strings.TrimSpace(string(sanitizedData))
 				line = "data: " + string(sanitizedData)

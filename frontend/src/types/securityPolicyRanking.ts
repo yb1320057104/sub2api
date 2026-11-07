@@ -49,6 +49,7 @@ export interface SecurityPolicyGroupRule {
 }
 
 export interface SecurityPolicyRankingSettings {
+  /** USD per upstream type-4 event: automatic minimum and fixed manual charge. */
   multiplier: string
   auto_disable_enabled: boolean
   auto_disable_threshold: number
@@ -82,6 +83,10 @@ export interface SecurityPolicyTriggerRecord {
   auto_charge_reason?: string
   actual_cost?: string | null
   audit_multiplier?: string | null
+  /** Persisted per-event evidence; absent on historical rows. Never infer from current settings. */
+  auto_charge_source?: 'upstream_type4' | 'audit_charge_allow' | 'audit_block' | null
+  auto_charge_rule?: 'max_cost_multiplier_minimum' | 'cost_multiplier' | null
+  auto_charge_minimum?: string | null
   auto_charge_amount?: string | null
 }
 

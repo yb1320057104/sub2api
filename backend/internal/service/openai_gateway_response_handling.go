@@ -556,12 +556,14 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 				if hit, code, msg := detectOpenAICyberPolicy(dataBytes); hit {
 					cyberHit = true
 					MarkOpsCyberPolicy(c, CyberPolicyMark{
-						Code:           code,
-						Message:        msg,
-						Body:           truncateString(string(dataBytes), 4096),
-						UpstreamStatus: http.StatusOK,
-						UpstreamInTok:  usage.InputTokens,
-						UpstreamOutTok: usage.OutputTokens,
+						AuditSettlementNegotiated: auditSettlementWasNegotiated(resp),
+						UpstreamHeaders:           auditSettlementResponseHeaders(resp.Header),
+						Code:                      code,
+						Message:                   msg,
+						Body:                      truncateString(string(dataBytes), 4096),
+						UpstreamStatus:            http.StatusOK,
+						UpstreamInTok:             usage.InputTokens,
+						UpstreamOutTok:            usage.OutputTokens,
 					})
 				}
 				outputStarted := openAIStreamClientOutputStarted(c, clientOutputStarted)
@@ -678,6 +680,7 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 				eventType,
 				openAIStreamClientOutputStarted(c, clientOutputStarted),
 			); sanitized {
+				sanitizedData = auditSettlementCyberEvent(c, sanitizedData, eventType)
 				dataBytes = sanitizedData
 				data = string(sanitizedData)
 				line = "data: " + data

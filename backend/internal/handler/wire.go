@@ -55,6 +55,7 @@ func ProvideAdminHandlers(
 	cyberPolicy *service.CyberPolicyService,
 ) *AdminHandlers {
 	usageHandler.SetCyberPolicyService(cyberPolicy)
+	contentModerationHandler.AttachAuditCenter(promptAuditHandler, cyberPolicy)
 	accountHandler.SetUpstreamBillingProbeService(upstreamBillingProbe)
 	accountHandler.SetOllamaCloudUsageService(ollamaCloudUsage)
 	accountHandler.SetOpenCodeGoUsageService(opencodeGoUsage)

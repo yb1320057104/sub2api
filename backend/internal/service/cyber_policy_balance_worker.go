@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/google/uuid"
 )
 
@@ -17,16 +18,17 @@ type cyberBalanceInvalidator interface {
 // CyberPolicyBalanceWorker delivers invalidations committed with automatic
 // audit charges. A delayed second pass catches in-flight balance cache loads.
 type CyberPolicyBalanceWorker struct {
-	db     *sql.DB
-	cache  cyberBalanceInvalidator
-	owner  string
-	ctx    context.Context
-	cancel context.CancelFunc
-	start  sync.Once
-	stop   sync.Once
-	mu     sync.Mutex
-	closed bool
-	wg     sync.WaitGroup
+	imports *auditSettlementImportWorker
+	db      *sql.DB
+	cache   cyberBalanceInvalidator
+	owner   string
+	ctx     context.Context
+	cancel  context.CancelFunc
+	start   sync.Once
+	stop    sync.Once
+	mu      sync.Mutex
+	closed  bool
+	wg      sync.WaitGroup
 }
 
 func newCyberPolicyBalanceWorker(db *sql.DB, cache cyberBalanceInvalidator) *CyberPolicyBalanceWorker {
@@ -34,8 +36,9 @@ func newCyberPolicyBalanceWorker(db *sql.DB, cache cyberBalanceInvalidator) *Cyb
 	return &CyberPolicyBalanceWorker{db: db, cache: cache, owner: uuid.NewString(), ctx: ctx, cancel: cancel}
 }
 
-func ProvideCyberPolicyBalanceWorker(db *sql.DB, cache *BillingCacheService) *CyberPolicyBalanceWorker {
+func ProvideCyberPolicyBalanceWorker(db *sql.DB, cache *BillingCacheService, accounts AccountRepository, upstream HTTPUpstream, cfg *config.Config) *CyberPolicyBalanceWorker {
 	w := newCyberPolicyBalanceWorker(db, cache)
+	w.imports = newAuditSettlementImportWorker(db, accounts, upstream, cfg)
 	startBackgroundAfterActivation("CyberPolicyBalanceWorker", w.Start)
 	return w
 }
@@ -49,6 +52,9 @@ func (w *CyberPolicyBalanceWorker) Start() {
 		defer w.mu.Unlock()
 		if w.closed {
 			return
+		}
+		if w.imports != nil {
+			w.imports.Start()
 		}
 		w.wg.Add(1)
 		go func() {
@@ -81,6 +87,9 @@ func (w *CyberPolicyBalanceWorker) Stop() {
 		w.cancel()
 		w.mu.Unlock()
 		w.wg.Wait()
+		if w.imports != nil {
+			w.imports.Stop()
+		}
 	})
 }
 

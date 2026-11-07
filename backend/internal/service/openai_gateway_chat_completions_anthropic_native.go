@@ -274,16 +274,17 @@ func (s *OpenAIGatewayService) handleCCBufferedFromNativeAnthropic(
 	responsesResp := apicompat.AnthropicToResponsesResponse(finalResp)
 	ccResp := apicompat.ResponsesToChatCompletions(responsesResp, originalModel)
 	result := &OpenAIForwardResult{
-		RequestID:        requestID,
-		UpstreamHeaders:  resp.Header,
-		Usage:            claudeUsageToOpenAIUsage(&usage),
-		Model:            originalModel,
-		BillingModel:     billingModel,
-		UpstreamModel:    upstreamModel,
-		UpstreamEndpoint: "/v1/messages",
-		ReasoningEffort:  reasoningEffort,
-		Stream:           false,
-		Duration:         time.Since(startTime),
+		RequestID:                 requestID,
+		AuditSettlementNegotiated: auditSettlementWasNegotiated(resp),
+		UpstreamHeaders:           resp.Header,
+		Usage:                     claudeUsageToOpenAIUsage(&usage),
+		Model:                     originalModel,
+		BillingModel:              billingModel,
+		UpstreamModel:             upstreamModel,
+		UpstreamEndpoint:          "/v1/messages",
+		ReasoningEffort:           reasoningEffort,
+		Stream:                    false,
+		Duration:                  time.Since(startTime),
 	}
 
 	if s.responseHeaderFilter != nil {
@@ -357,18 +358,19 @@ func (s *OpenAIGatewayService) handleCCStreamingFromNativeAnthropic(
 
 	resultWithUsage := func() *OpenAIForwardResult {
 		return &OpenAIForwardResult{
-			RequestID:        requestID,
-			UpstreamHeaders:  resp.Header,
-			Usage:            claudeUsageToOpenAIUsage(&usage),
-			Model:            originalModel,
-			BillingModel:     billingModel,
-			UpstreamModel:    upstreamModel,
-			UpstreamEndpoint: "/v1/messages",
-			ReasoningEffort:  reasoningEffort,
-			Stream:           true,
-			Duration:         time.Since(startTime),
-			FirstTokenMs:     firstTokenMs,
-			ClientDisconnect: clientDisconnected,
+			RequestID:                 requestID,
+			AuditSettlementNegotiated: auditSettlementWasNegotiated(resp),
+			UpstreamHeaders:           resp.Header,
+			Usage:                     claudeUsageToOpenAIUsage(&usage),
+			Model:                     originalModel,
+			BillingModel:              billingModel,
+			UpstreamModel:             upstreamModel,
+			UpstreamEndpoint:          "/v1/messages",
+			ReasoningEffort:           reasoningEffort,
+			Stream:                    true,
+			Duration:                  time.Since(startTime),
+			FirstTokenMs:              firstTokenMs,
+			ClientDisconnect:          clientDisconnected,
 		}
 	}
 

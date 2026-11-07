@@ -228,6 +228,24 @@ describe('admin RiskControlView', () => {
     }))
   })
 
+  it('exposes an embedded editor draft without separate saves or shared scope controls', async () => {
+    const config = { ...baseConfig(), group_ids: [7], user_allowlist_ids: [42], blocked_keywords: ['preserved-custom'], risk_policy: defaultAuditRiskPolicy() }
+    const wrapper = mount(RiskControlView, { props: { embedded: true, editorOnly: true, initialConfig: config }, global: { stubs: { AppLayout: AppLayoutStub, BaseDialog: BaseDialogStub, Icon: true, Select: true, Toggle: true, Pagination: true, ModelWhitelistSelector: ModelWhitelistSelectorStub, ProxySelector: true } } })
+    await flushPromises()
+    expect(getConfig).not.toHaveBeenCalled()
+    expect(updateConfig).not.toHaveBeenCalled()
+    expect(listLogs).not.toHaveBeenCalled()
+    expect(wrapper.text()).not.toContain('admin.riskControl.saveConfig')
+    await findButtonByText(wrapper, 'admin.riskControl.tabs.scope').trigger('click')
+    expect(wrapper.find('[data-test="content-audit-user-allowlist"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="audit-group-7"]').exists()).toBe(false)
+    const payload = (wrapper.vm as unknown as { preparePayload(): UpdateContentModerationConfig }).preparePayload()
+    expect(payload).toMatchObject({ group_ids: [7], user_allowlist_ids: [42], blocked_keywords: ['preserved-custom'] })
+    expect(payload.api_keys).toBeUndefined()
+    expect(updateConfig).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
   it('keeps old audit policy until enabled, saves keyword scores and clears scored mode explicitly', async () => {
     const config = { ...baseConfig(), blocked_keywords: ['Custom', '忽略之前的所有指令'], keyword_scores: { custom: 0, '忽略之前的所有指令': 7 } }
     getConfig.mockResolvedValue(config)

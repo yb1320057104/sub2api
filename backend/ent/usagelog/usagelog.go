@@ -78,6 +78,8 @@ const (
 	FieldBillingType = "billing_type"
 	// FieldStream holds the string denoting the stream field in the database.
 	FieldStream = "stream"
+	// FieldAuditSettlementImportedEvent holds the string denoting the audit_settlement_imported_event field in the database.
+	FieldAuditSettlementImportedEvent = "audit_settlement_imported_event"
 	// FieldDurationMs holds the string denoting the duration_ms field in the database.
 	FieldDurationMs = "duration_ms"
 	// FieldFirstTokenMs holds the string denoting the first_token_ms field in the database.
@@ -192,6 +194,7 @@ var Columns = []string{
 	FieldAccountRateMultiplier,
 	FieldBillingType,
 	FieldStream,
+	FieldAuditSettlementImportedEvent,
 	FieldDurationMs,
 	FieldFirstTokenMs,
 	FieldUserAgent,
@@ -268,6 +271,8 @@ var (
 	DefaultBillingType int8
 	// DefaultStream holds the default value on creation for the "stream" field.
 	DefaultStream bool
+	// DefaultAuditSettlementImportedEvent holds the default value on creation for the "audit_settlement_imported_event" field.
+	DefaultAuditSettlementImportedEvent bool
 	// UserAgentValidator is a validator for the "user_agent" field. It is called by the builders before save.
 	UserAgentValidator func(string) error
 	// IPAddressValidator is a validator for the "ip_address" field. It is called by the builders before save.
@@ -458,6 +463,11 @@ func ByBillingType(opts ...sql.OrderTermOption) OrderOption {
 // ByStream orders the results by the stream field.
 func ByStream(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldStream, opts...).ToFunc()
+}
+
+// ByAuditSettlementImportedEvent orders the results by the audit_settlement_imported_event field.
+func ByAuditSettlementImportedEvent(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldAuditSettlementImportedEvent, opts...).ToFunc()
 }
 
 // ByDurationMs orders the results by the duration_ms field.

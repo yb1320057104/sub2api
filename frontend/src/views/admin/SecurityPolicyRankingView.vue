@@ -1,7 +1,7 @@
 <template>
-  <AppLayout>
+  <component :is="embedded ? 'div' : AppLayout">
     <div class="space-y-5">
-      <div>
+      <div v-if="!embedded">
         <h1 class="text-2xl font-semibold text-gray-900 dark:text-gray-100">{{ t('securityPolicyRanking.title') }}</h1>
         <p class="mt-2 text-sm text-gray-500 dark:text-gray-400">{{ t('securityPolicyRanking.description') }}</p>
         <p v-if="!isAdmin" class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('securityPolicyRanking.maskedIdentity') }}</p>
@@ -30,7 +30,7 @@
         <p v-if="rangeError" class="text-sm text-red-600 dark:text-red-400" role="alert">{{ rangeError }}</p>
       </section>
 
-      <section v-if="isAdmin" class="card space-y-4 p-4" data-testid="ranking-settings">
+      <section v-if="isAdmin && !embedded" class="card space-y-4 p-4" data-testid="ranking-settings">
         <form class="space-y-4" @submit.prevent="saveSettings">
           <div class="flex flex-wrap items-end gap-3">
             <div class="min-w-48 flex-1">
@@ -182,7 +182,7 @@
                 <td class="min-w-64 px-3 py-3" data-testid="ranking-record-charge">
                   <div :class="record.auto_charge_status === 'deducted' ? 'text-green-700 dark:text-green-300' : 'text-gray-600 dark:text-gray-400'">{{ t(`securityPolicyRanking.chargeStatuses.${record.auto_charge_status || 'historical_unknown'}`) }}</div>
                   <div v-if="record.auto_charge_reason" class="mt-1 text-xs text-gray-500">{{ recordChargeReason(record.auto_charge_reason) }}</div>
-                  <div v-if="record.audit_multiplier != null && record.auto_charge_reason !== 'auto_deduct_off'" class="mt-1 text-xs tabular-nums text-gray-500" data-testid="ranking-record-charge-formula">{{ t('securityPolicyRanking.chargeFormula', { cost: decimal(record.actual_cost), multiplier: decimal(record.audit_multiplier), amount: decimal(record.auto_charge_amount) }) }}</div>
+                  <div v-if="record.audit_multiplier != null && record.auto_charge_reason !== 'auto_deduct_off'" class="mt-1 text-xs tabular-nums text-gray-500" data-testid="ranking-record-charge-formula">{{ recordChargeFormula(record) }}</div>
                   <div class="mt-1 text-xs tabular-nums" data-testid="ranking-record-charge-deducted">{{ t('securityPolicyRanking.chargeDeducted', { amount: record.auto_charge_status === 'deducted' ? decimal(record.auto_charge_amount) : !record.auto_charge_status || record.auto_charge_status === 'historical_unknown' ? '—' : '0' }) }}</div>
                 </td>
               </tr>
@@ -211,7 +211,7 @@
         <div class="flex justify-end gap-2"><button class="btn btn-secondary" :disabled="deducting" @click="closePreview">{{ t('common.cancel') }}</button><button class="btn btn-primary" :disabled="deducting || !preview?.trigger_count" data-testid="ranking-confirm-deduct" @click="confirmDeduction">{{ deducting ? t('common.processing') : deductionError ? t('securityPolicyRanking.retryDeduct') : t('securityPolicyRanking.confirmDeduct') }}</button></div>
       </template>
     </BaseDialog>
-  </AppLayout>
+  </component>
 </template>
 
 <script setup lang="ts">
@@ -230,6 +230,7 @@ import DateRangePicker from '@/components/common/DateRangePicker.vue'
 import Pagination from '@/components/common/Pagination.vue'
 import UserAllowlistSelector from '@/components/admin/user/UserAllowlistSelector.vue'
 
+defineProps<{ embedded?: boolean }>()
 const { t } = useI18n()
 const appStore = useAppStore()
 const authStore = useAuthStore()
@@ -332,6 +333,15 @@ function recordCountLabel(record: SecurityPolicyTriggerRecord) {
 function recordChargeReason(reason: string) {
   const known = ['observation_only', 'group_not_enabled', 'user_exempt', 'user_unavailable', 'admin_exempt', 'auto_deduct_off', 'invalid_cost', 'charge_failed']
   return t(`securityPolicyRanking.chargeReasons.${known.includes(reason) ? reason : 'unknown'}`)
+}
+
+function recordChargeFormula(record: SecurityPolicyTriggerRecord) {
+  const values = { cost: decimal(record.actual_cost), multiplier: decimal(record.audit_multiplier), amount: decimal(record.auto_charge_amount) }
+  if (record.auto_charge_rule === 'max_cost_multiplier_minimum') {
+    if (record.auto_charge_minimum == null) return t('securityPolicyRanking.chargeFormulaUnknown')
+    return t('securityPolicyRanking.chargeMinimumFormula', { ...values, minimum: decimal(record.auto_charge_minimum) })
+  }
+  return t('securityPolicyRanking.chargeFormula', values)
 }
 
 function schedule() {

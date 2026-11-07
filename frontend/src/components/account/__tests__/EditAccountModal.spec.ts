@@ -337,6 +337,48 @@ describe('EditAccountModal', () => {
 
   afterEach(() => vi.useRealTimers())
 
+  it('keeps audit settlement off by default and writes explicit trust without changing other extra settings', async () => {
+    const account = buildAccount()
+    account.extra = { preserved_setting: 'keep' }
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+    const wrapper = mountModal(account)
+    const toggle = wrapper.get('[data-testid="audit-settlement-toggle"]')
+    expect(toggle.attributes('aria-checked')).toBe('false')
+    await toggle.trigger('click')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra).toMatchObject({ audit_settlement_enabled: true, preserved_setting: 'keep' })
+    wrapper.unmount()
+  })
+
+  it('can turn off a trusted upstream settlement while excluding OAuth accounts', async () => {
+    const account = { ...buildAccount(), type: 'upstream', extra: { audit_settlement_enabled: true } }
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+    const wrapper = mountModal(account)
+    expect(wrapper.get('[data-testid="audit-settlement-toggle"]').attributes('aria-checked')).toBe('true')
+    await wrapper.get('[data-testid="audit-settlement-toggle"]').trigger('click')
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    expect(updateAccountMock.mock.calls[0]?.[1]?.extra?.audit_settlement_enabled).toBe(false)
+    wrapper.unmount()
+    const oauth = mountModal({ ...buildAccount(), type: 'oauth' })
+    expect(oauth.find('[data-testid="audit-settlement-setting"]').exists()).toBe(false)
+    oauth.unmount()
+  })
+
+  it.each(['https://upstream.example.test/antigravity', 'https://upstream.example.test/v1?key=x', 'https://user:pass@upstream.example.test', 'not-a-url'])('rejects enabling settlement on unsupported URL %s without updating the account', async (baseURL) => {
+    const account = buildAccount()
+    account.credentials.base_url = baseURL
+    updateAccountMock.mockReset().mockResolvedValue(account)
+    checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+    const wrapper = mountModal(account)
+    await wrapper.get('[data-testid="audit-settlement-toggle"]').trigger('click')
+    expect(wrapper.find('[data-testid="audit-settlement-invalid"]').exists()).toBe(true)
+    await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+    expect(updateAccountMock).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
   it('loads and disables Kilo without changing account mapping, proxy or cache conversion', async () => {
     const account = buildAccount()
     account.proxy_id = 7

@@ -120,6 +120,9 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 			})
 		}
 
+		if refused, handled := s.consumeGatewayAuditPolicyError(c, resp, account, input.OriginalModel, input.RequestModel, input.RequestStream, input.StartTime); handled {
+			return refused, errOpenAICyberPolicyForwarded
+		}
 		// 透传分支禁止 400 请求体降级重试（该重试会改写请求体）
 		if resp.StatusCode >= 400 && resp.StatusCode != 400 && s.shouldRetryUpstreamError(account, resp.StatusCode) {
 			if attempt < maxRetryAttempts {
@@ -255,6 +258,12 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 	var clientDisconnect bool
 	if input.RequestStream {
 		streamResult, err := s.handleStreamingResponseAnthropicAPIKeyPassthrough(ctx, resp, c, account, input.StartTime, input.RequestModel)
+		if refused := gatewayAuditPolicyResult(c, resp, input.OriginalModel, input.RequestModel, true, input.StartTime); refused != nil {
+			if streamResult != nil && streamResult.usage != nil {
+				refused.Usage, refused.FirstTokenMs, refused.ClientDisconnect = *streamResult.usage, streamResult.firstTokenMs, streamResult.clientDisconnect
+			}
+			return refused, errOpenAICyberPolicyForwarded
+		}
 		if err != nil {
 			// 流中断时保留已观测到的 usage 与错误一起返回，避免上游已计量的请求
 			// 完全漏记漏计费（issue #5148）。
@@ -268,6 +277,12 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 		clientDisconnect = streamResult.clientDisconnect
 	} else {
 		usage, err = s.handleNonStreamingResponseAnthropicAPIKeyPassthrough(ctx, resp, c, account)
+		if refused := gatewayAuditPolicyResult(c, resp, input.OriginalModel, input.RequestModel, false, input.StartTime); refused != nil {
+			if usage != nil {
+				refused.Usage = *usage
+			}
+			return refused, errOpenAICyberPolicyForwarded
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -278,6 +293,7 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 
 	return &ForwardResult{
 		RequestID:                     resp.Header.Get("x-request-id"),
+		AuditSettlementNegotiated:     auditSettlementWasNegotiated(resp),
 		UpstreamHeaders:               resp.Header,
 		Usage:                         *usage,
 		Model:                         input.OriginalModel,
@@ -365,6 +381,7 @@ func (s *GatewayService) buildUpstreamRequestAnthropicAPIKeyPassthrough(
 
 	// 账号级请求头覆写（最终生效，覆盖上面所有来源的同名头）
 	account.ApplyHeaderOverrides(req.Header)
+	prepareAuditSettlementRequest(req, account)
 	filterSonnet55ToolsetBetaHeader(req.Header, body, gjson.GetBytes(body, "model").String())
 
 	return req, body, nil
@@ -535,6 +552,19 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 			line := ev.line
 			if data, ok := extractAnthropicSSEDataLine(line); ok {
 				trimmed := strings.TrimSpace(data)
+				if markGatewayAuditPolicy(c, resp, account, []byte(trimmed)) {
+					mergeGatewayAuditPolicyUsage([]byte(trimmed), usage)
+					payload, _ := json.Marshal(gatewayAuditPolicyBody(c))
+					if !clientDisconnected {
+						// The event: line may already be written; finish this event once.
+						if _, err := fmt.Fprintf(w, "data: %s\n\n", payload); err != nil {
+							clientDisconnected = true
+						} else {
+							flusher.Flush()
+						}
+					}
+					return &streamingResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: clientDisconnected}, errOpenAICyberPolicyForwarded
+				}
 				observer.ObserveAnthropic([]byte(trimmed))
 				if anthropicStreamEventIsTerminal("", trimmed) {
 					sawTerminalEvent = true
@@ -858,6 +888,10 @@ func (s *GatewayService) handleNonStreamingResponseAnthropicAPIKeyPassthrough(
 	body, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, anthropicTooLargeError)
 	if err != nil {
 		return nil, err
+	}
+	if markGatewayAuditPolicy(c, resp, account, body) {
+		writeGatewayAuditPolicyError(c, resp.StatusCode)
+		return parseClaudeUsageFromResponseBody(body), errOpenAICyberPolicyForwarded
 	}
 	observer := upstreamResponseModelObserverFromContext(c)
 	if observer == nil {

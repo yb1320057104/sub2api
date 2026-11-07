@@ -727,12 +727,14 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 		// 标记供 handler 事后写风控/邮件/tokens=0 用量行。
 		if hit, code, msg := detectOpenAICyberPolicy(payload); hit {
 			MarkOpsCyberPolicy(c, CyberPolicyMark{
-				Code:           code,
-				Message:        msg,
-				Body:           truncateString(string(payload), 4096),
-				UpstreamStatus: http.StatusOK,
-				UpstreamInTok:  usage.InputTokens,
-				UpstreamOutTok: usage.OutputTokens,
+				AuditSettlementNegotiated: auditSettlementWasNegotiated(resp),
+				UpstreamHeaders:           auditSettlementResponseHeaders(resp.Header),
+				Code:                      code,
+				Message:                   msg,
+				Body:                      truncateString(string(payload), 4096),
+				UpstreamStatus:            http.StatusOK,
+				UpstreamInTok:             usage.InputTokens,
+				UpstreamOutTok:            usage.OutputTokens,
 			})
 			clientMsg := msg
 			if clientMsg == "" {
@@ -789,6 +791,7 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 
 	result := &OpenAIForwardResult{
 		RequestID:                     requestID,
+		AuditSettlementNegotiated:     auditSettlementWasNegotiated(resp),
 		UpstreamHeaders:               resp.Header,
 		Usage:                         usage,
 		Model:                         originalModel,
@@ -911,6 +914,7 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 	resultWithUsage := func() *OpenAIForwardResult {
 		out := &OpenAIForwardResult{
 			RequestID:                     requestID,
+			AuditSettlementNegotiated:     auditSettlementWasNegotiated(resp),
 			UpstreamHeaders:               resp.Header,
 			Usage:                         usage,
 			Model:                         originalModel,
@@ -970,12 +974,14 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 				// [DONE]，让程序化客户端可感知并停止重试（F4）；标记供 handler 事后
 				// 写风控/邮件。
 				MarkOpsCyberPolicy(c, CyberPolicyMark{
-					Code:           code,
-					Message:        msg,
-					Body:           truncateString(string(payloadBytes), 4096),
-					UpstreamStatus: http.StatusOK,
-					UpstreamInTok:  usage.InputTokens,
-					UpstreamOutTok: usage.OutputTokens,
+					AuditSettlementNegotiated: auditSettlementWasNegotiated(resp),
+					UpstreamHeaders:           auditSettlementResponseHeaders(resp.Header),
+					Code:                      code,
+					Message:                   msg,
+					Body:                      truncateString(string(payloadBytes), 4096),
+					UpstreamStatus:            http.StatusOK,
+					UpstreamInTok:             usage.InputTokens,
+					UpstreamOutTok:            usage.OutputTokens,
 				})
 				if !clientDisconnected {
 					// 被 refusal 检测扣留的 pendingSSE 有意丢弃——cyber 拦截优先于部分内容下发。
@@ -1363,10 +1369,7 @@ func writeChatCompletionsError(c *gin.Context, statusCode int, errType, message 
 	message = sanitizeKiloBridgeClientErrorMessage(c, message)
 	MarkResponseCommitted(c)
 	c.JSON(statusCode, gin.H{
-		"error": gin.H{
-			"type":    errType,
-			"message": message,
-		},
+		"error": auditSettlementClientError(c, errType, message),
 	})
 }
 

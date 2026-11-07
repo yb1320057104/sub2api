@@ -7,7 +7,7 @@
         {{ t('admin.promptAudit.riskPolicy.enabled') }}
       </label>
     </div>
-    <p class="mt-2 text-sm leading-6 text-gray-500 dark:text-gray-400">{{ t('admin.promptAudit.riskPolicy.hint') }}</p>
+    <p class="mt-2 text-sm leading-6 text-gray-500 dark:text-gray-400">{{ t(shared ? 'admin.auditCenter.sharedPolicyHint' : 'admin.promptAudit.riskPolicy.hint') }}</p>
     <p v-if="modelValue == null" class="mt-3 text-sm text-amber-700 dark:text-amber-300" :data-test="`${audit}-risk-policy-legacy`">{{ t('admin.promptAudit.riskPolicy.legacy') }}</p>
     <template v-else>
       <div class="mt-4 grid gap-3 md:grid-cols-3">
@@ -28,8 +28,9 @@
       <p v-if="!validAuditRiskPolicy(modelValue)" role="alert" class="mt-3 text-sm text-red-600 dark:text-red-300">{{ t('admin.promptAudit.riskPolicy.invalid') }}</p>
       <p v-else class="mt-3 text-xs leading-5 text-gray-500 dark:text-gray-400">{{ t('admin.promptAudit.riskPolicy.ranges', { low: modelValue.low_threshold, medium: modelValue.medium_threshold, high: modelValue.high_threshold }) }}</p>
       <p class="mt-3 text-xs leading-5 text-gray-500 dark:text-gray-400">{{ t(`admin.promptAudit.riskPolicy.${audit}Scores`) }}</p>
+      <p v-if="shared" class="mt-2 text-xs leading-5 text-gray-500 dark:text-gray-400">{{ t('admin.promptAudit.riskPolicy.promptScores') }}</p>
       <p class="mt-2 text-xs leading-5 text-gray-500 dark:text-gray-400">{{ t('admin.promptAudit.riskPolicy.chargeHint') }}</p>
-      <p v-if="!synchronous" class="mt-2 text-xs text-amber-700 dark:text-amber-300">{{ t(`admin.promptAudit.riskPolicy.${audit}ModeHint`) }}</p>
+      <p v-if="!synchronous && !shared" class="mt-2 text-xs text-amber-700 dark:text-amber-300">{{ t(`admin.promptAudit.riskPolicy.${audit}ModeHint`) }}</p>
     </template>
   </section>
 </template>
@@ -40,7 +41,7 @@ import { useI18n } from 'vue-i18n'
 import { defaultAuditRiskPolicy, validAuditRiskPolicy } from '@/types/auditRiskPolicy'
 import type { AuditPolicyAction, AuditRiskLevel, AuditRiskPolicy } from '@/types/auditRiskPolicy'
 
-const props = defineProps<{ modelValue: AuditRiskPolicy | null | undefined; audit: 'content' | 'prompt'; synchronous: boolean }>()
+const props = defineProps<{ modelValue: AuditRiskPolicy | null | undefined; audit: 'content' | 'prompt'; synchronous: boolean; shared?: boolean }>()
 const emit = defineEmits<{ (event: 'update:modelValue', value: AuditRiskPolicy | null): void }>()
 const { t } = useI18n()
 const levels: AuditRiskLevel[] = ['low', 'medium', 'high']

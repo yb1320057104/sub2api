@@ -5,14 +5,280 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
 
+	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/auditrisk"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
 )
+
+func TestAuditCenterSharedPatchPreservesSecretsAndExplicitEmptyValues(t *testing.T) {
+	current := DefaultStorageConfig()
+	current.GroupIDs, current.UserAllowlistIDs = []int64{2, 4}, []int64{9}
+	current.RiskPolicy = &auditrisk.Policy{LowThreshold: 20, MediumThreshold: 40, HighThreshold: 80, LowAction: "allow", MediumAction: "block", HighAction: "charge_allow"}
+	current.Endpoints = []StorageEndpoint{{ID: "main", Name: "saved", Protocol: "openai_compatible", BaseURL: "https://audit.example.test", Model: "saved-audit-model", TokenCiphertext: "enc:stored-private-token", TimeoutMS: 1000, InputLimit: 4000}}
+	content, prompt, ranking := splitAuditCenterUpdate(AuditCenterUpdate{Content: &service.UpdateContentModerationConfigInput{}}, current)
+	require.NotNil(t, content)
+	require.Nil(t, prompt)
+	require.Nil(t, ranking, "an omitted shared section must not normalize mismatched scopes")
+	content, prompt, ranking = splitAuditCenterUpdate(AuditCenterUpdate{Shared: &AuditCenterShared{GroupIDs: &[]int64{}, UserAllowlistIDs: &[]int64{}, RiskPolicy: json.RawMessage("null")}}, current)
+	require.Empty(t, *content.GroupIDs)
+	require.Empty(t, *ranking.UserAllowlistIDs)
+	require.NotNil(t, prompt.UserAllowlistIDs, "explicit empty must not inherit old exemptions")
+	manager := NewConfigManager(nil, nil, nil, prefixEncryptor{}, testTotpKeyConfig())
+	next, err := manager.buildNextStorage(current, *prompt, 1)
+	require.NoError(t, err)
+	require.Empty(t, next.GroupIDs)
+	require.Empty(t, next.UserAllowlistIDs)
+	require.Nil(t, next.RiskPolicy)
+	require.Equal(t, "enc:stored-private-token", next.Endpoints[0].TokenCiphertext)
+	require.Equal(t, current.AuditInstructions, next.AuditInstructions)
+	require.Equal(t, current.LocalRules, next.LocalRules)
+	require.Equal(t, []int64{2, 4}, current.GroupIDs, "preparation must not mutate the stored snapshot")
+	// Updating only shared groups preserves both policies and endpoint secrets.
+	_, prompt, _ = splitAuditCenterUpdate(AuditCenterUpdate{Shared: &AuditCenterShared{GroupIDs: &[]int64{7}}}, current)
+	next, err = manager.buildNextStorage(current, *prompt, 1)
+	require.NoError(t, err)
+	require.Equal(t, current.RiskPolicy, next.RiskPolicy)
+	require.Equal(t, current.Endpoints, next.Endpoints)
+}
+
+func TestAuditCenterDiagnosticsDoesNotPromiseAsyncOrLowScoreCharges(t *testing.T) {
+	policy := &auditrisk.Policy{LowThreshold: 20, MediumThreshold: 40, HighThreshold: 80, LowAction: "allow", MediumAction: "allow", HighAction: "charge_allow"}
+	cfg := &AuditCenterConfig{RiskControlEnabled: true,
+		Content: &service.ContentModerationConfigView{Enabled: true, Mode: "pre_block", KeywordBlockingMode: "keyword_async_api", GroupIDs: []int64{4}, APIKeyConfigured: true, SampleRate: 100, RiskPolicy: policy, BlockedKeywords: []string{"example"}, KeywordScores: map[string]int{"example": 20}},
+		Prompt:  PublicConfig{Enabled: true, Engine: PromptEngineLocalRules, GroupIDs: []int64{2, 4}, RiskPolicy: policy, LocalRules: DefaultLocalRules()},
+		Ranking: &service.CyberPolicySettings{GroupIDs: []int64{2, 4, 5}, GroupRules: []service.CyberPolicyGroupRule{{GroupID: 2, AutoDeductEnabled: true}, {GroupID: 4, AutoDeductEnabled: true}}},
+	}
+	differences, groups := auditCenterDiagnostics(cfg)
+	require.Contains(t, differences, "group_ids")
+	require.Equal(t, []int64{2, 4, 5}, []int64{groups[0].GroupID, groups[1].GroupID, groups[2].GroupID})
+	require.Contains(t, groups[0].Reasons, "scope_mismatch")
+	require.Contains(t, groups[1].Reasons, "prompt_async_observation_only")
+	require.Contains(t, groups[1].Reasons, "content_keyword_async_api_observation_only")
+	require.Contains(t, groups[1].Reasons, "content_keyword_scores_do_not_charge")
+	require.Contains(t, groups[1].Reasons, "prompt_low_allow")
+	require.Equal(t, "disabled", groups[1].ChargeState, "remote observation and low-score local allow cannot debit")
+	cfg.Prompt.BlockingEnabled = true
+	_, groups = auditCenterDiagnostics(cfg)
+	require.Equal(t, "ready", groups[1].ChargeState, "enabled default high-score local rules can reach charge_allow")
+	cfg.RiskControlEnabled = false
+	_, groups = auditCenterDiagnostics(cfg)
+	require.Equal(t, "disabled", groups[1].ChargeState)
+	require.Contains(t, groups[1].Reasons, "risk_control_disabled")
+}
+
+func auditCenterTestSnapshot() *auditCenterSnapshot {
+	values := map[string]string{}
+	for _, key := range auditCenterSettingKeys {
+		values[key] = ""
+	}
+	values[SettingKeyRiskControl] = "true"
+	return &auditCenterSnapshot{values: values, ranking: &service.CyberPolicySettings{Multiplier: "1.000000", AutoDisableThreshold: 10, ResetOnManualEnable: true, GroupIDs: []int64{}, UserAllowlistIDs: []int64{}, GroupRules: []service.CyberPolicyGroupRule{}, SettingsRevision: 1}}
+}
+
+func expectAuditCenterSnapshot(mock sqlmock.Sqlmock, snapshot *auditCenterSnapshot, locked bool) {
+	rows := sqlmock.NewRows([]string{"key", "value"})
+	for _, key := range auditCenterSettingKeys {
+		rows.AddRow(key, snapshot.values[key])
+	}
+	query := "SELECT key,value FROM settings"
+	if locked {
+		query += ".*FOR UPDATE"
+	}
+	mock.ExpectQuery(query).WillReturnRows(rows).RowsWillBeClosed()
+	r := snapshot.ranking
+	raw, _ := json.Marshal(r.GroupRules)
+	query = "SELECT multiplier::text,auto_disable_enabled"
+	if locked {
+		query += ".*FOR UPDATE"
+	}
+	mock.ExpectQuery(query).WillReturnRows(sqlmock.NewRows([]string{"multiplier", "enabled", "threshold", "reset", "groups", "revision", "users", "rules"}).
+		AddRow(r.Multiplier, r.AutoDisableEnabled, r.AutoDisableThreshold, r.ResetOnManualEnable, "{}", r.SettingsRevision, "{}", raw))
+}
+
+func TestAuditCenterAtomicSaveConflictRollbackAndActivation(t *testing.T) {
+	for _, mode := range []string{"stale-before-lock", "stale-after-lock", "prompt-write-failed", "ranking-write-failed", "import-summary-failed", "commit-failed", "success"} {
+		t.Run(mode, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			require.NoError(t, err)
+			defer db.Close()
+			manager := NewConfigManager(db, nil, nil, prefixEncryptor{}, testTotpKeyConfig())
+			center := &AuditCenterService{prompt: manager, content: &service.ContentModerationService{}, ranking: service.NewCyberPolicyService(db, nil, nil)}
+			current := auditCenterTestSnapshot()
+			input := AuditCenterUpdate{ExpectedRevision: current.revision(), Shared: &AuditCenterShared{UserAllowlistIDs: &[]int64{}}}
+			disabled := false
+			input.RiskControlEnabled = &disabled
+			if mode == "stale-before-lock" {
+				input.ExpectedRevision = "stale"
+			}
+			mock.ExpectBegin()
+			mock.ExpectExec("SELECT pg_advisory_xact_lock").WithArgs(promptAuditConfigLockKey).WillReturnResult(sqlmock.NewResult(0, 1))
+			expectAuditCenterSnapshot(mock, current, false)
+			if mode != "stale-before-lock" {
+				for range auditCenterSettingKeys {
+					mock.ExpectExec("INSERT INTO settings").WillReturnResult(sqlmock.NewResult(0, 1))
+				}
+				if mode == "stale-after-lock" {
+					current.values[SettingKeyRiskControl] = "false"
+				}
+				expectAuditCenterSnapshot(mock, current, true)
+				if mode != "stale-after-lock" {
+					mock.ExpectExec("UPDATE settings SET value").WithArgs(SettingKeyRiskControl, "false").WillReturnResult(sqlmock.NewResult(0, 1))
+					mock.ExpectExec("UPDATE settings SET value").WithArgs(service.SettingKeyContentModerationConfig, sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
+					promptWrite := mock.ExpectExec("UPDATE settings SET value").WithArgs(SettingKeyPromptAuditConfig, sqlmock.AnyArg())
+					if mode == "prompt-write-failed" {
+						promptWrite.WillReturnError(errors.New("prompt write failed"))
+					} else {
+						promptWrite.WillReturnResult(sqlmock.NewResult(0, 1))
+						rankingWrite := mock.ExpectQuery("UPDATE cyber_policy_settings SET")
+						if mode == "ranking-write-failed" {
+							rankingWrite.WillReturnError(errors.New("ranking write failed"))
+						} else {
+							rankingWrite.WillReturnRows(sqlmock.NewRows([]string{"multiplier", "enabled", "threshold", "reset", "groups", "revision", "users", "rules"}).AddRow("1.000000", false, 10, true, "{}", 2, "{}", []byte("[]")))
+							mock.ExpectQuery("WITH recent AS.*cyber_policy_auto_charges.*CASE WHEN status='deducted'").WillReturnRows(sqlmock.NewRows([]string{"status", "reason", "count", "amount"}).AddRow("zero_cost", "", 2, "0"))
+							importRead := mock.ExpectQuery("WITH recent AS.*audit_settlement_imports.*CASE WHEN status='deducted'")
+							if mode == "import-summary-failed" {
+								importRead.WillReturnError(errors.New("import summary unavailable"))
+							} else {
+								importRead.WillReturnRows(sqlmock.NewRows([]string{"status", "reason", "count", "amount"}).AddRow("deducted", "", 1, "0.20000000"))
+								mock.ExpectQuery("WITH recent AS.*cyber_policy_audit_observations").WillReturnRows(sqlmock.NewRows([]string{"source", "count"}).AddRow("prompt_observation", 1908))
+							}
+						}
+					}
+				}
+			}
+			switch mode {
+			case "success":
+				mock.ExpectCommit()
+			case "commit-failed":
+				mock.ExpectCommit().WillReturnError(errors.New("commit failed"))
+			default:
+				mock.ExpectRollback()
+			}
+			result, err := center.Save(context.Background(), input, 3)
+			if mode == "success" {
+				require.NoError(t, err)
+				require.NotEqual(t, input.ExpectedRevision, result.Revision)
+				require.Equal(t, int64(2), result.Prompt.ConfigVersion)
+				require.Equal(t, int64(2), result.Ranking.SettingsRevision)
+				require.Equal(t, int64(2), manager.snapshot.Load().storage.ConfigVersion)
+				require.False(t, result.RiskControlEnabled)
+				require.False(t, manager.snapshot.Load().active.RiskControlEnabled)
+				require.Equal(t, 10000, result.ChargeSummarySampleLimit)
+				require.True(t, result.ChargeSummarySampled)
+				require.Equal(t, "0.20000000", result.ImportSummary[0].Amount)
+				require.Equal(t, int64(1908), result.ObservationSummary[0].Count)
+				require.Equal(t, "0.00000000", result.ObservationSummary[0].Amount)
+				require.Equal(t, "observation_only", result.ObservationSummary[0].Reason)
+			} else {
+				require.Error(t, err)
+				require.Nil(t, result)
+				require.Nil(t, manager.snapshot.Load(), "a rolled-back/failed transaction must not activate new policy")
+				if strings.HasPrefix(mode, "stale-") {
+					require.Equal(t, "AUDIT_CENTER_CONFIG_CONFLICT", infraerrors.Reason(err))
+				}
+			}
+			require.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}
+
+func TestAuditCenterGlobalGateOnlyPreservesBothConfigsAndRankingRevision(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+	manager := NewConfigManager(db, nil, nil, prefixEncryptor{}, testTotpKeyConfig())
+	center := &AuditCenterService{prompt: manager, content: &service.ContentModerationService{}, ranking: service.NewCyberPolicyService(db, nil, nil)}
+	current := auditCenterTestSnapshot()
+	disabled := false
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT pg_advisory_xact_lock").WillReturnResult(sqlmock.NewResult(0, 1))
+	expectAuditCenterSnapshot(mock, current, false)
+	for range auditCenterSettingKeys {
+		mock.ExpectExec("INSERT INTO settings").WillReturnResult(sqlmock.NewResult(0, 1))
+	}
+	expectAuditCenterSnapshot(mock, current, true)
+	mock.ExpectExec("UPDATE settings SET value").WithArgs(SettingKeyRiskControl, "false").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("WITH recent AS.*cyber_policy_auto_charges").WillReturnRows(sqlmock.NewRows([]string{"status", "reason", "count", "amount"}))
+	mock.ExpectQuery("WITH recent AS.*audit_settlement_imports").WillReturnRows(sqlmock.NewRows([]string{"status", "reason", "count", "amount"}))
+	mock.ExpectQuery("WITH recent AS.*cyber_policy_audit_observations").WillReturnRows(sqlmock.NewRows([]string{"source", "count"}))
+	mock.ExpectCommit()
+	result, err := center.Save(context.Background(), AuditCenterUpdate{ExpectedRevision: current.revision(), RiskControlEnabled: &disabled}, 3)
+	require.NoError(t, err)
+	require.False(t, result.RiskControlEnabled)
+	require.False(t, manager.snapshot.Load().active.RiskControlEnabled)
+	require.Equal(t, int64(1), result.Prompt.ConfigVersion)
+	require.Equal(t, int64(1), result.Ranking.SettingsRevision)
+	require.NotEqual(t, current.revision(), result.Revision)
+	require.NoError(t, mock.ExpectationsWereMet(), "global-only updates must never write the unchanged module settings")
+}
+
+func TestAuditCenterViewRedactsSecretsAndKeepsInheritedExemptions(t *testing.T) {
+	snapshot := auditCenterTestSnapshot()
+	snapshot.values[service.SettingKeyContentModerationConfig] = `{"api_keys":["sk-content-should-stay-private"],"group_ids":[4]}`
+	snapshot.values[service.SettingKeyCyberPolicyUserAllowlist] = "7,9"
+	prompt := DefaultStorageConfig()
+	prompt.Endpoints = []StorageEndpoint{{ID: "main", Name: "saved", Protocol: "openai_compatible", BaseURL: "https://audit.example.test", Model: "saved-audit-model", TokenCiphertext: "enc:prompt-should-stay-private", TimeoutMS: 1000, InputLimit: 4000}}
+	raw, err := json.Marshal(prompt)
+	require.NoError(t, err)
+	snapshot.values[SettingKeyPromptAuditConfig] = string(raw)
+	center := &AuditCenterService{prompt: NewConfigManager(nil, nil, nil, prefixEncryptor{}, testTotpKeyConfig()), content: &service.ContentModerationService{}}
+	result, err := center.view(snapshot)
+	require.NoError(t, err)
+	require.Equal(t, []int64{7, 9}, result.Content.UserAllowlistIDs)
+	require.True(t, result.Content.UserAllowlistInherited)
+	require.Contains(t, result.Differences, "user_allowlist_ids")
+	raw, err = json.Marshal(result)
+	require.NoError(t, err)
+	require.NotContains(t, string(raw), "sk-content-should-stay-private")
+	require.NotContains(t, string(raw), "prompt-should-stay-private")
+	require.NotContains(t, string(raw), "token_ciphertext")
+	require.True(t, result.Prompt.Endpoints[0].HasToken)
+}
+
+func TestAuditCenterIdentityUnionKeepsIndependentModuleLimits(t *testing.T) {
+	for _, tc := range []struct {
+		kind    string
+		size    int
+		allowed bool
+	}{
+		{"groups", 4000, true}, {"groups", 4001, false}, {"users", 3000, true}, {"users", 3001, false},
+	} {
+		t.Run(fmt.Sprintf("%s_%d", tc.kind, tc.size), func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			require.NoError(t, err)
+			defer db.Close()
+			mock.ExpectBegin()
+			tx, err := db.Begin()
+			require.NoError(t, err)
+			ids := make([]int64, tc.size)
+			rows := sqlmock.NewRows([]string{"id"})
+			for i := range ids {
+				ids[i] = int64(i + 1)
+				rows.AddRow(ids[i])
+			}
+			if tc.allowed {
+				mock.ExpectQuery("SELECT id FROM " + tc.kind).WillReturnRows(rows).RowsWillBeClosed()
+			}
+			mock.ExpectRollback()
+			err = auditCenterLockIDs(context.Background(), tx, tc.kind, ids)
+			if tc.allowed {
+				require.NoError(t, err)
+			} else {
+				require.Equal(t, "AUDIT_CENTER_IDENTITIES_INVALID", infraerrors.Reason(err))
+			}
+			require.NoError(t, tx.Rollback())
+			require.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}
 
 type prefixEncryptor struct{}
 

@@ -189,14 +189,36 @@ describe('PKSecurityPolicyRanking route access', () => {
     authStore.isSimpleMode = false
   })
 
-  it.each([false, true])('lets authenticated users read the independent ranking (admin=%s)', async (admin) => {
+  it.each([false, true])('keeps user ranking and sends admins to the audit center (admin=%s)', async (admin) => {
     authStore.isAuthenticated = true
     authStore.isAdmin = admin
     const route = routerHarness.routes.find(item => item.path === '/security-policy-ranking')
     expect(route?.meta).toMatchObject({ requiresAuth: true, requiresAdmin: false, titleKey: 'securityPolicyRanking.title' })
     const { navigation, next } = runGuard(route!.meta!, route!.path)
     await navigation
+    if (admin) expect(next).toHaveBeenCalledWith({ path: '/admin/audit-center', hash: '#audit-evidence' })
+    else expect(next).toHaveBeenCalledWith()
+  })
+
+  it('keeps audit diagnostics accessible to admins while global risk control is off', async () => {
+    authStore.isAuthenticated = true
+    authStore.isAdmin = true
+    appStore.publicSettingsLoaded = true
+    appStore.cachedPublicSettings = { risk_control_enabled: false }
+    const route = routerHarness.routes.find(item => item.path === '/admin/audit-center')!
+    expect(route.meta?.requiresAdmin).toBe(true)
+    const { navigation, next } = runGuard(route.meta!, route.path)
+    await navigation
     expect(next).toHaveBeenCalledWith()
+  })
+
+  it('does not expose the unified configuration to ordinary users', async () => {
+    authStore.isAuthenticated = true
+    authStore.isAdmin = false
+    const route = routerHarness.routes.find(item => item.path === '/admin/audit-center')!
+    const { navigation, next } = runGuard(route.meta!, route.path)
+    await navigation
+    expect(next).toHaveBeenCalledWith('/dashboard')
   })
 
   it('requires login before showing the ranking', async () => {

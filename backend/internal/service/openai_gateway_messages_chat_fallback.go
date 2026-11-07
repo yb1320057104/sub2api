@@ -184,6 +184,7 @@ func (s *OpenAIGatewayService) bufferChatCompletionsAsAnthropic(
 
 	return &OpenAIForwardResult{
 		RequestID:                   requestID,
+		AuditSettlementNegotiated:   auditSettlementWasNegotiated(resp),
 		UpstreamHeaders:             resp.Header,
 		Usage:                       usage,
 		Model:                       originalModel,
@@ -250,6 +251,7 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsAnthropic(
 	resultWithUsage := func() *OpenAIForwardResult {
 		return &OpenAIForwardResult{
 			RequestID:                   requestID,
+			AuditSettlementNegotiated:   auditSettlementWasNegotiated(resp),
 			UpstreamHeaders:             resp.Header,
 			Usage:                       usage,
 			Model:                       originalModel,

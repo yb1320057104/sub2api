@@ -11,12 +11,15 @@ const componentSource = readFileSync(componentPath, 'utf8')
 const stylePath = resolve(dirname(fileURLToPath(import.meta.url)), '../../../style.css')
 const styleSource = readFileSync(stylePath, 'utf8')
 
-describe('PKSecurityPolicyRanking independent navigation', () => {
-  it('provides the requested standalone menu for users and admins without duplicating the admin personal menu', () => {
+describe('Unified audit navigation', () => {
+  it('keeps the user ranking while admins have one audit center entry', () => {
     const shared = componentSource.slice(componentSource.indexOf('function buildSelfNavItems'), componentSource.indexOf('// finalizeNav'))
     const admin = componentSource.slice(componentSource.indexOf('const adminNavItems = computed'))
     expect(shared).toMatch(/path: '\/security-policy-ranking'[^\n]*featureFlag: \(\) => !authStore.isAdmin/)
-    expect(admin).toMatch(/path: '\/security-policy-ranking'[^\n]*label: t\('securityPolicyRanking.title'\)/)
+    expect(admin).toMatch(/path: '\/admin\/audit-center'[^\n]*label: t\('admin.auditCenter.title'\)/)
+    expect(admin).not.toContain("path: '/admin/prompt-audit'")
+    expect(admin).not.toContain("path: '/admin/risk-control'")
+    expect(admin).not.toContain("path: '/security-policy-ranking'")
     expect(zhRanking.securityPolicyRanking.title).toBe('耻辱排行榜')
     expect(enRanking.securityPolicyRanking.title).toBe('Hall of Shame')
   })

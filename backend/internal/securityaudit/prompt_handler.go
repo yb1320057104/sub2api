@@ -26,7 +26,10 @@ type PromptAdminService interface {
 	DeleteByFilter(context.Context, DeleteByFilterRequest, int64) (*DeleteResult, error)
 }
 
-type PromptAdminHandler struct{ service PromptAdminService }
+type PromptAdminHandler struct {
+	service     PromptAdminService
+	auditCenter *AuditCenterService
+}
 
 func NewPromptAdminHandler(service PromptAdminService) *PromptAdminHandler {
 	return &PromptAdminHandler{service: service}

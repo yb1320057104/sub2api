@@ -126,6 +126,10 @@ func (UsageLog) Fields() []ent.Field {
 			Default(0),
 		field.Bool("stream").
 			Default(false),
+		field.Bool("audit_settlement_imported_event").
+			Default(false).
+			Immutable().
+			Comment("Server-verified remote audit event; financial settlement belongs to its upstream receipt"),
 		field.Int("duration_ms").
 			Optional().
 			Nillable(),

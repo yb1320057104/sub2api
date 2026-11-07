@@ -93,6 +93,12 @@ func FilterHeaders(src http.Header, filter *CompiledHeaderFilter) http.Header {
 	filtered := make(http.Header, len(src))
 	for key, values := range src {
 		lower := strings.ToLower(key)
+		// Settlement receipts identify this gateway's own bill. Forwarding an
+		// upstream receipt would bind the client to another site's credential,
+		// even when an administrator enabled additional response headers.
+		if lower == "x-sub2api-audit-settlement" || lower == "x-sub2api-audit-receipt" {
+			continue
+		}
 		if _, blocked := filter.forceRemove[lower]; blocked {
 			continue
 		}

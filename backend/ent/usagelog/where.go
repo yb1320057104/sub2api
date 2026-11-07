@@ -215,6 +215,11 @@ func Stream(v bool) predicate.UsageLog {
 	return predicate.UsageLog(sql.FieldEQ(FieldStream, v))
 }
 
+// AuditSettlementImportedEvent applies equality check predicate on the "audit_settlement_imported_event" field. It's identical to AuditSettlementImportedEventEQ.
+func AuditSettlementImportedEvent(v bool) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldEQ(FieldAuditSettlementImportedEvent, v))
+}
+
 // DurationMs applies equality check predicate on the "duration_ms" field. It's identical to DurationMsEQ.
 func DurationMs(v int) predicate.UsageLog {
 	return predicate.UsageLog(sql.FieldEQ(FieldDurationMs, v))
@@ -1683,6 +1688,16 @@ func StreamEQ(v bool) predicate.UsageLog {
 // StreamNEQ applies the NEQ predicate on the "stream" field.
 func StreamNEQ(v bool) predicate.UsageLog {
 	return predicate.UsageLog(sql.FieldNEQ(FieldStream, v))
+}
+
+// AuditSettlementImportedEventEQ applies the EQ predicate on the "audit_settlement_imported_event" field.
+func AuditSettlementImportedEventEQ(v bool) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldEQ(FieldAuditSettlementImportedEvent, v))
+}
+
+// AuditSettlementImportedEventNEQ applies the NEQ predicate on the "audit_settlement_imported_event" field.
+func AuditSettlementImportedEventNEQ(v bool) predicate.UsageLog {
+	return predicate.UsageLog(sql.FieldNEQ(FieldAuditSettlementImportedEvent, v))
 }
 
 // DurationMsEQ applies the EQ predicate on the "duration_ms" field.

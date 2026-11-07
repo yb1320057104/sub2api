@@ -5,6 +5,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/tidwall/gjson"
 	"io"
@@ -18,6 +19,103 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
+
+func TestGatewayCompatAuditSettlementPolicyRefusal(t *testing.T) {
+	for _, chat := range []bool{false, true} {
+		for _, incomingSettlement := range []bool{false, true} {
+			for _, variant := range []string{"http400", "http429", "http_usage", "http400_heartbeat", "buffered", "buffered_usage", "stream", "stream_usage", "stream_final_usage"} {
+				t.Run(fmt.Sprintf("chat=%v/incoming=%v/%s", chat, incomingSettlement, variant), func(t *testing.T) {
+					account := newAnthropicAPIKeyAccountForTest()
+					account.Extra[AuditSettlementEnabledExtraKey] = true
+					payload := `{"type":"error","error":{"type":"invalid_request_error","code":"cyber_policy","message":"private detail"}}`
+					if variant == "http_usage" || variant == "stream_final_usage" {
+						payload = `{"type":"error","error":{"code":"cyber_policy","message":"private detail"},"usage":{"input_tokens":11,"output_tokens":7,"cache_read_input_tokens":5}}`
+					}
+					status := http.StatusBadRequest
+					upstreamStream := strings.HasPrefix(variant, "stream")
+					clientStream := upstreamStream || variant == "http400_heartbeat"
+					if variant == "http429" {
+						status = http.StatusTooManyRequests
+					}
+					if upstreamStream || strings.HasPrefix(variant, "buffered") {
+						status = http.StatusOK
+						payload = "event: error\ndata: " + payload + "\n\n"
+						if variant == "stream_usage" || variant == "buffered_usage" {
+							payload = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_policy\",\"model\":\"claude-sonnet-4\",\"content\":[],\"usage\":{\"input_tokens\":11,\"cache_read_input_tokens\":5}}}\n\n" + payload
+						}
+					}
+					upstream := &auditPolicyAnthropicUpstream{anthropicHTTPUpstreamRecorder: &anthropicHTTPUpstreamRecorder{resp: &http.Response{
+						StatusCode: status, Header: http.Header{auditImportCapabilityHeader: {"v1"}, auditImportReceiptHeader: {"2561ce22-94f1-44bc-a2a5-984c29ee5f49"}}, Body: io.NopCloser(strings.NewReader(payload)),
+					}}}
+					svc := newForwardPartialUsageServiceForTest(upstream.anthropicHTTPUpstreamRecorder)
+					svc.httpUpstream = upstream
+					rec := httptest.NewRecorder()
+					c, _ := gin.CreateTestContext(rec)
+					requestBody := fmt.Sprintf(`{"model":"claude-sonnet-4","input":"fixture","stream":%v}`, clientStream)
+					if chat {
+						requestBody = fmt.Sprintf(`{"model":"claude-sonnet-4","messages":[{"role":"user","content":"fixture"}],"stream":%v}`, clientStream)
+					}
+					c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(requestBody))
+					if incomingSettlement {
+						c.Request = c.Request.WithContext(context.WithValue(c.Request.Context(), auditSettlementContextKey{}, &auditSettlementTracker{}))
+					}
+					if variant == "http400_heartbeat" {
+						c.Writer.Header().Set("Content-Type", "text/event-stream")
+						_, err := c.Writer.WriteString(": ping\n\n")
+						require.NoError(t, err)
+						c.Writer.Flush()
+					}
+					var result *ForwardResult
+					var err error
+					if chat {
+						result, err = svc.ForwardAsChatCompletions(c.Request.Context(), c, account, []byte(requestBody), nil)
+					} else {
+						result, err = svc.ForwardAsResponses(c.Request.Context(), c, account, []byte(requestBody), nil)
+					}
+					require.ErrorIs(t, err, errOpenAICyberPolicyForwarded)
+					require.NotNil(t, result, "even zero-token refusals must retain import identity")
+					require.True(t, result.AuditSettlementCyberPolicy)
+					require.True(t, result.AuditSettlementNegotiated)
+					require.Equal(t, "2561ce22-94f1-44bc-a2a5-984c29ee5f49", result.UpstreamHeaders.Get(auditImportReceiptHeader))
+					require.Equal(t, 1, upstream.calls)
+					if strings.HasSuffix(variant, "usage") {
+						require.Equal(t, 11, result.Usage.InputTokens)
+						require.Equal(t, 5, result.Usage.CacheReadInputTokens)
+					} else {
+						require.Zero(t, result.Usage.InputTokens)
+					}
+					if variant == "http_usage" || variant == "stream_final_usage" {
+						require.Equal(t, 7, result.Usage.OutputTokens)
+					} else {
+						require.Zero(t, result.Usage.OutputTokens)
+					}
+					require.Equal(t, clientStream, result.Stream)
+					require.NotContains(t, rec.Body.String(), "private detail")
+					require.Equal(t, incomingSettlement, strings.Contains(rec.Body.String(), `"code":"cyber_policy"`))
+					require.NotContains(t, rec.Body.String(), "response.completed")
+					require.NotContains(t, rec.Body.String(), "[DONE]")
+					if clientStream {
+						require.Contains(t, rec.Header().Get("Content-Type"), "text/event-stream")
+						if variant == "http400_heartbeat" {
+							require.Equal(t, http.StatusOK, rec.Code)
+							require.Contains(t, rec.Body.String(), ": ping\n\nevent: error\ndata: ")
+						} else if !chat {
+							require.Contains(t, rec.Body.String(), "event: response.failed")
+						}
+					} else {
+						expectedStatus := http.StatusBadRequest
+						if status >= 400 {
+							expectedStatus = mapUpstreamStatusCode(status)
+						}
+						require.Equal(t, expectedStatus, rec.Code)
+						require.Contains(t, rec.Header().Get("Content-Type"), "application/json")
+						require.True(t, gjson.Get(rec.Body.String(), "error").IsObject())
+					}
+				})
+			}
+		}
+	}
+}
 
 func TestAdaptResponsesClientToolsForAnthropic_FlattensNamespace(t *testing.T) {
 	t.Parallel()
@@ -159,7 +257,7 @@ func TestHandleResponsesBufferedStreamingResponse_RestoresNamespaceTool(t *testi
 	resp := &http.Response{Body: io.NopCloser(strings.NewReader(namespaceToolAnthropicStream()))}
 
 	svc := &GatewayService{}
-	_, err := svc.handleResponsesBufferedStreamingResponse(resp, c, "claude-fable-5", "claude-fable-5", nil, time.Now(), namespaceToolMapping())
+	_, err := svc.handleResponsesBufferedStreamingResponse(resp, nil, c, "claude-fable-5", "claude-fable-5", nil, time.Now(), namespaceToolMapping())
 	require.NoError(t, err)
 	require.Contains(t, rec.Body.String(), `"type":"function_call"`)
 	require.Contains(t, rec.Body.String(), `"name":"read_thread"`)
@@ -175,7 +273,7 @@ func TestHandleResponsesBufferedStreamingResponse_ToolArgumentsAreValidJSON(t *t
 	c, _ := gin.CreateTestContext(rec)
 	resp := &http.Response{Body: io.NopCloser(strings.NewReader(toolAnthropicSSEStream()))}
 
-	_, err := (&GatewayService{}).handleResponsesBufferedStreamingResponse(resp, c, "claude-fable-5", "claude-fable-5", nil, time.Now(), apicompat.ResponsesClientToolMapping{})
+	_, err := (&GatewayService{}).handleResponsesBufferedStreamingResponse(resp, nil, c, "claude-fable-5", "claude-fable-5", nil, time.Now(), apicompat.ResponsesClientToolMapping{})
 	require.NoError(t, err)
 
 	var body struct {
@@ -207,7 +305,7 @@ func TestHandleResponsesStreamingResponse_RestoresNamespaceTool(t *testing.T) {
 	resp := &http.Response{Body: io.NopCloser(strings.NewReader(namespaceToolAnthropicStream()))}
 
 	svc := &GatewayService{}
-	_, err := svc.handleResponsesStreamingResponse(resp, c, "claude-fable-5", "claude-fable-5", nil, time.Now(), namespaceToolMapping())
+	_, err := svc.handleResponsesStreamingResponse(resp, nil, c, "claude-fable-5", "claude-fable-5", nil, time.Now(), namespaceToolMapping())
 	require.NoError(t, err)
 	require.Contains(t, rec.Body.String(), `response.output_item.added`)
 	require.Contains(t, rec.Body.String(), `"name":"read_thread"`)
@@ -264,7 +362,7 @@ func TestHandleResponsesBufferedStreamingResponse_PreservesMessageStartCacheUsag
 	}
 
 	svc := &GatewayService{}
-	result, err := svc.handleResponsesBufferedStreamingResponse(resp, c, "claude-sonnet-4.5", "claude-sonnet-4.5", nil, time.Now(), apicompat.ResponsesClientToolMapping{})
+	result, err := svc.handleResponsesBufferedStreamingResponse(resp, nil, c, "claude-sonnet-4.5", "claude-sonnet-4.5", nil, time.Now(), apicompat.ResponsesClientToolMapping{})
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.Equal(t, 12, result.Usage.InputTokens)
@@ -300,7 +398,7 @@ func TestHandleResponsesStreamingResponse_PreservesMessageStartCacheUsage(t *tes
 	}
 
 	svc := &GatewayService{}
-	result, err := svc.handleResponsesStreamingResponse(resp, c, "claude-sonnet-4.5", "claude-sonnet-4.5", nil, time.Now(), apicompat.ResponsesClientToolMapping{})
+	result, err := svc.handleResponsesStreamingResponse(resp, nil, c, "claude-sonnet-4.5", "claude-sonnet-4.5", nil, time.Now(), apicompat.ResponsesClientToolMapping{})
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.Equal(t, 20, result.Usage.InputTokens)
@@ -387,7 +485,7 @@ func TestHandleResponsesStreamingResponse_NormalizesTerminalUsage(t *testing.T) 
 				}
 				resp := &http.Response{Body: io.NopCloser(strings.NewReader(strings.Join(lines, "\n")))}
 
-				result, err := (&GatewayService{}).handleResponsesStreamingResponse(resp, c, "k3", "k3", nil, time.Now(), apicompat.ResponsesClientToolMapping{})
+				result, err := (&GatewayService{}).handleResponsesStreamingResponse(resp, nil, c, "k3", "k3", nil, time.Now(), apicompat.ResponsesClientToolMapping{})
 				require.NoError(t, err)
 				require.Equal(t, tt.wantInput, result.Usage.InputTokens)
 				require.Equal(t, tt.wantCached, result.Usage.CacheReadInputTokens)
@@ -521,7 +619,7 @@ func TestHandleResponsesBufferedStreamingResponse_CompactSSEFormat(t *testing.T)
 	}
 
 	svc := &GatewayService{}
-	result, err := svc.handleResponsesBufferedStreamingResponse(resp, c, "claude-sonnet-4.5", "claude-sonnet-4.5", nil, time.Now(), apicompat.ResponsesClientToolMapping{})
+	result, err := svc.handleResponsesBufferedStreamingResponse(resp, nil, c, "claude-sonnet-4.5", "claude-sonnet-4.5", nil, time.Now(), apicompat.ResponsesClientToolMapping{})
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.Equal(t, 10, result.Usage.InputTokens)
@@ -555,7 +653,7 @@ func TestHandleResponsesStreamingResponse_CompactSSEFormat(t *testing.T) {
 	}
 
 	svc := &GatewayService{}
-	result, err := svc.handleResponsesStreamingResponse(resp, c, "claude-sonnet-4.5", "claude-sonnet-4.5", nil, time.Now(), apicompat.ResponsesClientToolMapping{})
+	result, err := svc.handleResponsesStreamingResponse(resp, nil, c, "claude-sonnet-4.5", "claude-sonnet-4.5", nil, time.Now(), apicompat.ResponsesClientToolMapping{})
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.Equal(t, 15, result.Usage.InputTokens)
@@ -585,9 +683,9 @@ func TestClaude55ResponsesSignedThinkingBufferedAndStreamed(t *testing.T) {
 			svc := &GatewayService{}
 			var err error
 			if stream {
-				_, err = svc.handleResponsesStreamingResponse(resp, c, "public-claude", model, nil, time.Now(), apicompat.ResponsesClientToolMapping{})
+				_, err = svc.handleResponsesStreamingResponse(resp, nil, c, "public-claude", model, nil, time.Now(), apicompat.ResponsesClientToolMapping{})
 			} else {
-				_, err = svc.handleResponsesBufferedStreamingResponse(resp, c, "public-claude", model, nil, time.Now(), apicompat.ResponsesClientToolMapping{})
+				_, err = svc.handleResponsesBufferedStreamingResponse(resp, nil, c, "public-claude", model, nil, time.Now(), apicompat.ResponsesClientToolMapping{})
 			}
 			require.NoError(t, err)
 			require.Contains(t, rec.Body.String(), "anthropic-thinking-v1:")

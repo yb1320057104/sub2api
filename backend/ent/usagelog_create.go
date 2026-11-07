@@ -435,6 +435,20 @@ func (_c *UsageLogCreate) SetNillableStream(v *bool) *UsageLogCreate {
 	return _c
 }
 
+// SetAuditSettlementImportedEvent sets the "audit_settlement_imported_event" field.
+func (_c *UsageLogCreate) SetAuditSettlementImportedEvent(v bool) *UsageLogCreate {
+	_c.mutation.SetAuditSettlementImportedEvent(v)
+	return _c
+}
+
+// SetNillableAuditSettlementImportedEvent sets the "audit_settlement_imported_event" field if the given value is not nil.
+func (_c *UsageLogCreate) SetNillableAuditSettlementImportedEvent(v *bool) *UsageLogCreate {
+	if v != nil {
+		_c.SetAuditSettlementImportedEvent(*v)
+	}
+	return _c
+}
+
 // SetDurationMs sets the "duration_ms" field.
 func (_c *UsageLogCreate) SetDurationMs(v int) *UsageLogCreate {
 	_c.mutation.SetDurationMs(v)
@@ -761,6 +775,10 @@ func (_c *UsageLogCreate) defaults() {
 		v := usagelog.DefaultStream
 		_c.mutation.SetStream(v)
 	}
+	if _, ok := _c.mutation.AuditSettlementImportedEvent(); !ok {
+		v := usagelog.DefaultAuditSettlementImportedEvent
+		_c.mutation.SetAuditSettlementImportedEvent(v)
+	}
 	if _, ok := _c.mutation.ImageCount(); !ok {
 		v := usagelog.DefaultImageCount
 		_c.mutation.SetImageCount(v)
@@ -883,6 +901,9 @@ func (_c *UsageLogCreate) check() error {
 	}
 	if _, ok := _c.mutation.Stream(); !ok {
 		return &ValidationError{Name: "stream", err: errors.New(`ent: missing required field "UsageLog.stream"`)}
+	}
+	if _, ok := _c.mutation.AuditSettlementImportedEvent(); !ok {
+		return &ValidationError{Name: "audit_settlement_imported_event", err: errors.New(`ent: missing required field "UsageLog.audit_settlement_imported_event"`)}
 	}
 	if v, ok := _c.mutation.UserAgent(); ok {
 		if err := usagelog.UserAgentValidator(v); err != nil {
@@ -1074,6 +1095,10 @@ func (_c *UsageLogCreate) createSpec() (*UsageLog, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.Stream(); ok {
 		_spec.SetField(usagelog.FieldStream, field.TypeBool, value)
 		_node.Stream = value
+	}
+	if value, ok := _c.mutation.AuditSettlementImportedEvent(); ok {
+		_spec.SetField(usagelog.FieldAuditSettlementImportedEvent, field.TypeBool, value)
+		_node.AuditSettlementImportedEvent = value
 	}
 	if value, ok := _c.mutation.DurationMs(); ok {
 		_spec.SetField(usagelog.FieldDurationMs, field.TypeInt, value)
@@ -2093,6 +2118,9 @@ func (u *UsageLogUpsert) UpdateCacheTTLOverridden() *UsageLogUpsert {
 func (u *UsageLogUpsertOne) UpdateNewValues() *UsageLogUpsertOne {
 	u.create.conflict = append(u.create.conflict, sql.ResolveWithNewValues())
 	u.create.conflict = append(u.create.conflict, sql.ResolveWith(func(s *sql.UpdateSet) {
+		if _, exists := u.create.mutation.AuditSettlementImportedEvent(); exists {
+			s.SetIgnore(usagelog.FieldAuditSettlementImportedEvent)
+		}
 		if _, exists := u.create.mutation.CreatedAt(); exists {
 			s.SetIgnore(usagelog.FieldCreatedAt)
 		}
@@ -3248,6 +3276,9 @@ func (u *UsageLogUpsertBulk) UpdateNewValues() *UsageLogUpsertBulk {
 	u.create.conflict = append(u.create.conflict, sql.ResolveWithNewValues())
 	u.create.conflict = append(u.create.conflict, sql.ResolveWith(func(s *sql.UpdateSet) {
 		for _, b := range u.create.builders {
+			if _, exists := b.mutation.AuditSettlementImportedEvent(); exists {
+				s.SetIgnore(usagelog.FieldAuditSettlementImportedEvent)
+			}
 			if _, exists := b.mutation.CreatedAt(); exists {
 				s.SetIgnore(usagelog.FieldCreatedAt)
 			}

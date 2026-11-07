@@ -4,9 +4,11 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,8 +16,284 @@ import (
 	"github.com/lib/pq"
 	"github.com/stretchr/testify/require"
 
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 )
+
+func configurePK54UpstreamMinimum(t *testing.T, groupID int64) {
+	t.Helper()
+	svc := service.NewCyberPolicyService(integrationDB, nil, nil)
+	old, err := svc.Settings(context.Background())
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_, restoreErr := svc.SaveSettings(context.Background(), service.CyberPolicySettingsInput{
+			Multiplier: &old.Multiplier, AutoDisableEnabled: &old.AutoDisableEnabled, AutoDisableThreshold: &old.AutoDisableThreshold,
+			ResetOnManualEnable: &old.ResetOnManualEnable, GroupIDs: &old.GroupIDs, UserAllowlistIDs: &old.UserAllowlistIDs, GroupRules: &old.GroupRules,
+		})
+		require.NoError(t, restoreErr)
+	})
+	minimum, enabled, threshold := "6.7", true, int64(1000000)
+	_, err = svc.SaveSettings(context.Background(), service.CyberPolicySettingsInput{Multiplier: &minimum, AutoDisableEnabled: &enabled, AutoDisableThreshold: &threshold,
+		GroupIDs: &[]int64{groupID}, UserAllowlistIDs: &[]int64{}, GroupRules: &[]service.CyberPolicyGroupRule{{GroupID: groupID, Multiplier: "2", AutoDeductEnabled: true}}})
+	require.NoError(t, err)
+}
+
+func TestPK54AuditSettlementUpstreamMinimumFinancialBoundaries(t *testing.T) {
+	ctx := context.Background()
+	client := testEntClient(t)
+	group := mustCreateGroup(t, client, &service.Group{Name: "pk54-minimum-" + uuid.NewString()})
+	configurePK54UpstreamMinimum(t, group.ID)
+	account := mustCreateAccount(t, client, &service.Account{Name: "minimum fixture"})
+	repo := newUsageLogRepositoryWithSQL(client, integrationDB)
+	svc := service.NewCyberPolicyService(integrationDB, nil, nil)
+	for _, tc := range []struct {
+		name                                      string
+		cost, balance                             float64
+		role                                      string
+		exempt, unscoped, off, banOff, failLedger bool
+		status, reason, amount, remaining         string
+	}{
+		{name: "zero cost", balance: 100, status: "deducted", amount: "6.70000000", remaining: "93.30000000"},
+		{name: "below minimum", cost: 1, balance: 100, status: "deducted", amount: "6.70000000", remaining: "93.30000000"},
+		{name: "above minimum", cost: 4, balance: 100, status: "deducted", amount: "8.00000000", remaining: "92.00000000"},
+		{name: "auto ban independent", balance: 100, banOff: true, status: "deducted", amount: "6.70000000", remaining: "93.30000000"},
+		{name: "insufficient balance", balance: 3, status: "insufficient_balance", amount: "6.70000000", remaining: "3.00000000"},
+		{name: "user exemption", balance: 100, exempt: true, status: "skipped", reason: "user_exempt", amount: "6.70000000", remaining: "100.00000000"},
+		{name: "admin exemption", balance: 100, role: service.RoleAdmin, status: "skipped", reason: "admin_exempt", amount: "6.70000000", remaining: "100.00000000"},
+		{name: "group not selected", balance: 100, unscoped: true, status: "skipped", reason: "group_not_enabled", amount: "6.70000000", remaining: "100.00000000"},
+		{name: "auto deduction off", balance: 100, off: true, status: "skipped", reason: "auto_deduct_off", amount: "6.70000000", remaining: "100.00000000"},
+		{name: "ledger failure", balance: 100, failLedger: true, status: "failed", reason: "charge_failed", amount: "6.70000000", remaining: "100.00000000"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			user := mustCreateUser(t, client, &service.User{Email: "pk54-min-" + uuid.NewString() + "@example.com", Balance: tc.balance, Role: tc.role})
+			key := mustCreateApiKey(t, client, &service.APIKey{UserID: user.ID, Key: "pk54-min-" + uuid.NewString(), Name: "minimum", GroupID: &group.ID})
+			users := []int64{}
+			if tc.exempt {
+				users = append(users, user.ID)
+			}
+			banEnabled := !tc.banOff
+			_, err := svc.SaveSettings(ctx, service.CyberPolicySettingsInput{UserAllowlistIDs: &users, AutoDisableEnabled: &banEnabled,
+				GroupRules: &[]service.CyberPolicyGroupRule{{GroupID: group.ID, Multiplier: "2", AutoDeductEnabled: !tc.off}}})
+			require.NoError(t, err)
+			if tc.failLedger {
+				_, err = integrationDB.Exec(fmt.Sprintf(`CREATE FUNCTION pk54_min_reject_ledger() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.used_by=%d AND NEW.notes LIKE '自动安全审计扣款%%' THEN RAISE EXCEPTION 'fixture ledger unavailable'; END IF; RETURN NEW; END $$; CREATE TRIGGER pk54_min_reject_ledger BEFORE INSERT ON redeem_codes FOR EACH ROW EXECUTE FUNCTION pk54_min_reject_ledger()`, user.ID))
+				require.NoError(t, err)
+				t.Cleanup(func() {
+					_, cleanupErr := integrationDB.Exec(`DROP TRIGGER IF EXISTS pk54_min_reject_ledger ON redeem_codes; DROP FUNCTION IF EXISTS pk54_min_reject_ledger()`)
+					require.NoError(t, cleanupErr)
+				})
+			}
+			usage := &service.UsageLog{UserID: user.ID, APIKeyID: key.ID, AccountID: account.ID, GroupID: &group.ID, RequestID: uuid.NewString(), Model: "minimum",
+				RequestType: service.RequestTypeCyberBlocked, ActualCost: tc.cost, CreatedAt: time.Now().UTC().Truncate(time.Microsecond)}
+			if tc.unscoped {
+				usage.GroupID = nil
+			}
+			_, err = repo.Create(ctx, usage)
+			require.NoError(t, err)
+			var status, reason, amount, minimum, source, rule, balance string
+			require.NoError(t, integrationDB.QueryRow(`SELECT status,reason,amount::text,minimum_amount::text,charge_source,calculation_rule FROM cyber_policy_auto_charges WHERE usage_id=$1 AND usage_created_at=$2`, usage.ID, usage.CreatedAt).Scan(&status, &reason, &amount, &minimum, &source, &rule))
+			require.Equal(t, tc.status, status)
+			require.Equal(t, tc.reason, reason)
+			require.Equal(t, tc.amount, amount)
+			require.Equal(t, "6.70000000", minimum)
+			require.Equal(t, "upstream_type4", source)
+			require.Equal(t, "max_cost_multiplier_minimum", rule)
+			require.NoError(t, integrationDB.QueryRow(`SELECT balance::text FROM users WHERE id=$1`, user.ID).Scan(&balance))
+			require.Equal(t, tc.remaining, balance)
+			var actual float64
+			require.NoError(t, integrationDB.QueryRow(`SELECT actual_cost FROM usage_logs WHERE id=$1 AND created_at=$2`, usage.ID, usage.CreatedAt).Scan(&actual))
+			require.Equal(t, tc.cost, actual, "the minimum is an additional charge, never a fabricated upstream cost")
+			// An identical helper invocation is harmless, including failed or insufficient decisions.
+			_, err = integrationDB.Exec(`SELECT apply_cyber_policy_auto_charge(e.usage_id,e.usage_created_at,NULL,e.user_id,e.group_id,l.actual_cost,e.auto_deduct_enabled,e.audit_multiplier,e.scope_matched,e.count_reason,e.settings_revision,e.evaluated_at) FROM cyber_policy_count_events e JOIN usage_logs l ON l.id=e.usage_id AND l.created_at=e.usage_created_at WHERE e.usage_id=$1 AND e.usage_created_at=$2`, usage.ID, usage.CreatedAt)
+			require.NoError(t, err)
+			require.NoError(t, integrationDB.QueryRow(`SELECT balance::text FROM users WHERE id=$1`, user.ID).Scan(&balance))
+			require.Equal(t, tc.remaining, balance)
+			var claims, ledger int
+			require.NoError(t, integrationDB.QueryRow(`SELECT count(*) FROM cyber_policy_charges WHERE usage_id=$1 AND usage_created_at=$2`, usage.ID, usage.CreatedAt).Scan(&claims))
+			require.NoError(t, integrationDB.QueryRow(`SELECT count(*) FROM redeem_codes WHERE used_by=$1 AND notes LIKE '自动安全审计扣款%'`, user.ID).Scan(&ledger))
+			want := 0
+			if tc.status == "deducted" {
+				want = 1
+			}
+			require.Equal(t, want, claims)
+			require.Equal(t, want, ledger)
+		})
+	}
+	// Ordinary completed audit actions keep their exact cost-multiplier rule.
+	_, err := svc.SaveSettings(ctx, service.CyberPolicySettingsInput{UserAllowlistIDs: &[]int64{}, GroupRules: &[]service.CyberPolicyGroupRule{{GroupID: group.ID, Multiplier: "2", AutoDeductEnabled: true}}})
+	require.NoError(t, err)
+	user := mustCreateUser(t, client, &service.User{Email: "pk54-local-" + uuid.NewString() + "@example.com", Balance: 100})
+	key := mustCreateApiKey(t, client, &service.APIKey{UserID: user.ID, Key: "pk54-local-" + uuid.NewString(), Name: "local", GroupID: &group.ID})
+	for _, cost := range []float64{0, 0.5} {
+		usage := &service.UsageLog{UserID: user.ID, APIKeyID: key.ID, AccountID: account.ID, GroupID: &group.ID, RequestID: uuid.NewString(), Model: "local", ActualCost: cost, CreatedAt: time.Now().UTC().Truncate(time.Microsecond)}
+		_, err = repo.Create(ctx, usage)
+		require.NoError(t, err)
+		if cost > 0 {
+			// An imported ordinary response may still have an independent local
+			// charge_allow action. Only imported type4 suppresses local penalties.
+			require.NoError(t, repo.RegisterAuditSettlementImport(ctx, service.AuditSettlementImportInput{
+				UsageID: usage.ID, UsageCreatedAt: usage.CreatedAt, AccountID: account.ID, UserID: user.ID,
+				APIKeyID: key.ID, GroupID: &group.ID, UpstreamIdentity: strings.Repeat("d", 64), ReceiptID: uuid.NewString(),
+			}))
+		}
+		require.NoError(t, svc.RecordAuditUsage(ctx, service.CyberPolicyAuditBlockInput{EventKey: uuid.NewString(), UserID: user.ID, GroupID: &group.ID, Source: "prompt_audit", PolicyAction: "charge_allow"}, usage))
+		var status, amount, minimum, rule string
+		require.NoError(t, integrationDB.QueryRow(`SELECT status,amount::text,minimum_amount::text,calculation_rule FROM cyber_policy_auto_charges WHERE usage_id=$1 AND usage_created_at=$2`, usage.ID, usage.CreatedAt).Scan(&status, &amount, &minimum, &rule))
+		require.Equal(t, "cost_multiplier", rule)
+		require.Equal(t, "0.00000000", minimum)
+		if cost == 0 {
+			require.Equal(t, "zero_cost", status)
+			require.Equal(t, "0.00000000", amount)
+		} else {
+			require.Equal(t, "deducted", status)
+			require.Equal(t, "1.00000000", amount)
+			var localClaims int
+			require.NoError(t, integrationDB.QueryRow(`SELECT count(*) FROM cyber_policy_charges WHERE usage_id=$1 AND usage_created_at=$2 AND auto_charge_id IS NOT NULL`, usage.ID, usage.CreatedAt).Scan(&localClaims))
+			require.Equal(t, 1, localClaims, "a live ordinary import must not suppress an independent local audit charge")
+		}
+	}
+	block := service.CyberPolicyAuditBlockInput{EventKey: uuid.NewString(), UserID: user.ID, GroupID: &group.ID, Source: "content_audit", PolicyAction: "block"}
+	require.NoError(t, svc.RecordAuditBlock(ctx, block))
+	var blockStatus, blockAmount string
+	require.NoError(t, integrationDB.QueryRow(`SELECT ac.status,ac.amount::text FROM cyber_policy_auto_charges ac JOIN cyber_policy_audit_blocks b ON b.id=ac.audit_id WHERE b.event_key=$1`, block.EventKey).Scan(&blockStatus, &blockAmount))
+	require.Equal(t, "zero_cost", blockStatus)
+	require.Equal(t, "0.00000000", blockAmount)
+	// A settings edit versions the minimum but does not rewrite existing decisions.
+	before, err := svc.Settings(ctx)
+	require.NoError(t, err)
+	newMinimum := "9"
+	after, err := svc.SaveSettings(ctx, service.CyberPolicySettingsInput{Multiplier: &newMinimum})
+	require.NoError(t, err)
+	require.Greater(t, after.SettingsRevision, before.SettingsRevision)
+	var oldMinimum string
+	require.NoError(t, integrationDB.QueryRow(`SELECT minimum_amount::text FROM cyber_policy_auto_charges WHERE charge_source='upstream_type4' AND group_id=$1 ORDER BY id LIMIT 1`, group.ID).Scan(&oldMinimum))
+	require.Equal(t, "6.70000000", oldMinimum)
+	newUsage := &service.UsageLog{UserID: user.ID, APIKeyID: key.ID, AccountID: account.ID, GroupID: &group.ID, RequestID: uuid.NewString(), Model: "new minimum",
+		RequestType: service.RequestTypeCyberBlocked, CreatedAt: time.Now().UTC().Truncate(time.Microsecond)}
+	_, err = repo.Create(ctx, newUsage)
+	require.NoError(t, err)
+	var newAmount, newSnapshot string
+	require.NoError(t, integrationDB.QueryRow(`SELECT amount::text,minimum_amount::text FROM cyber_policy_auto_charges WHERE usage_id=$1 AND usage_created_at=$2`, newUsage.ID, newUsage.CreatedAt).Scan(&newAmount, &newSnapshot))
+	require.Equal(t, "9.00000000", newAmount)
+	require.Equal(t, "9.00000000", newSnapshot)
+}
+
+func TestPK54AuditSettlementUpstreamType4ReceiptChargesEachHopOnce(t *testing.T) {
+	ctx := context.Background()
+	client := testEntClient(t)
+	group := mustCreateGroup(t, client, &service.Group{Name: "pk54-hop-" + uuid.NewString()})
+	configurePK54UpstreamMinimum(t, group.ID)
+	account := mustCreateAccount(t, client, &service.Account{Name: "type4 relay"})
+	repo := newUsageLogRepositoryWithSQL(client, integrationDB)
+	svc := service.NewCyberPolicyService(integrationDB, nil, nil)
+	makeUser := func(name string) (*service.User, *service.APIKey) {
+		user := mustCreateUser(t, client, &service.User{Email: name + "-" + uuid.NewString() + "@example.com", Balance: 100})
+		key := mustCreateApiKey(t, client, &service.APIKey{UserID: user.ID, Key: name + "-" + uuid.NewString(), Name: name, GroupID: &group.ID})
+		return user, key
+	}
+	upstreamUser, upstreamKey := makeUser("upstream")
+	downstreamUser, downstreamKey := makeUser("downstream")
+	otherUser, otherKey := makeUser("other")
+	makeUsage := func(user *service.User, key *service.APIKey, imported bool) *service.UsageLog {
+		usage := &service.UsageLog{UserID: user.ID, APIKeyID: key.ID, AccountID: account.ID, GroupID: &group.ID, RequestID: uuid.NewString(), Model: "type4 hop",
+			RequestType: service.RequestTypeCyberBlocked, AuditSettlementImportedEvent: imported, CreatedAt: time.Now().UTC().Truncate(time.Microsecond)}
+		_, err := repo.Create(ctx, usage)
+		require.NoError(t, err)
+		return usage
+	}
+	upstreamUsage := makeUsage(upstreamUser, upstreamKey, false)
+	receiptCtx, receipt, err := svc.BeginAuditSettlement(ctx, upstreamUser.ID, upstreamKey.ID)
+	require.NoError(t, err)
+	service.RecordAuditSettlementUsage(receiptCtx, upstreamUsage)
+	service.EndAuditSettlementRequest(receiptCtx)
+	exported, err := svc.AuditSettlement(ctx, upstreamUser.ID, upstreamKey.ID, receipt)
+	require.NoError(t, err)
+	require.Equal(t, "ready", exported.Status)
+	require.Equal(t, "6.70000000", *exported.AdditionalCost)
+	downstreamUsage := makeUsage(downstreamUser, downstreamKey, true)
+	persistedUsage, err := repo.GetByID(ctx, downstreamUsage.ID)
+	require.NoError(t, err)
+	require.True(t, persistedUsage.AuditSettlementImportedEvent, "the trusted imported-type4 marker must survive SQL insert/read roundtrip")
+	require.Equal(t, service.RequestTypeCyberBlocked, persistedUsage.RequestType)
+	in := service.AuditSettlementImportInput{UsageID: downstreamUsage.ID, UsageCreatedAt: downstreamUsage.CreatedAt, AccountID: account.ID, UserID: downstreamUser.ID, APIKeyID: downstreamKey.ID, GroupID: &group.ID, UpstreamIdentity: strings.Repeat("c", 64), ReceiptID: receipt}
+	require.NoError(t, repo.RegisterAuditSettlementImport(ctx, in))
+	require.NoError(t, repo.RegisterAuditSettlementImport(ctx, in))
+	var importID int64
+	require.NoError(t, integrationDB.QueryRow(`UPDATE audit_settlement_imports SET claimed_by='type4-fixture',charge_started_at=NOW() WHERE usage_id=$1 AND usage_created_at=$2 RETURNING id`, downstreamUsage.ID, downstreamUsage.CreatedAt).Scan(&importID))
+	for i := 0; i < 3; i++ {
+		var status string
+		require.NoError(t, integrationDB.QueryRow(`SELECT settle_audit_settlement_import($1,'type4-fixture',$2::numeric)`, importID, *exported.AdditionalCost).Scan(&status))
+		require.Equal(t, "deducted", status)
+	}
+	var balance string
+	require.NoError(t, integrationDB.QueryRow(`SELECT balance::text FROM users WHERE id=$1`, downstreamUser.ID).Scan(&balance))
+	require.Equal(t, "93.30000000", balance, "a relayed type4 must not pay both the local minimum and imported amount")
+	var charges, counts, manual, ledger int
+	require.NoError(t, integrationDB.QueryRow(`SELECT count(*) FROM cyber_policy_auto_charges WHERE user_id=$1`, downstreamUser.ID).Scan(&charges))
+	require.NoError(t, integrationDB.QueryRow(`SELECT count(*) FROM cyber_policy_count_events WHERE user_id=$1`, downstreamUser.ID).Scan(&counts))
+	require.NoError(t, integrationDB.QueryRow(`SELECT count(*) FROM cyber_policy_charges WHERE user_id=$1`, downstreamUser.ID).Scan(&manual))
+	require.NoError(t, integrationDB.QueryRow(`SELECT count(*) FROM redeem_codes WHERE used_by=$1`, downstreamUser.ID).Scan(&ledger))
+	require.Zero(t, charges)
+	require.Zero(t, counts)
+	require.Zero(t, manual)
+	require.Equal(t, 1, ledger)
+	_, err = svc.Preview(ctx, 42, downstreamUser.ID, service.CyberPolicyWindowInput{})
+	require.Equal(t, "CYBER_NOTHING_TO_DEDUCT", infraerrors.Reason(err))
+	records, err := svc.Records(ctx, downstreamUser.ID, service.CyberPolicyWindowInput{}, 1, 20)
+	require.NoError(t, err)
+	require.Zero(t, records.Total)
+	// A stale/older binary's manual preview cannot bypass the durable marker.
+	previewID := uuid.NewString()
+	_, err = integrationDB.Exec(`INSERT INTO cyber_policy_deductions(id,actor_id,user_id,email,username,start_date,end_date,timezone,trigger_count,multiplier,balance)
+		VALUES($1,42,$2,'fixture@example.com','fixture',CURRENT_DATE,CURRENT_DATE,'UTC',1,6.7,100)`, previewID, downstreamUser.ID)
+	require.NoError(t, err)
+	_, err = integrationDB.Exec(`INSERT INTO cyber_policy_preview_items(deduction_id,usage_id,usage_created_at) VALUES($1,$2,$3)`, previewID, downstreamUsage.ID, downstreamUsage.CreatedAt)
+	require.NoError(t, err)
+	claim, err := integrationDB.Exec(`INSERT INTO cyber_policy_charges(usage_id,usage_created_at,deduction_id,user_id) VALUES($1,$2,$3,$4)`, downstreamUsage.ID, downstreamUsage.CreatedAt, previewID, downstreamUser.ID)
+	require.NoError(t, err)
+	affected, err := claim.RowsAffected()
+	require.NoError(t, err)
+	require.Zero(t, affected)
+	_, err = svc.Deduct(ctx, 42, downstreamUser.ID, previewID)
+	require.Equal(t, "CYBER_PREVIEW_STALE", infraerrors.Reason(err))
+	_, err = integrationDB.Exec(`SELECT apply_cyber_policy_auto_charge($1,$2,NULL,$3,$4,0,true,2,true,'',1,NOW())`, downstreamUsage.ID, downstreamUsage.CreatedAt, downstreamUser.ID, group.ID)
+	require.NoError(t, err)
+	require.NoError(t, integrationDB.QueryRow(`SELECT balance::text FROM users WHERE id=$1`, downstreamUser.ID).Scan(&balance))
+	require.Equal(t, "93.30000000", balance)
+	localCtx, localReceipt, err := svc.BeginAuditSettlement(ctx, downstreamUser.ID, downstreamKey.ID)
+	require.NoError(t, err)
+	service.RecordAuditSettlementUsage(localCtx, downstreamUsage)
+	service.EndAuditSettlementRequest(localCtx)
+	onward, err := svc.AuditSettlement(ctx, downstreamUser.ID, downstreamKey.ID, localReceipt)
+	require.NoError(t, err)
+	require.Equal(t, "6.70000000", *onward.AdditionalCost)
+	require.Len(t, onward.Items, 1)
+	otherUsage := makeUsage(otherUser, otherKey, true)
+	conflict := in
+	conflict.UsageID, conflict.UsageCreatedAt, conflict.UserID, conflict.APIKeyID = otherUsage.ID, otherUsage.CreatedAt, otherUser.ID, otherKey.ID
+	require.Error(t, repo.RegisterAuditSettlementImport(ctx, conflict))
+	require.NoError(t, integrationDB.QueryRow(`SELECT balance::text FROM users WHERE id=$1`, otherUser.ID).Scan(&balance))
+	require.Equal(t, "100.00000000", balance)
+	_, err = svc.AuditSettlement(ctx, otherUser.ID, otherKey.ID, receipt)
+	require.ErrorIs(t, err, service.ErrAuditSettlementNotFound)
+	raw, err := json.Marshal(onward)
+	require.NoError(t, err)
+	require.NotContains(t, string(raw), upstreamKey.Key)
+	// Usage retention must not make a frozen old-binary preview chargeable.
+	_, err = integrationDB.Exec(`DELETE FROM usage_logs WHERE id=$1 AND created_at=$2`, downstreamUsage.ID, downstreamUsage.CreatedAt)
+	require.NoError(t, err)
+	claim, err = integrationDB.Exec(`INSERT INTO cyber_policy_charges(usage_id,usage_created_at,deduction_id,user_id) VALUES($1,$2,$3,$4)`, downstreamUsage.ID, downstreamUsage.CreatedAt, previewID, downstreamUser.ID)
+	require.NoError(t, err)
+	affected, err = claim.RowsAffected()
+	require.NoError(t, err)
+	require.Zero(t, affected, "durable import evidence protects even after the usage flag was removed by retention")
+	_, err = svc.Deduct(ctx, 42, downstreamUser.ID, previewID)
+	require.Equal(t, "CYBER_PREVIEW_STALE", infraerrors.Reason(err))
+	require.NoError(t, integrationDB.QueryRow(`SELECT balance::text FROM users WHERE id=$1`, downstreamUser.ID).Scan(&balance))
+	require.Equal(t, "93.30000000", balance)
+	require.NoError(t, integrationDB.QueryRow(`SELECT count(*) FROM redeem_codes WHERE used_by=$1`, downstreamUser.ID).Scan(&ledger))
+	require.Equal(t, 1, ledger)
+}
 
 func TestUsageBillingRepositoryApply_DeduplicatesBalanceBilling(t *testing.T) {
 	ctx := context.Background()
@@ -657,4 +935,144 @@ func TestUsageBillingRepositoryApply_DeduplicatesAgainstArchivedKey(t *testing.T
 	var balance float64
 	require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT balance FROM users WHERE id = $1", user.ID).Scan(&balance))
 	require.InDelta(t, 98.75, balance, 0.000001)
+}
+
+// These assertions exercise the real SQL transaction and provider query, not a
+// mocked balance repository. They never invoke an upstream model.
+func TestPK54AuditSettlementFinancialIdempotency(t *testing.T) {
+	ctx := context.Background()
+	client := testEntClient(t)
+	user := mustCreateUser(t, client, &service.User{Balance: 20})
+	key := mustCreateApiKey(t, client, &service.APIKey{UserID: user.ID, Key: "pk54-" + uuid.NewString(), Name: "audit settlement"})
+	account := mustCreateAccount(t, client, &service.Account{Name: "audit settlement"})
+	repo := newUsageLogRepositoryWithSQL(client, integrationDB)
+	newImport := func() (*service.UsageLog, int64) {
+		usage := &service.UsageLog{UserID: user.ID, APIKeyID: key.ID, AccountID: account.ID, Model: "fixture", RequestID: uuid.NewString(), InputTokens: 10, OutputTokens: 5, TotalCost: 0.5, ActualCost: 0.5, CreatedAt: time.Now().UTC().Truncate(time.Microsecond)}
+		_, err := repo.Create(ctx, usage)
+		require.NoError(t, err)
+		in := service.AuditSettlementImportInput{UsageID: usage.ID, UsageCreatedAt: usage.CreatedAt, UserID: user.ID, APIKeyID: key.ID, AccountID: account.ID, ReceiptID: uuid.NewString(), UpstreamIdentity: strings.Repeat("a", 64)}
+		require.NoError(t, repo.RegisterAuditSettlementImport(ctx, in))
+		require.NoError(t, repo.RegisterAuditSettlementImport(ctx, in))
+		var id int64
+		require.NoError(t, integrationDB.QueryRow(`UPDATE audit_settlement_imports SET claimed_by='fixture',charge_started_at=NOW() WHERE usage_id=$1 AND usage_created_at=$2 RETURNING id`, usage.ID, usage.CreatedAt).Scan(&id))
+		return usage, id
+	}
+	usage, id := newImport()
+	var wg sync.WaitGroup
+	failures := make(chan error, 12)
+	for i := 0; i < 12; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			var status string
+			err := integrationDB.QueryRow(`SELECT settle_audit_settlement_import($1,'fixture',0.25)`, id).Scan(&status)
+			if err == nil && status != "deducted" {
+				err = fmt.Errorf("unexpected %s", status)
+			}
+			failures <- err
+		}()
+	}
+	wg.Wait()
+	close(failures)
+	for err := range failures {
+		require.NoError(t, err)
+	}
+	var balance, ordinaryCost string
+	var ledgerCount, outboxCount int
+	require.NoError(t, integrationDB.QueryRow(`SELECT balance::text FROM users WHERE id=$1`, user.ID).Scan(&balance))
+	require.Equal(t, "19.75000000", balance)
+	require.NoError(t, integrationDB.QueryRow(`SELECT count(*) FROM redeem_codes WHERE used_by=$1 AND notes LIKE '上游审计追加费用%'`, user.ID).Scan(&ledgerCount))
+	require.Equal(t, 1, ledgerCount)
+	require.NoError(t, integrationDB.QueryRow(`SELECT count(*) FROM cyber_policy_auto_charge_outbox WHERE user_id=$1`, user.ID).Scan(&outboxCount))
+	require.Equal(t, 1, outboxCount)
+	require.NoError(t, integrationDB.QueryRow(`SELECT actual_cost::text FROM usage_logs WHERE id=$1 AND created_at=$2`, usage.ID, usage.CreatedAt).Scan(&ordinaryCost))
+	require.InDelta(t, 0.5, usage.ActualCost, 1e-10)
+	var sameUsageCost float64
+	require.NoError(t, integrationDB.QueryRow(`SELECT actual_cost FROM usage_logs WHERE id=$1 AND created_at=$2`, usage.ID, usage.CreatedAt).Scan(&sameUsageCost))
+	require.Equal(t, 0.5, sameUsageCost)
+	_, insufficientID := newImport()
+	var status string
+	require.NoError(t, integrationDB.QueryRow(`SELECT settle_audit_settlement_import($1,'fixture',99)`, insufficientID).Scan(&status))
+	require.Equal(t, "insufficient_balance", status)
+	require.NoError(t, integrationDB.QueryRow(`SELECT settle_audit_settlement_import($1,'fixture',0.01)`, insufficientID).Scan(&status))
+	require.Equal(t, "insufficient_balance", status, "terminal results must never retry after balance or price changes")
+	_, zeroID := newImport()
+	require.NoError(t, integrationDB.QueryRow(`SELECT settle_audit_settlement_import($1,'fixture',0)`, zeroID).Scan(&status))
+	require.Equal(t, "zero_cost", status)
+	// Force a ledger write failure after the user debit, verifying subtransaction rollback.
+	_, failedID := newImport()
+	_, err := integrationDB.Exec(fmt.Sprintf(`CREATE FUNCTION pk54_reject_ledger() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.used_by=%d AND NEW.notes LIKE '上游审计追加费用%%' THEN RAISE EXCEPTION 'fixture ledger unavailable'; END IF; RETURN NEW; END $$; CREATE TRIGGER pk54_reject_ledger BEFORE INSERT ON redeem_codes FOR EACH ROW EXECUTE FUNCTION pk54_reject_ledger()`, user.ID))
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_, _ = integrationDB.Exec(`DROP TRIGGER IF EXISTS pk54_reject_ledger ON redeem_codes; DROP FUNCTION IF EXISTS pk54_reject_ledger()`)
+	})
+	require.NoError(t, integrationDB.QueryRow(`SELECT settle_audit_settlement_import($1,'fixture',0.5)`, failedID).Scan(&status))
+	require.Equal(t, "failed", status)
+	require.NoError(t, integrationDB.QueryRow(`SELECT balance::text FROM users WHERE id=$1`, user.ID).Scan(&balance))
+	require.Equal(t, "19.75000000", balance)
+	require.NoError(t, integrationDB.QueryRow(`SELECT count(*) FROM redeem_codes WHERE used_by=$1 AND notes LIKE '上游审计追加费用%'`, user.ID).Scan(&ledgerCount))
+	require.Equal(t, 1, ledgerCount)
+}
+
+func TestPK54AuditSettlementProviderMultiHopAndOwnership(t *testing.T) {
+	ctx := context.Background()
+	client := testEntClient(t)
+	user := mustCreateUser(t, client, &service.User{Balance: 20})
+	key := mustCreateApiKey(t, client, &service.APIKey{UserID: user.ID, Key: "pk54-" + uuid.NewString(), Name: "receipt"})
+	account := mustCreateAccount(t, client, &service.Account{Name: "receipt"})
+	repo := newUsageLogRepositoryWithSQL(client, integrationDB)
+	usage := &service.UsageLog{UserID: user.ID, APIKeyID: key.ID, AccountID: account.ID, Model: "fixture", RequestID: uuid.NewString(), ActualCost: 0.5, CreatedAt: time.Now().UTC().Truncate(time.Microsecond)}
+	_, err := repo.Create(ctx, usage)
+	require.NoError(t, err)
+	_, err = integrationDB.Exec(`INSERT INTO cyber_policy_auto_charges(usage_id,usage_created_at,user_id,actual_cost,multiplier,amount,status,settings_revision,evaluated_at) VALUES($1,$2,$3,0.5,0.5,0.25,'deducted',1,NOW())`, usage.ID, usage.CreatedAt, user.ID)
+	require.NoError(t, err)
+	in := service.AuditSettlementImportInput{UsageID: usage.ID, UsageCreatedAt: usage.CreatedAt, UserID: user.ID, APIKeyID: key.ID, AccountID: account.ID, ReceiptID: uuid.NewString(), UpstreamIdentity: strings.Repeat("b", 64)}
+	require.NoError(t, repo.RegisterAuditSettlementImport(ctx, in))
+	svc := service.NewCyberPolicyService(integrationDB, nil, nil)
+	receiptCtx, receipt, err := svc.BeginAuditSettlement(ctx, user.ID, key.ID)
+	require.NoError(t, err)
+	service.RecordAuditSettlementUsage(receiptCtx, usage)
+	service.EndAuditSettlementRequest(receiptCtx)
+	got, err := svc.AuditSettlement(ctx, user.ID, key.ID, receipt)
+	require.NoError(t, err)
+	require.Equal(t, "pending", got.Status)
+	require.Nil(t, got.AdditionalCost)
+	_, err = svc.AuditSettlement(ctx, user.ID, key.ID+999, receipt)
+	require.ErrorIs(t, err, service.ErrAuditSettlementNotFound)
+	_, err = svc.AuditSettlement(ctx, user.ID+999, key.ID, receipt)
+	require.ErrorIs(t, err, service.ErrAuditSettlementNotFound)
+	for _, status := range []string{"failed", "unavailable", "insufficient_balance", "skipped", "zero_cost", "deducted"} {
+		amount := "0"
+		if status == "deducted" {
+			amount = "0.125"
+		}
+		_, err = integrationDB.Exec(`UPDATE audit_settlement_imports SET status=$3,amount=$4::numeric,reported_amount=$4::numeric WHERE usage_id=$1 AND usage_created_at=$2`, usage.ID, usage.CreatedAt, status, amount)
+		require.NoError(t, err)
+		got, err = svc.AuditSettlement(ctx, user.ID, key.ID, receipt)
+		require.NoError(t, err)
+		if status == "failed" || status == "unavailable" {
+			require.Equal(t, "unavailable", got.Status)
+			require.Nil(t, got.AdditionalCost)
+		} else {
+			require.Equal(t, "ready", got.Status)
+			require.NotNil(t, got.AdditionalCost)
+			expected := "0.25000000"
+			if status == "deducted" {
+				expected = "0.37500000"
+				require.Len(t, got.Items, 2)
+			}
+			require.Equal(t, expected, *got.AdditionalCost)
+		}
+	}
+	// An idempotent original bill must not be exportable again via a fresh receipt.
+	secondCtx, second, err := svc.BeginAuditSettlement(ctx, user.ID, key.ID)
+	require.NoError(t, err)
+	service.RecordAuditSettlementUsage(secondCtx, usage)
+	service.EndAuditSettlementRequest(secondCtx)
+	got, err = svc.AuditSettlement(ctx, user.ID, key.ID, second)
+	require.NoError(t, err)
+	require.Equal(t, "unavailable", got.Status)
+	// A repeated remote receipt cannot be attached to a different local usage.
+	in.UsageID += 123456
+	require.Error(t, repo.RegisterAuditSettlementImport(ctx, in))
 }

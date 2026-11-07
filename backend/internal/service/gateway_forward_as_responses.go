@@ -162,6 +162,13 @@ func (s *GatewayService) ForwardAsResponses(
 		respBody, _ := s.readUpstreamErrorBody(resp)
 		_ = resp.Body.Close()
 		resp.Body = io.NopCloser(bytes.NewReader(respBody))
+		if markGatewayAuditPolicy(c, resp, account, respBody) {
+			writeGatewayCompatAuditPolicyError(c, mapUpstreamStatusCode(resp.StatusCode))
+			result := gatewayAuditPolicyResult(c, resp, originalModel, mappedModel, clientStream, startTime)
+			mergeGatewayAuditPolicyUsage(respBody, &result.Usage)
+			result.ReasoningEffort = reasoningEffort
+			return result, errOpenAICyberPolicyForwarded
+		}
 
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
@@ -199,7 +206,7 @@ func (s *GatewayService) ForwardAsResponses(
 	var handleErr error
 	if clientStream {
 		writerSizeBeforeStream := c.Writer.Size()
-		result, handleErr = s.handleResponsesStreamingResponse(resp, c, originalModel, mappedModel, reasoningEffort, startTime, clientToolMapping)
+		result, handleErr = s.handleResponsesStreamingResponse(resp, account, c, originalModel, mappedModel, reasoningEffort, startTime, clientToolMapping)
 		var sseErr *sseStreamErrorEventError
 		switch {
 		case errors.As(handleErr, &sseErr):
@@ -208,7 +215,7 @@ func (s *GatewayService) ForwardAsResponses(
 			s.rateLimitService.HandleStreamTimeout(ctx, account, originalModel)
 		}
 	} else {
-		result, handleErr = s.handleResponsesBufferedStreamingResponse(resp, c, originalModel, mappedModel, reasoningEffort, startTime, clientToolMapping)
+		result, handleErr = s.handleResponsesBufferedStreamingResponse(resp, account, c, originalModel, mappedModel, reasoningEffort, startTime, clientToolMapping)
 	}
 
 	return result, handleErr
@@ -377,6 +384,7 @@ func parseAnthropicSSEField(line, field string) (string, bool) {
 // response, converts to Responses API JSON format, and writes it to the client.
 func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 	resp *http.Response,
+	account *Account,
 	c *gin.Context,
 	originalModel string,
 	mappedModel string,
@@ -412,6 +420,13 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 		payload, ok := parseAnthropicSSEField(dataLine, "data")
 		if !ok {
 			continue
+		}
+		if markGatewayAuditPolicy(c, resp, account, []byte(payload)) {
+			mergeGatewayAuditPolicyUsage([]byte(payload), &usage)
+			writeGatewayCompatAuditPolicyError(c, http.StatusBadRequest)
+			result := gatewayAuditPolicyResult(c, resp, originalModel, mappedModel, false, startTime)
+			result.Usage, result.ReasoningEffort = usage, reasoningEffort
+			return result, errOpenAICyberPolicyForwarded
 		}
 
 		var event apicompat.AnthropicStreamEvent
@@ -513,14 +528,15 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 	}
 
 	return &ForwardResult{
-		RequestID:       requestID,
-		UpstreamHeaders: resp.Header,
-		Usage:           usage,
-		Model:           originalModel,
-		UpstreamModel:   mappedModel,
-		ReasoningEffort: reasoningEffort,
-		Stream:          false,
-		Duration:        time.Since(startTime),
+		RequestID:                 requestID,
+		AuditSettlementNegotiated: auditSettlementWasNegotiated(resp),
+		UpstreamHeaders:           resp.Header,
+		Usage:                     usage,
+		Model:                     originalModel,
+		UpstreamModel:             mappedModel,
+		ReasoningEffort:           reasoningEffort,
+		Stream:                    false,
+		Duration:                  time.Since(startTime),
 	}, nil
 }
 
@@ -528,6 +544,7 @@ func (s *GatewayService) handleResponsesBufferedStreamingResponse(
 // converts each to Responses SSE events, and writes them to the client.
 func (s *GatewayService) handleResponsesStreamingResponse(
 	resp *http.Response,
+	account *Account,
 	c *gin.Context,
 	originalModel string,
 	mappedModel string,
@@ -560,16 +577,17 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 
 	resultWithUsage := func() *ForwardResult {
 		return &ForwardResult{
-			RequestID:        requestID,
-			UpstreamHeaders:  resp.Header,
-			Usage:            usage,
-			Model:            originalModel,
-			UpstreamModel:    mappedModel,
-			ReasoningEffort:  reasoningEffort,
-			Stream:           true,
-			Duration:         time.Since(startTime),
-			FirstTokenMs:     firstTokenMs,
-			ClientDisconnect: stream.clientDisconnected,
+			RequestID:                 requestID,
+			AuditSettlementNegotiated: auditSettlementWasNegotiated(resp),
+			UpstreamHeaders:           resp.Header,
+			Usage:                     usage,
+			Model:                     originalModel,
+			UpstreamModel:             mappedModel,
+			ReasoningEffort:           reasoningEffort,
+			Stream:                    true,
+			Duration:                  time.Since(startTime),
+			FirstTokenMs:              firstTokenMs,
+			ClientDisconnect:          stream.clientDisconnected,
 		}
 	}
 
@@ -674,6 +692,23 @@ func (s *GatewayService) handleResponsesStreamingResponse(
 		payload, ok := parseAnthropicSSEField(dataLine, "data")
 		if !ok {
 			continue
+		}
+		if markGatewayAuditPolicy(c, resp, account, []byte(payload)) {
+			mergeGatewayAuditPolicyUsage([]byte(payload), &usage)
+			policyErr := errOpenAICyberPolicyForwarded
+			if !stream.clientDisconnected {
+				code := "invalid_request_error"
+				if c.Request != nil && HasAuditSettlement(c.Request.Context()) {
+					code = "cyber_policy"
+				}
+				writeAnthropicCompatResponsesStreamFailure(c, state, clientToolRestorer, &anthropicCompatStreamFailure{
+					err: policyErr, errType: code, message: "Request rejected by upstream safety policy",
+				})
+			}
+			result := resultWithUsage()
+			result.AuditSettlementCyberPolicy = true
+			result.UpstreamHeaders = auditSettlementResponseHeaders(resp.Header)
+			return result, policyErr
 		}
 
 		var event apicompat.AnthropicStreamEvent

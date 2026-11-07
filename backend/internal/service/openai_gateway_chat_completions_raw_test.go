@@ -21,6 +21,124 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func negotiatedAuditTestResponse(t *testing.T, body string, stream bool) (*Account, *http.Response) {
+	t.Helper()
+	account := &Account{ID: 42, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{"base_url": "https://relay.example", "api_key": "fixture"},
+		Extra:       map[string]any{AuditSettlementEnabledExtraKey: true}}
+	req, err := http.NewRequest(http.MethodPost, "https://relay.example/v1/chat/completions", nil)
+	require.NoError(t, err)
+	req.Header.Set("Authorization", "Bearer fixture")
+	prepareAuditSettlementRequest(req, account)
+	contentType := "application/json"
+	if stream {
+		contentType = "text/event-stream"
+	}
+	return account, &http.Response{StatusCode: http.StatusOK, Request: req,
+		Header: http.Header{"Content-Type": {contentType}, AuditSettlementCapabilityHeader: {"v1"},
+			AuditSettlementReceiptHeader: {"2561ce22-94f1-44bc-a2a5-984c29ee5f49"}},
+		Body: io.NopCloser(strings.NewReader(body))}
+}
+
+func TestRawChatNegotiatedAuditCyberPolicy(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		for _, tokens := range []int{0, 17} {
+			t.Run(fmt.Sprintf("stream=%v/tokens=%d", stream, tokens), func(t *testing.T) {
+				body := fmt.Sprintf(`{"error":{"code":"cyber_policy","message":"blocked"},"usage":{"prompt_tokens":%d,"completion_tokens":0}}`, tokens)
+				if stream {
+					body = "data: " + body + "\n\n"
+					if tokens > 0 {
+						body = "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial\"}}]}\n\n" + body
+					}
+				}
+				account, resp := negotiatedAuditTestResponse(t, body, stream)
+				recorder := httptest.NewRecorder()
+				c, _ := gin.CreateTestContext(recorder)
+				c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+				svc := &OpenAIGatewayService{}
+				var result *OpenAIForwardResult
+				var err error
+				if stream {
+					result, err = svc.streamRawChatCompletions(c, resp, account, "gpt-5", "gpt-5", "gpt-5", nil, nil, time.Now(), 10)
+				} else {
+					result, err = svc.bufferRawChatCompletions(c, resp, account, "gpt-5", "gpt-5", "gpt-5", nil, nil, time.Now())
+				}
+				require.ErrorIs(t, err, errOpenAICyberPolicyForwarded)
+				var failover *UpstreamFailoverError
+				require.False(t, errors.As(err, &failover))
+				require.NotNil(t, result)
+				require.Equal(t, tokens, result.Usage.InputTokens)
+				require.Equal(t, 0, result.Usage.OutputTokens)
+				require.True(t, result.AuditSettlementNegotiated)
+				mark := GetOpsCyberPolicy(c)
+				require.NotNil(t, mark)
+				require.True(t, mark.AuditSettlementNegotiated)
+				require.True(t, IsImportedAuditSettlementCyberPolicy(account, mark))
+				require.Contains(t, recorder.Body.String(), "cyber_policy")
+			})
+		}
+	}
+}
+
+func TestNativeAnthropicNegotiatedAuditCyberPolicy(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		for _, blank := range []bool{false, true} {
+			t.Run(fmt.Sprintf("stream=%v/blank=%v", stream, blank), func(t *testing.T) {
+				tokens := 0
+				if blank {
+					tokens = 17
+				}
+				body := fmt.Sprintf(`{"type":"error","error":{"code":"cyber_policy","message":"blocked"},"usage":{"input_tokens":%d,"output_tokens":0}}`, tokens)
+				if stream {
+					body = "event: error\ndata: " + body + "\n"
+					if blank {
+						body += "\n"
+					}
+				}
+				account, resp := negotiatedAuditTestResponse(t, body, stream)
+				recorder := httptest.NewRecorder()
+				c, _ := gin.CreateTestContext(recorder)
+				c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+				svc := &OpenAIGatewayService{}
+				var result *OpenAIForwardResult
+				var err error
+				if stream {
+					result, err = svc.handleNativeAnthropicStreamingResponse(context.Background(), resp, c, account, "claude", "claude", "claude", nil, time.Now())
+				} else {
+					result, err = svc.handleNativeAnthropicBufferedResponse(context.Background(), resp, c, account, "claude", "claude", "claude", nil, time.Now())
+				}
+				require.ErrorIs(t, err, errOpenAICyberPolicyForwarded)
+				require.NotNil(t, result)
+				require.Equal(t, OpenAIUsage{InputTokens: tokens}, result.Usage)
+				require.NotNil(t, GetOpsCyberPolicy(c))
+				require.Contains(t, recorder.Body.String(), "cyber_policy")
+			})
+		}
+	}
+}
+
+func TestRawAuditCyberPolicyRequiresNegotiationAndValidReceipt(t *testing.T) {
+	for _, mode := range []string{"no negotiation", "disabled", "invalid receipt", "no capability"} {
+		t.Run(mode, func(t *testing.T) {
+			account, resp := negotiatedAuditTestResponse(t, "", false)
+			switch mode {
+			case "no negotiation":
+				resp.Request = nil
+			case "disabled":
+				account.Extra[AuditSettlementEnabledExtraKey] = false
+			case "invalid receipt":
+				resp.Header.Set(AuditSettlementReceiptHeader, "bad")
+			case "no capability":
+				resp.Header.Del(AuditSettlementCapabilityHeader)
+			}
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			require.False(t, markNegotiatedAuditCyberPolicy(c, account, resp, []byte(`{"error":{"code":"cyber_policy"}}`), OpenAIUsage{}))
+			require.Nil(t, GetOpsCyberPolicy(c))
+			require.False(t, IsImportedAuditSettlementCyberPolicy(account, &CyberPolicyMark{Code: "cyber_policy", AuditSettlementNegotiated: auditSettlementWasNegotiated(resp), UpstreamHeaders: resp.Header}))
+		})
+	}
+}
+
 func TestBuildOpenAIChatCompletionsURL(t *testing.T) {
 	t.Parallel()
 

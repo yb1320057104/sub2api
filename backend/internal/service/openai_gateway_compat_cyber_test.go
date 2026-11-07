@@ -12,7 +12,43 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
+
+func TestAuditSettlementProviderErrorCodeRequiresNegotiation(t *testing.T) {
+	for _, negotiated := range []bool{false, true} {
+		for _, endpoint := range []string{"chat", "messages", "responses"} {
+			t.Run(endpoint+map[bool]string{false: "/native", true: "/negotiated"}[negotiated], func(t *testing.T) {
+				recorder := httptest.NewRecorder()
+				c, _ := gin.CreateTestContext(recorder)
+				ctx := context.Background()
+				if negotiated {
+					ctx = context.WithValue(ctx, auditSettlementContextKey{}, &auditSettlementTracker{})
+				}
+				c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil).WithContext(ctx)
+				MarkOpsCyberPolicy(c, CyberPolicyMark{Code: "cyber_policy"})
+				switch endpoint {
+				case "chat":
+					writeChatCompletionsError(c, 400, "invalid_request_error", "safe blocked")
+				case "messages":
+					writeAnthropicError(c, 400, "invalid_request_error", "safe blocked")
+				case "responses":
+					writeOpenAIPassthroughErrorEnvelope(c, 400, nil, "safe blocked")
+				}
+				require.Equal(t, negotiated, gjson.Get(recorder.Body.String(), "error.code").String() == "cyber_policy")
+				for _, event := range []string{"response.failed", "error"} {
+					payload := auditSettlementCyberEvent(c, []byte(`{"type":"error","error":{"message":"safe blocked"}}`), event)
+					path := "error.code"
+					if event == "response.failed" {
+						path = "response.error.code"
+					}
+					require.Equal(t, negotiated, gjson.GetBytes(payload, path).String() == "cyber_policy")
+					require.Contains(t, string(payload), "safe blocked")
+				}
+			})
+		}
+	}
+}
 
 // compatCyberOAuthAccount 是 compat cyber 测试共用的 OAuth 账号。
 func compatCyberOAuthAccount() *Account {

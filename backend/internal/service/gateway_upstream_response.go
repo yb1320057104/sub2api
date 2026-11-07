@@ -664,6 +664,82 @@ type streamingResult struct {
 	clientDisconnect bool // 客户端是否在流式传输过程中断开
 }
 
+const gatewayAuditPolicyKey = "gateway_audit_settlement_policy"
+
+// A remote policy refusal is eligible only with server-owned negotiation and a
+// valid receipt from the opted-in account. No client/user identity comes from it.
+func markGatewayAuditPolicy(c *gin.Context, resp *http.Response, account *Account, body []byte) bool {
+	if c == nil || resp == nil || !negotiatedAuditSettlementReceipt(account, resp.Header, auditSettlementWasNegotiated(resp)) {
+		return false
+	}
+	if hit, _, _ := detectOpenAICyberPolicy(body); !hit {
+		return false
+	}
+	c.Set(gatewayAuditPolicyKey, true)
+	return true
+}
+
+// A terminal error can carry a final cumulative usage object. Feed that object
+// through the existing message-delta usage parser without changing wire bytes
+// or inventing tokens, and retain earlier observations for omitted fields.
+func mergeGatewayAuditPolicyUsage(body []byte, usage *ClaudeUsage) {
+	if usage == nil || !gjson.GetBytes(body, "usage").Exists() {
+		return
+	}
+	terminalUsage, err := sjson.SetBytes(body, "type", "message_delta")
+	if err == nil {
+		parseSSEUsagePassthrough(string(terminalUsage), usage)
+	}
+}
+
+func gatewayAuditPolicyResult(c *gin.Context, resp *http.Response, model, upstreamModel string, stream bool, start time.Time) *ForwardResult {
+	if c == nil || !c.GetBool(gatewayAuditPolicyKey) || resp == nil {
+		return nil
+	}
+	return &ForwardResult{AuditSettlementCyberPolicy: true, AuditSettlementNegotiated: auditSettlementWasNegotiated(resp),
+		RequestID: resp.Header.Get("x-request-id"), UpstreamHeaders: auditSettlementResponseHeaders(resp.Header),
+		Model: model, UpstreamModel: upstreamModel, Stream: stream, Duration: time.Since(start)}
+}
+
+func gatewayAuditPolicyBody(c *gin.Context) gin.H {
+	detail := gin.H{"type": "invalid_request_error", "message": "Request rejected by upstream safety policy"}
+	if c != nil && c.Request != nil && HasAuditSettlement(c.Request.Context()) {
+		detail["code"] = "cyber_policy"
+	}
+	return gin.H{"type": "error", "error": detail}
+}
+
+func writeGatewayAuditPolicyError(c *gin.Context, status int) {
+	MarkResponseCommitted(c)
+	if c.Writer.Written() && strings.Contains(strings.ToLower(c.Writer.Header().Get("Content-Type")), "text/event-stream") {
+		payload, _ := json.Marshal(gatewayAuditPolicyBody(c))
+		if _, err := fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", payload); err == nil {
+			c.Writer.Flush()
+		}
+		return
+	}
+	c.JSON(status, gatewayAuditPolicyBody(c))
+}
+
+// Inspect before retries or account-health side effects; a settled refusal must
+// never be replayed. Non-policy bodies are restored for the original handler.
+func (s *GatewayService) consumeGatewayAuditPolicyError(c *gin.Context, resp *http.Response, account *Account, model, upstreamModel string, stream bool, start time.Time) (*ForwardResult, bool) {
+	if resp == nil || resp.Body == nil || resp.StatusCode < 400 || !negotiatedAuditSettlementReceipt(account, resp.Header, auditSettlementWasNegotiated(resp)) {
+		return nil, false
+	}
+	body, err := s.readUpstreamErrorBody(resp)
+	_ = resp.Body.Close()
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+	if err != nil || !markGatewayAuditPolicy(c, resp, account, body) {
+		return nil, false
+	}
+	writeGatewayAuditPolicyError(c, resp.StatusCode)
+	_ = resp.Body.Close()
+	result := gatewayAuditPolicyResult(c, resp, model, upstreamModel, stream, start)
+	result.Usage = *parseClaudeUsageFromResponseBody(body)
+	return result, true
+}
+
 // hasObservedTokens 报告流式过程中是否已观测到任何上游计量的 token。
 func (u *ClaudeUsage) hasObservedTokens() bool {
 	if u == nil {
@@ -683,6 +759,12 @@ func (u *ClaudeUsage) hasObservedTokens() bool {
 // 不变式：UpstreamFailoverError 必须保持 result=nil——failover 重试成功后按成功请求
 // 计费，若同时返回部分 usage 会造成双重计费，此处显式拦截兜底。
 func partialStreamUsageResult(c *gin.Context, resp *http.Response, streamResult *streamingResult, model, upstreamModel string, startTime time.Time, err error) *ForwardResult {
+	if result := gatewayAuditPolicyResult(c, resp, model, upstreamModel, true, startTime); result != nil {
+		if streamResult != nil && streamResult.usage != nil {
+			result.Usage, result.FirstTokenMs, result.ClientDisconnect = *streamResult.usage, streamResult.firstTokenMs, streamResult.clientDisconnect
+		}
+		return result
+	}
 	if streamResult == nil || !streamResult.usage.hasObservedTokens() {
 		return nil
 	}
@@ -692,6 +774,7 @@ func partialStreamUsageResult(c *gin.Context, resp *http.Response, streamResult 
 	}
 	return &ForwardResult{
 		RequestID:                     resp.Header.Get("x-request-id"),
+		AuditSettlementNegotiated:     auditSettlementWasNegotiated(resp),
 		UpstreamHeaders:               resp.Header,
 		Usage:                         *streamResult.usage,
 		Model:                         model,
@@ -876,6 +959,18 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 			}
 		}
 
+		if markGatewayAuditPolicy(c, resp, account, []byte(dataLine)) {
+			mergeGatewayAuditPolicyUsage([]byte(dataLine), usage)
+			payload, _ := json.Marshal(gatewayAuditPolicyBody(c))
+			if !clientDisconnected {
+				if _, err := fmt.Fprintf(w, "event: error\ndata: %s\n\n", payload); err != nil {
+					clientDisconnected = true
+				} else {
+					flusher.Flush()
+				}
+			}
+			return nil, dataLine, nil, errOpenAICyberPolicyForwarded
+		}
 		if eventName == "error" {
 			return nil, dataLine, nil, &sseStreamErrorEventError{RawData: dataLine}
 		}
@@ -1023,6 +1118,23 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 		select {
 		case ev, ok := <-events:
 			if !ok {
+				// Some relays close immediately after the final data line. Only
+				// finish a verified policy event here; leave other EOF semantics intact.
+				for _, line := range pendingEventLines {
+					data, isData := extractAnthropicSSEDataLine(line)
+					if isData && markGatewayAuditPolicy(c, resp, account, []byte(data)) {
+						mergeGatewayAuditPolicyUsage([]byte(data), usage)
+						payload, _ := json.Marshal(gatewayAuditPolicyBody(c))
+						if !clientDisconnected {
+							if _, err := fmt.Fprintf(w, "event: error\ndata: %s\n\n", payload); err != nil {
+								clientDisconnected = true
+							} else {
+								flusher.Flush()
+							}
+						}
+						return &streamingResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: clientDisconnected}, errOpenAICyberPolicyForwarded
+					}
+				}
 				// 上游完成，返回结果
 				if !sawTerminalEvent {
 					return &streamingResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: clientDisconnected}, fmt.Errorf("stream usage incomplete: missing terminal event")
@@ -1083,6 +1195,9 @@ func (s *GatewayService) handleStreamingResponse(ctx context.Context, resp *http
 				outputBlocks, data, usagePatch, err := processSSEEvent(pendingEventLines)
 				pendingEventLines = pendingEventLines[:0]
 				if err != nil {
+					if errors.Is(err, errOpenAICyberPolicyForwarded) {
+						return &streamingResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: clientDisconnected}, err
+					}
 					if clientDisconnected {
 						return &streamingResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: true}, nil
 					}
@@ -1401,6 +1516,10 @@ func (s *GatewayService) handleNonStreamingResponse(ctx context.Context, resp *h
 	body, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, anthropicTooLargeError)
 	if err != nil {
 		return nil, err
+	}
+	if markGatewayAuditPolicy(c, resp, account, body) {
+		writeGatewayAuditPolicyError(c, resp.StatusCode)
+		return parseClaudeUsageFromResponseBody(body), errOpenAICyberPolicyForwarded
 	}
 	observer := upstreamResponseModelObserverFromContext(c)
 	if observer == nil {

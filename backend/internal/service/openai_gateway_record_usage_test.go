@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +12,81 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/stretchr/testify/require"
 )
+
+type openAIAuditUsageRepoStub struct {
+	openAIRecordUsageLogRepoStub
+	importCalls int
+	imported    AuditSettlementImportInput
+}
+
+func (s *openAIAuditUsageRepoStub) Create(ctx context.Context, log *UsageLog) (bool, error) {
+	log.ID = 301
+	if log.CreatedAt.IsZero() {
+		log.CreatedAt = time.Now().UTC()
+	}
+	return s.openAIRecordUsageLogRepoStub.Create(ctx, log)
+}
+
+func (s *openAIAuditUsageRepoStub) RegisterAuditSettlementImport(_ context.Context, in AuditSettlementImportInput) error {
+	s.importCalls++
+	s.imported = in
+	return nil
+}
+
+func TestOpenAIAuditSettlementCyberUsageOwnership(t *testing.T) {
+	for _, mode := range []string{"zero", "tokens", "unnegotiated", "disabled", "invalid receipt", "ordinary"} {
+		t.Run(mode, func(t *testing.T) {
+			repo := &openAIAuditUsageRepoStub{openAIRecordUsageLogRepoStub: openAIRecordUsageLogRepoStub{inserted: true}}
+			userRepo := &openAIRecordUsageUserRepoStub{}
+			svc := newOpenAIRecordUsageServiceForTest(repo, userRepo, &openAIRecordUsageSubRepoStub{}, nil)
+			account := &Account{ID: 42, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+				Credentials: map[string]any{"base_url": "https://relay.example", "api_key": "fixture"},
+				Extra:       map[string]any{AuditSettlementEnabledExtraKey: true}}
+			result := &OpenAIForwardResult{Model: "gpt-5.1", RequestID: "audit-owner-" + mode, AuditSettlementNegotiated: true,
+				UpstreamHeaders: http.Header{AuditSettlementCapabilityHeader: {"v1"}, AuditSettlementReceiptHeader: {"2561ce22-94f1-44bc-a2a5-984c29ee5f49"}}}
+			if mode == "tokens" {
+				result.Usage = OpenAIUsage{InputTokens: 1200, OutputTokens: 300, CacheReadInputTokens: 200}
+			}
+			if mode == "unnegotiated" {
+				result.AuditSettlementNegotiated = false
+			}
+			if mode == "disabled" {
+				account.Extra[AuditSettlementEnabledExtraKey] = false
+			}
+			if mode == "invalid receipt" {
+				result.UpstreamHeaders.Set(AuditSettlementReceiptHeader, "bad")
+			}
+			user := &User{ID: 71}
+			key := &APIKey{ID: 72, UserID: 71, User: user, Group: &Group{RateMultiplier: 1}}
+			require.NoError(t, svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{Result: result, APIKey: key, User: user, Account: account, CyberBlocked: mode != "ordinary"}))
+			require.NotNil(t, repo.lastLog)
+			require.Equal(t, int64(71), repo.lastLog.UserID)
+			require.Equal(t, int64(72), repo.lastLog.APIKeyID)
+			valid := mode == "zero" || mode == "tokens"
+			require.Equal(t, valid, repo.lastLog.AuditSettlementImportedEvent)
+			if mode != "ordinary" {
+				require.Equal(t, RequestTypeCyberBlocked, repo.lastLog.RequestType)
+			}
+			if valid || mode == "ordinary" {
+				require.Equal(t, 1, repo.importCalls)
+				require.Equal(t, int64(71), repo.imported.UserID)
+				require.Equal(t, int64(72), repo.imported.APIKeyID)
+				require.Equal(t, int64(301), repo.imported.UsageID)
+			} else {
+				require.Zero(t, repo.importCalls)
+			}
+			if mode == "tokens" {
+				require.Equal(t, 1000, repo.lastLog.InputTokens)
+				require.Equal(t, 200, repo.lastLog.CacheReadTokens)
+				require.Equal(t, 300, repo.lastLog.OutputTokens)
+				require.Greater(t, repo.lastLog.ActualCost, 0.0)
+			} else {
+				require.Zero(t, repo.lastLog.ActualCost)
+				require.Zero(t, userRepo.deductCalls)
+			}
+		})
+	}
+}
 
 type openAIRecordUsageLogRepoStub struct {
 	UsageLogRepository

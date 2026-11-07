@@ -221,6 +221,7 @@ func (s *OpenAIGatewayService) buildNativeAnthropicUpstreamRequest(
 
 	// 账号级请求头覆写（最终生效，覆盖上面所有来源的同名头）
 	account.ApplyHeaderOverrides(req.Header)
+	prepareAuditSettlementRequest(req, account)
 	filterSonnet55ToolsetBetaHeader(req.Header, body, gjson.GetBytes(body, "model").String())
 	payloads := append([][]byte{body}, sessionBodies...)
 	applyOpenCodeSessionHeader(c, account, targetURL, req.Header, payloads...)
@@ -261,6 +262,7 @@ func (s *OpenAIGatewayService) handleNativeAnthropicBufferedResponse(
 	}
 
 	usage := parseClaudeUsageFromResponseBody(body)
+	cyberPolicy := markNegotiatedAuditCyberPolicy(c, account, resp, body, claudeUsageToOpenAIUsage(usage))
 	if IsForceCacheBilling(ctx) && usage.InputTokens > 0 {
 		body, err = classifyAnthropicResponseInputAsCacheRead(body, usage)
 		if err != nil {
@@ -274,16 +276,17 @@ func (s *OpenAIGatewayService) handleNativeAnthropicBufferedResponse(
 		contentType = "application/json"
 	}
 	result := &OpenAIForwardResult{
-		RequestID:        resp.Header.Get("x-request-id"),
-		UpstreamHeaders:  resp.Header,
-		Usage:            claudeUsageToOpenAIUsage(usage),
-		Model:            originalModel,
-		BillingModel:     billingModel,
-		UpstreamModel:    upstreamModel,
-		UpstreamEndpoint: "/v1/messages",
-		Stream:           false,
-		ReasoningEffort:  reasoningEffort,
-		Duration:         time.Since(startTime),
+		RequestID:                 resp.Header.Get("x-request-id"),
+		AuditSettlementNegotiated: auditSettlementWasNegotiated(resp),
+		UpstreamHeaders:           resp.Header,
+		Usage:                     claudeUsageToOpenAIUsage(usage),
+		Model:                     originalModel,
+		BillingModel:              billingModel,
+		UpstreamModel:             upstreamModel,
+		UpstreamEndpoint:          "/v1/messages",
+		Stream:                    false,
+		ReasoningEffort:           reasoningEffort,
+		Duration:                  time.Since(startTime),
 	}
 	body = reverseToolNamesIfPresent(c, body)
 	if account.IsCacheConversionEnabled() {
@@ -294,6 +297,9 @@ func (s *OpenAIGatewayService) handleNativeAnthropicBufferedResponse(
 		c.Writer.Header().Del("Content-Length")
 	}
 	c.Data(resp.StatusCode, contentType, body)
+	if cyberPolicy {
+		return result, errOpenAICyberPolicyForwarded
+	}
 	return result, nil
 }
 
@@ -444,6 +450,12 @@ func (s *OpenAIGatewayService) handleNativeAnthropicStreamingResponse(
 	for {
 		select {
 		case ev, ok := <-events:
+			if (!ok || ev.err != nil) && GetOpsCyberPolicy(c) != nil {
+				if !clientDisconnected {
+					flusher.Flush()
+				}
+				return s.nativeAnthropicStreamResult(c, resp, usage, firstTokenMs, clientDisconnected, originalModel, billingModel, upstreamModel, reasoningEffort, startTime), errOpenAICyberPolicyForwarded
+			}
 			if !ok {
 				if !clientDisconnected {
 					flusher.Flush()
@@ -486,6 +498,12 @@ func (s *OpenAIGatewayService) handleNativeAnthropicStreamingResponse(
 					firstTokenMs = &ms
 				}
 				parseSSEUsagePassthrough(data, usage)
+				if markNegotiatedAuditCyberPolicy(c, account, resp, []byte(trimmed), claudeUsageToOpenAIUsage(usage)) {
+					mergeGatewayAuditPolicyUsage([]byte(trimmed), usage)
+					actual := claudeUsageToOpenAIUsage(usage)
+					mark := GetOpsCyberPolicy(c)
+					mark.UpstreamInTok, mark.UpstreamOutTok = actual.InputTokens, actual.OutputTokens
+				}
 			} else {
 				trimmed := strings.TrimSpace(line)
 				if strings.HasPrefix(trimmed, "event:") && anthropicStreamEventIsTerminal(strings.TrimSpace(strings.TrimPrefix(trimmed, "event:")), "") {
@@ -523,6 +541,10 @@ func (s *OpenAIGatewayService) handleNativeAnthropicStreamingResponse(
 				} else {
 					inPartialEvent = true
 				}
+			}
+
+			if line == "" && GetOpsCyberPolicy(c) != nil {
+				return s.nativeAnthropicStreamResult(c, resp, usage, firstTokenMs, clientDisconnected, originalModel, billingModel, upstreamModel, reasoningEffort, startTime), errOpenAICyberPolicyForwarded
 			}
 
 		case <-intervalCh:
@@ -583,18 +605,19 @@ func (s *OpenAIGatewayService) nativeAnthropicStreamResult(
 		usage = &ClaudeUsage{}
 	}
 	return &OpenAIForwardResult{
-		RequestID:        resp.Header.Get("x-request-id"),
-		UpstreamHeaders:  resp.Header,
-		Usage:            claudeUsageToOpenAIUsage(usage),
-		Model:            originalModel,
-		BillingModel:     billingModel,
-		UpstreamModel:    upstreamModel,
-		UpstreamEndpoint: "/v1/messages",
-		Stream:           true,
-		ReasoningEffort:  reasoningEffort,
-		Duration:         time.Since(startTime),
-		FirstTokenMs:     firstTokenMs,
-		ClientDisconnect: clientDisconnect,
+		RequestID:                 resp.Header.Get("x-request-id"),
+		AuditSettlementNegotiated: auditSettlementWasNegotiated(resp),
+		UpstreamHeaders:           resp.Header,
+		Usage:                     claudeUsageToOpenAIUsage(usage),
+		Model:                     originalModel,
+		BillingModel:              billingModel,
+		UpstreamModel:             upstreamModel,
+		UpstreamEndpoint:          "/v1/messages",
+		Stream:                    true,
+		ReasoningEffort:           reasoningEffort,
+		Duration:                  time.Since(startTime),
+		FirstTokenMs:              firstTokenMs,
+		ClientDisconnect:          clientDisconnect,
 	}
 }
 

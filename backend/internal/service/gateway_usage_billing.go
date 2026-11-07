@@ -624,29 +624,47 @@ func (s *GatewayService) billingDeps() *billingDeps {
 
 func writeUsageLogBestEffort(ctx context.Context, repo UsageLogRepository, usageLog *UsageLog, logKey string) {
 	if repo == nil || usageLog == nil {
+		FailAuditSettlement(ctx)
 		return
 	}
 	usageCtx, cancel := detachedBillingContext(ctx)
 	defer cancel()
-	if snapshot, ok := cyberPolicyAuditUsageFromContext(usageCtx, usageLog); ok {
-		// Only this opt-in audit path needs the persisted usage identity. Normal
-		// billing has already completed; penalty failure never discards its bill.
+	snapshot, hasAudit := cyberPolicyAuditUsageFromContext(usageCtx, usageLog)
+	if hasAudit || HasAuditSettlement(usageCtx) || HasAuditSettlementUsageObserver(usageCtx) {
+		// Negotiated settlement requires a persisted usage identity before the
+		// receipt is complete. Original billing has already committed.
 		inserted, err := repo.Create(usageCtx, usageLog)
 		if err != nil {
 			logger.LegacyPrintf(logKey, "Create usage log failed: %v", err)
+			FailAuditSettlement(usageCtx)
 			// Preserve the ordinary best-effort/synchronous recovery path, but
 			// never retry a penalty when the first insert outcome is uncertain.
-			writeUsageLogBestEffort(WithoutCyberPolicyAuditUsage(ctx), repo, usageLog, logKey)
+			fallbackCtx, fallbackCancel := detachedBillingContext(ctx)
+			defer fallbackCancel()
+			writeUsageLogUnsettledBestEffort(fallbackCtx, repo, usageLog, logKey)
 			return
 		}
-		if inserted {
+		if !inserted {
+			// A duplicate request may resolve to a historical bill that never
+			// negotiated settlement. Do not export or import that old charge
+			// under this request's new receipt, even on its first export.
+			FailAuditSettlement(usageCtx)
+			return
+		}
+		if hasAudit {
 			if err := snapshot.recorder.RecordAuditUsage(usageCtx, snapshot.input, usageLog); err != nil {
+				FailAuditSettlement(usageCtx)
 				slog.Warn("security_audit.usage_penalty_record_failed", "user_id", usageLog.UserID)
 			}
 		}
+		recordAuditSettlementUsageObserver(usageCtx, usageLog)
+		RecordAuditSettlementUsage(usageCtx, usageLog)
 		return
 	}
+	writeUsageLogUnsettledBestEffort(usageCtx, repo, usageLog, logKey)
+}
 
+func writeUsageLogUnsettledBestEffort(usageCtx context.Context, repo UsageLogRepository, usageLog *UsageLog, logKey string) {
 	if writer, ok := repo.(usageLogBestEffortWriter); ok {
 		if err := writer.CreateBestEffort(usageCtx, usageLog); err != nil {
 			logger.LegacyPrintf(logKey, "Create usage log failed: %v", err)
@@ -800,6 +818,13 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 	user := input.User
 	account := input.Account
 	subscription := input.Subscription
+	if result.AuditSettlementCyberPolicy {
+		if !negotiatedAuditSettlementReceipt(account, result.UpstreamHeaders, result.AuditSettlementNegotiated) {
+			FailAuditSettlement(ctx)
+			return errors.New("audit settlement refusal identity unavailable")
+		}
+		ctx = WithoutCyberPolicyAuditUsage(ctx)
+	}
 	ApplyForwardImageBillingResolution(result)
 	logServiceTierBillingDowngrade("service.gateway", account, result.RequestID, ApplyForwardServiceTierBillingResolution(result))
 
@@ -865,6 +890,10 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 	accountRateMultiplier := account.BillingRateMultiplier()
 	usageLog := s.buildRecordUsageLog(ctx, input, result, apiKey, user, account, subscription,
 		requestedModel, multiplier, imageMultiplier, accountRateMultiplier, billingType, cacheTTLOverridden, cost)
+	if result.AuditSettlementCyberPolicy {
+		usageLog.RequestType = RequestTypeCyberBlocked
+		usageLog.AuditSettlementImportedEvent = true
+	}
 
 	// 计算账号统计定价费用（使用最终上游模型匹配自定义规则）。纯存储费不是一次模型请求，
 	// 账号统计成本回落 total_cost（官方存储价）。
@@ -926,6 +955,9 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 	}
 	if simpleModeKeyRateLimitOnly {
 		ctx = WithoutCyberPolicyAuditUsage(ctx)
+	}
+	if !simpleModeKeyRateLimitOnly {
+		ctx = withUpstreamAuditSettlementImport(ctx, s.usageLogRepo, account, result.UpstreamHeaders, result.AuditSettlementNegotiated)
 	}
 	writeUsageLogBestEffort(ctx, s.usageLogRepo, usageLog, "service.gateway")
 

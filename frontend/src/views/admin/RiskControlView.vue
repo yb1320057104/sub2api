@@ -1,12 +1,12 @@
 <template>
-  <AppLayout>
+  <component :is="embedded ? 'div' : AppLayout">
     <div class="space-y-6">
       <div v-if="loading" class="flex items-center justify-center py-16">
         <div class="h-8 w-8 animate-spin rounded-full border-b-2 border-primary-600"></div>
       </div>
 
-      <template v-else>
-        <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+      <template v-else-if="!editorOnly">
+        <div v-if="!embedded" class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div>
             <h1 class="text-2xl font-semibold text-gray-900 dark:text-white">{{ t('admin.riskControl.title') }}</h1>
             <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.description') }}</p>
@@ -380,7 +380,7 @@
         </div>
       </template>
 
-      <BaseDialog :show="settingsOpen" :title="t('admin.riskControl.settingsTitle')" width="extra-wide" @close="settingsOpen = false">
+      <component :is="editorOnly ? 'section' : BaseDialog" :show="settingsOpen" :title="t('admin.riskControl.settingsTitle')" width="extra-wide" @close="settingsOpen = false">
         <div class="space-y-6">
           <div class="flex gap-2 overflow-x-auto border-b border-gray-100 pb-3 dark:border-dark-700">
             <button
@@ -397,21 +397,21 @@
 
           <div v-if="activeSettingsTab === 'basic' || activeSettingsTab === 'keywords'" data-test="audit-no-key-guide" class="rounded-lg border border-sky-100 bg-sky-50 p-4 text-sm leading-6 text-sky-800 dark:border-sky-900 dark:bg-sky-950/30 dark:text-sky-200">
             <p class="font-medium">{{ t('admin.riskControl.noKeyGuideTitle') }}</p>
-            <p class="mt-1">{{ t('admin.riskControl.noKeyGuide') }}</p>
+            <p class="mt-1">{{ t(editorOnly ? 'admin.auditCenter.noKeyGuide' : 'admin.riskControl.noKeyGuide') }}</p>
           </div>
 
           <div v-if="activeSettingsTab === 'basic'" class="space-y-5">
             <div class="grid grid-cols-1 gap-5 lg:grid-cols-2">
-              <div class="flex items-center justify-between rounded-lg border border-gray-100 p-4 dark:border-dark-700">
+              <div v-if="!editorOnly" class="flex items-center justify-between rounded-lg border border-gray-100 p-4 dark:border-dark-700">
                 <div>
                   <p class="text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.riskControl.enabled') }}</p>
                   <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.enabledHint') }}</p>
                 </div>
                 <Toggle v-model="configForm.enabled" />
               </div>
-              <div>
+              <div v-if="!editorOnly">
                 <label class="input-label">{{ t('admin.riskControl.mode') }}</label>
-                <Select v-model="configForm.mode" :options="modeOptions" />
+                <Select v-model="configForm.mode" :options="modeOptions" :disabled="editorOnly" />
                 <p class="mt-2 text-xs leading-5 text-gray-500 dark:text-gray-400">{{ modeDescription(configForm.mode) }}</p>
               </div>
               <div>
@@ -726,6 +726,7 @@
           </div>
 
           <div v-else-if="activeSettingsTab === 'scope'" class="space-y-5">
+            <template v-if="!editorOnly">
             <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
               <div>
                 <h3 class="text-base font-semibold text-gray-900 dark:text-white">{{ t('admin.riskControl.groupScope') }}</h3>
@@ -769,6 +770,7 @@
             <UserAllowlistSelector v-model="configForm.user_allowlist_ids" :title="t('admin.riskControl.userAllowlistTitle')" :hint="t('admin.riskControl.userAllowlistHint')" :disabled="saving" test-id="content-audit-user-allowlist" />
             <p v-if="configForm.user_allowlist_inherited" class="text-sm text-amber-700 dark:text-amber-300" data-test="content-audit-allowlist-inherited">{{ t('admin.riskControl.userAllowlistInherited') }}</p>
 
+            </template>
             <div class="space-y-4 rounded-lg border border-gray-100 p-4 dark:border-dark-700">
               <div class="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
                 <div>
@@ -880,6 +882,7 @@
           </div>
 
           <div v-else-if="activeSettingsTab === 'response'" class="space-y-5">
+            <p v-if="editorOnly" class="text-sm text-amber-700 dark:text-amber-300">{{ t('admin.auditCenter.legacyPenalty') }}</p>
             <div class="grid grid-cols-1 gap-5 lg:grid-cols-2">
               <div>
                 <label class="input-label">{{ t('admin.riskControl.blockStatus') }}</label>
@@ -896,7 +899,7 @@
                 </div>
                 <Toggle v-model="configForm.email_on_hit" />
               </div>
-              <div class="flex items-center justify-between rounded-lg border border-gray-100 p-4 dark:border-dark-700">
+              <div v-if="!editorOnly" class="flex items-center justify-between rounded-lg border border-gray-100 p-4 dark:border-dark-700">
                 <div>
                   <p class="text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.riskControl.autoBan') }}</p>
                   <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.riskControl.autoBanHint') }}</p>
@@ -910,11 +913,11 @@
                 </div>
                 <Toggle v-model="configForm.cyber_policy_exclude_from_ban_count" />
               </div>
-              <div>
+              <div v-if="!editorOnly">
                 <label class="input-label">{{ t('admin.riskControl.banThreshold') }}</label>
                 <input v-model.number="configForm.ban_threshold" type="number" min="1" max="1000" class="input" />
               </div>
-              <div>
+              <div v-if="!editorOnly">
                 <label class="input-label">{{ t('admin.riskControl.violationWindowHours') }}</label>
                 <input v-model.number="configForm.violation_window_hours" type="number" min="1" max="8760" class="input" />
               </div>
@@ -922,7 +925,8 @@
           </div>
 
           <div v-else-if="activeSettingsTab === 'riskThresholds'" class="space-y-5">
-            <AuditRiskPolicyPanel v-model="configForm.risk_policy" audit="content" :synchronous="configForm.enabled && configForm.mode === 'pre_block'" />
+            <p v-if="editorOnly && configForm.risk_policy" class="text-sm text-gray-500">{{ t('admin.auditCenter.sharedPolicyLocation') }}</p>
+            <AuditRiskPolicyPanel v-if="!editorOnly" v-model="configForm.risk_policy" audit="content" :synchronous="configForm.enabled && configForm.mode === 'pre_block'" />
             <div v-if="!configForm.risk_policy" class="space-y-5" data-test="legacy-category-thresholds">
             <p class="text-sm font-medium">{{ engineLabel(configForm.engine) }}</p>
             <p v-if="configForm.engine === 'typesafe'" class="text-sm text-amber-700 dark:text-amber-300">{{ t('admin.riskControl.typeSafeThresholds') }}</p>
@@ -1092,7 +1096,7 @@
             </button>
           </div>
         </template>
-      </BaseDialog>
+      </component>
 
       <BaseDialog
         :show="inputDetailRow !== null"
@@ -1161,11 +1165,11 @@
         </template>
       </BaseDialog>
     </div>
-  </AppLayout>
+  </component>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, reactive, ref, toRaw } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, toRaw, watch, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import BaseDialog from '@/components/common/BaseDialog.vue'
@@ -1201,6 +1205,11 @@ import AuditRiskPolicyPanel from '@/components/admin/AuditRiskPolicyPanel.vue'
 import ContentKeywordScores from '@/components/admin/ContentKeywordScores.vue'
 import { auditKeywordKey, auditKeywordScoresPayload, validAuditRiskPolicy, validAuditScore } from '@/types/auditRiskPolicy'
 import type { AuditRiskPolicy } from '@/types/auditRiskPolicy'
+
+const props = defineProps<{ embedded?: boolean; editorOnly?: boolean; initialConfig?: ContentModerationConfig; sharedRiskPolicy?: AuditRiskPolicy | null }>()
+const emit = defineEmits<{ (event: 'changed', value: boolean): void }>()
+let initialEditorFingerprint = ''
+const editorReady = ref(false)
 
 type SettingsTab = 'basic' | 'scope' | 'runtime' | 'response' | 'riskThresholds' | 'retention' | 'keywords'
 type WorkerSlotState = 'active' | 'idle' | 'disabled'
@@ -1882,7 +1891,7 @@ async function loadAll() {
   loading.value = true
   try {
     const [config, groupItems, runtimeStatus, proxyItems] = await Promise.all([
-      adminAPI.riskControl.getConfig(),
+      props.initialConfig ? Promise.resolve(props.initialConfig) : adminAPI.riskControl.getConfig(),
       adminAPI.groups.getAll(),
       adminAPI.riskControl.getStatus(),
       // 代理列表加载失败不阻塞风控页面（仅影响下拉可选项）
@@ -1896,7 +1905,10 @@ async function loadAll() {
       configForm.api_key_statuses = [...runtimeStatus.api_key_statuses]
       prunePendingDeleteAPIKeyHashes()
     }
-    await loadLogs()
+    if (!props.editorOnly) await loadLogs()
+    await nextTick()
+    initialEditorFingerprint = editorFingerprint()
+    editorReady.value = true
   } catch (err: unknown) {
     appStore.showError(extractApiErrorMessage(err, t('admin.riskControl.loadFailed')))
   } finally {
@@ -1922,9 +1934,7 @@ async function loadStatus(silent = true) {
   }
 }
 
-async function saveConfig() {
-  saving.value = true
-  try {
+function preparePayload(): UpdateContentModerationConfig | undefined {
     if (!validAuditRiskPolicy(configForm.risk_policy)) {
       appStore.showError(t('admin.promptAudit.riskPolicy.invalid'))
       return
@@ -1990,6 +2000,14 @@ async function saveConfig() {
 
     engineDrafts.value[configForm.engine] = captureEngineDraft()
     payload.engine_configs = Object.fromEntries(Object.entries(engineDrafts.value).map(([engine, draft]) => [engine, engineDraftPayload(draft)]))
+    return payload
+}
+
+async function saveConfig() {
+  saving.value = true
+  try {
+    const payload = preparePayload()
+    if (!payload) return
     const updated = await adminAPI.riskControl.updateConfig(payload)
     applyConfig(updated)
     settingsOpen.value = false
@@ -2515,8 +2533,21 @@ function formatNumber(value: number): string {
   return new Intl.NumberFormat().format(value)
 }
 
+function editorFingerprint() {
+  const { api_key_statuses: _statuses, risk_policy: _policy, ...form } = toRaw(configForm)
+  return JSON.stringify({ form, deletes: pendingDeleteApiKeyHashes.value, engines: engineDrafts.value })
+}
+watch([configForm, engineDrafts, pendingDeleteApiKeyHashes], () => {
+  if (props.editorOnly && editorReady.value) emit('changed', editorFingerprint() !== initialEditorFingerprint)
+}, { deep: true })
+watch(() => props.sharedRiskPolicy, value => {
+  if (props.editorOnly && value !== undefined) configForm.risk_policy = value == null ? null : { ...value }
+}, { deep: true })
+defineExpose({ preparePayload })
+
 onMounted(() => {
   void loadAll()
+  if (props.editorOnly) return
   statusTimer = window.setInterval(() => {
     void loadStatus(true)
   }, 15000)

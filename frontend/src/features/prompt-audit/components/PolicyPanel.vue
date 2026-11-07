@@ -7,6 +7,7 @@
 
     <div class="mt-5 grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(260px,0.45fr)]">
       <div class="rounded-xl border border-gray-200 p-4 dark:border-dark-700/60 dark:bg-dark-900/20 sm:p-5">
+        <template v-if="!hideShared">
         <fieldset>
           <legend class="text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.promptAudit.policy.scope') }}</legend>
           <p class="mt-2 text-sm text-gray-500 dark:text-dark-300">{{ t('admin.promptAudit.policy.selectedOnlyHint') }}</p>
@@ -36,6 +37,7 @@
 
         <UserAllowlistSelector class="mt-5" :model-value="draft.user_allowlist_ids ?? []" :title="t('admin.promptAudit.policy.userAllowlistTitle')" :hint="t('admin.promptAudit.policy.userAllowlistHint')" test-id="prompt-audit-user-allowlist" @update:model-value="patch({ user_allowlist_ids: $event })" />
 
+        </template>
         <fieldset v-if="draft.engine === 'remote'" class="mt-5 border-t border-gray-100 pt-5 dark:border-dark-800">
           <legend class="text-sm font-medium text-gray-900 dark:text-white">{{ t('admin.promptAudit.policy.scanners') }}</legend>
           <div class="mt-3 grid gap-2 sm:grid-cols-2">
@@ -72,7 +74,7 @@ import UserAllowlistSelector from '@/components/admin/user/UserAllowlistSelector
 import type { PromptAuditDraft, PromptAuditGroup } from '../types'
 import { cloneData, SCANNER_CATALOG } from '../viewModel'
 
-const props = defineProps<{ draft: PromptAuditDraft; groups: PromptAuditGroup[] }>()
+const props = defineProps<{ draft: PromptAuditDraft; groups: PromptAuditGroup[]; hideShared?: boolean }>()
 const emit = defineEmits<{ (event: 'update:draft', value: PromptAuditDraft): void }>()
 const { t } = useI18n()
 const groupSearch = ref('')

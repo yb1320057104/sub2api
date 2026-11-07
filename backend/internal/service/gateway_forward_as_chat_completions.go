@@ -151,6 +151,13 @@ func (s *GatewayService) ForwardAsChatCompletions(
 		respBody, _ := s.readUpstreamErrorBody(resp)
 		_ = resp.Body.Close()
 		resp.Body = io.NopCloser(bytes.NewReader(respBody))
+		if markGatewayAuditPolicy(c, resp, account, respBody) {
+			writeGatewayCompatAuditPolicyError(c, mapUpstreamStatusCode(resp.StatusCode))
+			result := gatewayAuditPolicyResult(c, resp, originalModel, mappedModel, clientStream, startTime)
+			mergeGatewayAuditPolicyUsage(respBody, &result.Usage)
+			result.ReasoningEffort = reasoningEffort
+			return result, errOpenAICyberPolicyForwarded
+		}
 
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
@@ -188,7 +195,7 @@ func (s *GatewayService) ForwardAsChatCompletions(
 	var handleErr error
 	if clientStream {
 		writerSizeBeforeStream := c.Writer.Size()
-		result, handleErr = s.handleCCStreamingFromAnthropic(resp, c, originalModel, mappedModel, reasoningEffort, startTime)
+		result, handleErr = s.handleCCStreamingFromAnthropic(resp, account, c, originalModel, mappedModel, reasoningEffort, startTime)
 		var sseErr *sseStreamErrorEventError
 		switch {
 		case errors.As(handleErr, &sseErr):
@@ -197,7 +204,7 @@ func (s *GatewayService) ForwardAsChatCompletions(
 			s.rateLimitService.HandleStreamTimeout(ctx, account, originalModel)
 		}
 	} else {
-		result, handleErr = s.handleCCBufferedFromAnthropic(resp, c, originalModel, mappedModel, reasoningEffort, startTime)
+		result, handleErr = s.handleCCBufferedFromAnthropic(resp, account, c, originalModel, mappedModel, reasoningEffort, startTime)
 	}
 
 	return result, handleErr
@@ -229,6 +236,7 @@ func extractCCReasoningEffortFromBody(body []byte, modelCandidates ...string) *s
 // response, then converts Anthropic → Responses → Chat Completions.
 func (s *GatewayService) handleCCBufferedFromAnthropic(
 	resp *http.Response,
+	account *Account,
 	c *gin.Context,
 	originalModel string,
 	mappedModel string,
@@ -261,6 +269,13 @@ func (s *GatewayService) handleCCBufferedFromAnthropic(
 		payload, ok := extractOpenAISSEDataLine(scanner.Text())
 		if !ok {
 			continue
+		}
+		if markGatewayAuditPolicy(c, resp, account, []byte(payload)) {
+			mergeGatewayAuditPolicyUsage([]byte(payload), &usage)
+			writeGatewayCompatAuditPolicyError(c, http.StatusBadRequest)
+			result := gatewayAuditPolicyResult(c, resp, originalModel, mappedModel, false, startTime)
+			result.Usage, result.ReasoningEffort = usage, reasoningEffort
+			return result, errOpenAICyberPolicyForwarded
 		}
 
 		var event apicompat.AnthropicStreamEvent
@@ -348,14 +363,15 @@ func (s *GatewayService) handleCCBufferedFromAnthropic(
 	}
 
 	return &ForwardResult{
-		RequestID:       requestID,
-		UpstreamHeaders: resp.Header,
-		Usage:           usage,
-		Model:           originalModel,
-		UpstreamModel:   mappedModel,
-		ReasoningEffort: reasoningEffort,
-		Stream:          false,
-		Duration:        time.Since(startTime),
+		RequestID:                 requestID,
+		AuditSettlementNegotiated: auditSettlementWasNegotiated(resp),
+		UpstreamHeaders:           resp.Header,
+		Usage:                     usage,
+		Model:                     originalModel,
+		UpstreamModel:             mappedModel,
+		ReasoningEffort:           reasoningEffort,
+		Stream:                    false,
+		Duration:                  time.Since(startTime),
 	}, nil
 }
 
@@ -363,6 +379,7 @@ func (s *GatewayService) handleCCBufferedFromAnthropic(
 // to Responses events, then to Chat Completions chunks, and writes them.
 func (s *GatewayService) handleCCStreamingFromAnthropic(
 	resp *http.Response,
+	account *Account,
 	c *gin.Context,
 	originalModel string,
 	mappedModel string,
@@ -396,16 +413,17 @@ func (s *GatewayService) handleCCStreamingFromAnthropic(
 
 	resultWithUsage := func() *ForwardResult {
 		return &ForwardResult{
-			RequestID:        requestID,
-			UpstreamHeaders:  resp.Header,
-			Usage:            usage,
-			Model:            originalModel,
-			UpstreamModel:    mappedModel,
-			ReasoningEffort:  reasoningEffort,
-			Stream:           true,
-			Duration:         time.Since(startTime),
-			FirstTokenMs:     firstTokenMs,
-			ClientDisconnect: stream.clientDisconnected,
+			RequestID:                 requestID,
+			AuditSettlementNegotiated: auditSettlementWasNegotiated(resp),
+			UpstreamHeaders:           resp.Header,
+			Usage:                     usage,
+			Model:                     originalModel,
+			UpstreamModel:             mappedModel,
+			ReasoningEffort:           reasoningEffort,
+			Stream:                    true,
+			Duration:                  time.Since(startTime),
+			FirstTokenMs:              firstTokenMs,
+			ClientDisconnect:          stream.clientDisconnected,
 		}
 	}
 
@@ -493,6 +511,22 @@ func (s *GatewayService) handleCCStreamingFromAnthropic(
 		if !ok {
 			continue
 		}
+		if markGatewayAuditPolicy(c, resp, account, []byte(payload)) {
+			mergeGatewayAuditPolicyUsage([]byte(payload), &usage)
+			if !stream.clientDisconnected {
+				errorPayload, _ := json.Marshal(gin.H{"error": gatewayAuditPolicyBody(c)["error"]})
+				MarkResponseCommitted(c)
+				if _, err := fmt.Fprintf(c.Writer, "data: %s\n\n", errorPayload); err != nil {
+					stream.markClientDisconnected()
+				} else {
+					c.Writer.Flush()
+				}
+			}
+			result := resultWithUsage()
+			result.AuditSettlementCyberPolicy = true
+			result.UpstreamHeaders = auditSettlementResponseHeaders(resp.Header)
+			return result, errOpenAICyberPolicyForwarded
+		}
 
 		var event apicompat.AnthropicStreamEvent
 		if err := json.Unmarshal([]byte(payload), &event); err != nil {
@@ -549,6 +583,21 @@ func writeGatewayCCError(c *gin.Context, statusCode int, errType, message string
 			"message": message,
 		},
 	})
+}
+
+// Chat Completions and Responses share this sanitized error envelope. Only an
+// authenticated incoming settlement retains the safe machine-readable code.
+func writeGatewayCompatAuditPolicyError(c *gin.Context, statusCode int) {
+	MarkResponseCommitted(c)
+	if c.Writer.Written() && strings.Contains(c.Writer.Header().Get("Content-Type"), "text/event-stream") {
+		payload, _ := json.Marshal(gin.H{"type": "error", "error": gatewayAuditPolicyBody(c)["error"]})
+		if _, err := fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", payload); err == nil {
+			c.Writer.Flush()
+		}
+		return
+	}
+	c.Writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+	c.JSON(statusCode, gin.H{"error": gatewayAuditPolicyBody(c)["error"]})
 }
 
 // anthropicChatStreamHasUsage distinguishes an explicit zero-valued usage object

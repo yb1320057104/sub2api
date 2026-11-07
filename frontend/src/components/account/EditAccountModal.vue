@@ -1932,6 +1932,15 @@
         :type="account.type"
       />
 
+      <div v-if="supportsAuditSettlement" class="flex items-start justify-between gap-4 rounded-xl border border-gray-200 p-4 dark:border-dark-600" data-testid="audit-settlement-setting">
+        <div class="min-w-0">
+          <p class="text-sm font-medium">{{ t('admin.auditCenter.settlementTitle') }}</p>
+          <p class="mt-2 text-xs leading-5 text-gray-500 dark:text-gray-400">{{ t('admin.auditCenter.settlementHint') }}</p>
+          <p v-if="auditSettlementEnabled && !auditSettlementConfigValid" class="mt-2 text-xs text-red-600 dark:text-red-300" role="alert" data-testid="audit-settlement-invalid">{{ t('admin.auditCenter.settlementInvalid') }}</p>
+        </div>
+        <Toggle v-model="auditSettlementEnabled" :disabled="submitting" :aria-label="t('admin.auditCenter.settlementTitle')" data-testid="audit-settlement-toggle" />
+      </div>
+
       <div class="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <div>
           <label class="input-label">{{ t('admin.accounts.concurrency') }}</label>
@@ -4144,6 +4153,16 @@ const autoResetCreditEnabled = ref(false)
 const autoResetCredit5hThreshold = ref(100)
 const autoResetCredit7dThreshold = ref(100)
 const upstreamBillingAutoProbeEnabled = ref(false)
+const auditSettlementEnabled = ref(false)
+const supportsAuditSettlement = computed(() => !!props.account && ['apikey', 'upstream'].includes(props.account.type) && ['openai', 'anthropic'].includes(props.account.platform))
+const auditSettlementConfigValid = computed(() => {
+  try {
+    const value = editBaseUrl.value.trim().replace(/\/+$/, '')
+    const parsed = new URL(value)
+    const savedKey = (props.account?.credentials as Record<string, unknown> | undefined)?.api_key
+    return ['http:', 'https:'].includes(parsed.protocol) && !!parsed.hostname && !parsed.username && !parsed.password && !parsed.search && !parsed.hash && ['', '/', '/v1'].includes(parsed.pathname) && !!(editApiKey.value.trim() || (typeof savedKey === 'string' && savedKey.trim()))
+  } catch { return false }
+})
 const upstreamBillingRateSyncEnabled = ref(false)
 const mixedScheduling = ref(false) // For antigravity accounts: enable mixed scheduling
 // 上游ID：直接上游声明请求标识的响应头名，留空不记录。
@@ -4722,6 +4741,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
 	autoResetCredit7dThreshold.value =
 		typeof extra?.auto_reset_credit_7d_threshold === 'number' ? extra.auto_reset_credit_7d_threshold * 100 : 100
 	upstreamBillingAutoProbeEnabled.value = extra?.upstream_billing_probe_enabled === true
+	auditSettlementEnabled.value = extra?.audit_settlement_enabled === true
   upstreamBillingRateSyncEnabled.value =
     upstreamBillingAutoProbeEnabled.value && extra?.upstream_billing_rate_sync_enabled === true
 
@@ -5720,6 +5740,11 @@ const handleSubmit = async () => {
   if (!props.account) return
   const accountID = props.account.id
 
+  if (supportsAuditSettlement.value && auditSettlementEnabled.value && !auditSettlementConfigValid.value) {
+    appStore.showError(t('admin.auditCenter.settlementInvalid'))
+    return
+  }
+
   if (props.account.platform === 'openai' && cacheConversionEnabled.value && !cacheConversionMultiplierValid.value) {
     appStore.showError(t('admin.accounts.openai.cacheConversionMultiplierInvalid'))
     return
@@ -6483,6 +6508,11 @@ const handleSubmit = async () => {
         cache_conversion_enabled: cacheConversionEnabled.value,
         cache_conversion_multiplier: cacheConversionMultiplierValid.value ? cacheConversionMultiplier.value : 1
       }
+    }
+
+    // Trust is explicit and defaults off. Unrelated edits preserve the saved flag.
+    if (supportsAuditSettlement.value && auditSettlementEnabled.value !== (props.account.extra?.audit_settlement_enabled === true)) {
+      updatePayload.extra = { ...(updatePayload.extra || props.account.extra || {}), audit_settlement_enabled: auditSettlementEnabled.value }
     }
 
     // 上游ID头名只在改动时写回 extra，避免用弹窗打开时的快照覆盖运行态键。

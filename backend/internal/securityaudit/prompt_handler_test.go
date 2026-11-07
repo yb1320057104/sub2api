@@ -18,6 +18,42 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestAuditCenterHandlerRequiresFullAdministrator(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, method := range []string{http.MethodGet, http.MethodPut} {
+		for _, tc := range []struct {
+			name, role    string
+			authenticated bool
+			want          int
+		}{
+			{"anonymous", "", false, http.StatusUnauthorized},
+			{"role-without-subject", "admin", false, http.StatusUnauthorized},
+			{"ordinary-user", "user", true, http.StatusForbidden},
+			{"scoped-admin", "operator", true, http.StatusForbidden},
+			{"administrator", "admin", true, http.StatusServiceUnavailable},
+		} {
+			t.Run(method+"/"+tc.name, func(t *testing.T) {
+				recorder := httptest.NewRecorder()
+				ctx, _ := gin.CreateTestContext(recorder)
+				ctx.Request = httptest.NewRequest(method, "/api/v1/admin/audit-center/config", strings.NewReader("{}"))
+				if tc.authenticated {
+					ctx.Set(string(servermiddleware.ContextKeyUser), servermiddleware.AuthSubject{UserID: 42})
+				}
+				if tc.role != "" {
+					ctx.Set(string(servermiddleware.ContextKeyUserRole), tc.role)
+				}
+				handler := &PromptAdminHandler{}
+				if method == http.MethodGet {
+					handler.GetAuditCenter(ctx)
+				} else {
+					handler.UpdateAuditCenter(ctx)
+				}
+				require.Equal(t, tc.want, recorder.Code)
+			})
+		}
+	}
+}
+
 type fakePromptAdminService struct {
 	config       PublicConfig
 	save         func(context.Context, UpdateConfigRequest, int64) (PublicConfig, error)

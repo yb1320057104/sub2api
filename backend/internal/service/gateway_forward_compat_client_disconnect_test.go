@@ -106,10 +106,10 @@ type compatStreamHandler func(*GatewayService, *http.Response, *gin.Context) (*F
 func compatStreamHandlers() map[string]compatStreamHandler {
 	return map[string]compatStreamHandler{
 		"chat_completions": func(svc *GatewayService, resp *http.Response, c *gin.Context) (*ForwardResult, error) {
-			return svc.handleCCStreamingFromAnthropic(resp, c, "claude-sonnet-4-6", "claude-sonnet-4-6", nil, time.Now())
+			return svc.handleCCStreamingFromAnthropic(resp, nil, c, "claude-sonnet-4-6", "claude-sonnet-4-6", nil, time.Now())
 		},
 		"responses": func(svc *GatewayService, resp *http.Response, c *gin.Context) (*ForwardResult, error) {
-			return svc.handleResponsesStreamingResponse(resp, c, "claude-sonnet-4-6", "claude-sonnet-4-6", nil, time.Now(), apicompat.ResponsesClientToolMapping{})
+			return svc.handleResponsesStreamingResponse(resp, nil, c, "claude-sonnet-4-6", "claude-sonnet-4-6", nil, time.Now(), apicompat.ResponsesClientToolMapping{})
 		},
 	}
 }
@@ -591,7 +591,7 @@ func TestHandleResponsesStreamingResponse_FailureSequenceFollowsRestoredEvents(t
 	mapping := apicompat.ResponsesClientToolMapping{CustomTools: map[string]bool{"apply_patch": true}}
 
 	_, err := (&GatewayService{}).handleResponsesStreamingResponse(
-		&http.Response{Header: http.Header{}, Body: io.NopCloser(strings.NewReader(stream))},
+		&http.Response{Header: http.Header{}, Body: io.NopCloser(strings.NewReader(stream))}, nil,
 		c, "claude-sonnet-4-6", "claude-sonnet-4-6", nil, time.Now(), mapping,
 	)
 
@@ -780,7 +780,7 @@ func TestHandleCCStreamingFromAnthropic_ClientDisconnectDrainsUpstreamUsage(t *t
 	c, _ := gin.CreateTestContext(writer)
 
 	result, err := (&GatewayService{}).handleCCStreamingFromAnthropic(
-		&http.Response{Header: http.Header{}, Body: io.NopCloser(strings.NewReader(anthropicStreamWithMidStreamText()))},
+		&http.Response{Header: http.Header{}, Body: io.NopCloser(strings.NewReader(anthropicStreamWithMidStreamText()))}, nil,
 		c, "claude-sonnet-4-6", "claude-sonnet-4-6", nil, time.Now(),
 	)
 	require.NoError(t, err)
@@ -808,7 +808,7 @@ func TestHandleResponsesStreamingResponse_ClientDisconnectDrainsUpstreamUsage(t 
 	c, _ := gin.CreateTestContext(writer)
 
 	result, err := (&GatewayService{}).handleResponsesStreamingResponse(
-		&http.Response{Header: http.Header{}, Body: io.NopCloser(strings.NewReader(anthropicStreamWithMidStreamText()))},
+		&http.Response{Header: http.Header{}, Body: io.NopCloser(strings.NewReader(anthropicStreamWithMidStreamText()))}, nil,
 		c, "claude-sonnet-4-6", "claude-sonnet-4-6", nil, time.Now(), apicompat.ResponsesClientToolMapping{},
 	)
 	require.NoError(t, err)

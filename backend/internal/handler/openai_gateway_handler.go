@@ -253,6 +253,7 @@ func usageRecordContext(parent context.Context, base context.Context) context.Co
 	}
 	base = service.CopyFirstResponseTiming(parent, base)
 	base = service.CopyCyberPolicyAuditUsage(parent, base)
+	base = service.CopyAuditSettlement(parent, base)
 	if clientRequestID, _ := parent.Value(ctxkey.ClientRequestID).(string); strings.TrimSpace(clientRequestID) != "" {
 		base = context.WithValue(base, ctxkey.ClientRequestID, strings.TrimSpace(clientRequestID))
 	}
@@ -273,10 +274,13 @@ func wrapUsageRecordTaskContext(parent context.Context, task service.UsageRecord
 	if parent != nil {
 		done = service.InflightReservationFromContext(parent).Acquire()
 	}
+	decorateSettlement, settlementDone := service.BeginAuditSettlementTask(parent)
+	var once sync.Once
+	complete := func() { once.Do(func() { settlementDone(); done() }) }
 	return func(ctx context.Context) {
-		defer done()
-		task(usageRecordContext(parent, ctx))
-	}, done
+		defer complete()
+		task(decorateSettlement(usageRecordContext(parent, ctx)))
+	}, complete
 }
 
 func openAICompatibleRequestPlatform(ctx context.Context, apiKey *service.APIKey) string {
@@ -807,7 +811,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		if service.GetOpsCyberPolicy(c) != nil {
 			cyberBlockBodyHTTP = sessionHashBody
 		}
-		h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, reqModel, err != nil, cyberBlockBodyHTTP, clientRequestedUsageFields(c, channelMapping, reqModel, ""), service.HashUsageRequestPayload(body))
+		h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, reqModel, err != nil && result == nil, cyberBlockBodyHTTP, clientRequestedUsageFields(c, channelMapping, reqModel, ""), service.HashUsageRequestPayload(body))
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
 		upstreamLatencyMs, _ := getContextInt64(c, service.OpsUpstreamLatencyMsKey)
 		responseLatencyMs := forwardDurationMs
@@ -1405,7 +1409,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		if service.GetOpsCyberPolicy(c) != nil {
 			cyberBlockBodyMsg = body
 		}
-		h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, reqModel, err != nil, cyberBlockBodyMsg, clientRequestedUsageFields(c, channelMappingMsg, reqModel, ""), service.HashUsageRequestPayload(body))
+		h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, reqModel, err != nil && result == nil, cyberBlockBodyMsg, clientRequestedUsageFields(c, channelMappingMsg, reqModel, ""), service.HashUsageRequestPayload(body))
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
 		upstreamLatencyMs, _ := getContextInt64(c, service.OpsUpstreamLatencyMsKey)
 		responseLatencyMs := forwardDurationMs
@@ -4401,9 +4405,9 @@ func (h *OpenAIGatewayHandler) enqueueCyberSessionBlockedOpsEntry(c *gin.Context
 }
 
 // recordCyberPolicyIfMarked 在 gateway forward 返回后检查 cyber 标记，异步写风控日志/邮件，
-// 并在 forward 返回错误时写一条 tokens=0 用量行。标记由 gateway 服务层在透传 cyber 后设置；
-// 当前请求已发给用户，本方法只做事后记录，不影响响应。forwardErrored 为 true 时才写用量行，
-// 避免与正常 RecordUsage(forward 成功路径)重复。每请求至多记录一次。
+// 并在 forward 错误没有部分 result 时用已观测的真实 tokens 写 type4 用量行。
+// HTTP 错误带 result 时由普通 usage 任务持久化完整用量，本方法只记录审计事件，
+// 避免同一请求双写、重复计费或使结算回执不可用。每请求至多记录一次。
 func (h *OpenAIGatewayHandler) recordCyberPolicyIfMarked(c *gin.Context, apiKey *service.APIKey, account *service.Account, subscription *service.UserSubscription, model string, forwardErrored bool, cyberBlockBody []byte, channelFields service.ChannelUsageFields, requestPayloadHash string) {
 	mark := service.GetOpsCyberPolicy(c)
 	if mark == nil {
@@ -4487,7 +4491,7 @@ func (h *OpenAIGatewayHandler) recordCyberPolicyIfMarked(c *gin.Context, apiKey 
 		ClientIP:        clientIPStr,
 		CreatedAt:       time.Now(),
 	}
-	cyberLogOnly := h.cyberPolicyLogOnly(c, apiKey)
+	cyberLogOnly := h.cyberPolicyLogOnly(c, apiKey) || service.IsImportedAuditSettlementCyberPolicy(account, mark)
 	if gwSvc != nil && apiKey != nil && !cyberLogOnly {
 		plan := buildCyberSessionBlockWritePlan(apiKey.ID, c, cyberBlockBody)
 		if len(plan.keys) > 0 {
@@ -4496,8 +4500,17 @@ func (h *OpenAIGatewayHandler) recordCyberPolicyIfMarked(c *gin.Context, apiKey 
 			cancel()
 		}
 	}
+	decorateSettlement := func(ctx context.Context) context.Context { return ctx }
+	settlementDone := func() {}
+	if forwardErrored && gwSvc != nil {
+		// This error-path usage bypasses the normal usage task pool, but may
+		// still incur a committed type4 audit charge. Hold its receipt pending
+		// before the HTTP handler returns, just like a queued success bill.
+		decorateSettlement, settlementDone = service.BeginAuditSettlementTask(requestCtx)
+	}
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer settlementDone()
+		ctx, cancel := context.WithTimeout(decorateSettlement(usageRecordContext(requestCtx, context.Background())), 30*time.Second)
 		defer cancel()
 		if cmSvc != nil {
 			cmSvc.RecordCyberPolicyEvent(ctx, service.CyberPolicyRecordInput{
@@ -4520,23 +4533,25 @@ func (h *OpenAIGatewayHandler) recordCyberPolicyIfMarked(c *gin.Context, apiKey 
 		}
 		if forwardErrored && gwSvc != nil {
 			gwSvc.RecordCyberPolicyUsageLog(ctx, service.CyberPolicyUsageInput{
-				APIKey:             apiKey,
-				Account:            account,
-				Subscription:       subscription,
-				RequestID:          requestID,
-				Model:              model,
-				Stream:             stream,
-				InputTokens:        mark.UpstreamInTok,
-				OutputTokens:       mark.UpstreamOutTok,
-				InboundEndpoint:    inboundEndpoint,
-				UpstreamEndpoint:   upstreamEndpoint,
-				UserAgent:          userAgent,
-				IPAddress:          clientIPStr,
-				SessionID:          sessionID,
-				RequestPayloadHash: requestPayloadHash,
-				APIKeyService:      apiKeySvc,
-				NativeCompactionV2: nativeCompactionV2,
-				ChannelUsageFields: channelFields,
+				APIKey:                    apiKey,
+				Account:                   account,
+				Subscription:              subscription,
+				RequestID:                 requestID,
+				Model:                     model,
+				Stream:                    stream,
+				InputTokens:               mark.UpstreamInTok,
+				OutputTokens:              mark.UpstreamOutTok,
+				UpstreamHeaders:           mark.UpstreamHeaders,
+				AuditSettlementNegotiated: mark.AuditSettlementNegotiated,
+				InboundEndpoint:           inboundEndpoint,
+				UpstreamEndpoint:          upstreamEndpoint,
+				UserAgent:                 userAgent,
+				IPAddress:                 clientIPStr,
+				SessionID:                 sessionID,
+				RequestPayloadHash:        requestPayloadHash,
+				APIKeyService:             apiKeySvc,
+				NativeCompactionV2:        nativeCompactionV2,
+				ChannelUsageFields:        channelFields,
 			})
 		}
 		if opsSvc != nil {

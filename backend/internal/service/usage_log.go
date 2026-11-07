@@ -178,11 +178,14 @@ type UsageLog struct {
 	Stream             bool
 	OpenAIWSMode       bool
 	NativeCompactionV2 bool
-	DurationMs         *int
-	FirstTokenMs       *int
-	FirstResponseMs    *int // User-visible TTFT: downstream first write when early response is enabled; native upstream TTFT otherwise.
-	UserAgent          *string
-	IPAddress          *string
+	// Server-owned provenance for a negotiated remote type4 event. Never bind
+	// from client JSON; its committed receipt is charged through the import ledger.
+	AuditSettlementImportedEvent bool `json:"-"`
+	DurationMs                   *int
+	FirstTokenMs                 *int
+	FirstResponseMs              *int // User-visible TTFT: downstream first write when early response is enabled; native upstream TTFT otherwise.
+	UserAgent                    *string
+	IPAddress                    *string
 	// SessionID is the explicit client-provided request correlation identifier
 	// (e.g. the session_id / X-Session-Id headers). Nil when the client sent no
 	// valid session header. It is never derived from prompt_cache_key or content.

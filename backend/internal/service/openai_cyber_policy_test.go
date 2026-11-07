@@ -87,11 +87,11 @@ func TestCyberPolicyRecordsKeepsHistoricalUnknownAndInsertionEvidence(t *testing
 	mock.ExpectQuery(regexp.QuoteMeta(cyberRecordsCountQuery)).
 		WithArgs(int64(7), start, end).WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(4))
 	mock.ExpectQuery(regexp.QuoteMeta(cyberRecordsQuery)).WithArgs(int64(7), start, end, 100, 0).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at", "group_id", "group_name", "request_id", "model", "status", "reason", "scope", "revision", "evaluated_at", "source", "audit_id", "charge_status", "charge_reason", "cost", "multiplier", "charge_amount", "policy_action", "risk_score", "risk_level", "linked_usage_id"}).
-			AddRow(3, start.Add(3*time.Hour), 9, "original skipped group", "request-c", "model", "skipped", "group_not_enabled", false, 12, evaluated, "upstream_policy", nil, "skipped", "group_not_enabled", "0.0200000000", "1.000000", "0.02000000", "", nil, nil, nil).
-			AddRow(2, start.Add(2*time.Hour), 7, "original counted group", "request-b", "model", "counted", "", true, 11, evaluated, "upstream_policy", nil, "deducted", "", "0.0200000000", "2.000000", "0.04000000", "", nil, nil, nil).
-			AddRow(1, start.Add(time.Hour), nil, "", "request-a", "model", "unknown", "historical_unknown", nil, nil, nil, "upstream_policy", nil, "historical_unknown", "", nil, nil, nil, "", nil, nil, nil).
-			AddRow(0, start.Add(30*time.Minute), 7, "audit group snapshot", "request-d", "model", "counted", "", true, 11, evaluated, "content_audit", 41, "zero_cost", "", "0.0000000000", "2.000000", "0.00000000", "block", 70, "high", nil)).RowsWillBeClosed()
+		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at", "group_id", "group_name", "request_id", "model", "status", "reason", "scope", "revision", "evaluated_at", "source", "audit_id", "charge_status", "charge_reason", "cost", "multiplier", "charge_amount", "policy_action", "risk_score", "risk_level", "linked_usage_id", "auto_charge_source", "auto_charge_rule", "auto_charge_minimum"}).
+			AddRow(3, start.Add(3*time.Hour), 9, "original skipped group", "request-c", "model", "skipped", "group_not_enabled", false, 12, evaluated, "upstream_policy", nil, "skipped", "group_not_enabled", "0.0200000000", "1.000000", "0.02000000", "", nil, nil, nil, nil, nil, nil).
+			AddRow(2, start.Add(2*time.Hour), 7, "original counted group", "request-b", "model", "counted", "", true, 11, evaluated, "upstream_policy", nil, "deducted", "", "0.0000000000", "2.000000", "6.70000000", "", nil, nil, nil, "upstream_type4", "max_cost_multiplier_minimum", "6.70000000").
+			AddRow(1, start.Add(time.Hour), nil, "", "request-a", "model", "unknown", "historical_unknown", nil, nil, nil, "upstream_policy", nil, "historical_unknown", "", nil, nil, nil, "", nil, nil, nil, nil, nil, nil).
+			AddRow(0, start.Add(30*time.Minute), 7, "audit group snapshot", "request-d", "model", "counted", "", true, 11, evaluated, "content_audit", 41, "zero_cost", "", "0.0000000000", "2.000000", "0.00000000", "block", 70, "high", nil, nil, nil, nil)).RowsWillBeClosed()
 	mock.ExpectCommit()
 	result, err := svc.Records(context.Background(), 7, CyberPolicyWindowInput{StartDate: "2006-02-03", EndDate: "2006-02-03", Timezone: "Asia/Shanghai"}, 0, 1000)
 	require.NoError(t, err)
@@ -112,7 +112,13 @@ func TestCyberPolicyRecordsKeepsHistoricalUnknownAndInsertionEvidence(t *testing
 	require.Nil(t, result.Items[2].SettingsRevision)
 	require.Nil(t, result.Items[2].EvaluatedAt)
 	require.Equal(t, "deducted", result.Items[1].AutoChargeStatus)
-	require.Equal(t, "0.04000000", *result.Items[1].AutoChargeAmount)
+	require.Equal(t, "6.70000000", *result.Items[1].AutoChargeAmount)
+	require.Equal(t, "0.0000000000", *result.Items[1].ActualCost)
+	require.Equal(t, "upstream_type4", *result.Items[1].AutoChargeSource)
+	require.Equal(t, "max_cost_multiplier_minimum", *result.Items[1].AutoChargeRule)
+	require.Equal(t, "6.70000000", *result.Items[1].AutoChargeMinimum)
+	require.Nil(t, result.Items[2].AutoChargeMinimum)
+	require.Nil(t, result.Items[3].AutoChargeRule, "old zero-cost audit evidence must not inherit today's minimum")
 	require.Nil(t, result.Items[2].AutoChargeAmount)
 	require.Equal(t, "upstream_policy", result.Items[2].Source)
 	require.Equal(t, "usage:1:"+result.Items[2].OccurredAt.UTC().Format(time.RFC3339Nano), result.Items[2].RecordKey)

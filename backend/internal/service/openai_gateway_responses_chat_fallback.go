@@ -173,6 +173,7 @@ func (s *OpenAIGatewayService) bufferChatCompletionsAsResponses(
 
 	return &OpenAIForwardResult{
 		RequestID:                   requestID,
+		AuditSettlementNegotiated:   auditSettlementWasNegotiated(resp),
 		UpstreamHeaders:             resp.Header,
 		Usage:                       usage,
 		Model:                       originalModel,
@@ -252,6 +253,7 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 	resultWithUsage := func() *OpenAIForwardResult {
 		return &OpenAIForwardResult{
 			RequestID:                   requestID,
+			AuditSettlementNegotiated:   auditSettlementWasNegotiated(resp),
 			UpstreamHeaders:             resp.Header,
 			Usage:                       scan.Usage,
 			Model:                       originalModel,

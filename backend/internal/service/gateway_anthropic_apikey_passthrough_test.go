@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -63,6 +64,120 @@ func (u *anthropicHTTPUpstreamRecorder) Do(req *http.Request, proxyURL string, a
 
 func (u *anthropicHTTPUpstreamRecorder) DoWithTLS(req *http.Request, proxyURL string, accountID int64, accountConcurrency int, profile *tlsfingerprint.Profile) (*http.Response, error) {
 	return u.Do(req, proxyURL, accountID, accountConcurrency)
+}
+
+type auditPolicyAnthropicUpstream struct {
+	*anthropicHTTPUpstreamRecorder
+	calls int
+}
+
+func (u *auditPolicyAnthropicUpstream) DoWithTLS(req *http.Request, proxyURL string, accountID int64, concurrency int, profile *tlsfingerprint.Profile) (*http.Response, error) {
+	u.calls++
+	resp, err := u.anthropicHTTPUpstreamRecorder.DoWithTLS(req, proxyURL, accountID, concurrency, profile)
+	if resp != nil {
+		resp.Request = req
+	}
+	return resp, err
+}
+
+func TestGatewayAuditSettlementPolicyRefusal(t *testing.T) {
+	for _, passthrough := range []bool{false, true} {
+		for _, variant := range []string{"http400", "http429", "http200", "stream", "stream_with_usage", "stream_without_boundary", "stream_final_usage", "heartbeat_http400"} {
+			t.Run(fmt.Sprintf("passthrough=%v/%s", passthrough, variant), func(t *testing.T) {
+				account := newAnthropicAPIKeyAccountForTest()
+				account.Extra["anthropic_passthrough"] = passthrough
+				account.Extra[AuditSettlementEnabledExtraKey] = true
+				body := `{"type":"error","error":{"type":"invalid_request_error","code":"cyber_policy","message":"private detail"}}`
+				if variant == "stream_final_usage" {
+					body = `{"type":"error","error":{"code":"cyber_policy"},"usage":{"input_tokens":11,"output_tokens":7,"cache_read_input_tokens":5}}`
+				}
+				status := http.StatusBadRequest
+				stream := strings.HasPrefix(variant, "stream")
+				if variant == "http429" {
+					status = http.StatusTooManyRequests
+				}
+				if variant == "http200" || stream {
+					status = http.StatusOK
+				}
+				if stream {
+					body = "event: error\ndata: " + body + "\n\n"
+					if variant == "stream_without_boundary" {
+						body = strings.TrimRight(body, "\n")
+					}
+					if variant == "stream_with_usage" {
+						body = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":11}}}\n\n" + body
+					}
+				}
+				upstream := &auditPolicyAnthropicUpstream{anthropicHTTPUpstreamRecorder: &anthropicHTTPUpstreamRecorder{resp: &http.Response{
+					StatusCode: status, Header: http.Header{auditImportCapabilityHeader: {"v1"}, auditImportReceiptHeader: {"2561ce22-94f1-44bc-a2a5-984c29ee5f49"}}, Body: io.NopCloser(strings.NewReader(body)),
+				}}}
+				svc := newForwardPartialUsageServiceForTest(upstream.anthropicHTTPUpstreamRecorder)
+				svc.httpUpstream = upstream
+				rec := httptest.NewRecorder()
+				c, _ := gin.CreateTestContext(rec)
+				c.Request = httptest.NewRequest("POST", "/v1/messages", nil)
+				if variant == "heartbeat_http400" {
+					stream = true
+					c.Writer.Header().Set("Content-Type", "text/event-stream")
+					_, _ = c.Writer.WriteString(": ping\n\n")
+					c.Writer.Flush()
+				}
+				parsed, err := ParseGatewayRequest(NewRequestBodyRef([]byte(fmt.Sprintf(`{"model":"claude-sonnet-4","stream":%v,"max_tokens":10,"messages":[{"role":"user","content":"fixture"}]}`, stream))), PlatformAnthropic)
+				require.NoError(t, err)
+				result, err := svc.Forward(context.Background(), c, account, parsed)
+				require.ErrorIs(t, err, errOpenAICyberPolicyForwarded)
+				require.NotNil(t, result)
+				require.True(t, result.AuditSettlementCyberPolicy)
+				require.True(t, result.AuditSettlementNegotiated)
+				require.Equal(t, 1, upstream.calls, "policy refusal must not retry or fail over")
+				if variant == "stream_with_usage" || variant == "stream_final_usage" {
+					require.Equal(t, 11, result.Usage.InputTokens)
+				} else {
+					require.Zero(t, result.Usage.InputTokens)
+				}
+				if variant == "stream_final_usage" {
+					require.Equal(t, 7, result.Usage.OutputTokens)
+					require.Equal(t, 5, result.Usage.CacheReadInputTokens)
+				} else {
+					require.Zero(t, result.Usage.OutputTokens)
+				}
+				require.NotContains(t, rec.Body.String(), "private detail")
+				require.NotContains(t, rec.Body.String(), `"code":"cyber_policy"`, "native downstream did not negotiate")
+				if variant == "heartbeat_http400" {
+					require.Contains(t, rec.Body.String(), "event: error\ndata: ")
+				}
+			})
+		}
+	}
+}
+
+func TestGatewayAuditSettlementPolicyRequiresReceiptAndNegotiation(t *testing.T) {
+	a := newAnthropicAPIKeyAccountForTest()
+	a.Extra[AuditSettlementEnabledExtraKey] = true
+	req, err := http.NewRequest("POST", "https://api.anthropic.com/v1/messages?beta=true", nil)
+	require.NoError(t, err)
+	req.Header.Set("X-Api-Key", a.GetCredential("api_key"))
+	prepareAuditSettlementRequest(req, a)
+	resp := &http.Response{Request: req, Header: http.Header{auditImportCapabilityHeader: {"v1"}, auditImportReceiptHeader: {"2561ce22-94f1-44bc-a2a5-984c29ee5f49"}}}
+	for _, variant := range []string{"valid", "bad_receipt", "not_negotiated", "disabled", "not_policy"} {
+		t.Run(variant, func(t *testing.T) {
+			copyResp := *resp
+			copyResp.Header = resp.Header.Clone()
+			a.Extra[AuditSettlementEnabledExtraKey] = variant != "disabled"
+			payload := []byte(`{"error":{"code":"cyber_policy"}}`)
+			if variant == "bad_receipt" {
+				copyResp.Header.Set(auditImportReceiptHeader, "broken")
+			}
+			if variant == "not_negotiated" {
+				copyResp.Request = nil
+			}
+			if variant == "not_policy" {
+				payload = []byte(`{"error":{"code":"rate_limit_error"}}`)
+			}
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			require.Equal(t, variant == "valid", markGatewayAuditPolicy(c, &copyResp, a, payload))
+		})
+	}
 }
 
 type streamReadCloser struct {

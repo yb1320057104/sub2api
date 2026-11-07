@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -21,6 +22,113 @@ import (
 )
 
 const promptAuditRedisTestEnv = "PROMPT_AUDIT_TEST_REDIS_ADDR"
+
+// This test never falls back to the application's DSN. The caller supplies an
+// isolated PostgreSQL instance, and the test creates/drops only its own schema.
+func TestPK54AuditCenterAtomicIntegration(t *testing.T) {
+	dsn := strings.TrimSpace(os.Getenv("PK54_TEST_POSTGRES_DSN"))
+	if dsn == "" {
+		t.Skip("PK54_TEST_POSTGRES_DSN is required for isolated audit-center integration")
+	}
+	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
+		parsed, err := pq.ParseURL(dsn)
+		require.NoError(t, err)
+		dsn = parsed
+	}
+	adminDB, err := sql.Open("postgres", dsn)
+	require.NoError(t, err)
+	defer adminDB.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	schema := fmt.Sprintf("pk54_audit_center_%d", time.Now().UnixNano())
+	_, err = adminDB.ExecContext(ctx, "CREATE SCHEMA "+pq.QuoteIdentifier(schema))
+	require.NoError(t, err)
+	defer func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cleanupCancel()
+		_, cleanupErr := adminDB.ExecContext(cleanupCtx, "DROP SCHEMA "+pq.QuoteIdentifier(schema)+" CASCADE")
+		require.NoError(t, cleanupErr)
+	}()
+	db, err := sql.Open("postgres", dsn+" search_path="+schema)
+	require.NoError(t, err)
+	defer db.Close()
+	_, err = db.ExecContext(ctx, `
+		CREATE TABLE settings(key TEXT PRIMARY KEY,value TEXT NOT NULL,updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+		CREATE TABLE users(id BIGINT PRIMARY KEY,deleted_at TIMESTAMPTZ);
+		CREATE TABLE groups(id BIGINT PRIMARY KEY,status TEXT NOT NULL,deleted_at TIMESTAMPTZ);
+		CREATE TABLE cyber_policy_settings(id INTEGER PRIMARY KEY,multiplier NUMERIC NOT NULL DEFAULT 1,
+			auto_disable_enabled BOOLEAN NOT NULL DEFAULT FALSE,auto_disable_threshold BIGINT NOT NULL DEFAULT 10,
+			reset_on_manual_enable BOOLEAN NOT NULL DEFAULT TRUE,group_ids BIGINT[] NOT NULL DEFAULT '{}',
+			settings_revision BIGINT NOT NULL DEFAULT 1,user_allowlist_ids BIGINT[] NOT NULL DEFAULT '{}',
+			group_rules JSONB NOT NULL DEFAULT '[]',updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+		CREATE FUNCTION audit_center_fixture_revision() RETURNS TRIGGER LANGUAGE plpgsql AS $body$
+		BEGIN
+			IF NEW.auto_disable_threshold=999 THEN RAISE EXCEPTION 'isolated ranking write failure'; END IF;
+			NEW.settings_revision:=OLD.settings_revision+1; RETURN NEW;
+		END;$body$;
+		CREATE TRIGGER audit_center_fixture_revision BEFORE UPDATE ON cyber_policy_settings
+			FOR EACH ROW EXECUTE FUNCTION audit_center_fixture_revision();
+		CREATE TABLE cyber_policy_auto_charges(id BIGSERIAL PRIMARY KEY,status TEXT,reason TEXT,amount NUMERIC,evaluated_at TIMESTAMPTZ);
+		CREATE TABLE audit_settlement_imports(id BIGSERIAL PRIMARY KEY,status TEXT,reason TEXT,amount NUMERIC,created_at TIMESTAMPTZ);
+		CREATE TABLE cyber_policy_audit_observations(id BIGSERIAL PRIMARY KEY,source TEXT,created_at TIMESTAMPTZ);
+		INSERT INTO users(id) VALUES(101);
+		INSERT INTO groups(id,status) VALUES(201,'active'),(202,'active');
+		INSERT INTO cyber_policy_settings(id,group_ids) VALUES(1,ARRAY[202]);
+		INSERT INTO cyber_policy_auto_charges(status,reason,amount,evaluated_at) VALUES
+			('deducted','',0.25,NOW()-INTERVAL '1 minute'),('skipped','user_exempt',99,NOW()-INTERVAL '1 minute');
+		INSERT INTO audit_settlement_imports(status,reason,amount,created_at) VALUES('deducted','',0.5,NOW()-INTERVAL '1 minute');
+		INSERT INTO cyber_policy_audit_observations(source,created_at) VALUES('prompt_observation',NOW()-INTERVAL '1 minute');
+	`)
+	require.NoError(t, err)
+	prompt := DefaultStorageConfig()
+	prompt.GroupIDs = []int64{202}
+	prompt.Endpoints = []StorageEndpoint{{ID: "main", Name: "saved", Protocol: "openai_compatible", BaseURL: "https://audit.example.test", Model: "saved-model", TokenCiphertext: "enc:private-prompt-key", TimeoutMS: 1000, InputLimit: 4000}}
+	promptRaw, err := json.Marshal(prompt)
+	require.NoError(t, err)
+	for key, value := range map[string]string{
+		SettingKeyRiskControl: "true", SettingKeyPromptAuditConfig: string(promptRaw),
+		service.SettingKeyContentModerationConfig: `{"api_keys":["private-content-key"],"group_ids":[201]}`,
+	} {
+		_, err = db.ExecContext(ctx, `INSERT INTO settings(key,value) VALUES($1,$2)`, key, value)
+		require.NoError(t, err)
+	}
+	manager := NewConfigManager(db, nil, nil, prefixEncryptor{}, testTotpKeyConfig())
+	center := &AuditCenterService{prompt: manager, content: &service.ContentModerationService{}, ranking: service.NewCyberPolicyService(db, nil, nil)}
+	before, err := center.Get(ctx)
+	require.NoError(t, err)
+	require.Contains(t, before.Differences, "group_ids")
+	require.Len(t, before.ObservationSummary, 1)
+	require.Equal(t, "0", before.ChargeSummary[1].Amount, "skipped proposed amounts are never reported as actual debits")
+	disabled := false
+	after, err := center.Save(ctx, AuditCenterUpdate{ExpectedRevision: before.Revision, RiskControlEnabled: &disabled,
+		Shared: &AuditCenterShared{GroupIDs: &[]int64{201}, UserAllowlistIDs: &[]int64{101}}}, 42)
+	require.NoError(t, err)
+	require.Equal(t, []int64{201}, after.Content.GroupIDs)
+	require.Equal(t, after.Content.GroupIDs, after.Prompt.GroupIDs)
+	require.Equal(t, after.Content.GroupIDs, after.Ranking.GroupIDs)
+	require.Equal(t, []int64{101}, after.Prompt.UserAllowlistIDs)
+	require.False(t, after.RiskControlEnabled)
+	require.Equal(t, int64(2), after.Prompt.ConfigVersion)
+	require.Equal(t, int64(2), after.Ranking.SettingsRevision)
+	_, err = center.Save(ctx, AuditCenterUpdate{ExpectedRevision: before.Revision, RiskControlEnabled: &disabled}, 42)
+	require.Equal(t, "AUDIT_CENTER_CONFIG_CONFLICT", infraerrors.Reason(err))
+	var savedContent, savedPrompt string
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key=$1`, service.SettingKeyContentModerationConfig).Scan(&savedContent))
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key=$1`, SettingKeyPromptAuditConfig).Scan(&savedPrompt))
+	require.Contains(t, savedContent, "private-content-key")
+	require.Contains(t, savedPrompt, "enc:private-prompt-key")
+	enabled := true
+	failingThreshold := int64(999)
+	_, err = center.Save(ctx, AuditCenterUpdate{ExpectedRevision: after.Revision, RiskControlEnabled: &enabled,
+		Shared:  &AuditCenterShared{UserAllowlistIDs: &[]int64{}},
+		Ranking: &service.CyberPolicySettingsInput{AutoDisableThreshold: &failingThreshold}}, 42)
+	require.ErrorContains(t, err, "isolated ranking write failure")
+	final, err := center.Get(ctx)
+	require.NoError(t, err)
+	require.Equal(t, after.Revision, final.Revision, "later ranking SQL failure must roll back both audit configs and the shared gate")
+	require.False(t, manager.snapshot.Load().active.RiskControlEnabled)
+	require.Equal(t, int64(2), manager.snapshot.Load().storage.ConfigVersion)
+}
 
 type postgresPromptAuditSettingRepository struct{ db *sql.DB }
 

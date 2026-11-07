@@ -333,12 +333,13 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 	refusalDetector := newOpenAIChatSilentRefusalDetector(requestBodyLen)
 	var terminal openAIRawStreamTerminalState
 	var conversionErr error
+	cyberPolicy := false
 
 	writeLine := func(line string) {
 		if clientDisconnected {
 			return
 		}
-		if !clientOutputStarted && !refusalDetector.ShouldReleaseClientOutput() {
+		if !clientOutputStarted && !cyberPolicy && !refusalDetector.ShouldReleaseClientOutput() {
 			pendingLines = append(pendingLines, line)
 			return
 		}
@@ -378,6 +379,9 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 				if u := extractCCStreamUsage(payload); u != nil {
 					usage = *u
 				}
+				if markNegotiatedAuditCyberPolicy(c, account, resp, []byte(payload), usage) {
+					cyberPolicy = true
+				}
 				if firstTokenMs == nil && !usageOnlyChunk {
 					elapsed := int(time.Since(startTime).Milliseconds())
 					firstTokenMs = &elapsed
@@ -397,6 +401,9 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 			if !clientDisconnected && clientOutputStarted {
 				c.Writer.Flush()
 			}
+			if cyberPolicy {
+				break
+			}
 			continue
 		}
 		if !clientDisconnected && clientOutputStarted {
@@ -407,6 +414,7 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 	resultWithUsage := func() *OpenAIForwardResult {
 		return &OpenAIForwardResult{
 			RequestID:                     requestID,
+			AuditSettlementNegotiated:     auditSettlementWasNegotiated(resp),
 			UpstreamHeaders:               resp.Header,
 			Usage:                         usage,
 			Model:                         originalModel,
@@ -423,6 +431,9 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 		}
 	}
 
+	if cyberPolicy {
+		return resultWithUsage(), errOpenAICyberPolicyForwarded
+	}
 	if conversionErr != nil {
 		return resultWithUsage(), conversionErr
 	}
@@ -559,8 +570,9 @@ func (s *OpenAIGatewayService) bufferRawChatCompletions(
 	if parsedUsage, ok := extractOpenAIUsageFromJSONBytes(respBody); ok {
 		usage = parsedUsage
 	}
+	cyberPolicy := markNegotiatedAuditCyberPolicy(c, account, resp, respBody, usage)
 	responseModel := gjson.GetBytes(respBody, "model").String()
-	if requiresBillableGrokChatUsage(account, billingModel, upstreamModel, responseModel) && !hasBillableGrokChatUsage(usage) {
+	if !cyberPolicy && requiresBillableGrokChatUsage(account, billingModel, upstreamModel, responseModel) && !hasBillableGrokChatUsage(usage) {
 		upstreamRequestID := firstNonEmpty(requestID, resp.Header.Get("xai-request-id"))
 		return nil, newGrokMissingUsageFailoverError(c, account, upstreamRequestID)
 	}
@@ -583,9 +595,13 @@ func (s *OpenAIGatewayService) bufferRawChatCompletions(
 		c.Writer.WriteHeader(http.StatusOK)
 		_, _ = c.Writer.Write(respBody)
 	}
+	if cyberPolicy {
+		conversionErr = errOpenAICyberPolicyForwarded
+	}
 
 	return &OpenAIForwardResult{
 		RequestID:                     requestID,
+		AuditSettlementNegotiated:     auditSettlementWasNegotiated(resp),
 		UpstreamHeaders:               resp.Header,
 		Usage:                         usage,
 		Model:                         originalModel,

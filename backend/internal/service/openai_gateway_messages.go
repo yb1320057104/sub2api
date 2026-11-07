@@ -660,12 +660,14 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 		payload, _ := json.Marshal(gin.H{"type": "response.failed", "response": finalResponse})
 		if hit, code, msg := detectOpenAICyberPolicy(payload); hit {
 			MarkOpsCyberPolicy(c, CyberPolicyMark{
-				Code:           code,
-				Message:        msg,
-				Body:           truncateString(string(payload), 4096),
-				UpstreamStatus: http.StatusOK,
-				UpstreamInTok:  usage.InputTokens,
-				UpstreamOutTok: usage.OutputTokens,
+				AuditSettlementNegotiated: auditSettlementWasNegotiated(resp),
+				UpstreamHeaders:           auditSettlementResponseHeaders(resp.Header),
+				Code:                      code,
+				Message:                   msg,
+				Body:                      truncateString(string(payload), 4096),
+				UpstreamStatus:            http.StatusOK,
+				UpstreamInTok:             usage.InputTokens,
+				UpstreamOutTok:            usage.OutputTokens,
 			})
 			clientMsg := msg
 			if clientMsg == "" {
@@ -713,6 +715,7 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 
 	result := &OpenAIForwardResult{
 		RequestID:                     requestID,
+		AuditSettlementNegotiated:     auditSettlementWasNegotiated(resp),
 		UpstreamHeaders:               resp.Header,
 		ResponseID:                    finalResponse.ID,
 		Usage:                         usage,
@@ -1073,6 +1076,7 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 	resultWithUsage := func() *OpenAIForwardResult {
 		out := &OpenAIForwardResult{
 			RequestID:                     requestID,
+			AuditSettlementNegotiated:     auditSettlementWasNegotiated(resp),
 			UpstreamHeaders:               resp.Header,
 			ResponseID:                    responseID,
 			Usage:                         usage,
@@ -1138,12 +1142,14 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 				payloadBytes := []byte(payload)
 				if hit, code, msg := detectOpenAICyberPolicy(payloadBytes); hit {
 					MarkOpsCyberPolicy(c, CyberPolicyMark{
-						Code:           code,
-						Message:        msg,
-						Body:           truncateString(payload, 4096),
-						UpstreamStatus: http.StatusOK,
-						UpstreamInTok:  usage.InputTokens,
-						UpstreamOutTok: usage.OutputTokens,
+						AuditSettlementNegotiated: auditSettlementWasNegotiated(resp),
+						UpstreamHeaders:           auditSettlementResponseHeaders(resp.Header),
+						Code:                      code,
+						Message:                   msg,
+						Body:                      truncateString(payload, 4096),
+						UpstreamStatus:            http.StatusOK,
+						UpstreamInTok:             usage.InputTokens,
+						UpstreamOutTok:            usage.OutputTokens,
 					})
 					if !clientDisconnected {
 						writeStreamHeaders()
@@ -1151,7 +1157,7 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 						if clientMsg == "" {
 							clientMsg = "Request blocked by upstream cyber-security policy"
 						}
-						if _, err := fmt.Fprint(c.Writer, buildAnthropicStreamErrorSSE("invalid_request_error", sanitizeKiloBridgeClientErrorMessage(c, clientMsg))); err == nil {
+						if _, err := fmt.Fprint(c.Writer, buildAnthropicStreamErrorSSE("invalid_request_error", sanitizeKiloBridgeClientErrorMessage(c, clientMsg), auditSettlementCyberCode(c))); err == nil {
 							c.Writer.Flush()
 						}
 						clientDisconnected = true
@@ -1450,11 +1456,8 @@ func (s *OpenAIGatewayService) handleAnthropicStreamingResponse(
 func writeAnthropicError(c *gin.Context, statusCode int, errType, message string) {
 	message = sanitizeKiloBridgeClientErrorMessage(c, message)
 	c.JSON(statusCode, gin.H{
-		"type": "error",
-		"error": gin.H{
-			"type":    errType,
-			"message": message,
-		},
+		"type":  "error",
+		"error": auditSettlementClientError(c, errType, message),
 	})
 }
 
@@ -1462,13 +1465,14 @@ func writeAnthropicError(c *gin.Context, statusCode int, errType, message string
 // streaming response can terminate with a visible error (e.g. upstream
 // cyber_policy) and programmatic clients stop retrying.
 // Marshal 失败的兜底仅保留固定提示。
-func buildAnthropicStreamErrorSSE(errType, message string) string {
+func buildAnthropicStreamErrorSSE(errType, message string, auditCode ...string) string {
+	errorBody := gin.H{"type": errType, "message": message}
+	if len(auditCode) > 0 && auditCode[0] == "cyber_policy" {
+		errorBody["code"] = auditCode[0]
+	}
 	payload, err := json.Marshal(gin.H{
-		"type": "error",
-		"error": gin.H{
-			"type":    errType,
-			"message": message,
-		},
+		"type":  "error",
+		"error": errorBody,
 	})
 	if err != nil {
 		return "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"" + errType + "\",\"message\":\"upstream error\"}}\n\n"

@@ -157,27 +157,32 @@ func apiKeyAuthWithSubscription(apiKeyService *service.APIKeyService, subscripti
 			return
 		}
 
-		// 检查用户状态
-		if !apiKey.User.IsActive() {
+		// A completed request may itself exhaust the balance or auto-ban its
+		// payer. Reading that key's existing receipt must remain possible.
+		// Key validity and IP ACL above still apply, including disabled keys.
+		settlementRead := service.IsAuditSettlementRead(c.Request.Method, c.Request.URL.Path)
+		if !settlementRead && !apiKey.User.IsActive() {
 			MarkIngressRejected(c, IngressRejectUserInactive)
 			AbortWithError(c, 401, "USER_INACTIVE", "User account is not active")
 			return
 		}
-		var groupRouted bool
-		apiKey, groupRouted = routeAPIKeyRequestGroup(c, apiKey, subscriptionService, cfg)
-		if !groupRouted {
-			return
-		}
-		if abortIfAPIKeyGroupUnavailable(c, apiKey) {
-			return
-		}
-		if abortIfAPIKeyGroupNotAllowed(c, apiKey) {
-			return
+		if !settlementRead {
+			var groupRouted bool
+			apiKey, groupRouted = routeAPIKeyRequestGroup(c, apiKey, subscriptionService, cfg)
+			if !groupRouted {
+				return
+			}
+			if abortIfAPIKeyGroupUnavailable(c, apiKey) {
+				return
+			}
+			if abortIfAPIKeyGroupNotAllowed(c, apiKey) {
+				return
+			}
 		}
 		ctx := context.WithValue(c.Request.Context(), ctxkey.UserID, apiKey.User.ID)
 		ctx = service.WithAccountProxyRouting(ctx)
 		c.Request = c.Request.WithContext(ctx)
-		billingInfoRequest := c.Request.URL.Path == "/v1/sub2api/billing"
+		billingInfoRequest := c.Request.URL.Path == "/v1/sub2api/billing" || settlementRead
 		// Async image task polling only reads data that already belongs to the
 		// authenticated key and must remain available after the completed
 		// generation consumes the key's remaining balance.

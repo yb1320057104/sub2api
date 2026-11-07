@@ -53,14 +53,16 @@ type OpenAIRecordUsageInput struct {
 // 用量按上游真实 token 计费，与 WS cyber 及正常请求口径一致（InputTokens/OutputTokens
 // 取自上游 response.failed 报告的 usage，即 mark.UpstreamInTok/OutTok）。
 type CyberPolicyUsageInput struct {
-	APIKey       *APIKey
-	Account      *Account
-	Subscription *UserSubscription
-	RequestID    string
-	Model        string
-	Stream       bool
-	InputTokens  int
-	OutputTokens int
+	AuditSettlementNegotiated bool // Server-owned outgoing HTTP negotiation evidence.
+	UpstreamHeaders           http.Header
+	APIKey                    *APIKey
+	Account                   *Account
+	Subscription              *UserSubscription
+	RequestID                 string
+	Model                     string
+	Stream                    bool
+	InputTokens               int
+	OutputTokens              int
 	// 渠道归因与请求级 meta，使 cyber 计费行与正常 RecordUsage 行口径一致
 	// （否则 cyber 行 channel_id 等为空，渠道维度统计会遗漏 cyber 命中）。
 	InboundEndpoint    string
@@ -85,9 +87,11 @@ func (s *OpenAIGatewayService) RecordCyberPolicyUsageLog(ctx context.Context, in
 		return
 	}
 	result := &OpenAIForwardResult{
-		RequestID: in.RequestID,
-		Model:     in.Model,
-		Stream:    in.Stream,
+		RequestID:                 in.RequestID,
+		UpstreamHeaders:           in.UpstreamHeaders,
+		AuditSettlementNegotiated: in.AuditSettlementNegotiated,
+		Model:                     in.Model,
+		Stream:                    in.Stream,
 		Usage: OpenAIUsage{
 			InputTokens:  in.InputTokens,
 			OutputTokens: in.OutputTokens,
@@ -462,6 +466,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	usageLog.Stream = result.Stream
 	if input.CyberBlocked {
 		usageLog.RequestType = RequestTypeCyberBlocked
+		usageLog.AuditSettlementImportedEvent = negotiatedAuditSettlementReceipt(account, result.UpstreamHeaders, result.AuditSettlementNegotiated)
 	}
 	usageLog.OpenAIWSMode = result.OpenAIWSMode
 	usageLog.DurationMs = &durationMs
@@ -560,6 +565,9 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	}
 	if simpleModeKeyRateLimitOnly {
 		ctx = WithoutCyberPolicyAuditUsage(ctx)
+	}
+	if !simpleModeKeyRateLimitOnly {
+		ctx = withUpstreamAuditSettlementImport(ctx, s.usageLogRepo, account, result.UpstreamHeaders, result.AuditSettlementNegotiated)
 	}
 	writeUsageLogBestEffort(ctx, s.usageLogRepo, usageLog, "service.openai_gateway")
 

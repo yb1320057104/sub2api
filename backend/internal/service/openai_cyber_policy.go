@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -21,12 +22,14 @@ var errOpenAICyberPolicyForwarded = errors.New("openai cyber_policy forwarded to
 
 // CyberPolicyMark 记录一次 cyber_policy 硬阻断的上游证据。
 type CyberPolicyMark struct {
-	Code           string // 固定 "cyber_policy"
-	Message        string // 上游 error.message
-	Body           string // 上游 response.failed / 400 原始 body（已截断；未脱敏，ops_error 落库由 sanitizeErrorBodyForStorage、风控日志由 redactContentModerationSecrets 统一脱敏）
-	UpstreamStatus int    // 上游 HTTP 状态（流式=200，非流式=400）
-	UpstreamInTok  int    // 上游已报 input tokens（如有）
-	UpstreamOutTok int    // 上游已报 output tokens（如有）
+	AuditSettlementNegotiated bool        // Server-owned outgoing HTTP negotiation evidence.
+	UpstreamHeaders           http.Header // Only negotiated settlement headers; never stored in audit bodies.
+	Code                      string      // 固定 "cyber_policy"
+	Message                   string      // 上游 error.message
+	Body                      string      // 上游 response.failed / 400 原始 body（已截断；未脱敏，ops_error 落库由 sanitizeErrorBodyForStorage、风控日志由 redactContentModerationSecrets 统一脱敏）
+	UpstreamStatus            int         // 上游 HTTP 状态（流式=200，非流式=400）
+	UpstreamInTok             int         // 上游已报 input tokens（如有）
+	UpstreamOutTok            int         // 上游已报 output tokens（如有）
 }
 
 // MarkOpsCyberPolicy 记录 cyber 标记；首个写入生效，后续忽略（同一 turn 只记一次）。
@@ -104,4 +107,30 @@ func markOpenAICyberPolicyEvent(c *gin.Context, payload []byte, upstreamStatus i
 	}
 	MarkOpsCyberPolicy(c, mark)
 	return true
+}
+
+// markNegotiatedAuditCyberPolicy extends raw API-key protocols only when both
+// the actual outgoing negotiation and a valid opted-in receipt are present.
+func markNegotiatedAuditCyberPolicy(c *gin.Context, account *Account, resp *http.Response, payload []byte, usage OpenAIUsage) bool {
+	if resp == nil || !negotiatedAuditSettlementReceipt(account, resp.Header, auditSettlementWasNegotiated(resp)) {
+		return false
+	}
+	hit, code, message := detectOpenAICyberPolicy(payload)
+	if !hit {
+		return false
+	}
+	MarkOpsCyberPolicy(c, CyberPolicyMark{
+		Code: code, Message: message, Body: truncateString(string(payload), 4096),
+		UpstreamStatus: resp.StatusCode, UpstreamInTok: usage.InputTokens, UpstreamOutTok: usage.OutputTokens,
+		AuditSettlementNegotiated: true, UpstreamHeaders: auditSettlementResponseHeaders(resp.Header),
+	})
+	return true
+}
+
+// Imported policy events remain visible as log-only evidence. Their upstream
+// receipt already owns the penalty; an intermediate gateway must not repeat its
+// legacy local ban counter, notification or session-block side effects.
+func IsImportedAuditSettlementCyberPolicy(account *Account, mark *CyberPolicyMark) bool {
+	return mark != nil && mark.Code == "cyber_policy" &&
+		negotiatedAuditSettlementReceipt(account, mark.UpstreamHeaders, mark.AuditSettlementNegotiated)
 }

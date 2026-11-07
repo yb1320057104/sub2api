@@ -5,6 +5,8 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -53,6 +55,51 @@ func newGatewayRecordUsageServiceWithBillingRepoForTest(usageRepo UsageLogReposi
 	svc := newGatewayRecordUsageServiceForTest(usageRepo, userRepo, subRepo)
 	svc.usageBillingRepo = billingRepo
 	return svc
+}
+
+type gatewayAuditPolicyUsageRepo struct {
+	*openAIRecordUsageLogRepoStub
+	imports []AuditSettlementImportInput
+}
+
+func (r *gatewayAuditPolicyUsageRepo) Create(ctx context.Context, usage *UsageLog) (bool, error) {
+	usage.ID = 901
+	return r.openAIRecordUsageLogRepoStub.Create(ctx, usage)
+}
+
+func (r *gatewayAuditPolicyUsageRepo) RegisterAuditSettlementImport(_ context.Context, input AuditSettlementImportInput) error {
+	r.imports = append(r.imports, input)
+	return nil
+}
+
+func TestGatewayAuditSettlementPolicyUsageKeepsLocalOwner(t *testing.T) {
+	for _, tokens := range []int{0, 1200} {
+		t.Run(fmt.Sprint(tokens), func(t *testing.T) {
+			usageRepo := &gatewayAuditPolicyUsageRepo{openAIRecordUsageLogRepoStub: &openAIRecordUsageLogRepoStub{inserted: true}}
+			billingRepo := &openAIRecordUsageBillingRepoStub{}
+			svc := newGatewayRecordUsageServiceWithBillingRepoForTest(usageRepo, billingRepo, &openAIRecordUsageUserRepoStub{}, &openAIRecordUsageSubRepoStub{})
+			account := newAnthropicAPIKeyAccountForTest()
+			account.Extra[AuditSettlementEnabledExtraKey] = true
+			input := &RecordUsageInput{Result: &ForwardResult{
+				Model: "claude-sonnet-4", AuditSettlementCyberPolicy: true, AuditSettlementNegotiated: true,
+				Usage:           ClaudeUsage{InputTokens: tokens},
+				UpstreamHeaders: http.Header{auditImportCapabilityHeader: {"v1"}, auditImportReceiptHeader: {"2561ce22-94f1-44bc-a2a5-984c29ee5f49"}},
+			}, User: &User{ID: 611}, APIKey: &APIKey{ID: 512, UserID: 611}, Account: account}
+			require.NoError(t, svc.RecordUsage(context.Background(), input))
+			require.Len(t, usageRepo.imports, 1)
+			require.Equal(t, int64(611), usageRepo.imports[0].UserID)
+			require.Equal(t, int64(512), usageRepo.imports[0].APIKeyID)
+			require.Equal(t, int64(901), usageRepo.imports[0].UsageID)
+			require.Equal(t, RequestTypeCyberBlocked, usageRepo.lastLog.RequestType)
+			require.True(t, usageRepo.lastLog.AuditSettlementImportedEvent)
+			require.Equal(t, tokens, usageRepo.lastLog.InputTokens)
+			if tokens == 0 {
+				require.Zero(t, usageRepo.lastLog.ActualCost)
+			} else {
+				require.Positive(t, usageRepo.lastLog.ActualCost)
+			}
+		})
+	}
 }
 
 type openAIRecordUsageBestEffortLogRepoStub struct {

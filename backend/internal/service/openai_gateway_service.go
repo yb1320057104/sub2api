@@ -233,6 +233,7 @@ type OpenAIUsage struct {
 
 // OpenAIForwardResult represents the result of forwarding
 type OpenAIForwardResult struct {
+	AuditSettlementNegotiated bool // Server-owned outgoing HTTP negotiation evidence.
 	// AuditAction is a server-owned deferred video snapshot, never parsed from upstream JSON.
 	AuditAction *CyberPolicyAuditBlockInput `json:"-"`
 	RequestID   string
