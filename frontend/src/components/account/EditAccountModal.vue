@@ -4155,12 +4155,15 @@ const autoResetCredit7dThreshold = ref(100)
 const upstreamBillingAutoProbeEnabled = ref(false)
 const auditSettlementEnabled = ref(false)
 const supportsAuditSettlement = computed(() => !!props.account && ['apikey', 'upstream'].includes(props.account.type) && ['openai', 'anthropic'].includes(props.account.platform))
+const hasExistingApiKey = computed(() => {
+  const savedKey = (props.account?.credentials as Record<string, unknown> | undefined)?.api_key
+  return props.account?.credentials_status?.has_api_key ?? (typeof savedKey === 'string' && !!savedKey.trim())
+})
 const auditSettlementConfigValid = computed(() => {
   try {
     const value = editBaseUrl.value.trim().replace(/\/+$/, '')
     const parsed = new URL(value)
-    const savedKey = (props.account?.credentials as Record<string, unknown> | undefined)?.api_key
-    return ['http:', 'https:'].includes(parsed.protocol) && !!parsed.hostname && !parsed.username && !parsed.password && !parsed.search && !parsed.hash && ['', '/', '/v1'].includes(parsed.pathname) && !!(editApiKey.value.trim() || (typeof savedKey === 'string' && savedKey.trim()))
+    return ['http:', 'https:'].includes(parsed.protocol) && !!parsed.hostname && !parsed.username && !parsed.password && !parsed.search && !parsed.hash && ['', '/', '/v1'].includes(parsed.pathname) && (!!editApiKey.value.trim() || hasExistingApiKey.value)
   } catch { return false }
 })
 const upstreamBillingRateSyncEnabled = ref(false)
@@ -5836,11 +5839,9 @@ const handleSubmit = async () => {
       // 用户填入新值则覆盖；留空时优先看 credentials_status.has_api_key；
       // 若后端尚未升级（无 credentials_status），回退读旧结构 currentCredentials.api_key。
       // 两者都无才报错。
-      const hasExistingApiKey =
-        props.account.credentials_status?.has_api_key ?? Boolean(currentCredentials.api_key)
       if (editApiKey.value.trim()) {
         newCredentials.api_key = editApiKey.value.trim()
-      } else if (!hasExistingApiKey) {
+      } else if (!hasExistingApiKey.value) {
         appStore.showError(t('admin.accounts.apiKeyIsRequired'))
         return
       }

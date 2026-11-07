@@ -351,6 +351,111 @@ describe('EditAccountModal', () => {
     wrapper.unmount()
   })
 
+  describe.each([
+    { platform: 'openai', type: 'apikey' },
+    { platform: 'openai', type: 'upstream' },
+    { platform: 'anthropic', type: 'apikey' },
+    { platform: 'anthropic', type: 'upstream' }
+  ])('audit settlement credentials for $platform / $type', ({ platform, type }) => {
+    function settlementAccount(baseURL = 'https://upstream.example.test/v1') {
+      return {
+        ...buildAccount(),
+        platform,
+        type,
+        credentials: { base_url: baseURL },
+        credentials_status: { has_api_key: true },
+        extra: { preserved_setting: 'keep' }
+      } as any
+    }
+
+    function mountSettlement(account: any) {
+      updateAccountMock.mockReset().mockResolvedValue(account)
+      checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
+      return mountModal(account)
+    }
+
+    it.each(['', '/', '/v1', '/v1/'])('enables settlement with a redacted saved key at path %s without resending the key', async (path) => {
+      const account = settlementAccount('https://upstream.example.test' + path)
+      const wrapper = mountSettlement(account)
+      expect((wrapper.get('input[type="password"]').element as HTMLInputElement).value).toBe('')
+      await wrapper.get('[data-testid="audit-settlement-toggle"]').trigger('click')
+      expect(wrapper.find('[data-testid="audit-settlement-invalid"]').exists()).toBe(false)
+      await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+      expect(updateAccountMock).toHaveBeenCalledTimes(1)
+      const payload = updateAccountMock.mock.calls[0]?.[1]
+      expect(payload.extra).toMatchObject({ audit_settlement_enabled: true, preserved_setting: 'keep' })
+      expect(payload.credentials).not.toHaveProperty('api_key')
+      expect(account.credentials).not.toHaveProperty('api_key')
+      wrapper.unmount()
+    })
+
+    it.each([
+      { label: 'explicit false', status: { has_api_key: false }, legacyKey: undefined },
+      { label: 'explicit false overrides legacy key', status: { has_api_key: false }, legacyKey: 'sk-old-fixture' },
+      { label: 'missing status and key', status: undefined, legacyKey: undefined },
+      { label: 'missing status and whitespace key', status: undefined, legacyKey: '   ' }
+    ])('rejects settlement with $label', async ({ status, legacyKey }) => {
+      const account = settlementAccount()
+      account.credentials_status = status
+      if (legacyKey !== undefined) account.credentials.api_key = legacyKey
+      const wrapper = mountSettlement(account)
+      await wrapper.get('[data-testid="audit-settlement-toggle"]').trigger('click')
+      expect(wrapper.find('[data-testid="audit-settlement-invalid"]').exists()).toBe(true)
+      await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+      expect(updateAccountMock).not.toHaveBeenCalled()
+      wrapper.unmount()
+    })
+
+    it.each([false, undefined])('accepts an explicitly entered new key when saved-key status is %s', async (status) => {
+      const account = settlementAccount()
+      account.credentials_status = status === undefined ? undefined : { has_api_key: status }
+      const wrapper = mountSettlement(account)
+      await wrapper.get('[data-testid="audit-settlement-toggle"]').trigger('click')
+      expect(wrapper.find('[data-testid="audit-settlement-invalid"]').exists()).toBe(true)
+      await wrapper.get('input[type="password"]').setValue(' sk-new-fixture ')
+      expect(wrapper.find('[data-testid="audit-settlement-invalid"]').exists()).toBe(false)
+      await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+      expect(updateAccountMock).toHaveBeenCalledTimes(1)
+      expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.api_key).toBe('sk-new-fixture')
+      expect(updateAccountMock.mock.calls[0]?.[1]?.extra?.audit_settlement_enabled).toBe(true)
+      wrapper.unmount()
+    })
+
+    it('accepts an existing legacy key when credential status is absent', async () => {
+      const account = settlementAccount()
+      delete account.credentials_status
+      account.credentials.api_key = 'sk-legacy-fixture'
+      const wrapper = mountSettlement(account)
+      await wrapper.get('[data-testid="audit-settlement-toggle"]').trigger('click')
+      expect(wrapper.find('[data-testid="audit-settlement-invalid"]').exists()).toBe(false)
+      await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+      expect(updateAccountMock).toHaveBeenCalledTimes(1)
+      expect(updateAccountMock.mock.calls[0]?.[1]?.credentials?.api_key).toBe('sk-legacy-fixture')
+      wrapper.unmount()
+    })
+
+    it('preserves enabled settlement when saving a redacted account again', async () => {
+      const account = settlementAccount()
+      account.extra.audit_settlement_enabled = true
+      const wrapper = mountSettlement(account)
+      expect(wrapper.find('[data-testid="audit-settlement-invalid"]').exists()).toBe(false)
+      await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+      expect(updateAccountMock).toHaveBeenCalledTimes(1)
+      expect(updateAccountMock.mock.calls[0]?.[1]?.credentials).not.toHaveProperty('api_key')
+      expect(updateAccountMock.mock.calls[0]?.[1]?.extra?.audit_settlement_enabled).not.toBe(false)
+      wrapper.unmount()
+    })
+
+    it('still rejects an unsupported URL when the saved key exists', async () => {
+      const wrapper = mountSettlement(settlementAccount('https://upstream.example.test/unsupported/v1'))
+      await wrapper.get('[data-testid="audit-settlement-toggle"]').trigger('click')
+      expect(wrapper.find('[data-testid="audit-settlement-invalid"]').exists()).toBe(true)
+      await wrapper.get('form#edit-account-form').trigger('submit.prevent')
+      expect(updateAccountMock).not.toHaveBeenCalled()
+      wrapper.unmount()
+    })
+  })
+
   it('can turn off a trusted upstream settlement while excluding OAuth accounts', async () => {
     const account = { ...buildAccount(), type: 'upstream', extra: { audit_settlement_enabled: true } }
     updateAccountMock.mockReset().mockResolvedValue(account)
@@ -368,7 +473,8 @@ describe('EditAccountModal', () => {
 
   it.each(['https://upstream.example.test/antigravity', 'https://upstream.example.test/v1?key=x', 'https://user:pass@upstream.example.test', 'not-a-url'])('rejects enabling settlement on unsupported URL %s without updating the account', async (baseURL) => {
     const account = buildAccount()
-    account.credentials.base_url = baseURL
+    account.credentials = { base_url: baseURL }
+    account.credentials_status = { has_api_key: true }
     updateAccountMock.mockReset().mockResolvedValue(account)
     checkMixedChannelRiskMock.mockReset().mockResolvedValue({ has_risk: false })
     const wrapper = mountModal(account)
