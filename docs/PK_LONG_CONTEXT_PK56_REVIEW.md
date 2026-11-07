@@ -80,3 +80,23 @@
 首轮 `.runtime/pk56-pricing-checks.jsonl`／exit=1保留，SHA256 `4c0716968984289c35588a108c3056a1ea9d9f346e554b098c0ddf85750d57dd`。模型映射身份用例沿用300000上下文和旧272000门槛断言，在新500000门槛下失效；将该夹具调整到超过500000以保留原身份豁免覆盖。第二轮 `.runtime/pk56-pricing-final.jsonl`／exit=1保留，SHA256 `62f91205b6f0ef426cb5b24f650e45f1df84d3f8f1242d0c57288a34280054f7`；新增API母账号Spark影子用例不符合只允许OAuth母账号的既有域约束，移除该无效新增用例后final-2通过。两轮修正均未因此修改生产计费逻辑；最终成功日志单独留存，不覆盖失败证据。
 
 本轮仅发布Release供后续更新，没有部署或重启生产，没有修改生产配置、历史账务或启动守卫，未发布GHCR，未执行真实模型／授权／币安请求，未跑全套源码回归。旧版启动守卫曾按固定哈希限制执行，未来升级必须在重启前核对新正式二进制许可与完整HA证据；本轮不宣称已安装该许可或恢复HA。本次仅在main补录上述五份文档，正式版本分支／标签和封存制品保持不变。
+
+## 2026-11-08 用户更新后502及恢复
+
+Release发布时未部署生产。用户后续网页安装pk.56后再次出现502；线上文件SHA256与正式发行的 `fa55b8fa82a1853b28cb14cdc22d73d9457e61fc602b1a31db15d7f40ac471ab` 一致，但宿主及容器外置启动守卫仍只允许pk.52、镜像种子和pk.54。日志为 `sub2api: startup guard rejected executable`，容器退出126并反复重启，应用尚未进入业务启动。网页更新只替换程序，没有同步外置守卫白名单，这是本次复发原因。
+
+按用户本轮故障恢复授权，保留完整原文件，在 `/data/sub2api/ha-startup-guard/pk56-recovery-20261107T163222Z` 记录备份与恢复回执。只追加正式pk.56哈希，同步宿主和原容器的entrypoint，原路径/符号链接/FD9校验及启动槽位保护不变；同步receipt两个守卫哈希、允许列表和install-state的receipt哈希。未换镜像、数据卷或业务配置。守卫SHA256从 `fc296b85908d1585d0dc05f6d879c6cb9718623df34c4054cd832e352b476ad3` 更新为 `038c0776aaf9d2cb7860c2a4dc2d2dc961424bf67b484dafd622fd379e1b9c8b`，新receipt SHA256为 `c95b7e890055f248f60f0b9d6232819df7fe5d357fc5b80858843711aa0e5fef`。
+
+北京时间2026-11-08 00:32:25.989启动原容器，初验和后续复验五个HTTP探针均200；最终healthy、重启计数0、进程身份保持。实际 `/proc/PID/exe` 为正式pk.56哈希／提交 `547aa51fd9553321ce0ce940296904941d764afc`，`SUB2API_SKIP_STARTUP_SLOT_CLEANUP=true`，receipt绑定完整。五个探针为本地18081健康/首页、公网健康/首页/公开设置；不冒称真实模型或金融交易验证。
+
+故障前后HA监测仍failed，guardian、armed与fence仍inactive，未恢复或宣称恢复完整集群。此修复只放行已验证pk.56，不自动信任未来程序；未来升级仍需先联动守卫许可与HA证据。正式Release、版本分支及标签不变，本次仅main记录生产后续事件。
+
+原始证据位于外层 `.runtime/pk56-guard-recovery-*.json`。首次verify遇到容器重启竞态失败，未当作成功；随后独立diagnose、plan、apply及两次verify分别保留，最终证据如下：
+
+| 文件 | SHA256 |
+| --- | --- |
+| `pk56-guard-recovery-apply-20261107T163214Z.json` | `5a045377b87cfdcc06209027aad77c1ba5ad9dab5cd0309d5a05810e2aa598a9` |
+| `pk56-guard-recovery-diagnose-20261107T163016Z.json` | `66bb1d1081792f678dddecc6417133b3a60cb70c481f33cb0c7300da27d57374` |
+| `pk56-guard-recovery-plan-20261107T163122Z.json` | `3fc37654faa52da40172fa7d816405635281fd22da2564bb9f6fc0d279d3ceb6` |
+| `pk56-guard-recovery-verify-20261107T163249Z.json` | `107e973d721b04b99849bf1f2f19dc108884dc752fbcae11d7e7780e7afc3c4a` |
+| `pk56-guard-recovery-verify-20261107T163341Z.json` | `09d4474baf1513af5d64af97e4529712e54b941d07c4c4eadff9da035b1001e8` |
