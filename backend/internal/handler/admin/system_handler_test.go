@@ -34,6 +34,10 @@ type systemHandlerUpdateServiceStub struct {
 	rollbackVersions      []service.RollbackVersion
 	rollbackVersionsErr   error
 	rollbackVersionsCall  int
+	restartReservation    service.SystemRestartReservation
+	prepareRestartErr     error
+	prepareRestartCall    int
+	prepareRestartCtx     context.Context
 }
 
 func (s *systemHandlerUpdateServiceStub) CheckUpdate(_ context.Context, force bool) (*service.UpdateInfo, error) {
@@ -65,6 +69,28 @@ func (s *systemHandlerUpdateServiceStub) RollbackToVersion(ctx context.Context, 
 	s.rollbackToVersions = append(s.rollbackToVersions, version)
 	return s.rollbackToErr
 }
+
+func (s *systemHandlerUpdateServiceStub) PrepareRestart(ctx context.Context) (service.SystemRestartReservation, error) {
+	s.prepareRestartCall++
+	s.prepareRestartCtx = ctx
+	return s.restartReservation, s.prepareRestartErr
+}
+
+type systemRestartReservationStub struct {
+	execute      func(context.Context, func() error) error
+	executeCalls int
+	cancelCalls  int
+}
+
+func (s *systemRestartReservationStub) Execute(ctx context.Context, signal func() error) error {
+	s.executeCalls++
+	if s.execute != nil {
+		return s.execute(ctx, signal)
+	}
+	return signal()
+}
+
+func (s *systemRestartReservationStub) Cancel() { s.cancelCalls++ }
 
 type systemUpdateResponseEnvelope struct {
 	Code    int    `json:"code"`
@@ -360,4 +386,178 @@ func TestSystemHandlerGetRollbackVersionsError(t *testing.T) {
 	router.ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+func newSystemRestartTestRouter(t *testing.T, updateSvc *systemHandlerUpdateServiceStub) (*gin.Engine, *SystemHandler, *memoryIdempotencyRepoStub) {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	service.SetDefaultIdempotencyCoordinator(nil)
+	t.Cleanup(func() { service.SetDefaultIdempotencyCoordinator(nil) })
+	repo := newMemoryIdempotencyRepoStub()
+	lockSvc := service.NewSystemOperationLockService(repo, service.IdempotencyConfig{
+		ProcessingTimeout: time.Minute, SystemOperationTTL: time.Hour,
+	})
+	handler := NewSystemHandler(updateSvc, lockSvc)
+	// No test is allowed to use the real process signal or delayed scheduler.
+	handler.restartSignal = func() error { t.Fatal("unexpected restart signal"); return nil }
+	handler.restartSchedule = func(func()) { t.Fatal("unexpected restart scheduling") }
+	router := gin.New()
+	router.POST("/api/v1/admin/system/restart", handler.RestartService)
+	return router, handler, repo
+}
+
+func systemRestartRequest(router *gin.Engine, key string, ctx context.Context) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/system/restart", nil)
+	req.Header.Set("Idempotency-Key", key)
+	if ctx != nil {
+		req = req.WithContext(ctx)
+	}
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestSystemHandlerRestartPreflightFailureDoesNotScheduleOrSignal(t *testing.T) {
+	reservation := &systemRestartReservationStub{}
+	updateSvc := &systemHandlerUpdateServiceStub{
+		prepareRestartErr: errors.New("guard rejected"), restartReservation: reservation,
+	}
+	router, _, repo := newSystemRestartTestRouter(t, updateSvc)
+	rec := systemRestartRequest(router, "preflight-failure", nil)
+	require.Equal(t, http.StatusInternalServerError, rec.Code)
+	require.Equal(t, 1, updateSvc.prepareRestartCall)
+	require.Equal(t, 0, reservation.executeCalls)
+	require.Equal(t, 1, reservation.cancelCalls)
+	require.ErrorIs(t, updateSvc.prepareRestartCtx.Err(), context.Canceled)
+	requireSystemLockStatus(t, repo, service.IdempotencyStatusFailedRetryable)
+}
+
+func TestSystemHandlerRestartRetainsLockAndSurvivesDisconnectUntilSignal(t *testing.T) {
+	reservation := &systemRestartReservationStub{}
+	updateSvc := &systemHandlerUpdateServiceStub{restartReservation: reservation}
+	router, handler, repo := newSystemRestartTestRouter(t, updateSvc)
+	var scheduled func()
+	handler.restartSchedule = func(run func()) { scheduled = run }
+	signals := 0
+	handler.restartSignal = func() error {
+		signals++
+		requireSystemLockStatus(t, repo, service.IdempotencyStatusProcessing)
+		return nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	rec := systemRestartRequest(router, "accepted-restart", ctx)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.NotNil(t, scheduled)
+	require.Equal(t, 1, updateSvc.prepareRestartCall)
+	require.Equal(t, 0, reservation.executeCalls)
+	requireSystemLockStatus(t, repo, service.IdempotencyStatusProcessing)
+	cancel()
+	require.NoError(t, updateSvc.prepareRestartCtx.Err())
+	deadline, ok := updateSvc.prepareRestartCtx.Deadline()
+	require.True(t, ok)
+	require.WithinDuration(t, time.Now().Add(systemRestartTimeout), deadline, time.Second)
+	reservation.execute = func(executeCtx context.Context, signal func() error) error {
+		require.Same(t, updateSvc.prepareRestartCtx, executeCtx)
+		require.NoError(t, executeCtx.Err())
+		return signal()
+	}
+	scheduled()
+	require.Equal(t, 1, signals)
+	require.Equal(t, 1, reservation.executeCalls)
+	require.Zero(t, reservation.cancelCalls, "successful restart must retain service pending state until exit")
+	requireSystemLockStatus(t, repo, service.IdempotencyStatusSucceeded)
+	require.ErrorIs(t, updateSvc.prepareRestartCtx.Err(), context.Canceled)
+}
+
+func TestSystemHandlerRestartExecutionFailureClearsReservationAndReleasesLock(t *testing.T) {
+	for _, executionFailure := range []bool{false, true} {
+		name := "signal_failure"
+		if executionFailure {
+			name = "guard_recheck_failure"
+		}
+		t.Run(name, func(t *testing.T) {
+			reservation := &systemRestartReservationStub{}
+			updateSvc := &systemHandlerUpdateServiceStub{restartReservation: reservation}
+			router, handler, repo := newSystemRestartTestRouter(t, updateSvc)
+			var scheduled func()
+			handler.restartSchedule = func(run func()) { scheduled = run }
+			signals := 0
+			handler.restartSignal = func() error { signals++; return errors.New("signal denied") }
+			if executionFailure {
+				reservation.execute = func(context.Context, func() error) error { return errors.New("guard changed") }
+			}
+			rec := systemRestartRequest(router, name, nil)
+			require.Equal(t, http.StatusOK, rec.Code)
+			require.NotNil(t, scheduled)
+			scheduled()
+			require.Equal(t, 1, reservation.executeCalls)
+			require.Equal(t, 1, reservation.cancelCalls)
+			if executionFailure {
+				require.Zero(t, signals)
+			} else {
+				require.Equal(t, 1, signals)
+			}
+			requireSystemLockStatus(t, repo, service.IdempotencyStatusFailedRetryable)
+		})
+	}
+}
+
+func TestSystemHandlerRestartDuplicateRequestsAndCallbackOnlySignalOnce(t *testing.T) {
+	reservation := &systemRestartReservationStub{}
+	updateSvc := &systemHandlerUpdateServiceStub{restartReservation: reservation}
+	router, handler, repo := newSystemRestartTestRouter(t, updateSvc)
+	var scheduled func()
+	schedules, signals := 0, 0
+	handler.restartSchedule = func(run func()) { schedules++; scheduled = run }
+	handler.restartSignal = func() error { signals++; return nil }
+	require.Equal(t, http.StatusOK, systemRestartRequest(router, "same-restart", nil).Code)
+	require.Equal(t, http.StatusConflict, systemRestartRequest(router, "same-restart", nil).Code)
+	require.Equal(t, http.StatusConflict, systemRestartRequest(router, "other-restart", nil).Code)
+	require.Equal(t, 1, updateSvc.prepareRestartCall)
+	require.Equal(t, 1, schedules)
+	requireSystemLockStatus(t, repo, service.IdempotencyStatusProcessing)
+	scheduled()
+	scheduled()
+	require.Equal(t, 1, reservation.executeCalls)
+	require.Equal(t, 1, signals)
+	requireSystemLockStatus(t, repo, service.IdempotencyStatusSucceeded)
+}
+
+func TestSystemHandlerRestartIdempotentReplayDoesNotReschedule(t *testing.T) {
+	reservation := &systemRestartReservationStub{}
+	updateSvc := &systemHandlerUpdateServiceStub{restartReservation: reservation}
+	router, handler, repo := newSystemRestartTestRouter(t, updateSvc)
+	service.SetDefaultIdempotencyCoordinator(service.NewIdempotencyCoordinator(repo, service.DefaultIdempotencyConfig()))
+	var scheduled func()
+	schedules, signals := 0, 0
+	handler.restartSchedule = func(run func()) { schedules++; scheduled = run }
+	handler.restartSignal = func() error { signals++; return nil }
+	require.Equal(t, http.StatusOK, systemRestartRequest(router, "replay-restart", nil).Code)
+	replay := systemRestartRequest(router, "replay-restart", nil)
+	require.Equal(t, http.StatusOK, replay.Code)
+	require.Equal(t, "true", replay.Header().Get("X-Idempotency-Replayed"))
+	require.Equal(t, 1, schedules)
+	require.Equal(t, 1, updateSvc.prepareRestartCall)
+	scheduled()
+	require.Equal(t, 1, signals)
+}
+
+func TestSystemHandlerRestartSynchronousSchedulerRunsAfterSuccessResponse(t *testing.T) {
+	reservation := &systemRestartReservationStub{}
+	updateSvc := &systemHandlerUpdateServiceStub{restartReservation: reservation}
+	router, handler, repo := newSystemRestartTestRouter(t, updateSvc)
+	rec := httptest.NewRecorder()
+	signals := 0
+	handler.restartSchedule = func(run func()) {
+		require.Equal(t, http.StatusOK, rec.Code)
+		require.Contains(t, rec.Body.String(), "Service restart initiated")
+		require.Equal(t, 1, updateSvc.prepareRestartCall)
+		run()
+	}
+	handler.restartSignal = func() error { signals++; return nil }
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/system/restart", nil)
+	req.Header.Set("Idempotency-Key", "synchronous-scheduler")
+	router.ServeHTTP(rec, req)
+	require.Equal(t, 1, signals)
+	requireSystemLockStatus(t, repo, service.IdempotencyStatusSucceeded)
 }

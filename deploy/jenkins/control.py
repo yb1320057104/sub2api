@@ -26,6 +26,7 @@ import frontend_dependencies as dependencies
 import deployment_bundle as deployment
 import browser_payload as browser
 import repository_policy as provenance
+import startup_guard_publication as startup_guard
 
 REPOSITORY = provenance.REPOSITORY
 IMAGE = provenance.image(REPOSITORY)
@@ -489,6 +490,7 @@ def ready() -> None:
         proof = evidence(data)
         write_json(Path("output/local-test-evidence.json"), proof)
     release_ready(data)
+    startup_guard.authorize(Path("output"), data, "plan")
     print("Required package evidence passed; private tag and main ancestry verified.")
 
 
@@ -537,6 +539,7 @@ def publish() -> None:
     require(bool(registry_token and registry_user), "Dedicated GHCR publishing credential is missing")
     require(os.environ.get("DOCKER_HOST", "").startswith("tcp://"), "Use the isolated build daemon")
     package_registry_ready(data, registry_token)
+    startup_guard.authorize(Path("output"), data, "prepare")
     # Loading an image does not execute its entrypoint or application code.
     command("docker", "load", "--input", str(Path("output") / data["image_archive"]), capture=False)
     image_id = command("docker", "image", "inspect", data["image_tag"], "--format", "{{.Id}}")
@@ -589,6 +592,7 @@ def publish() -> None:
         deployment_assets = [data["deployment_archive"]] if deployment.declaration(data) else []
         for name in [data["binary_archive"], *deployment_assets, "checksums.txt", "manifest.json", *reports]:
             upload_asset(release["id"], Path("output") / name, credential)
+        startup_guard.authorize(Path("output"), data, "check")
         released = request("/repos/" + REPOSITORY + "/releases/" + str(release["id"]),
                            method="PATCH", token=credential,
                            data={"draft": False, "prerelease": False, "make_latest": "true"})
@@ -596,7 +600,7 @@ def publish() -> None:
         command("docker", "push", IMAGE + ":latest", capture=False, env=environment)
     write_json(Path("output/published.json"), {"release_url": released["html_url"], "package_id": data["package_id"],
                                                "commit": data["commit"], "production_deployed": False})
-    print("Published " + released["html_url"] + "; production was not changed")
+    print("Published " + released["html_url"] + "; application binary and service were not changed; startup authorization verified")
 
 
 if __name__ == "__main__":

@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -630,6 +631,350 @@ func TestUpdateServiceExecutableResolutionFailurePreventsReplacement(t *testing.
 			require.NoError(t, err)
 			require.Equal(t, "original", string(data))
 			require.NoFileExists(t, installPath+".backup")
+		})
+	}
+}
+
+func updateGuardScript(hashes ...string) string {
+	return "#!/bin/sh\n" + startupGuardBegin + "\n" + reviewedGuardBeforeAllowlist + "\n    " + strings.Join(hashes, "|") + ") ;;\n" + reviewedGuardAfterAllowlist + "\n" + startupGuardEnd + "\n"
+}
+
+func updateGuardHash(body string) string { return fmt.Sprintf("%x", sha256.Sum256([]byte(body))) }
+
+func newGuardedUpdateTestService(t *testing.T) (*UpdateService, string, string) {
+	t.Helper()
+	dir := t.TempDir()
+	install := filepath.Join(dir, "sub2api")
+	guard := filepath.Join(dir, "entrypoint.sh")
+	require.NoError(t, os.WriteFile(install, []byte("current"), 0755))
+	require.NoError(t, os.WriteFile(install+".backup", []byte("previous"), 0755))
+	var archive bytes.Buffer
+	gzipWriter := gzip.NewWriter(&archive)
+	tarWriter := tar.NewWriter(gzipWriter)
+	require.NoError(t, tarWriter.WriteHeader(&tar.Header{Name: "sub2api", Mode: 0755, Size: int64(len("candidate"))}))
+	_, err := tarWriter.Write([]byte("candidate"))
+	require.NoError(t, err)
+	require.NoError(t, tarWriter.Close())
+	require.NoError(t, gzipWriter.Close())
+	name := fmt.Sprintf("sub2api_0.2.19-pk.58_%s_%s.tar.gz", runtime.GOOS, runtime.GOARCH)
+	assets := []GitHubAsset{
+		{Name: name, APIURL: "https://api.github.com/repos/yb1320057104/sub2api/releases/assets/101"},
+		{Name: "checksums.txt", APIURL: "https://api.github.com/repos/yb1320057104/sub2api/releases/assets/102"},
+	}
+	client := &updateServiceGitHubClientStub{
+		release:        &GitHubRelease{TagName: "v0.2.19-pk.58", Assets: assets},
+		recentReleases: []*GitHubRelease{{TagName: "v0.2.19-pk.56", Assets: assets}},
+		download: func(_ context.Context, _ string, dest string, _ int64) error {
+			return os.WriteFile(dest, archive.Bytes(), 0600)
+		},
+		checksum: func(context.Context, string) ([]byte, error) {
+			return []byte(fmt.Sprintf("%x  %s\n", sha256.Sum256(archive.Bytes()), name)), nil
+		},
+	}
+	svc := newUpdateServiceWithExecutable(&updateServiceCacheStub{}, client, "0.2.19-pk.57", "release", func() (string, error) { return install, nil })
+	svc.startupGuardPath = guard
+	// Test fixtures are intentionally not root-owned. Production always uses
+	// the Linux stat/owner checker; only this isolated fixture replaces it.
+	svc.startupGuardTrust = func(string, os.FileInfo) error { return nil }
+	return svc, install, guard
+}
+
+func TestUpdateServiceStartupGuardMutations(t *testing.T) {
+	for _, operation := range []string{"upgrade", "version rollback", "backup rollback"} {
+		for _, allowed := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/approved=%t", operation, allowed), func(t *testing.T) {
+				svc, install, guard := newGuardedUpdateTestService(t)
+				target := "candidate"
+				if operation == "backup rollback" {
+					target = "previous"
+				}
+				hashes := []string{updateGuardHash("current")}
+				if allowed {
+					hashes = append(hashes, updateGuardHash(target))
+				}
+				require.NoError(t, os.WriteFile(guard, []byte(updateGuardScript(hashes...)), 0644))
+				var err error
+				switch operation {
+				case "upgrade":
+					err = svc.PerformUpdate(context.Background())
+				case "version rollback":
+					err = svc.RollbackToVersion(context.Background(), "0.2.19-pk.56")
+				default:
+					err = svc.Rollback()
+				}
+				if allowed {
+					require.NoError(t, err)
+				} else {
+					require.ErrorIs(t, err, ErrStartupGuardNotApproved)
+				}
+				installed, err := os.ReadFile(install)
+				require.NoError(t, err)
+				if !allowed {
+					require.Equal(t, "current", string(installed))
+					backup, err := os.ReadFile(install + ".backup")
+					require.NoError(t, err)
+					require.Equal(t, "previous", string(backup), "authorization must precede deleting the prior backup")
+				} else {
+					require.Equal(t, target, string(installed))
+					if operation == "backup rollback" {
+						require.NoFileExists(t, install+".backup")
+					} else {
+						backup, err := os.ReadFile(install + ".backup")
+						require.NoError(t, err)
+						require.Equal(t, "current", string(backup))
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestUpdateServiceStartupGuardRejectsMalformedAndUntrusted(t *testing.T) {
+	valid := updateGuardScript(updateGuardHash("candidate"))
+	for _, tc := range []struct{ name, body string }{
+		{"partial marker", startupGuardBegin},
+		{"missing end", strings.ReplaceAll(valid, startupGuardEnd, "")},
+		{"duplicate marker", valid + startupGuardBegin},
+		{"wildcard allowlist", strings.ReplaceAll(valid, updateGuardHash("candidate"), "*")},
+		{"short hash", strings.ReplaceAll(valid, updateGuardHash("candidate"), "abcdef")},
+		{"duplicate hash", updateGuardScript(updateGuardHash("candidate"), updateGuardHash("candidate"))},
+		{"case injection", strings.Replace(valid, ") ;;\n*) guard_fail", ") echo bypass ;;\n*) guard_fail", 1)},
+		{"extra shell", valid + "exec /app/sub2api\n"},
+		{"disabled hash check", strings.Replace(valid, "case \"$guard_hash\" in", "case \"fixed\" in", 1)},
+		{"missing deny branch", strings.Replace(valid, reviewedGuardAfterAllowlist, strings.TrimPrefix(reviewedGuardAfterAllowlist, "*) guard_fail ;;\n"), 1)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, install, guard := newGuardedUpdateTestService(t)
+			require.NoError(t, os.WriteFile(guard, []byte(tc.body), 0644))
+			require.ErrorIs(t, svc.PerformUpdate(context.Background()), ErrStartupGuardInvalid)
+			body, err := os.ReadFile(install)
+			require.NoError(t, err)
+			require.Equal(t, "current", string(body))
+			body, err = os.ReadFile(install + ".backup")
+			require.NoError(t, err)
+			require.Equal(t, "previous", string(body))
+		})
+	}
+	for _, rejectAncestor := range []bool{false, true} {
+		t.Run(fmt.Sprintf("untrusted/ancestor=%t", rejectAncestor), func(t *testing.T) {
+			svc, _, guard := newGuardedUpdateTestService(t)
+			require.NoError(t, os.WriteFile(guard, []byte(valid), 0644))
+			svc.startupGuardTrust = func(path string, _ os.FileInfo) error {
+				if (path != guard) == rejectAncestor {
+					return errors.New("untrusted ownership or mode")
+				}
+				return nil
+			}
+			require.ErrorIs(t, svc.PerformUpdate(context.Background()), ErrStartupGuardInvalid)
+		})
+	}
+	t.Run("replaced while checking ownership", func(t *testing.T) {
+		svc, _, guard := newGuardedUpdateTestService(t)
+		require.NoError(t, os.WriteFile(guard, []byte(valid), 0644))
+		svc.startupGuardTrust = func(path string, _ os.FileInfo) error {
+			if path == guard {
+				return os.WriteFile(guard, []byte(valid+"# changed\n"), 0644)
+			}
+			return nil
+		}
+		require.ErrorIs(t, svc.PerformUpdate(context.Background()), ErrStartupGuardInvalid)
+	})
+}
+
+func TestUpdateServiceStartupGuardNativeAndRequired(t *testing.T) {
+	for _, content := range []string{"missing", "#!/bin/sh\nexec \"$@\"\n"} {
+		t.Run(content, func(t *testing.T) {
+			svc, install, guard := newGuardedUpdateTestService(t)
+			if content != "missing" {
+				require.NoError(t, os.WriteFile(guard, []byte(content), 0644))
+			}
+			require.NoError(t, svc.PerformUpdate(context.Background()))
+			body, err := os.ReadFile(install)
+			require.NoError(t, err)
+			require.Equal(t, "candidate", string(body))
+		})
+	}
+	t.Run("required missing", func(t *testing.T) {
+		svc, _, _ := newGuardedUpdateTestService(t)
+		svc.startupGuardRequired = true
+		require.ErrorIs(t, svc.Rollback(), ErrStartupGuardInvalid)
+	})
+	t.Run("observed guard cannot disappear", func(t *testing.T) {
+		svc, _, guard := newGuardedUpdateTestService(t)
+		require.NoError(t, os.WriteFile(guard, []byte(updateGuardScript(updateGuardHash("current"))), 0644))
+		reservation, err := svc.PrepareRestart(context.Background())
+		require.NoError(t, err)
+		reservation.Cancel()
+		require.NoError(t, os.Remove(guard))
+		_, err = svc.PrepareRestart(context.Background())
+		require.ErrorIs(t, err, ErrStartupGuardInvalid)
+	})
+	t.Run("nonregular file", func(t *testing.T) {
+		svc, _, guard := newGuardedUpdateTestService(t)
+		require.NoError(t, os.Mkdir(guard, 0755))
+		require.ErrorIs(t, svc.Rollback(), ErrStartupGuardInvalid)
+	})
+}
+
+func TestUpdateServiceRestartReservation(t *testing.T) {
+	for _, mutation := range []string{"success", "binary", "guard", "signal", "cancel", "context"} {
+		t.Run(mutation, func(t *testing.T) {
+			svc, install, guard := newGuardedUpdateTestService(t)
+			require.NoError(t, os.WriteFile(guard, []byte(updateGuardScript(updateGuardHash("current"), updateGuardHash("replacement"))), 0644))
+			reservation, err := svc.PrepareRestart(context.Background())
+			require.NoError(t, err)
+			require.ErrorIs(t, svc.PerformUpdate(context.Background()), ErrSystemOperationBusy)
+			require.ErrorIs(t, svc.Rollback(), ErrSystemOperationBusy)
+			require.ErrorIs(t, svc.RollbackToVersion(context.Background(), "0.2.19-pk.56"), ErrSystemOperationBusy)
+			_, err = svc.PrepareRestart(context.Background())
+			require.ErrorIs(t, err, ErrSystemOperationBusy)
+			ctx := context.Background()
+			switch mutation {
+			case "binary":
+				require.NoError(t, os.WriteFile(install, []byte("replacement"), 0755))
+			case "guard":
+				require.NoError(t, os.WriteFile(guard, []byte(updateGuardScript(updateGuardHash("replacement"))), 0644))
+			case "cancel":
+				reservation.Cancel()
+			case "context":
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				cancel()
+			}
+			calls := 0
+			err = reservation.Execute(ctx, func() error {
+				calls++
+				if mutation == "signal" {
+					return errors.New("signal failed")
+				}
+				return nil
+			})
+			if mutation == "success" {
+				require.NoError(t, err)
+				require.Equal(t, 1, calls)
+				reservation.Cancel() // successful signal keeps the shutdown fence
+				require.ErrorIs(t, svc.Rollback(), ErrSystemOperationBusy)
+			} else {
+				require.Error(t, err)
+				if mutation == "signal" {
+					require.Equal(t, 1, calls)
+				} else {
+					require.Zero(t, calls)
+				}
+				require.Nil(t, svc.restartPending)
+			}
+			require.Error(t, reservation.Execute(context.Background(), func() error { t.Fatal("reservation replay signaled"); return nil }))
+		})
+	}
+}
+
+func TestUpdateServiceConcurrentReplacementAndRestart(t *testing.T) {
+	svc, _, guard := newGuardedUpdateTestService(t)
+	require.NoError(t, os.WriteFile(guard, []byte(updateGuardScript(updateGuardHash("candidate"))), 0644))
+	client := svc.githubClient.(*updateServiceGitHubClientStub)
+	originalDownload := client.download
+	entered, proceed := make(chan struct{}), make(chan struct{})
+	client.download = func(ctx context.Context, url, dest string, size int64) error {
+		close(entered)
+		<-proceed
+		return originalDownload(ctx, url, dest, size)
+	}
+	done := make(chan error, 1)
+	go func() { done <- svc.PerformUpdate(context.Background()) }()
+	<-entered
+	_, err := svc.PrepareRestart(context.Background())
+	require.ErrorIs(t, err, ErrSystemOperationBusy)
+	require.ErrorIs(t, svc.Rollback(), ErrSystemOperationBusy)
+	require.ErrorIs(t, svc.RollbackToVersion(context.Background(), "0.2.19-pk.56"), ErrSystemOperationBusy)
+	close(proceed)
+	require.NoError(t, <-done)
+	reservation, err := svc.PrepareRestart(context.Background())
+	require.NoError(t, err)
+	reservation.Cancel()
+}
+
+func TestUpdateServiceStartupGuardReplacementRechecksInstalledIdentity(t *testing.T) {
+	for _, operation := range []string{"upgrade", "version rollback", "backup rollback"} {
+		t.Run(operation, func(t *testing.T) {
+			svc, install, guard := newGuardedUpdateTestService(t)
+			require.NoError(t, os.WriteFile(guard, []byte(updateGuardScript(updateGuardHash("candidate"), updateGuardHash("previous"))), 0644))
+			svc.startupGuardTrust = func(path string, _ os.FileInfo) error {
+				if path == guard {
+					return os.WriteFile(install, []byte("external replacement"), 0755)
+				}
+				return nil
+			}
+			var err error
+			switch operation {
+			case "upgrade":
+				err = svc.PerformUpdate(context.Background())
+			case "version rollback":
+				err = svc.RollbackToVersion(context.Background(), "0.2.19-pk.56")
+			default:
+				err = svc.Rollback()
+			}
+			require.ErrorIs(t, err, ErrRestartTargetChanged)
+			installed, err := os.ReadFile(install)
+			require.NoError(t, err)
+			require.Equal(t, "external replacement", string(installed), "must not overwrite a concurrently replaced target")
+			backup, err := os.ReadFile(install + ".backup")
+			require.NoError(t, err)
+			require.Equal(t, "previous", string(backup), "must reject before deleting the prior backup")
+		})
+	}
+}
+
+func TestUpdateServiceStartupGuardSnapshotRechecksDependencies(t *testing.T) {
+	for _, changed := range []string{"target", "guard", "sibling"} {
+		t.Run(changed, func(t *testing.T) {
+			svc, install, guard := newGuardedUpdateTestService(t)
+			require.NoError(t, os.WriteFile(guard, []byte(updateGuardScript(updateGuardHash("current"))), 0644))
+			snapshot, err := svc.checkStartupAllowed(context.Background(), install)
+			require.NoError(t, err)
+			switch changed {
+			case "target":
+				require.NoError(t, os.WriteFile(install, []byte("changed current"), 0755))
+			case "guard":
+				require.NoError(t, os.WriteFile(guard, []byte(updateGuardScript(updateGuardHash("replacement"))), 0644))
+			case "sibling":
+				require.NoError(t, os.WriteFile(filepath.Join(filepath.Dir(install), "unrelated"), []byte("sibling"), 0644))
+			}
+			if changed == "sibling" {
+				require.NoError(t, checkObservedPath(snapshot), "unrelated sibling changes do not change trusted directory identity")
+			} else {
+				require.Error(t, checkObservedPath(snapshot), "replacement must recheck the approved target and guard")
+			}
+		})
+	}
+}
+
+func TestUpdateServiceStartupGuardRejectsSymlinkPaths(t *testing.T) {
+	for _, linked := range []string{"guard", "guard ancestor", "target", "target ancestor"} {
+		t.Run(linked, func(t *testing.T) {
+			svc, install, guard := newGuardedUpdateTestService(t)
+			require.NoError(t, os.WriteFile(guard, []byte(updateGuardScript(updateGuardHash("current"))), 0644))
+			link := filepath.Join(t.TempDir(), "linked")
+			destination := guard
+			if linked == "target" {
+				destination = install
+			} else if strings.HasSuffix(linked, "ancestor") {
+				destination = filepath.Dir(guard)
+			}
+			if err := os.Symlink(destination, link); err != nil {
+				t.Skipf("symlink unavailable: %v", err)
+			}
+			switch linked {
+			case "guard":
+				svc.startupGuardPath = link
+			case "guard ancestor":
+				svc.startupGuardPath = filepath.Join(link, filepath.Base(guard))
+			case "target":
+				install = link
+			case "target ancestor":
+				install = filepath.Join(link, filepath.Base(install))
+			}
+			_, err := svc.checkStartupAllowed(context.Background(), install)
+			require.Error(t, err)
 		})
 	}
 }

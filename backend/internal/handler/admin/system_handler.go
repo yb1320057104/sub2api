@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
@@ -19,8 +21,10 @@ import (
 
 // SystemHandler handles system-related operations
 type SystemHandler struct {
-	updateSvc systemUpdateService
-	lockSvc   *service.SystemOperationLockService
+	updateSvc       systemUpdateService
+	lockSvc         *service.SystemOperationLockService
+	restartSchedule func(func())
+	restartSignal   func() error
 }
 
 // systemUpdateTimeout bounds a full in-place update or rollback: the release
@@ -28,6 +32,7 @@ type SystemHandler struct {
 // above the GitHub download client timeout (10 minutes) so the download owns
 // its own deadline.
 const systemUpdateTimeout = 15 * time.Minute
+const systemRestartTimeout = 30 * time.Second
 
 // systemUpdateContext detaches a long-running update/rollback from the HTTP
 // request lifetime. Browsers and reverse proxies commonly abort idle requests
@@ -50,13 +55,16 @@ type systemUpdateService interface {
 	Rollback() error
 	ListRollbackVersions(ctx context.Context) ([]service.RollbackVersion, error)
 	RollbackToVersion(ctx context.Context, version string) error
+	PrepareRestart(ctx context.Context) (service.SystemRestartReservation, error)
 }
 
 // NewSystemHandler creates a new SystemHandler
 func NewSystemHandler(updateSvc systemUpdateService, lockSvc *service.SystemOperationLockService) *SystemHandler {
 	return &SystemHandler{
-		updateSvc: updateSvc,
-		lockSvc:   lockSvc,
+		updateSvc:       updateSvc,
+		lockSvc:         lockSvc,
+		restartSchedule: func(run func()) { time.AfterFunc(500*time.Millisecond, run) },
+		restartSignal:   sysutil.SignalServiceRestart,
 	}
 }
 
@@ -215,29 +223,81 @@ func (h *SystemHandler) Rollback(c *gin.Context) {
 func (h *SystemHandler) RestartService(c *gin.Context) {
 	operationID := buildSystemOperationID(c, "restart")
 	payload := gin.H{"operation_id": operationID}
+	var runRestart func()
+	var cancelRestart func()
 	executeAdminIdempotentJSON(c, "admin.system.restart", payload, service.DefaultSystemOperationIdempotencyTTL(), func(ctx context.Context) (any, error) {
 		lock, release, err := h.acquireSystemLock(ctx, operationID)
 		if err != nil {
 			return nil, err
 		}
-		succeeded := false
-		defer func() {
-			release("", succeeded)
-		}()
-
-		// Schedule service restart in background after sending response
-		// This ensures the client receives the success response before the service restarts
-		go func() {
-			// Wait a moment to ensure the response is sent
-			time.Sleep(500 * time.Millisecond)
-			sysutil.RestartServiceAsync()
-		}()
-		succeeded = true
+		// Retain both the operation lock and the verified restart reservation
+		// until the synchronous signal attempt finishes. Client disconnects must
+		// not cancel an already accepted restart.
+		restartCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), systemRestartTimeout)
+		reservation, err := h.updateSvc.PrepareRestart(restartCtx)
+		if err != nil || reservation == nil {
+			if reservation != nil {
+				reservation.Cancel()
+			}
+			cancel()
+			release("SYSTEM_RESTART_PREFLIGHT_FAILED", false)
+			if err == nil {
+				err = errors.New("restart preparation is unavailable")
+			}
+			return nil, err
+		}
+		var once sync.Once
+		cancelRestart = func() {
+			once.Do(func() {
+				cancel()
+				reservation.Cancel()
+				release("SYSTEM_RESTART_RESPONSE_FAILED", false)
+			})
+		}
+		runRestart = func() {
+			once.Do(func() {
+				succeeded := false
+				defer func() {
+					cancel()
+					if !succeeded {
+						reservation.Cancel()
+						slog.Error("SYSTEM_RESTART_EXECUTION_FAILED")
+						release("SYSTEM_RESTART_EXECUTION_FAILED", false)
+						return
+					}
+					release("", true)
+				}()
+				if err := restartCtx.Err(); err != nil {
+					return
+				}
+				signal := h.restartSignal
+				if signal == nil {
+					signal = sysutil.SignalServiceRestart
+				}
+				if err := reservation.Execute(restartCtx, signal); err != nil {
+					return
+				}
+				succeeded = true
+			})
+		}
 		return gin.H{
 			"message":      "Service restart initiated",
 			"operation_id": lock.OperationID(),
 		}, nil
 	})
+	// Idempotent replay never sets runRestart. Scheduling after the helper
+	// returns also keeps injected synchronous schedulers behind the response.
+	if runRestart != nil {
+		if c.Writer.Status() >= http.StatusBadRequest {
+			cancelRestart()
+			return
+		}
+		if h.restartSchedule != nil {
+			h.restartSchedule(runRestart)
+		} else {
+			time.AfterFunc(500*time.Millisecond, runRestart)
+		}
+	}
 }
 
 func (h *SystemHandler) acquireSystemLock(

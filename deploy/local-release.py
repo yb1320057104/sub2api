@@ -33,6 +33,7 @@ import urllib.request
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "jenkins"))
 import control
+import startup_guard_publication as startup_guard
 
 REPOSITORY = control.REPOSITORY
 API_ROOT = "/repos/" + REPOSITORY
@@ -258,6 +259,9 @@ def publish(directory: Path, data: dict, assets: list[Asset], credential: str) -
         require(staged_data == data and staged_assets == assets, "Package changed while staging")
         control.release_ready(data, credential=credential)
         verify_source(data, credential)
+        # Authorize only bytes already validated against the formal source and
+        # artifact evidence. Never expose a release the managed host cannot run.
+        startup_guard.authorize(staged, data, "prepare")
         release = request(API_ROOT + "/releases", credential, method="POST", data={
             "tag_name": "v" + data["version"], "target_commitish": data["commit"],
             "name": data["version"] + " PK出版", "body": notes(data, assets),
@@ -276,6 +280,7 @@ def publish(directory: Path, data: dict, assets: list[Asset], credential: str) -
             require(draft.get("id") == release_id and draft.get("draft") is True
                     and draft.get("tag_name") == "v" + data["version"]
                     and draft.get("body") == notes(data, assets), "Draft metadata changed during upload")
+            startup_guard.authorize(staged, data, "check")
             released = request(f"{API_ROOT}/releases/{release_id}", credential, method="PATCH",
                                data={"draft": False, "prerelease": False, "make_latest": "true"})
             require(released.get("id") == release_id and released.get("draft") is False
@@ -287,7 +292,8 @@ def publish(directory: Path, data: dict, assets: list[Asset], credential: str) -
                   "check its state before retrying; otherwise the draft remains unpublished.", file=sys.stderr)
             raise
         print(f"Published https://github.com/{REPOSITORY}/releases/tag/v{data['version']}; "
-              "GHCR and production were not changed.")
+              "GHCR was not published; the application binary and service were not changed. "
+              "Managed startup authorization was checked before publication.")
 
 
 def main() -> int:
@@ -305,6 +311,7 @@ def main() -> int:
     if args.command == "check":
         control.release_ready(data, credential=credential)
         verify_source(data, credential)
+        startup_guard.authorize(directory, data, "plan")
         print(json.dumps({"repository": REPOSITORY, "version": data["version"], "commit": data["commit"],
                           "package_id": data["package_id"], "status": "ready", "checks": 11,
                           "assets": [asset.__dict__ for asset in assets], "published": False}, indent=2))

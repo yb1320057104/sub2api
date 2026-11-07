@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
@@ -69,12 +70,18 @@ type GitHubReleaseClient interface {
 
 // UpdateService handles software updates
 type UpdateService struct {
-	cache          UpdateCache
-	githubClient   GitHubReleaseClient
-	currentVersion string
-	buildType      string // "source" for manual builds, "release" for CI builds
-	installPath    string
-	installPathErr error
+	cache                UpdateCache
+	githubClient         GitHubReleaseClient
+	currentVersion       string
+	buildType            string // "source" for manual builds, "release" for CI builds
+	installPath          string
+	installPathErr       error
+	operationMu          sync.Mutex
+	restartPending       *systemRestartReservation
+	startupGuardPath     string
+	startupGuardRequired bool
+	startupGuardObserved bool
+	startupGuardTrust    func(string, os.FileInfo) error
 }
 
 // NewUpdateService creates a new UpdateService
@@ -84,10 +91,12 @@ func NewUpdateService(cache UpdateCache, githubClient GitHubReleaseClient, versi
 
 func newUpdateServiceWithExecutable(cache UpdateCache, githubClient GitHubReleaseClient, version, buildType string, executable func() (string, error)) *UpdateService {
 	s := &UpdateService{
-		cache:          cache,
-		githubClient:   githubClient,
-		currentVersion: version,
-		buildType:      buildType,
+		cache:                cache,
+		githubClient:         githubClient,
+		currentVersion:       version,
+		buildType:            buildType,
+		startupGuardPath:     "/app/docker-entrypoint.sh",
+		startupGuardRequired: strings.EqualFold(strings.TrimSpace(os.Getenv("SUB2API_STARTUP_GUARD_REQUIRED")), "true"),
 	}
 	// Resolve once before any replacement. On Linux os.Executable follows the
 	// running inode to .backup after a rename, which is no longer the install path.
@@ -221,6 +230,10 @@ func (s *UpdateService) PerformUpdate(ctx context.Context) error {
 	if err := s.requireReleaseBuild(); err != nil {
 		return err
 	}
+	if err := s.beginExecutableOperation(ctx); err != nil {
+		return err
+	}
+	defer s.operationMu.Unlock()
 	info, err := s.CheckUpdate(ctx, true)
 	if err != nil {
 		return err
@@ -315,13 +328,24 @@ func (s *UpdateService) applyReleaseAssets(ctx context.Context, releaseAssets []
 	// If step 2 fails, restore backup
 	backupPath := exePath + ".backup"
 
-	if err := validateExecutableFile(exePath); err != nil {
+	installed, err := snapshotExecutableFile(exePath)
+	if err != nil {
 		return fmt.Errorf("invalid installed executable: %w", err)
+	}
+	candidate, err := s.checkStartupAllowed(ctx, newBinaryPath)
+	if err != nil {
+		return err
+	}
+	if err := checkReplacementSnapshots(installed, candidate); err != nil {
+		return err
 	}
 
 	// Remove old backup only when it is a regular, non-symlink file. Never
 	// unlink an attacker-controlled directory or follow a symlink at restart.
 	if err := removePreviousBackup(backupPath); err != nil {
+		return err
+	}
+	if err := checkReplacementSnapshots(installed, candidate); err != nil {
 		return err
 	}
 
@@ -331,12 +355,16 @@ func (s *UpdateService) applyReleaseAssets(ctx context.Context, releaseAssets []
 	}
 
 	// Step 2: Move new binary to target location (atomic, same filesystem)
-	if err := os.Rename(newBinaryPath, exePath); err != nil {
+	replaceErr := checkObservedPath(candidate)
+	if replaceErr == nil {
+		replaceErr = os.Rename(newBinaryPath, exePath)
+	}
+	if replaceErr != nil {
 		// Restore backup on failure
 		if restoreErr := os.Rename(backupPath, exePath); restoreErr != nil {
-			return fmt.Errorf("replace failed and restore failed: %w (restore error: %v)", err, restoreErr)
+			return fmt.Errorf("replace failed and restore failed: %w (restore error: %v)", replaceErr, restoreErr)
 		}
-		return fmt.Errorf("replace failed (restored backup): %w", err)
+		return fmt.Errorf("replace failed (restored backup): %w", replaceErr)
 	}
 
 	// Success - backup file is kept for rollback capability
@@ -349,6 +377,10 @@ func (s *UpdateService) Rollback() error {
 	if err := s.requireReleaseBuild(); err != nil {
 		return err
 	}
+	if err := s.beginExecutableOperation(context.Background()); err != nil {
+		return err
+	}
+	defer s.operationMu.Unlock()
 	exePath, err := s.executablePath()
 	if err != nil {
 		return err
@@ -361,8 +393,23 @@ func (s *UpdateService) Rollback() error {
 		}
 		return fmt.Errorf("invalid backup: %w", err)
 	}
-	if err := validateExecutableFile(exePath); err != nil && !os.IsNotExist(err) {
+	installed, err := snapshotExecutableFile(exePath)
+	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("invalid installed executable: %w", err)
+	}
+	candidate, err := s.checkStartupAllowed(context.Background(), backupFile)
+	if err != nil {
+		return err
+	}
+	if installed == nil {
+		if _, err := os.Lstat(exePath); !os.IsNotExist(err) {
+			return ErrRestartTargetChanged
+		}
+	} else if err := checkObservedPath(installed); err != nil {
+		return ErrRestartTargetChanged.WithCause(err)
+	}
+	if err := checkObservedPath(candidate); err != nil {
+		return ErrRestartTargetChanged.WithCause(err)
 	}
 
 	// Replace current with backup
@@ -403,6 +450,10 @@ func (s *UpdateService) RollbackToVersion(ctx context.Context, version string) e
 	if err := s.requireReleaseBuild(); err != nil {
 		return err
 	}
+	if err := s.beginExecutableOperation(ctx); err != nil {
+		return err
+	}
+	defer s.operationMu.Unlock()
 	target := version
 	if strings.HasPrefix(target, "v") {
 		target = strings.TrimPrefix(target, "v")
@@ -824,18 +875,33 @@ func isPrivateReleaseVersion(version string) bool {
 }
 
 func validateExecutableFile(path string) error {
+	_, err := snapshotExecutableFile(path)
+	return err
+}
+
+func snapshotExecutableFile(path string) (*executableSnapshot, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("symlink is not allowed")
+		return nil, fmt.Errorf("symlink is not allowed")
 	}
 	if !info.Mode().IsRegular() {
-		return fmt.Errorf("path is not a regular file")
+		return nil, fmt.Errorf("path is not a regular file")
 	}
 	if runtime.GOOS != "windows" && info.Mode().Perm()&0111 == 0 {
-		return fmt.Errorf("file is not executable")
+		return nil, fmt.Errorf("file is not executable")
+	}
+	return &executableSnapshot{path: path, info: info}, nil
+}
+
+func checkReplacementSnapshots(installed, candidate *executableSnapshot) error {
+	if err := checkObservedPath(installed); err != nil {
+		return ErrRestartTargetChanged.WithCause(err)
+	}
+	if err := checkObservedPath(candidate); err != nil {
+		return ErrRestartTargetChanged.WithCause(err)
 	}
 	return nil
 }

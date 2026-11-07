@@ -2,12 +2,35 @@
 package sysutil
 
 import (
+	"errors"
 	"log"
 	"os"
 	"runtime"
 	"syscall"
 	"time"
 )
+
+var ErrRestartUnsupported = errors.New("service restart signaling is only supported on Linux")
+
+// SignalServiceRestart synchronously sends SIGTERM to this process. The caller
+// owns response scheduling and must finish restart preflight before calling it.
+func SignalServiceRestart() error {
+	return signalServiceRestart(runtime.GOOS, func() error {
+		process, err := os.FindProcess(os.Getpid())
+		if err != nil {
+			return err
+		}
+		defer func() { _ = process.Release() }()
+		return process.Signal(syscall.SIGTERM)
+	})
+}
+
+func signalServiceRestart(goos string, signal func() error) error {
+	if goos != "linux" {
+		return ErrRestartUnsupported
+	}
+	return signal()
+}
 
 // RestartService signals this process so the main server can shut down and run
 // its deferred cleanup before the supervisor restarts it. The setup server has
