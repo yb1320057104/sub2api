@@ -26,6 +26,9 @@ import (
 	"go.uber.org/zap"
 )
 
+// GPT-6.1 Sol API 默认长上下文按输入总量严格超过 500k 触发；倍率仍来自价格卡。
+const openAIGPT61SolLongContextThreshold = 500_000
+
 var (
 	openAIModelDatePattern = regexp.MustCompile(`-\d{8}$`)
 	openAIModelBasePattern = regexp.MustCompile(`^(gpt-\d+(?:\.\d+)?)(?:-|$)`)
@@ -100,7 +103,7 @@ var (
 		CacheCreationInputTokenCostPriority: 5e-6,
 		CacheReadInputTokenCost:             0.1e-6,
 		CacheReadInputTokenCostPriority:     0.2e-6,
-		LongContextInputTokenThreshold:      272_000,
+		LongContextInputTokenThreshold:      openAIGPT61SolLongContextThreshold,
 		LongContextInputCostMultiplier:      2,
 		LongContextOutputCostMultiplier:     1.5,
 		SupportsServiceTier:                 true,
@@ -678,7 +681,7 @@ func (s *PricingService) parsePricingData(body []byte) (map[string]*LiteLLMModel
 	if err := json.Unmarshal(body, &rawData); err != nil {
 		return nil, fmt.Errorf("parse raw JSON: %w", err)
 	}
-	rawData = s.applyPricingOverrides(rawData)
+	rawData, longContextOverrides := s.applyPricingOverrides(rawData)
 
 	result := make(map[string]*LiteLLMModelPricing)
 	skipped := 0
@@ -772,6 +775,11 @@ func (s *PricingService) parsePricingData(body []byte) (map[string]*LiteLLMModel
 				lopsidedLadders = append(lopsidedLadders, fmt.Sprintf("%s(input x%.2f, output x%.2f)", modelName,
 					pricing.LongContextInputCostMultiplier, pricing.LongContextOutputCostMultiplier))
 			}
+		}
+		// 远程目录/本地缓存可能仍携带旧阈值。只调整 Sol 6.1 已有的默认阶梯，
+		// 不补造缺失/关闭的阶梯，不改倍率，也不覆盖部署方明确的长上下文补丁。
+		if openai.IsGPT61SolModelSpelling(modelName) && !longContextOverrides[modelName] && pricing.LongContextInputTokenThreshold > 0 {
+			pricing.LongContextInputTokenThreshold = openAIGPT61SolLongContextThreshold
 		}
 		if orphans := orphanCacheTierFields(rawEntry); len(orphans) > 0 {
 			orphanCacheTiers = append(orphanCacheTiers, modelName+"("+strings.Join(orphans, ",")+")")
@@ -943,11 +951,12 @@ func warnOrphanCacheTierFields(entries []string) {
 // 文件的解析都经过 parsePricingData，因此 override 是最高优先级的数据源。这里只修补
 // 已存在的条目：目录/回退里都没有的模型由 mergeOverrideOnlyModels 在两层数据合并后
 // 统一并入——若在此处抢先建条目，纯 override 条目会挡住回退文件中同名完整条目的合并。
-func (s *PricingService) applyPricingOverrides(rawData map[string]json.RawMessage) map[string]json.RawMessage {
+func (s *PricingService) applyPricingOverrides(rawData map[string]json.RawMessage) (map[string]json.RawMessage, map[string]bool) {
 	overrides := s.loadPricingOverrideEntries()
 	if len(overrides) == 0 {
-		return rawData
+		return rawData, nil
 	}
+	longContextOverrides := make(map[string]bool)
 	for name, patch := range overrides {
 		base, ok := rawData[name]
 		if !ok {
@@ -959,8 +968,19 @@ func (s *PricingService) applyPricingOverrides(rawData map[string]json.RawMessag
 			continue
 		}
 		rawData[name] = merged
+		// 与本次实际合并使用同一份补丁，避免再次读文件产生不同修订的意图判断。
+		// null 删除及显式 0 也属于管理员意图；仅覆盖基础价不固定旧目录阈值。
+		var fields map[string]json.RawMessage
+		if json.Unmarshal(patch, &fields) == nil {
+			for field := range fields {
+				if strings.HasPrefix(field, "long_context_") || aboveTierPricePattern.MatchString(field) {
+					longContextOverrides[name] = true
+					break
+				}
+			}
+		}
 	}
-	return rawData
+	return rawData, longContextOverrides
 }
 
 // loadPricingOverrideEntries 读取 override 文件的原始条目。未配置返回 nil；

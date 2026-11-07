@@ -34,6 +34,42 @@ func newPricingServiceWithOverride(t *testing.T, overrideJSON string) *PricingSe
 	return svc
 }
 
+func TestPricingOverride_GPT61SolPreservesExplicitLongContextIntent(t *testing.T) {
+	const catalog = `{"gpt-6.1-sol":{"litellm_provider":"openai","input_cost_per_token":2e-6,"output_cost_per_token":10e-6,"input_cost_per_token_above_272k_tokens":4e-6,"output_cost_per_token_above_272k_tokens":15e-6}}`
+	for _, tc := range []struct {
+		name, patch                 string
+		threshold                   int
+		inputPrice, inputMultiplier float64
+	}{
+		{"zero disables", `{"long_context_input_token_threshold":0}`, 0, 2e-6, 0},
+		{"custom threshold", `{"long_context_input_token_threshold":600000,"long_context_input_cost_multiplier":2,"long_context_output_cost_multiplier":1.5}`, 600000, 2e-6, 2},
+		{"explicit old threshold", `{"long_context_input_token_threshold":272000,"long_context_input_cost_multiplier":2}`, 272000, 2e-6, 2},
+		{"custom above tier", `{"input_cost_per_token_above_272k_tokens":6e-6}`, 272000, 2e-6, 3},
+		{"remove ladder", `{"input_cost_per_token_above_272k_tokens":null,"output_cost_per_token_above_272k_tokens":null}`, 0, 2e-6, 0},
+		{"base price only inherits new threshold", `{"input_cost_per_token":3e-6}`, 500000, 3e-6, 4.0 / 3.0},
+		{"invalid patch cannot freeze old threshold", `"invalid"`, 500000, 2e-6, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := newPricingServiceWithOverride(t, `{"gpt-6.1-sol":`+tc.patch+`}`)
+			data, _, err := svc.buildPricingData([]byte(catalog))
+			require.NoError(t, err)
+			pricing := data["gpt-6.1-sol"]
+			require.Equal(t, tc.threshold, pricing.LongContextInputTokenThreshold)
+			require.InDelta(t, tc.inputPrice, pricing.InputCostPerToken, 1e-12)
+			require.InDelta(t, tc.inputMultiplier, pricing.LongContextInputCostMultiplier, 1e-12)
+			svc.pricingData = data
+			billing := NewBillingService(nil, svc)
+			cost, err := billing.CalculateCost("openai/gpt-6.1-sol-max", UsageTokens{InputTokens: 500001}, 1)
+			require.NoError(t, err)
+			factor := 1.0
+			if tc.threshold > 0 && 500001 > tc.threshold {
+				factor = tc.inputMultiplier
+			}
+			require.InDelta(t, 500001*tc.inputPrice*factor, cost.TotalCost, 1e-12)
+		})
+	}
+}
+
 // override 的旗舰用例：显式 threshold=0 压住 above 折算，把目录条目的阶梯关成标准价。
 func TestPricingOverride_ExplicitZeroThresholdDisablesCatalogLadder(t *testing.T) {
 	svc := newPricingServiceWithOverride(t, `{"gpt-5.5": {"long_context_input_token_threshold": 0}}`)

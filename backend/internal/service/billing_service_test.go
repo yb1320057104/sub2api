@@ -2047,21 +2047,24 @@ func TestNewModelPricingCatalogFallbackAndContext(t *testing.T) {
 		for _, tc := range []struct {
 			model                      string
 			input, output, write, read float64
+			threshold                  int
 		}{
-			{"gpt-6.1-sol", 2e-6, 10e-6, 2.5e-6, 0.1e-6},
-			{"gpt-6.1-terra", 1e-6, 5e-6, 1.25e-6, 0.05e-6},
-			{"openai/gpt-6.1-terra-max", 1e-6, 5e-6, 1.25e-6, 0.05e-6},
-			{"gpt-6-sol", 2e-6, 10e-6, 2.5e-6, 0.2e-6},
-			{"gpt-6-luna", 0.1e-6, 0.5e-6, 0.125e-6, 0.01e-6},
+			{"gpt-6.1-sol", 2e-6, 10e-6, 2.5e-6, 0.1e-6, 500000},
+			{"openai/GPT_6.1_SOL-max", 2e-6, 10e-6, 2.5e-6, 0.1e-6, 500000},
+			{"gpt-6.1-sol-openai-compact", 2e-6, 10e-6, 2.5e-6, 0.1e-6, 500000},
+			{"gpt-6.1-terra", 1e-6, 5e-6, 1.25e-6, 0.05e-6, 272000},
+			{"openai/gpt-6.1-terra-max", 1e-6, 5e-6, 1.25e-6, 0.05e-6, 272000},
+			{"gpt-6-sol", 2e-6, 10e-6, 2.5e-6, 0.2e-6, 272000},
+			{"gpt-6-luna", 0.1e-6, 0.5e-6, 0.125e-6, 0.01e-6, 272000},
 		} {
 			t.Run(source+"/"+tc.model, func(t *testing.T) {
-				for _, n := range []int{271999, 272000, 272001} {
+				for _, n := range []int{256001, 272000, 272001, 499999, 500000, 500001} {
 					for tier, mult := range map[string]float64{"": 1, "priority": 2, "fast": 2, "flex": 0.5} {
 						tokens := UsageTokens{InputTokens: n - 3000, CacheReadTokens: 2000, CacheCreationTokens: 1000, OutputTokens: 500}
 						cost, err := svc.CalculateCostWithServiceTier(tc.model, tokens, 1, tier)
 						require.NoError(t, err)
 						im, om := 1.0, 1.0
-						if n > 272000 {
+						if n > tc.threshold {
 							im = 2
 							om = 1.5
 						}
@@ -2070,7 +2073,7 @@ func TestNewModelPricingCatalogFallbackAndContext(t *testing.T) {
 						require.InDelta(t, 2000*tc.read*im*mult, cost.CacheReadCost, 1e-10)
 						require.InDelta(t, 500*tc.output*om*mult, cost.OutputCost, 1e-10)
 						require.InDelta(t, cost.InputCost+cost.OutputCost+cost.CacheCreationCost+cost.CacheReadCost, cost.TotalCost, 1e-10)
-						require.Equal(t, n > 272000, cost.LongContextBillingApplied)
+						require.Equal(t, n > tc.threshold, cost.LongContextBillingApplied)
 					}
 				}
 			})

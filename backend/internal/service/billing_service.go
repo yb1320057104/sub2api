@@ -630,7 +630,7 @@ func (s *BillingService) initFallbackPricing() {
 		CacheReadPricePerToken:             0.1e-6,
 		CacheReadPricePerTokenPriority:     0.2e-6,
 		CacheCreationPriceExplicit:         true,
-		LongContextInputThreshold:          272_000,
+		LongContextInputThreshold:          openAIGPT61SolLongContextThreshold,
 		LongContextInputMultiplier:         2,
 		LongContextOutputMultiplier:        1.5,
 	}

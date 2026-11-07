@@ -29,6 +29,62 @@ func TestPricingSchedulerBlankRemoteURLDoesNotStart(t *testing.T) {
 	}
 }
 
+func TestPricingServiceGPT61SolCatalogThreshold(t *testing.T) {
+	for _, tc := range []struct {
+		name, ladder string
+		threshold    int
+	}{
+		{"old explicit 256k", `"long_context_input_token_threshold":256000,"long_context_input_cost_multiplier":2,"long_context_output_cost_multiplier":1.5`, 500000},
+		{"old explicit 272k", `"long_context_input_token_threshold":272000,"long_context_input_cost_multiplier":2,"long_context_output_cost_multiplier":1.5`, 500000},
+		{"old above 256k", `"input_cost_per_token_above_256k_tokens":4e-6,"output_cost_per_token_above_256k_tokens":15e-6`, 500000},
+		{"old above 272k", `"input_cost_per_token_above_272k_tokens":4e-6,"output_cost_per_token_above_272k_tokens":15e-6`, 500000},
+		{"explicitly disabled", `"long_context_input_token_threshold":0,"long_context_input_cost_multiplier":2,"long_context_output_cost_multiplier":1.5`, 0},
+		{"absent ladder", `"supports_service_tier":true`, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(`{"gpt-6.1-sol":{"litellm_provider":"openai","input_cost_per_token":2e-6,"output_cost_per_token":10e-6,"cache_read_input_token_cost":0.1e-6,"cache_creation_input_token_cost":2.5e-6,` + tc.ladder + `}}`)
+			path := filepath.Join(t.TempDir(), "remote-cache.json")
+			require.NoError(t, os.WriteFile(path, body, 0600))
+			svc := &PricingService{}
+			// The same load path is used for a persisted remote catalog and reloads.
+			for range 2 {
+				require.NoError(t, svc.loadPricingData(path))
+				pricing := svc.GetModelPricing("openai/gpt-6.1-sol-max")
+				require.Equal(t, tc.threshold, pricing.LongContextInputTokenThreshold)
+				billing := NewBillingService(nil, svc)
+				for _, total := range []int{272001, 499999, 500000, 500001} {
+					tokens := UsageTokens{InputTokens: total - 100000, CacheReadTokens: 80000, CacheCreationTokens: 20000, OutputTokens: 1000}
+					cost, err := billing.CalculateCost("gpt-6.1-sol", tokens, 1)
+					require.NoError(t, err)
+					long := tc.threshold != 0 && total > 500000
+					inputFactor, outputFactor := 1.0, 1.0
+					if long {
+						inputFactor, outputFactor = 2, 1.5
+					}
+					require.Equal(t, long, cost.LongContextBillingApplied)
+					require.InDelta(t, (float64(total-100000)*2e-6+80000*0.1e-6+20000*2.5e-6)*inputFactor+1000*10e-6*outputFactor, cost.TotalCost, 1e-12)
+				}
+			}
+		})
+	}
+	for _, tc := range []struct {
+		model     string
+		threshold int
+	}{
+		{"gpt-6.1-sol", 500000}, {"openai/GPT_6.1_SOL-max", 500000}, {"gpt-6.1-sol-openai-compact", 500000},
+		{"gpt-6-sol", 272000}, {"gpt-6-luna", 272000}, {"gpt-6.1-terra", 272000},
+		{"gpt-6.1-sol-preview", 272000}, {"gpt-6.1-solitude", 272000},
+	} {
+		t.Run(tc.model, func(t *testing.T) {
+			body, err := json.Marshal(map[string]json.RawMessage{tc.model: json.RawMessage(`{"input_cost_per_token":2e-6,"output_cost_per_token":10e-6,"long_context_input_token_threshold":272000,"long_context_input_cost_multiplier":2,"long_context_output_cost_multiplier":1.5}`)})
+			require.NoError(t, err)
+			data, err := (&PricingService{}).parsePricingData(body)
+			require.NoError(t, err)
+			require.Equal(t, tc.threshold, data[tc.model].LongContextInputTokenThreshold)
+		})
+	}
+}
+
 func TestPricingNonEmptyInvalidRemoteURLStillReturnsValidationError(t *testing.T) {
 	svc := NewPricingService(&config.Config{Pricing: config.PricingConfig{
 		RemoteURL: "://invalid",
