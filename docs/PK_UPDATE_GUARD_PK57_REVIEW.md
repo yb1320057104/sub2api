@@ -1,5 +1,74 @@
 # pk.57 网页更新与启动守卫联动
 
+## 2026-11-08 最终发行及启动许可核对
+
+本节替代下文同版待验收的阶段状态。正式Release已发布并核对；本次只在main补录，版本分支、正式标签、正式源码tree及封存制品保持不变。
+
+正式commit `211da2227f502a118d2df8751cfa1dd5522f622f`，tree `f91a0b8db7fc18845cc2fbaf320938421559989d`，package_id `1794073843-211da2227f50`；二进制SHA256 `29347934effe0b2c0a2e510dc04f3de59f2851ce49d798ee7b25a9678db3654e`。镜像ID `sha256:ddda4cf9787459018b40a95237d6273218ba13c5be7f29129adff2b82e0fa20c`。私库 [v0.2.19-pk.57](https://github.com/yb1320057104/sub2api/releases/tag/v0.2.19-pk.57) 为发布核对时的latest，9项资产与本地封存名称／长度／SHA256逐项一致。
+
+前后端最终通过的构建均绑定本轮正式源；前端源码与pk.56相同，但本轮重新执行构建，不将旧版测试日志重标为pk.57。Vite实际1219模块，耗时43.86秒，产物文件198项；i18n 3项及类型检查通过。
+
+Windows Go 3包：顶层通过56、顶层跳过1；父子测试合计pass事件123、skip事件6，无失败。跳过原样列于下表，不冒称所有平台语义通过。Linux另执行交叉编译测试程序，33个顶层通过、无跳过，临时目录清理通过；该执行通过WSL wrapper完成，不能伪称直接运行go test，也不与Windows重复场景累加。
+
+Python宿主事务逻辑、Linux真实文件语义、publisher门禁分别以本轮原始unittest日志统计，全部无跳过；publisher外部I/O为模拟。Windows为已声明源码冻结下的运行后哈希快照，不冒称预先采集；publisher有前后精确哈希，Linux Go有编译前后源码绑定。Git切换产生的五份Python源码CRLF换行已恢复为实际测试原字节，Git blob语义未改变；修复记录保存在本轮证据目录。
+
+后端正式构建并非首轮全部成功。首轮Go构建生成的二进制带有 `vcs.modified=true`，干净VCS门禁拒绝继续封装；原因是五份新增Python源码checkout autocrlf换行及陈旧Git索引状态。恢复实际测试原字节并用git add刷新索引后，staged diff为空、正式HEAD不变，未修改语义源码或移动标签。首轮二进制SHA256 `9082daac2754bdc0e8f46041e9afa9ba33398e031b962de889150cc14dcde38c` 及embed输入／overlay保存在 `.runtime/pk57-build-attempt1`。第二次准备因 `existing_embed_evidence_requires_preservation` 提前拒绝，未执行Go编译；相应准备证据及失败记录已移存同目录。之后重建的最终 `pk57-local-build.json`、二进制和build-info才用于制品、发布与本节通过结论；最终build-info确认 `vcs.modified=false`。原失败证据未改写为通过，也不把第二次准备拒绝算作一次已执行编译。
+
+隔离制品运行基线为实际pk.56正式commit `547aa51fd9553321ce0ce940296904941d764afc`。324份迁移和校验和完全保留、无新增；金融函数由本版二进制安装后在隔离数据库校验，审计计数断言执行正式源SQL，不伪称编译后的repository Go方法已被集成调用。保留pk54 SQL夹具标记只是保留原字节，本节通过结果全部来自本轮新执行。隔离daemon、容器及临时资源清理通过。
+
+生产启动授权在公开Release前已prepare，最后check及发布后只读验证均绑定本次manifest／commit／tree／package／binary。最终宿主与容器守卫SHA256一致为 `9759afa16d38e72d390cc55bc920e83e39e290941c9e0904c0cbd16370e4a86a`；安装receipt SHA256 `b3ee8932837dc1ec35912ca034f7ebca601e1c1c652309c3bc5940a213f0b9e5`，journal SHA256 `033d6823e362bf5759d196ca31c2201ce7c4763519f0acf460d68eb65d265a8e`，epoch证据SHA256 `4e6f18285d2877db48ad3710fa60348a4bec6eeaa9645439752bc46db98c62b3`，发布后授权回执规范JSON SHA256 `637ddd6f8a91cebcdcd2b47c66a585fa023c71e7d29497a6abd542cd9746a9c1`。这些回执证明许可与实例绑定、核对时healthy且epoch未变；发布流程未替换应用二进制、未发送重启、未授HA仲裁权。生产外部守卫及回执确有变更，不能概括为生产未变化；应用的后续手动升级仍与发布区分。
+
+本轮local入口未发布GHCR，不执行真实模型／账号授权／币安请求、不运行全套源码回归。HA监测failed及guardian／armed／fence inactive的既有记录不因启动许可而失效；本次没有HA恢复结论，不能宣称集群恢复。固定containerID、两条受管最终执行路径、守卫挂载和活跃HA拒绝边界见下文。
+
+生产依赖审计实际为0 critical／2 high／12 moderate／2 low；原始审计退出1、既有依赖例外门禁退出0，未宣称漏洞清零。
+
+| 本轮检查 | 实际通过数量 |
+| --- | --- |
+| Linux文件语义 | 6 |
+| publisher门禁 | 11 |
+| Python宿主事务 | 19 |
+| 同制品运行时 | 11 |
+| 升级回退 | 7 |
+| 多代理API | 7 |
+| IP分组API | 7 |
+| 模型目录API | 7 |
+| 金融迁移函数 | 8 |
+| 审计源SQL | 6 |
+
+| Windows保留的跳过测试 |
+| --- |
+| `TestUpdateServiceRemovePreviousBackupRejectsNonExecutableAndPreservesIt` |
+| `TestUpdateServiceRollbackRejectsUnsafeBackupsWithoutChangingInstall/non-executable` |
+| `TestUpdateServiceStartupGuardRejectsSymlinkPaths/guard` |
+| `TestUpdateServiceStartupGuardRejectsSymlinkPaths/guard_ancestor` |
+| `TestUpdateServiceStartupGuardRejectsSymlinkPaths/target` |
+| `TestUpdateServiceStartupGuardRejectsSymlinkPaths/target_ancestor` |
+
+| Release资产 | 字节数 | SHA256 |
+| --- | --- | --- |
+| `artifact-validation.json` | 3797 | `3e04b22d7fd9e1d5370d5252a3460b4d4be1f783ced57f86e076b8d5ff7381b9` |
+| `checksums.txt` | 106 | `9fbf43a966c7662060517a219f276b3188dd1e7d8acd5e6d2932648fc7f2e77c` |
+| `isolated-smoke.json` | 84072 | `b4ed4865bdccd6d63bcc670c7a0cacd5cce0a652783f61a30feeea70d4be428e` |
+| `local-build.json` | 172233 | `6ca3734b9d1a02e63d98ab0138b77111fef6d94220bc81b576a016e419e0d61d` |
+| `manifest.json` | 1282 | `36a145a8775b4fc5579494936982aa1893d3d8ea3e43b2147477e76d9c974f05` |
+| `migrations-validation.json` | 43893 | `dbd828f07440082098f54f3963266473e4d78cf7c2ae0d15669a0417cf69d0d3` |
+| `review.json` | 1309 | `c621312a54531a4c96b9e9eb7ad2720b58e19d4772c077489780de9e5e40df3a` |
+| `sub2api_0.2.19-pk.57_linux_amd64.docker.tar.gz` | 50994877 | `dc3711f5a6c5fd97c2bdf967a7da8638cd5da13bb68f6ca92348d3d9f3fec93c` |
+| `sub2api_0.2.19-pk.57_linux_amd64.tar.gz` | 40548494 | `293a272828faa8a68c9f5d646e44690dbc5be6126832c42711810a7ead38158f` |
+
+| 本轮主要证据 | SHA256 |
+| --- | --- |
+| `.runtime/pk57-publication.json` | `636e66223663782ac3ce190ac87e4142f97b33b6a19f611c5a44d05d4bb7b88f` |
+| `.runtime/pk57-local-build.json` | `6ca3734b9d1a02e63d98ab0138b77111fef6d94220bc81b576a016e419e0d61d` |
+| `.runtime/pk57-frontend-build.json` | `b20a964f9ad210fd91e630b35af2295453f8b19ac19627d766c5706bd88ee592` |
+| `.runtime/pk57-targeted-checks.json` | `750524df579a9506486771e14ba2468f1a22512b2f18fc2897a7877c8d2f316f` |
+| `.runtime/pk57-guard-evidence/linux-go-supplementary.json` | `09779feab9fe205ab9ed4045b636e30b96dec32f363635e9b7c7731738a78da5` |
+| `.runtime/pk57-release/review.json` | `c621312a54531a4c96b9e9eb7ad2720b58e19d4772c077489780de9e5e40df3a` |
+| `.runtime/pk57-release/isolated-smoke.json` | `b4ed4865bdccd6d63bcc670c7a0cacd5cce0a652783f61a30feeea70d4be428e` |
+| `.runtime/pk57-release/migrations-validation.json` | `dbd828f07440082098f54f3963266473e4d78cf7c2ae0d15669a0417cf69d0d3` |
+| `.runtime/pk57-build-attempt1/failure.json` | `3ddac297c8b6e70f139de8607e5054d3fbed2f871b457721496c8e3b09ca60e5` |
+| `.runtime/pk57-build-attempt1/attempt2-prepare-failure.json` | `13ca2442f9ab2142ff574086d598b8eae17ede2b082c45786205c379cbb27313` |
+
 2026-11-08 阶段记录。目标版本为 `v0.2.19-pk.57`，基于私库 main `8339df3e15c73ad0a0ab2f713f416719a9070cc7`。正式提交、制品、发布与生产许可准备结果均须在实际完成后补录；本记录不表示已发布或已部署 pk.57。
 
 当前已实现发布侧许可准备与应用侧只读预检。Python 宿主逻辑19项、Linux文件语义6项的阶段运行通过，最终日志哈希与最终源码绑定尚待完成。Windows Go三个包56个顶层测试通过、1个顶层跳过，含子项总计6个skip事件（执行位2、符号链接4），无失败；Linux专项正在补验，不能以Windows的平台跳过代替。正式前后端构建、同一制品隔离验收、升级回退、私库 Release 和附件核对尚待实际执行。当前没有本版完整发行成功结论。
