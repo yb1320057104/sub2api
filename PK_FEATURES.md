@@ -1368,3 +1368,8 @@ pk.50追加PK-036联动：账号授权“入库账号出口”可设置每账号
 - 每站自动生成独立口令/JWT/TOTP/WireGuard密钥。Git/ZIP只使用明确源码模板白名单，排除sites、secrets、私钥、账号、数据、构建缓存。私库源提交只读导出、补丁及最终文件哈希验证；用户原有脏工作区不参与打包。
 - fresh install不覆盖无归属目录，重试要求同一安装身份/配置/密钥，Redis/Sentinel已选主配置不重写，不执行清库、删卷或重装已有生产。应用网页自更新关闭；本工具不是在线升级器，维护另行安排。
 - 入口：`deploy/cluster-kit/README.md`、Ansible platform/network/storage/image/application角色，`build/prepare_source.py`、`patches/manifest.json`、`tools/package.py`。验证实际范围见同目录VALIDATION及 `docs/PK_CLUSTER_KIT_REVIEW.md`，测试夹具不作为真实整机故障验收。
+- 2026-11-08扩展：`deploy/cluster-updater/` 对已接受的 HA r4 两应用节点提供统一更新确认。仅跟踪私库正式 Release；管理员确认绑定标签、提交及观测到的版本，来源变化使旧确认失效。main或工具包提交不视为新应用发行，不自动批准或降级。
+- 同一确定源码与已校验HA补丁构建一份程序，两节点校验同一SHA256，先准备停止状态候选；副API→主API→两节点worker串行更新，API仍使用原数据／TLS挂载、环境和网络。两入口摘除当前目标并由健康对端接流，等HTTP与计费收尾后自然退出，禁止强杀和跨节点重放已发送模型请求。
+- worker由本机Patroni writer状态控制；最终检查两API和两worker版本、真实存储就绪、仅一名活动worker且位于当前writer。纯仲裁节点不运行应用，不随应用版本更新；不更新PostgreSQL、Redis、etcd或操作系统。
+- 更新器以root私有配置及限定SSH命令协调现有gate／接受包／候选规格／入口协议；写动作有归属记录和重放拒绝。只在持有同一gate代次且能证明旧程序健康时局部回滚；失联、崩溃或恢复证据不完整时停止后续动作。程序回滚不撤销数据库迁移，迁移文件路径及内容哈希映射变化时拒绝自动部署。
+- 统一更新器当前适用范围是已部署r4协议，不是任意旧版本或新机的一键改造器。新站工具包仍只负责安装；两者的发布源码、生成配置和运行记录分开。43项本地定向检查及两节点只读预检通过的边界见 `docs/PK_CLUSTER_UPDATER_REVIEW.md`；不据此宣称真实新版本滚动升级已验收。
