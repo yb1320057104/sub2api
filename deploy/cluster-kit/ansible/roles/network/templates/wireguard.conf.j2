@@ -1,0 +1,13 @@
+[Interface]
+Address = {{ mesh_ip }}/32
+ListenPort = {{ wg_port }}
+PrivateKey = {{ cluster_secrets.wireguard[inventory_hostname].private }}
+
+{% for peer in groups['cluster'] if peer != inventory_hostname %}
+[Peer]
+PublicKey = {{ cluster_secrets.wireguard[peer].public }}
+AllowedIPs = {{ hostvars[peer].mesh_ip }}/32
+Endpoint = {{ hostvars[peer].ansible_host }}:{{ wg_port }}
+PersistentKeepalive = 25
+
+{% endfor %}

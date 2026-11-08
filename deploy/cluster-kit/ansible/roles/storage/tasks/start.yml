@@ -1,0 +1,11 @@
+---
+- name: Build fixed Patroni runtime on data nodes
+  ansible.builtin.command:
+    argv: [docker, compose, -f, "{{ site_dir }}/storage/compose.yml", build, postgres]
+  when: mode == 'ha' and inventory_hostname in groups['data']
+  changed_when: true
+
+- name: Start storage services without recreating running containers
+  ansible.builtin.command:
+    argv: [docker, compose, -f, "{{ site_dir }}/storage/compose.yml", up, -d, --no-recreate]
+  changed_when: true

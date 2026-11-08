@@ -1,0 +1,32 @@
+---
+# The playbook invokes this on the primary first and waits for its migration /
+# administrator bootstrap to finish before starting any secondary or worker.
+- name: Start initialized API and HTTPS listener
+  ansible.builtin.command:
+    argv: ['docker', 'compose', '-f', '{{ site_dir }}/application/compose.yml', 'up', '-d', '--no-recreate', '--no-deps', '--pull', 'never', 'api', 'caddy']
+  register: _api_start
+  changed_when: "'Started' in _api_start.stderr or 'Created' in _api_start.stderr"
+
+- name: Wait for real PostgreSQL writer and Redis master readiness
+  ansible.builtin.uri:
+    url: "http://{{ mesh_ip }}:18080/ready"
+    method: GET
+    use_proxy: false
+    return_content: true
+    timeout: 5
+    status_code: [200, 503]
+  register: _api_ready
+  until:
+    - _api_ready.status == 200
+    - _api_ready.json.status | default('') == 'ready'
+    - _api_ready.json.readiness_schema | default(0) == 1
+    - "_api_ready.json.dependencies | default({}) == {'postgres': 'primary', 'redis': 'master'}"
+  retries: 180
+  delay: 5
+  changed_when: false
+
+- name: Create the worker without starting it
+  ansible.builtin.command:
+    argv: ['docker', 'compose', '-f', '{{ site_dir }}/application/compose.yml', 'create', '--no-recreate', '--no-deps', '--pull', 'never', 'worker']
+  register: _worker_create
+  changed_when: "'Created' in _worker_create.stderr"

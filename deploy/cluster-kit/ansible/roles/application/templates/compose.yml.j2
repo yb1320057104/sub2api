@@ -1,0 +1,96 @@
+name: {{ (site_id ~ '-application') | to_json }}
+services:
+  api:
+    image: {{ app_image | to_json }}
+    container_name: {{ (site_id ~ '-api') | to_json }}
+    pull_policy: never
+    restart: unless-stopped
+    init: true
+    network_mode: host
+    command: ['/app/sub2api']
+    env_file: [common.env]
+    environment:
+      AUTO_SETUP: 'true'
+      SKIP_SETUP: 'false'
+      SUB2API_BACKGROUND_MODE: disabled
+      SUB2API_WORKER_ONLY: 'false'
+      DATABASE_MAX_OPEN_CONNS: '24'
+      SERVER_HOST: {{ mesh_ip | to_json }}
+      SERVER_PORT: '18080'
+    volumes:
+      - './api-data:/app/data'
+    stop_signal: SIGTERM
+    stop_grace_period: 900s
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -q -T 5 -O /dev/null http://{{ mesh_ip }}:18080/ready']
+      interval: 10s
+      timeout: 6s
+      start_period: 900s
+      retries: 3
+    cpus: 2
+    mem_limit: 4g
+    pids_limit: 512
+    ulimits:
+      nofile: {soft: 65536, hard: 65536}
+    security_opt: ['no-new-privileges:true']
+    labels:
+      sub2api.site: {{ site_id | to_json }}
+      sub2api.node: {{ node_role | to_json }}
+      sub2api.role: api
+    logging: &logging
+      driver: json-file
+      options: {max-size: '10m', max-file: '5'}
+  worker:
+    image: {{ app_image | to_json }}
+    container_name: {{ (site_id ~ '-worker') | to_json }}
+    pull_policy: never
+    restart: 'no'
+    init: true
+    network_mode: host
+    command: ['/app/sub2api']
+    env_file: [common.env]
+    environment:
+      AUTO_SETUP: 'false'
+      SKIP_SETUP: 'true'
+      SUB2API_BACKGROUND_MODE: active
+      SUB2API_WORKER_ONLY: 'true'
+      DATABASE_MAX_OPEN_CONNS: '12'
+    volumes:
+      - './worker-data:/app/data'
+    stop_signal: SIGTERM
+    stop_grace_period: 900s
+    healthcheck:
+      disable: true
+    cpus: 1
+    mem_limit: 2g
+    pids_limit: 512
+    ulimits:
+      nofile: {soft: 65536, hard: 65536}
+    security_opt: ['no-new-privileges:true']
+    labels:
+      sub2api.site: {{ site_id | to_json }}
+      sub2api.node: {{ node_role | to_json }}
+      sub2api.role: worker
+    logging: *logging
+  caddy:
+    image: caddy:2.8.4-alpine
+    container_name: {{ (site_id ~ '-https') | to_json }}
+    restart: unless-stopped
+    network_mode: host
+    entrypoint: ['caddy']
+    command: ['run', '--config', '/etc/caddy/Caddyfile', '--adapter', 'caddyfile']
+    volumes:
+      - './Caddyfile:/etc/caddy/Caddyfile:ro'
+      - './caddy-data:/data'
+      - './caddy-config:/config'
+    mem_limit: 512m
+    cpus: 1
+    pids_limit: 128
+    ulimits:
+      nofile: {soft: 65536, hard: 65536}
+    security_opt: ['no-new-privileges:true']
+    labels:
+      sub2api.site: {{ site_id | to_json }}
+      sub2api.node: {{ node_role | to_json }}
+      sub2api.role: edge
+    logging: *logging

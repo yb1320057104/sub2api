@@ -1,0 +1,12 @@
+.git
+.runtime
+.local
+node_modules
+**/node_modules
+**/__pycache__
+**/*.pyc
+data
+postgres_data
+redis_data
+sub2api
+backend/internal/web/dist

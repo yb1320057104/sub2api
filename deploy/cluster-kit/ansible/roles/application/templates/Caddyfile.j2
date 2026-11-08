@@ -1,0 +1,35 @@
+{
+    email {{ acme_email }}
+    admin off
+    servers {
+        max_header_size 1MB
+    }
+}
+
+{{ domain }} {
+    encode zstd gzip
+    @cluster_update {
+        method POST
+        path /api/v1/admin/system/update /api/v1/admin/system/rollback /api/v1/admin/system/restart
+    }
+    respond @cluster_update "Cluster deployments require a coordinated image rollout; single-node web updates are disabled." 409
+    reverse_proxy {{ mesh_ip }}:18080{% for host in groups['data'] %}{% if host != inventory_hostname %} {{ hostvars[host].mesh_ip }}:18080{% endif %}{% endfor %} {
+        lb_policy first
+        # No application request is retried on a second node.
+        lb_try_duration 0
+        health_uri /ready
+        health_interval 2s
+        health_timeout 4s
+        health_status 200
+        health_passes 2
+        health_fails 1
+        fail_duration 10s
+        max_fails 1
+        flush_interval -1
+        transport http {
+            versions 1.1
+            keepalive off
+            dial_timeout 3s
+        }
+    }
+}

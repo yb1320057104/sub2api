@@ -1,0 +1,74 @@
+---
+- name: Create private application directories
+  ansible.builtin.file:
+    path: "{{ site_dir }}/application/{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+  loop: ['', 'caddy-data', 'caddy-config']
+
+- name: Keep application data writable across installer retries
+  ansible.builtin.file:
+    path: "{{ site_dir }}/application/{{ item }}"
+    state: directory
+    owner: '1000'
+    group: '1000'
+    mode: '0700'
+  loop: ['api-data', 'worker-data']
+
+- name: Render service definitions
+  ansible.builtin.template:
+    src: compose.yml.j2
+    dest: "{{ site_dir }}/application/compose.yml"
+    owner: root
+    group: root
+    mode: '0600'
+
+- name: Render private shared application environment
+  ansible.builtin.template:
+    src: common.env.j2
+    dest: "{{ site_dir }}/application/common.env"
+    owner: root
+    group: root
+    mode: '0600'
+  no_log: true
+  diff: false
+
+- name: Render HTTPS and peer health routing
+  ansible.builtin.template:
+    src: Caddyfile.j2
+    dest: "{{ site_dir }}/application/Caddyfile"
+    owner: root
+    group: root
+    mode: '0600'
+
+- name: Install worker supervisor
+  ansible.builtin.copy:
+    src: worker_controller.py
+    dest: "{{ site_dir }}/application/worker_controller.py"
+    owner: root
+    group: root
+    mode: '0700'
+
+- name: Validate compose configuration without printing secrets
+  ansible.builtin.command:
+    argv: ['docker', 'compose', '-f', '{{ site_dir }}/application/compose.yml', 'config', '--quiet']
+  changed_when: false
+  no_log: true
+
+- name: Verify application image was staged
+  ansible.builtin.command:
+    argv: ['docker', 'image', 'inspect', '{{ app_image }}', '--format', '{{ "{{.Id}}" }}']
+  changed_when: false
+
+- name: Pull the pinned HTTPS image
+  ansible.builtin.command:
+    argv: ['docker', 'compose', '-f', '{{ site_dir }}/application/compose.yml', 'pull', 'caddy']
+  register: _caddy_pull
+  changed_when: "'Downloaded newer image' in _caddy_pull.stdout or 'Pull complete' in _caddy_pull.stderr"
+
+- name: Validate HTTPS configuration
+  ansible.builtin.command:
+    argv: ['docker', 'compose', '-f', '{{ site_dir }}/application/compose.yml', 'run', '--rm', '--no-deps', 'caddy', 'validate', '--config', '/etc/caddy/Caddyfile', '--adapter', 'caddyfile']
+  changed_when: false

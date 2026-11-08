@@ -1,0 +1,47 @@
+---
+- name: Install this site's WireGuard interface
+  ansible.builtin.template:
+    src: wireguard.conf.j2
+    dest: '/etc/wireguard/{{ wg_name }}.conf'
+    owner: root
+    group: root
+    mode: '0600'
+  register: mesh_config
+  no_log: true
+  when: mode == 'ha'
+
+- name: Enable full mesh private network
+  ansible.builtin.systemd:
+    name: 'wg-quick@{{ wg_name }}'
+    enabled: true
+    state: started
+  when: mode == 'ha'
+
+- name: Inspect UFW if installed
+  ansible.builtin.command: sh -c 'if command -v ufw >/dev/null 2>&1; then ufw status; fi'
+  register: ufw_status
+  changed_when: false
+
+- name: Permit only this deployment's required UFW ports
+  ansible.builtin.command:
+    argv: [ufw, allow, '{{ item }}']
+  loop: "{{ [ansible_port | string + '/tcp'] + (['80/tcp', '443/tcp'] if node_role != 'arbiter' else []) + ([wg_port | string + '/udp'] if mode == 'ha' else []) }}"
+  when: "'Status: active' in ufw_status.stdout"
+  changed_when: false
+
+- name: Permit encrypted private interface traffic in UFW
+  ansible.builtin.command:
+    argv: [ufw, allow, in, 'on', '{{ wg_name }}']
+  when: "mode == 'ha' and 'Status: active' in ufw_status.stdout"
+  changed_when: false
+
+- name: Check private peer connectivity
+  ansible.builtin.command:
+    argv: [ping, -c, '1', -W, '2', '{{ hostvars[item].mesh_ip }}']
+  loop: "{{ groups['cluster'] | difference([inventory_hostname]) }}"
+  register: mesh_probe
+  retries: 15
+  delay: 2
+  until: mesh_probe.rc == 0
+  changed_when: false
+  when: mode == 'ha'

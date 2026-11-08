@@ -1,0 +1,2 @@
+CREATE ROLE sub2api_app LOGIN PASSWORD '{{ cluster_secrets.pg_app_password }}' CONNECTION LIMIT 90;
+CREATE DATABASE sub2api OWNER sub2api_app;

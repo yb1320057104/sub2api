@@ -1,0 +1,29 @@
+---
+- name: Verify quorum, replication, writer routes and application credentials
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "{{ site_dir }}/storage/scripts/verify_storage.py"
+      - --site-dir
+      - "{{ site_dir }}"
+      - --site-id
+      - "{{ site_id }}"
+      - --mode
+      - "{{ mode }}"
+      - --node-role
+      - "{{ node_role }}"
+      - --mesh-ip
+      - "{{ mesh_ip }}"
+      - --members
+      - "{{ groups['cluster'] | map('extract', hostvars, 'mesh_ip') | join(',') }}"
+      - --data-members
+      - "{{ groups['data'] | map('extract', hostvars, 'mesh_ip') | join(',') }}"
+  register: storage_verification
+  changed_when: false
+  retries: 40
+  delay: 5
+  until: storage_verification.rc == 0
+
+- name: Show verified storage topology
+  ansible.builtin.debug:
+    msg: "{{ storage_verification.stdout | from_json }}"

@@ -1,0 +1,22 @@
+# Created once; Sentinel persists role changes here with CONFIG REWRITE.
+bind {{ mesh_ip }}
+port 6379
+protected-mode yes
+requirepass {{ cluster_secrets.redis_password }}
+masterauth {{ cluster_secrets.redis_password }}
+{% if mode == 'ha' and node_role == 'secondary' %}
+replicaof {{ hostvars['primary'].mesh_ip }} 6379
+{% endif %}
+replica-announce-ip {{ mesh_ip }}
+replica-announce-port 6379
+replica-read-only yes
+replica-serve-stale-data no
+appendonly yes
+appendfsync everysec
+dir /data
+maxmemory 256mb
+maxmemory-policy noeviction
+min-replicas-to-write 0
+save 900 1
+save 300 10
+save 60 10000

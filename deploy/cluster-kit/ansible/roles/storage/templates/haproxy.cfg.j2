@@ -1,0 +1,15 @@
+global
+    maxconn 2048
+defaults
+    mode tcp
+    timeout connect 5s
+    timeout client 1h
+    timeout server 1h
+    timeout check 3s
+listen postgres_writer
+    bind {{ mesh_ip }}:6432
+    option httpchk GET /primary
+    http-check expect status 200
+{% for host in groups['data'] %}
+    server {{ hostvars[host].node_role }} {{ hostvars[host].mesh_ip }}:5432 check port 8008 inter 2s fall 3 rise 2 on-marked-down shutdown-sessions
+{% endfor %}

@@ -1,0 +1,100 @@
+---
+- name: Prepare dedicated site hosts
+  hosts: cluster
+  become: true
+  gather_facts: true
+  roles:
+    - platform
+
+- name: Establish encrypted private network
+  hosts: cluster
+  become: true
+  gather_facts: false
+  roles:
+    - network
+
+- name: Configure independent PostgreSQL and Redis
+  hosts: cluster
+  become: true
+  gather_facts: false
+  vars:
+    storage_phase: configure
+  roles:
+    - storage
+
+- name: Start storage and quorum on all nodes
+  hosts: cluster
+  become: true
+  gather_facts: false
+  vars:
+    storage_phase: start
+  roles:
+    - storage
+
+- name: Verify independent storage
+  hosts: cluster
+  become: true
+  gather_facts: false
+  vars:
+    storage_phase: verify
+  roles:
+    - storage
+
+- name: Build or fetch application on primary
+  hosts: primary
+  become: true
+  gather_facts: false
+  roles:
+    - image
+
+- name: Install same application image on secondary
+  hosts: secondary
+  become: true
+  gather_facts: false
+  roles:
+    - image
+
+- name: Configure application and HTTPS
+  hosts: data
+  become: true
+  gather_facts: false
+  vars:
+    application_phase: configure
+  roles:
+    - application
+
+- name: Initialize primary API and schema first
+  hosts: primary
+  become: true
+  gather_facts: false
+  vars:
+    application_phase: start_api
+  roles:
+    - application
+
+- name: Start secondary API after primary schema is ready
+  hosts: secondary
+  become: true
+  gather_facts: false
+  vars:
+    application_phase: start_api
+  roles:
+    - application
+
+- name: Enable writer-following background worker
+  hosts: data
+  become: true
+  gather_facts: false
+  vars:
+    application_phase: start_worker
+  roles:
+    - application
+
+- name: Verify application and HTTPS
+  hosts: data
+  become: true
+  gather_facts: false
+  vars:
+    application_phase: verify
+  roles:
+    - application

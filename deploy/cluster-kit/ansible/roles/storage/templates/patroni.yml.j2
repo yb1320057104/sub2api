@@ -1,0 +1,64 @@
+scope: {{ site_id }}
+namespace: /sites/
+name: {{ node_role }}
+restapi:
+  listen: {{ mesh_ip }}:8008
+  connect_address: {{ mesh_ip }}:8008
+etcd3:
+  hosts: {% for host in groups['cluster'] %}{{ hostvars[host].mesh_ip }}:2379{% if not loop.last %},{% endif %}{% endfor %}
+
+bootstrap:
+  dcs:
+    ttl: 30
+    loop_wait: 10
+    retry_timeout: 10
+    maximum_lag_on_failover: 16777216
+    synchronous_mode: false
+    postgresql:
+      use_pg_rewind: true
+      use_slots: true
+      parameters:
+        wal_level: replica
+        hot_standby: 'on'
+        max_wal_senders: 10
+        max_replication_slots: 10
+        max_slot_wal_keep_size: 1GB
+        max_wal_size: 1GB
+        min_wal_size: 80MB
+        max_connections: 100
+        password_encryption: scram-sha-256
+  initdb:
+    - encoding: UTF8
+    - data-checksums
+  post_init: /opt/patroni/bin/python /opt/bootstrap.py
+postgresql:
+  listen: {{ mesh_ip }}:5432
+  connect_address: {{ mesh_ip }}:5432
+  data_dir: /var/lib/postgresql/patroni
+  bin_dir: /usr/lib/postgresql/18/bin
+  authentication:
+    superuser:
+      username: postgres
+      password: {{ cluster_secrets.pg_superuser_password | to_json }}
+    replication:
+      username: replicator
+      password: {{ cluster_secrets.pg_replication_password | to_json }}
+  parameters:
+    unix_socket_directories: /tmp
+    shared_buffers: 512MB
+    max_connections: 100
+  pg_hba:
+    - local all all peer
+{% for host in groups['data'] %}
+    - host replication replicator {{ hostvars[host].mesh_ip }}/32 scram-sha-256
+    - host postgres postgres {{ hostvars[host].mesh_ip }}/32 scram-sha-256
+    - host sub2api sub2api_app {{ hostvars[host].mesh_ip }}/32 scram-sha-256
+{% endfor %}
+    - host all all 0.0.0.0/0 reject
+    - host all all ::0/0 reject
+  create_replica_methods: [basebackup]
+watchdog:
+  mode: 'off'
+tags:
+  nofailover: false
+  noloadbalance: false

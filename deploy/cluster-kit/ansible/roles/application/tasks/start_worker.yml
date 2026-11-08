@@ -1,0 +1,38 @@
+---
+- name: Read the prepared worker immutable identity
+  ansible.builtin.command:
+    argv: ['docker', 'inspect', '--type', 'container', '{{ site_id }}-worker', '--format', '{{ "{{.Id}} {{.Image}}" }}']
+  register: _worker_identity
+  changed_when: false
+
+- name: Render worker identity and local writer probe
+  ansible.builtin.template:
+    src: worker.json.j2
+    dest: "{{ site_dir }}/application/worker.json"
+    owner: root
+    group: root
+    mode: '0600'
+
+- name: Install worker supervisor unit
+  ansible.builtin.template:
+    src: worker.service.j2
+    dest: "/etc/systemd/system/sub2api-{{ site_id }}-worker.service"
+    owner: root
+    group: root
+    mode: '0644'
+
+- name: Enable the one-worker-per-writer supervisor
+  ansible.builtin.systemd_service:
+    name: "sub2api-{{ site_id }}-worker.service"
+    daemon_reload: true
+    enabled: true
+    state: started
+
+- name: Wait for worker supervisor startup proof
+  ansible.builtin.command:
+    argv: ['python3', '{{ site_dir }}/application/worker_controller.py', '{{ site_dir }}/application/worker.json', '--check']
+  register: _worker_check
+  retries: 30
+  delay: 2
+  until: _worker_check.rc == 0
+  changed_when: false

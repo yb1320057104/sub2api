@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "site_id": {{ site_id | to_json }},
+  "node_role": {{ node_role | to_json }},
+  "mode": {{ mode | to_json }},
+  "mesh_ip": {{ mesh_ip | to_json }},
+  "container_id": {{ _worker_identity.stdout.split()[0] | to_json }},
+  "image_id": {{ _worker_identity.stdout.split()[1] | to_json }},
+  "container_name": {{ (site_id ~ '-worker') | to_json }},
+  "lock_file": {{ ('/run/sub2api-' ~ site_id ~ '-worker.lock') | to_json }},
+  "status_file": {{ (site_dir ~ '/application/worker-status.json') | to_json }}
+}

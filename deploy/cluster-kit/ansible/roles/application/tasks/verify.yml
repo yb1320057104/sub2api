@@ -1,0 +1,45 @@
+---
+- name: Verify ready contract through the private API listener
+  ansible.builtin.uri:
+    url: "http://{{ mesh_ip }}:18080/ready"
+    use_proxy: false
+    return_content: true
+    timeout: 5
+    status_code: 200
+  register: _final_ready
+  changed_when: false
+
+- name: Verify shared storage readiness response
+  ansible.builtin.assert:
+    that:
+      - _final_ready.json.readiness_schema == 1
+      - _final_ready.json.status == 'ready'
+      - "_final_ready.json.dependencies == {'postgres': 'primary', 'redis': 'master'}"
+
+- name: Verify authentication is required
+  ansible.builtin.uri:
+    url: "http://{{ mesh_ip }}:18080/api/v1/auth/me"
+    use_proxy: false
+    timeout: 5
+    status_code: 401
+  changed_when: false
+
+- name: Verify worker follows the current writer
+  ansible.builtin.command:
+    argv: ['python3', '{{ site_dir }}/application/worker_controller.py', '{{ site_dir }}/application/worker.json', '--check']
+  changed_when: false
+
+- name: Verify public HTTPS and certificate
+  ansible.builtin.uri:
+    url: "https://{{ domain }}/ready"
+    use_proxy: false
+    validate_certs: true
+    return_content: true
+    timeout: 15
+    status_code: 200
+  register: _public_ready
+  retries: 24
+  delay: 5
+  until: _public_ready.status == 200 and (_public_ready.json.status | default('')) == 'ready'
+  changed_when: false
+  when: verify_public_https | default(true) | bool

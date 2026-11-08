@@ -1,0 +1,28 @@
+---
+- name: Validate storage role contract
+  ansible.builtin.assert:
+    that:
+      - storage_phase | default('configure') in ['configure', 'start', 'verify']
+      - mode in ['single', 'ha']
+      - node_role in ['primary', 'secondary', 'arbiter']
+      - site_id is match('^[a-z][a-z0-9-]{1,23}$')
+      - site_dir is match('^/opt/[a-zA-Z0-9/_-]+$')
+      - inventory_hostname in groups['cluster']
+      - mode != 'ha' or (groups['cluster'] | length == 3 and groups['data'] | length == 2)
+      - mode != 'single' or (groups['cluster'] | length == 1 and groups['data'] | length == 1)
+      - mode != 'single' or (node_role == 'primary' and mesh_ip == '127.0.0.1')
+
+- name: Validate generated storage passwords
+  ansible.builtin.assert:
+    that:
+      - cluster_secrets[item] is match('^[0-9a-f]{48,128}$')
+  loop:
+    - pg_superuser_password
+    - pg_replication_password
+    - pg_app_password
+    - redis_password
+    - redis_sentinel_password
+  no_log: true
+
+- name: Select storage phase
+  ansible.builtin.include_tasks: "{{ storage_phase | default('configure') }}.yml"

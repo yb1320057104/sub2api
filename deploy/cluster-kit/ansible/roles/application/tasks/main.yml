@@ -1,0 +1,13 @@
+---
+- name: Check application role inputs
+  ansible.builtin.assert:
+    that:
+      - application_phase | default('configure') in ['configure', 'start_api', 'start_worker', 'verify']
+      - inventory_hostname in groups['data']
+      - mode in ['single', 'ha']
+      - node_role in ['primary', 'secondary']
+      - app_image | length > 0
+      - site_id is match('^[a-z][a-z0-9-]{1,23}$')
+
+- name: Run selected application phase
+  ansible.builtin.include_tasks: "{{ application_phase | default('configure') }}.yml"

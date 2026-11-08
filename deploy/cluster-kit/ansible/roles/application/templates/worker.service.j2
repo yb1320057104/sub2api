@@ -1,0 +1,24 @@
+[Unit]
+Description=Sub2API {{ site_id }} worker follows the local PostgreSQL writer
+After=docker.service network-online.target{% if mode == 'ha' %} wg-quick@{{ wg_name }}.service{% endif %}
+
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+UMask=0077
+ExecStart=/usr/bin/python3 {{ site_dir }}/application/worker_controller.py {{ site_dir }}/application/worker.json
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGTERM
+# The supervisor joins the worker's ordered shutdown; no forced TERM->KILL.
+TimeoutStopSec=infinity
+KillMode=process
+NoNewPrivileges=true
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

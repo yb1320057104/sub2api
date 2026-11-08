@@ -1,0 +1,107 @@
+---
+- name: Require supported dedicated Linux servers
+  ansible.builtin.assert:
+    that:
+      - ansible_distribution == 'Ubuntu'
+      - ansible_distribution_version is version('24.04', '>=')
+      - ansible_architecture == 'x86_64'
+      - ansible_service_mgr == 'systemd'
+    fail_msg: '首版支持专用 Ubuntu 24.04+ amd64；不会改装不兼容的现有主机。'
+
+- name: Inspect installation ownership marker
+  ansible.builtin.stat:
+    path: '{{ site_dir }}/installation.json'
+  register: installation_marker
+
+- name: Check site path before initial installation
+  ansible.builtin.stat:
+    path: '{{ site_dir }}'
+  register: site_path
+
+- name: Reject unowned preexisting site path
+  ansible.builtin.assert:
+    that:
+      - not site_path.stat.exists or installation_marker.stat.exists
+      - not (site_path.stat.islnk | default(false))
+    fail_msg: '站点路径已存在且不属于本部署；不会覆盖数据。'
+
+- name: Read existing ownership marker
+  ansible.builtin.slurp:
+    src: '{{ site_dir }}/installation.json'
+  register: previous_installation
+  when: installation_marker.stat.exists
+  no_log: true
+
+- name: Require original installation and node identity
+  ansible.builtin.assert:
+    that:
+      - (previous_installation.content | b64decode | from_json).installation_id == installation_id
+      - (previous_installation.content | b64decode | from_json).site_id == site_id
+      - (previous_installation.content | b64decode | from_json).node == node_role
+      - (previous_installation.content | b64decode | from_json).mode == mode
+      - (previous_installation.content | b64decode | from_json).mesh_ip == mesh_ip
+      - (previous_installation.content | b64decode | from_json).config_sha256 == config_sha256
+      - (previous_installation.content | b64decode | from_json).secrets_sha256 == secrets_sha256
+    fail_msg: '配置不是原站点配置；不得用新密钥或不同模式重装原数据。'
+  when: installation_marker.stat.exists
+  no_log: true
+
+- name: Check reserved listener ports on a fresh host
+  ansible.builtin.command:
+    argv: [python3, '-c', 'import socket; ports=[80,443,2379,2380,5432,6379,6432,8008,18080,26379]; sockets=[]; [(sockets.append(socket.socket()),sockets[-1].bind(("0.0.0.0",p))) for p in ports]; [s.close() for s in sockets]']
+  changed_when: false
+  when: not installation_marker.stat.exists
+
+- name: Check private network configuration ownership on a fresh host
+  ansible.builtin.stat:
+    path: '/etc/wireguard/{{ wg_name }}.conf'
+  register: prior_wireguard
+  when: mode == 'ha' and not installation_marker.stat.exists
+
+- name: Refuse an existing unmanaged WireGuard configuration
+  ansible.builtin.assert:
+    that:
+      - not prior_wireguard.stat.exists
+    fail_msg: '同名 WireGuard 配置已存在；请选择其他站点名，不能覆盖已有网络。'
+  when: mode == 'ha' and not installation_marker.stat.exists
+
+- name: Check private UDP port on a fresh host
+  ansible.builtin.command:
+    argv: [python3, '-c', 'import socket,sys; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.bind(("0.0.0.0",int(sys.argv[1]))); s.close()', '{{ wg_port | string }}']
+  changed_when: false
+  when: mode == 'ha' and not installation_marker.stat.exists
+
+- name: Install Docker, Compose and private network tools
+  ansible.builtin.apt:
+    name: [docker.io, docker-buildx, docker-compose-v2, wireguard-tools, python3, ca-certificates, tar, gzip, iproute2, iputils-ping]
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Enable Docker
+  ansible.builtin.systemd:
+    name: docker
+    state: started
+    enabled: true
+
+- name: Create private site root
+  ansible.builtin.file:
+    path: '{{ site_dir }}'
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+
+- name: Record ownership once
+  ansible.builtin.copy:
+    dest: '{{ site_dir }}/installation.json'
+    content: '{{ {"site_id": site_id, "installation_id": installation_id, "node": node_role, "mode": mode, "mesh_ip": mesh_ip, "config_sha256": config_sha256, "secrets_sha256": secrets_sha256} | to_nice_json }}'
+    owner: root
+    group: root
+    mode: '0600'
+    force: false
+  no_log: true
+
+- name: Verify Docker Compose v2
+  ansible.builtin.command: docker compose version --short
+  changed_when: false

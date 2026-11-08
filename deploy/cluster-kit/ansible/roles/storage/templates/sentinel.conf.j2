@@ -1,0 +1,16 @@
+# Created once; Sentinel rewrites elected master, known peers and epochs here.
+bind {{ mesh_ip }}
+port 26379
+protected-mode yes
+requirepass {{ cluster_secrets.redis_sentinel_password }}
+sentinel sentinel-user default
+sentinel sentinel-pass {{ cluster_secrets.redis_sentinel_password }}
+sentinel monitor {{ site_id }} {{ hostvars['primary'].mesh_ip }} 6379 2
+sentinel auth-user {{ site_id }} default
+sentinel auth-pass {{ site_id }} {{ cluster_secrets.redis_password }}
+sentinel down-after-milliseconds {{ site_id }} 10000
+sentinel failover-timeout {{ site_id }} 120000
+sentinel parallel-syncs {{ site_id }} 1
+sentinel announce-ip {{ mesh_ip }}
+sentinel announce-port 26379
+dir /data

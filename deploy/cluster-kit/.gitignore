@@ -1,0 +1,16 @@
+/sites/
+/dist/
+/.venv/
+/.runtime/
+__pycache__/
+*.pyc
+*.retry
+.env
+*.key
+*.pem
+*.tar
+*.tar.gz
+*.zip
+# This directory contains release source, not generated build output.
+!/build/
+!/build/**

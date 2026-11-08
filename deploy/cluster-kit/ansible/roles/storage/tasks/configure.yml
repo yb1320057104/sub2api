@@ -1,0 +1,167 @@
+---
+- name: Create private storage root
+  ansible.builtin.file:
+    path: "{{ site_dir }}/storage"
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+
+- name: Create root-owned service directories
+  ansible.builtin.file:
+    path: "{{ site_dir }}/storage/{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+  loop: [build, scripts, private, etcd-data, proxy]
+
+- name: Create service-owned private data and configuration
+  ansible.builtin.file:
+    path: "{{ site_dir }}/storage/{{ item }}"
+    state: directory
+    owner: '999'
+    group: '999'
+    mode: '0700'
+  loop: [pgdata, patroni, redis-data, redis-config, sentinel-data, sentinel-config, initdb]
+
+- name: Restrict configuration to this site's generated credentials
+  ansible.builtin.set_fact:
+    storage_secret_values:
+      pg_superuser_password: "{{ cluster_secrets.pg_superuser_password }}"
+      pg_replication_password: "{{ cluster_secrets.pg_replication_password }}"
+      pg_app_password: "{{ cluster_secrets.pg_app_password }}"
+      redis_password: "{{ cluster_secrets.redis_password }}"
+      redis_sentinel_password: "{{ cluster_secrets.redis_sentinel_password }}"
+  no_log: true
+
+- name: Inspect previous storage credential file
+  ansible.builtin.stat:
+    path: "{{ site_dir }}/storage/private/storage-secrets.json"
+  register: storage_secret_file
+
+- name: Read previous storage credentials for equality check
+  ansible.builtin.slurp:
+    src: "{{ site_dir }}/storage/private/storage-secrets.json"
+  register: storage_previous_secrets
+  when: storage_secret_file.stat.exists
+  no_log: true
+
+- name: Refuse implicit database and Redis credential rotation
+  ansible.builtin.assert:
+    that:
+      - storage_previous_secrets.content | b64decode | from_json == storage_secret_values
+    fail_msg: Existing storage credentials differ. Use an explicit credential rotation procedure.
+  when: storage_secret_file.stat.exists
+  no_log: true
+
+- name: Save root-only verification credentials
+  ansible.builtin.copy:
+    content: "{{ storage_secret_values | to_nice_json }}\n"
+    dest: "{{ site_dir }}/storage/private/storage-secrets.json"
+    owner: root
+    group: root
+    mode: '0600'
+  no_log: true
+
+- name: Install PostgreSQL superuser password file
+  ansible.builtin.copy:
+    content: "{{ cluster_secrets.pg_superuser_password }}\n"
+    dest: "{{ site_dir }}/storage/patroni/pg-superuser-password"
+    owner: '999'
+    group: '999'
+    mode: '0600'
+  when: inventory_hostname in groups['data']
+  no_log: true
+
+- name: Install pinned Patroni build inputs
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "{{ site_dir }}/storage/build/{{ item }}"
+    owner: root
+    group: root
+    mode: '0644'
+  loop: [Dockerfile, bootstrap.py]
+  when: mode == 'ha' and inventory_hostname in groups['data']
+
+- name: Render Patroni configuration
+  ansible.builtin.template:
+    src: patroni.yml.j2
+    dest: "{{ site_dir }}/storage/patroni/patroni.yml"
+    owner: '999'
+    group: '999'
+    mode: '0600'
+  when: mode == 'ha' and inventory_hostname in groups['data']
+  no_log: true
+
+- name: Install app bootstrap credentials for Patroni
+  ansible.builtin.copy:
+    content: "{{ {'pg_app_password': cluster_secrets.pg_app_password, 'pg_superuser_password': cluster_secrets.pg_superuser_password} | to_nice_json }}\n"
+    dest: "{{ site_dir }}/storage/patroni/bootstrap-secrets.json"
+    owner: '999'
+    group: '999'
+    mode: '0600'
+  when: mode == 'ha' and inventory_hostname in groups['data']
+  no_log: true
+
+- name: Render fresh standalone database initialization
+  ansible.builtin.template:
+    src: initdb.sql.j2
+    dest: "{{ site_dir }}/storage/initdb/010-app.sql"
+    owner: '999'
+    group: '999'
+    mode: '0600'
+  when: mode == 'single'
+  no_log: true
+
+- name: Initialize writable Redis configuration without overwriting elected role
+  ansible.builtin.template:
+    src: redis.conf.j2
+    dest: "{{ site_dir }}/storage/redis-config/redis.conf"
+    owner: '999'
+    group: '999'
+    mode: '0600'
+    force: false
+  when: inventory_hostname in groups['data']
+  no_log: true
+
+- name: Initialize writable Sentinel configuration without overwriting quorum state
+  ansible.builtin.template:
+    src: sentinel.conf.j2
+    dest: "{{ site_dir }}/storage/sentinel-config/sentinel.conf"
+    owner: '999'
+    group: '999'
+    mode: '0600'
+    force: false
+  when: mode == 'ha'
+  no_log: true
+
+- name: Render local PostgreSQL writer proxy
+  ansible.builtin.template:
+    src: haproxy.cfg.j2
+    dest: "{{ site_dir }}/storage/proxy/haproxy.cfg"
+    owner: root
+    group: root
+    mode: '0644'
+  when: mode == 'ha' and inventory_hostname in groups['data']
+
+- name: Install read-only storage verification
+  ansible.builtin.copy:
+    src: verify_storage.py
+    dest: "{{ site_dir }}/storage/scripts/verify_storage.py"
+    owner: root
+    group: root
+    mode: '0700'
+
+- name: Render site-specific storage Compose file
+  ansible.builtin.template:
+    src: compose.yml.j2
+    dest: "{{ site_dir }}/storage/compose.yml"
+    owner: root
+    group: root
+    mode: '0600'
+
+- name: Check storage Compose syntax
+  ansible.builtin.command:
+    argv: [docker, compose, -f, "{{ site_dir }}/storage/compose.yml", config, --quiet]
+  changed_when: false

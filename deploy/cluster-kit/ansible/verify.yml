@@ -1,0 +1,18 @@
+---
+- name: Inspect storage without applying configuration
+  hosts: cluster
+  become: true
+  gather_facts: false
+  vars:
+    storage_phase: verify
+  roles:
+    - storage
+
+- name: Inspect application without restarting services
+  hosts: data
+  become: true
+  gather_facts: false
+  vars:
+    application_phase: verify
+  roles:
+    - application

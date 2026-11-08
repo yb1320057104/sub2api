@@ -1,0 +1,8 @@
+* text eol=lf
+# The source patch contains intentionally preserved source line endings and is
+# SHA256 pinned. Git must not normalize these bytes on Windows or Linux.
+patches/*.patch -text -diff
+LICENSE -text whitespace=cr-at-eol
+patches/LICENSE -text whitespace=cr-at-eol
+patches/manifest.json -text whitespace=cr-at-eol
+*.zip -text

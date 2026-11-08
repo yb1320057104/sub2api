@@ -1,0 +1,78 @@
+---
+- name: Create build directory
+  ansible.builtin.file:
+    path: '{{ site_dir }}/build/app'
+    state: directory
+    mode: '0700'
+  when: source_build and node_role == 'primary'
+
+- name: Transfer the verified source archive
+  ansible.builtin.copy:
+    src: '{{ controller_state_dir }}/source.tar.gz'
+    dest: '{{ site_dir }}/build/source.tar.gz'
+    mode: '0600'
+  register: source_transfer
+  when: source_build and node_role == 'primary'
+
+- name: Unpack application source
+  ansible.builtin.unarchive:
+    src: '{{ site_dir }}/build/source.tar.gz'
+    dest: '{{ site_dir }}/build/app'
+    remote_src: true
+  when: source_build and node_role == 'primary'
+
+- name: Build the application once on the primary host
+  ansible.builtin.command:
+    argv: [docker, build, --file, Dockerfile, --tag, '{{ app_image }}', .]
+    chdir: '{{ site_dir }}/build/app'
+  environment:
+    DOCKER_BUILDKIT: '1'
+  when: source_build and node_role == 'primary'
+
+- name: Export the same image for the second application node
+  ansible.builtin.command:
+    argv: [docker, save, --output, '{{ site_dir }}/build/app-image.tar', '{{ app_image }}']
+  when: source_build and mode == 'ha' and node_role == 'primary'
+
+- name: Fetch application image over SSH
+  ansible.builtin.fetch:
+    src: '{{ site_dir }}/build/app-image.tar'
+    dest: '{{ controller_state_dir }}/app-image.tar'
+    flat: true
+  when: source_build and mode == 'ha' and node_role == 'primary'
+
+- name: Ensure secondary image staging directory
+  ansible.builtin.file:
+    path: '{{ site_dir }}/build'
+    state: directory
+    mode: '0700'
+  when: source_build and node_role == 'secondary'
+
+- name: Transfer the built image to secondary
+  ansible.builtin.copy:
+    src: '{{ controller_state_dir }}/app-image.tar'
+    dest: '{{ site_dir }}/build/app-image.tar'
+    mode: '0600'
+  when: source_build and node_role == 'secondary'
+
+- name: Load application image on secondary
+  ansible.builtin.command:
+    argv: [docker, load, --input, '{{ site_dir }}/build/app-image.tar']
+  when: source_build and node_role == 'secondary'
+
+- name: Pull explicitly configured image digest
+  ansible.builtin.command:
+    argv: [docker, pull, '{{ app_image }}']
+  when: not source_build
+
+- name: Inspect HA capability label
+  ansible.builtin.command:
+    argv: [docker, image, inspect, '{{ app_image }}']
+  register: app_image_info
+  changed_when: false
+
+- name: Reject images without required HA lifecycle fixes
+  ansible.builtin.assert:
+    that:
+      - (app_image_info.stdout | from_json)[0].Config.Labels['io.sub2api.cluster.capabilities'] | default('') == 'ha-r4'
+    fail_msg: '镜像必须包含 HA、共享准入、有序排空和手动糖果执行器修复；不能用普通旧版镜像替代。'

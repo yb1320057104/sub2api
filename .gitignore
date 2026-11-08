@@ -182,3 +182,5 @@ issues/
 !/scripts/test-local.py
 !/scripts/test-local.ps1
 !/scripts/test-server.py
+
+!docs/PK_CLUSTER_KIT_REVIEW.md
