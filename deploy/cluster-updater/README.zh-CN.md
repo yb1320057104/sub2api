@@ -24,7 +24,7 @@ GitHub 私库发布正式 Release 后，管理员在 `/cluster-update/` 确认�
 
 `server.py` 提供管理员确认界面；`builder.py` 解析正式 Release 并构建；`cluster_rollout.py` 按顺序协调；`agent.py` 在各节点执行限定动作。远端密钥使用 SSH forced command，不提供交互 shell、转发或 SFTP。
 
-控制器配置包含 `root`、`rollout_enabled`、`auth_port`、`auth_host`、`allowed_origins`、`listen_port`、`poll_interval_seconds`、`github_token_file`、`overlay_dir`、`work_dir`、`nodes`。节点代理配置包含 `schema=1`、`node`、`root`、`gate_runtime_dir`、`worker_runtime_dir`、`edge_rollout_module`、`candidate_root`，可选 `worker_unit` 与 `github_token_file`。这些文件及密钥需要 root 私有权限。
+控制器配置包含 `root`、`rollout_enabled`、`auth_port`、`auth_host`、`allowed_origins`、`listen_port`、`poll_interval_seconds`、`github_token_file`、`overlay_dir`、`work_dir`、`nodes`。节点代理配置包含 `schema=1`、`node`、`root`、`gate_runtime_dir`、`worker_runtime_dir`、`edge_rollout_module`、`candidate_root`，可选 `worker_unit`、`github_token_file` 与 `browser_runtime_images`。这些文件及密钥需要 root 私有权限。
 
 节点代理的可选 `github_token_file` 指向本机已有、root私有的GitHub令牌文件。只在创建API候选且原环境的 `UPDATE_GITHUB_TOKEN` 缺失或为空时补入；已有非空令牌保持，不给worker补入，不向构建容器提供。未配置该字段时不改变原凭据行为，令牌值不进入公开回执或日志。这解决API访问私库正式版本时缺凭据导致强制检查失败的情况。
 
@@ -56,3 +56,38 @@ python3 deploy/cluster-updater/prepare_overlay.py \
 ```
 
 第一步只从固定Git提交导出并校验源码；第二步逐文件核对、在临时目录应用本目录固定版本比较补丁，再生成三方合并输入与迁移基线映射。当前合并清单包括96份HA差异文件及348份迁移目录文件，其中324份SQL。把输出目录作为私有控制器配置中的 `overlay_dir`；再次生成时使用新的空输出目录。上述命令不安装服务、不更新应用，也不需要复制现有站点数据。
+
+## 只读HA容器的浏览器运行环境
+
+HA候选以用户1000运行、根文件系统只读，且不经过原镜像入口安装浏览器。若镜像未包含Chromium／Xvfb，授权预检会报`browser_missing`；直接对这类运行容器执行`install-browser.sh`会因只读系统拒绝apk安装。应在各节点从固定原镜像准备独立运行镜像，再通过候选更新切换，保持应用二进制、用户、只读根、网络和原业务挂载。
+
+节点代理可选`browser_runtime_images`是“原镜像完整ID→浏览器镜像完整ID”的JSON映射，键和值均为`sha256:`加64位小写十六进制。代理在预检及候选准备时核对目标镜像实际ID及`sub2api.browser-runtime.schema=1`、`sub2api.browser-runtime.base-image=<原镜像完整ID>`标签；目标缺失、标签不符或源镜像未登记即拒绝。空映射维持原行为；已运行目标镜像会继续使用同一目标，不重复替换。映射同时用于API与worker候选，仅替换Image；没有授予容器写根文件系统或安装系统包的权限。
+
+`Dockerfile.browser-runtime`适用于既有Alpine基础镜像，仅增加`chromium xvfb`，安装后使用`1000:1000`。在拥有固定基础镜像的每个节点，使用本机Docker镜像存储构建；`UPDATER_SOURCE`指向本目录，`BASE_IMAGE_ID`必须由已核验的候选规格取得。以下步骤仅准备镜像，不部署应用：
+
+Chromium启动包装器会读取镜像内`/etc/chromium/99-pk-runtime.conf`。该配置仅在浏览器参数包含绝对路径`--user-data-dir=/...`时，将该浏览器进程的XDG配置与缓存目录放到现有临时profile的`.config`／`.cache`子目录，随profile一同清理，避免只读HOME导致crashpad启动失败。没有绝对profile参数时（例如`--version`）不改XDG环境；不改应用全局环境、运行用户或根文件系统权限。
+
+```sh
+set -eu
+: "${UPDATER_SOURCE:?set updater source directory}"
+: "${BASE_IMAGE_ID:?set pinned base sha256 image ID}"
+printf '%s\n' "$BASE_IMAGE_ID" | grep -Eq '^sha256:[0-9a-f]{64}$'
+test "$(docker image inspect --format '{{.Id}}' "$BASE_IMAGE_ID")" = "$BASE_IMAGE_ID"
+BASE_TAG="sub2api-browser-base:${BASE_IMAGE_ID#sha256:}"
+RUNTIME_TAG="sub2api-browser-runtime:${BASE_IMAGE_ID#sha256:}"
+docker tag "$BASE_IMAGE_ID" "$BASE_TAG"
+test "$(docker image inspect --format '{{.Id}}' "$BASE_TAG")" = "$BASE_IMAGE_ID"
+BUILD_CONTEXT=$(mktemp -d)
+trap 'rmdir "$BUILD_CONTEXT"' EXIT
+docker build --pull=false --file "$UPDATER_SOURCE/Dockerfile.browser-runtime" \
+  --build-arg BASE_IMAGE="$BASE_TAG" --build-arg BASE_IMAGE_ID="$BASE_IMAGE_ID" \
+  --tag "$RUNTIME_TAG" "$BUILD_CONTEXT"
+BROWSER_IMAGE_ID=$(docker image inspect --format '{{.Id}}' "$RUNTIME_TAG")
+test "$(docker image inspect --format '{{index .Config.Labels "sub2api.browser-runtime.schema"}}' "$BROWSER_IMAGE_ID")" = 1
+test "$(docker image inspect --format '{{index .Config.Labels "sub2api.browser-runtime.base-image"}}' "$BROWSER_IMAGE_ID")" = "$BASE_IMAGE_ID"
+printf 'base=%s\nbrowser=%s\n' "$BASE_IMAGE_ID" "$BROWSER_IMAGE_ID"
+```
+
+不要把裸`sha256:镜像ID`直接放在FROM中；BuildKit可能将其当作镜像仓库名称拉取。上例先将已核验ID标记为本机唯一哈希标签，再核对标签指向并使用`--pull=false`。构建不挂载业务数据、配置、令牌或Docker socket；apk依赖从软件源下载，最终以实际生成的完整镜像ID登记，不将可移动标签写入代理映射。镜像需先在无业务挂载、相同用户与只读限制下验证Chromium／Xvfb能启动，再更新私有映射并执行正常逐台更新。构建或单次启动成功不等于完成账号授权验收。
+
+本次线上验证已完成：两节点构建的运行镜像在只读、用户1000下均通过Chromium 136的headless与后台CDP启动检查；更新器按副节点、主节点及worker顺序切换到候选代次8，两个API就绪，仅主数据库writer上的worker运行。控制器状态已恢复为`in_sync`。授权代理106随后真实检查返回成功，数据库状态为`passed`，消息为`chatgpt.com GET预检通过`。本次未修改数据库结构、账号凭据或正式Release。

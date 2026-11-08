@@ -146,10 +146,19 @@ def baseline(version):
     return version.split('-ha.', 1)[0]
 
 
+def browser_runtime_images(value):
+    need(isinstance(value, dict) and len(value) <= 32, 'browser_runtime_images_shape')
+    need(all(isinstance(image, str) and re.fullmatch('sha256:' + HASH, image)
+             for pair in value.items() for image in pair), 'browser_runtime_image_id')
+    need(len(set(value.values())) == len(value) and not set(value).intersection(value.values()),
+         'browser_runtime_images_ambiguous')
+    return value
+
+
 def config(path):
     value = json.loads(read(path))
     required = {'node', 'root', 'gate_runtime_dir', 'worker_runtime_dir', 'edge_rollout_module', 'candidate_root'}
-    need(required.issubset(value) and set(value).issubset(required | {'schema', 'worker_unit', 'github_token_file'}), 'config_shape')
+    need(required.issubset(value) and set(value).issubset(required | {'schema', 'worker_unit', 'github_token_file', 'browser_runtime_images'}), 'config_shape')
     need(type(value.get('schema', 1)) is int and value.get('schema', 1) == 1, 'config_schema')
     need(value['node'] in NODES, 'config_node')
     for key in required - {'node'}:
@@ -159,6 +168,7 @@ def config(path):
     if value.get('github_token_file') is not None:
         need(isinstance(value['github_token_file'], str) and Path(value['github_token_file']).is_absolute(), 'github_token_file_path')
         secure(value['github_token_file'])
+    browser_runtime_images(value.get('browser_runtime_images', {}))
     need(re.fullmatch(r'[a-zA-Z0-9_.-]+\.service', value['worker_unit']), 'worker_unit')
     return value
 
@@ -261,6 +271,7 @@ class Agent:
                 root = self.candidates / candidate['name']
                 spec = json.loads(read(root / 'container-spec.private.json'))
                 need(sha(json.dumps(spec, sort_keys=True).encode()) == candidate['spec_sha256'], 'source_spec_changed')
+                self.browser_runtime_image(support, spec['Image'])
                 env = dict(s.split('=', 1) for s in spec.get('Env', []) if '=' in s)
                 need(env.get('SUB2API_GRACEFUL_DRAIN') == 'true', 'graceful_drain_required')
                 need(env.get('SUB2API_WORKER_ONLY') == ('true' if candidate['role'] == 'worker' else 'false') and
@@ -274,6 +285,8 @@ class Agent:
                     found = support.api('GET', '/networks/' + name)
                     need(found.get('Id') == identity and found.get('Name') == name, 'source_network_changed')
             result['checks']['candidate_sources'] = True
+            if self.c.get('browser_runtime_images'):
+                result['checks']['browser_runtime_images'] = True
             old = self.rollout()
             for name in ('edge_context', 'route', 'route_keys', 'drain', 'terminate', 'wait_ready', 'gate', 'same_gate'):
                 need(callable(getattr(old, name, None)), 'rollout_interface_missing')
@@ -344,6 +357,21 @@ class Agent:
         spec['Env'] = [entry for entry in spec['Env'] if not entry.startswith('UPDATE_GITHUB_TOKEN=')]
         spec['Env'].append('UPDATE_GITHUB_TOKEN=' + token)
 
+    def browser_runtime_image(self, support, source):
+        mapping = browser_runtime_images(self.c.get('browser_runtime_images', {}))
+        if not mapping:
+            return source
+        reverse = {target: base for base, target in mapping.items()}
+        need(source in mapping or source in reverse, 'browser_runtime_source_unmapped')
+        base = source if source in mapping else reverse[source]
+        target = mapping[base]
+        row = support.api('GET', '/images/' + target + '/json')
+        need(isinstance(row, dict) and row.get('Id') == target, 'browser_runtime_image_changed')
+        labels = row.get('Config', {}).get('Labels') or {}
+        need(labels.get('sub2api.browser-runtime.schema') == '1' and
+             labels.get('sub2api.browser-runtime.base-image') == base, 'browser_runtime_image_labels')
+        return target
+
     def clone(self, support, previous, row, binary, meta):
         role = previous['role']
         source = self.candidates / previous['name']
@@ -361,6 +389,9 @@ class Agent:
         if row['State']['Running']:
             need(support.network_plan(row) == (primary, networks), 'source_network_changed')
         spec = copy.deepcopy(oldspec)
+        # Browser dependencies live in a separately prepared local runtime image.
+        # Do not inherit an unrecorded writable layer from a production container.
+        spec['Image'] = self.browser_runtime_image(support, spec['Image'])
         binds = spec['HostConfig']['Binds']
         replaced = 0
         for i, binding in enumerate(binds):
@@ -418,6 +449,9 @@ class Agent:
         put(self.job / 'old-worker-config.json', read(self.worker_root / 'config.json'))
         put(self.job / 'old-supervisor.py', read(self.worker_root / 'supervisor.py'))
         workerrow = support.api('GET', '/containers/' + oldworker['id'] + '/json')
+        # Refuse missing browser runtimes before creating either candidate.
+        self.browser_runtime_image(support, apirow['Image'])
+        self.browser_runtime_image(support, workerrow['Image'])
         newapi = self.clone(support, oldapi, apirow, binary, meta)
         newworker = self.clone(support, oldworker, workerrow, binary, meta)
         versions = dict(support.VERSIONS)

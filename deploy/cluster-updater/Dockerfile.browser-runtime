@@ -1,0 +1,32 @@
+# The caller must tag and inspect a pinned local image ID before this build.
+# Build with the local Docker image store and --pull=false; no production mounts.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+ARG BASE_IMAGE_ID
+USER 0
+RUN test "${#BASE_IMAGE_ID}" -eq 71 \
+    && printf '%s\n' "${BASE_IMAGE_ID}" | grep -Eq '^sha256:[0-9a-f]{64}$' \
+    && apk add --no-cache chromium xvfb \
+    && command -v chromium \
+    && command -v Xvfb
+# Alpine's Chromium launcher sources these files before starting the browser.
+# Keep crashpad/XDG state inside the request's existing temporary profile.
+RUN printf '%s\n' \
+    'for pk_browser_arg in "$@"; do' \
+    '  case "$pk_browser_arg" in' \
+    '    --user-data-dir=/*)' \
+    '      pk_browser_profile=${pk_browser_arg#--user-data-dir=}' \
+    '      if mkdir -p "$pk_browser_profile/.config" "$pk_browser_profile/.cache"; then' \
+    '        export XDG_CONFIG_HOME="$pk_browser_profile/.config"' \
+    '        export XDG_CACHE_HOME="$pk_browser_profile/.cache"' \
+    '      fi' \
+    '      break' \
+    '      ;;' \
+    '  esac' \
+    'done' \
+    'unset pk_browser_arg pk_browser_profile' \
+    > /etc/chromium/99-pk-runtime.conf \
+    && chmod 0644 /etc/chromium/99-pk-runtime.conf
+LABEL sub2api.browser-runtime.schema="1" \
+      sub2api.browser-runtime.base-image="${BASE_IMAGE_ID}"
+USER 1000:1000
