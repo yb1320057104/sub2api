@@ -24,9 +24,19 @@ GitHub 私库发布正式 Release 后，管理员在 `/cluster-update/` 确认�
 
 `server.py` 提供管理员确认界面；`builder.py` 解析正式 Release 并构建；`cluster_rollout.py` 按顺序协调；`agent.py` 在各节点执行限定动作。远端密钥使用 SSH forced command，不提供交互 shell、转发或 SFTP。
 
-控制器配置包含 `root`、`rollout_enabled`、`auth_port`、`auth_host`、`allowed_origins`、`listen_port`、`poll_interval_seconds`、`github_token_file`、`overlay_dir`、`work_dir`、`nodes`。节点代理配置包含 `schema=1`、`node`、`root`、`gate_runtime_dir`、`worker_runtime_dir`、`edge_rollout_module`、`candidate_root`。这些文件及密钥需要 root 私有权限。
+控制器配置包含 `root`、`rollout_enabled`、`auth_port`、`auth_host`、`allowed_origins`、`listen_port`、`poll_interval_seconds`、`github_token_file`、`overlay_dir`、`work_dir`、`nodes`。节点代理配置包含 `schema=1`、`node`、`root`、`gate_runtime_dir`、`worker_runtime_dir`、`edge_rollout_module`、`candidate_root`，可选 `worker_unit` 与 `github_token_file`。这些文件及密钥需要 root 私有权限。
+
+节点代理的可选 `github_token_file` 指向本机已有、root私有的GitHub令牌文件。只在创建API候选且原环境的 `UPDATE_GITHUB_TOKEN` 缺失或为空时补入；已有非空令牌保持，不给worker补入，不向构建容器提供。未配置该字段时不改变原凭据行为，令牌值不进入公开回执或日志。这解决API访问私库正式版本时缺凭据导致强制检查失败的情况。
+
+历史r1候选回执没有 `revision` 字段时，代理补为1后仍通过原身份校验；名称必须精确属于r1，容器、镜像、规格、程序及网络等原有固定信息继续核对，不放宽其他候选代次。
 
 HA 补丁源由 `prepare_overlay.py` 从固定私库提交与已校验源码生成。更新器不读取开发者未提交的工作区改动。历史 ordinary-secondary 更新器保持停用发布能力。
+
+`patches/version-baseline.patch` 补充应用后台的版本比较修复：运行版本的严格 `-ha.YYYYMMDD.N` 或 `-secondary.YYYYMMDD.N` 后缀只在比较时归一到正式基线，实际版本显示和构建类型保持。未知／畸形后缀不归一；正式发行标签准入及非release构建禁止原地升级／回退的规则保持。生成器从已验证r4源码在隔离临时目录应用此补丁，核对补丁与修改前后SHA，最终生成96份合并输入（原94份加2份版本比较源码／测试），并加入独立版本比较测试组。原cluster-kit的r4清单和安装包保持。
+
+本次同基线修复已通过人工接续完成：两API及两worker均运行`0.2.19-pk.58-ha.20261108.5`，候选代次为7；两gate释放且API就绪，仅主节点writer上的worker运行。真实管理员检查中，两节点缓存与强制刷新共四次均返回200，正式最新版本为pk.58，`has_update=false`，实际HA版本和`cluster-ha`构建类型保持。统一更新控制器状态为`in_sync`，无待确认候选或错误；两公网就绪检查均200。
+
+这次接续按用户“无需等待”的明确授权终止了旧连接，两个旧API退出码均为137，存在连接中断，不能视为无中断升级。默认自动更新流程仍等待请求完成，不因此获得以后强制终止的授权。本次是同基线修复，不替代下一正式Release的完整“页面确认→构建→逐台更新”验收。
 
 ## 重现 HA 补丁输入
 
@@ -45,4 +55,4 @@ python3 deploy/cluster-updater/prepare_overlay.py \
   --output "$WORK_DIR/overlay"
 ```
 
-第一步只从固定Git提交导出并校验源码；第二步逐文件核对后生成三方合并输入与迁移基线映射。当前清单包括94份HA差异文件及348份迁移目录文件，其中324份SQL。把输出目录作为私有控制器配置中的 `overlay_dir`；再次生成时使用新的空输出目录。上述命令不安装服务、不更新应用，也不需要复制现有站点数据。
+第一步只从固定Git提交导出并校验源码；第二步逐文件核对、在临时目录应用本目录固定版本比较补丁，再生成三方合并输入与迁移基线映射。当前合并清单包括96份HA差异文件及348份迁移目录文件，其中324份SQL。把输出目录作为私有控制器配置中的 `overlay_dir`；再次生成时使用新的空输出目录。上述命令不安装服务、不更新应用，也不需要复制现有站点数据。

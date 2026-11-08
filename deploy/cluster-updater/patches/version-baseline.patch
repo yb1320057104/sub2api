@@ -1,0 +1,119 @@
+--- a/backend/internal/service/update_service.go
++++ b/backend/internal/service/update_service.go
+@@ -54,6 +54,10 @@
+ 
+ var privateReleaseTagRE = regexp.MustCompile(privateReleaseTagPattern)
+ 
++// Deployment suffixes identify a local HA build, not a new formal release.
++// This pattern is used only for comparisons, never for release tag admission.
++var privateDeploymentVersionRE = regexp.MustCompile(`^(v?[0-9]+\.[0-9]+\.[0-9]+-pk\.[0-9]+)-(?:ha|secondary)\.[0-9]{8}\.[1-9][0-9]*$`)
++
+ // UpdateCache defines cache operations for update service
+ type UpdateCache interface {
+ 	GetUpdateInfo(ctx context.Context) (string, error)
+@@ -813,6 +817,8 @@
+ 
+ // compareVersions compares two semantic versions
+ func compareVersions(current, latest string) int {
++	current = privateReleaseComparisonVersion(current)
++	latest = privateReleaseComparisonVersion(latest)
+ 	currentParts := parseVersion(current)
+ 	latestParts := parseVersion(latest)
+ 
+@@ -833,6 +839,15 @@
+ 		return 1
+ 	}
+ 	return 0
++}
++
++// privateReleaseComparisonVersion preserves unknown suffixes and all public
++// version metadata; only exact deployment identities share a formal baseline.
++func privateReleaseComparisonVersion(version string) string {
++	if parts := privateDeploymentVersionRE.FindStringSubmatch(version); parts != nil {
++		return parts[1]
++	}
++	return version
+ }
+ 
+ func (s *UpdateService) requireReleaseBuild() error {
+--- a/backend/internal/service/update_service_test.go
++++ b/backend/internal/service/update_service_test.go
+@@ -978,3 +978,78 @@
+ 		})
+ 	}
+ }
++
++func TestUpdateServicePrivateDeploymentVersionFreshAndCache(t *testing.T) {
++	for _, tt := range []struct {
++		name, current, latest string
++		wantUpdate            bool
++	}{
++		{"same_ha", "0.2.19-pk.58-ha.20261108.4", "0.2.19-pk.58", false},
++		{"lower_release", "0.2.19-pk.58-ha.20261108.4", "0.2.19-pk.57", false},
++		{"newer_release", "0.2.19-pk.58-ha.20261108.4", "0.2.19-pk.59", true},
++		{"newer_upstream", "0.2.19-pk.58-ha.20261108.4", "0.2.20-pk.1", true},
++		{"older_upstream", "0.2.19-pk.58-ha.20261108.4", "0.2.18-pk.99", false},
++		{"leading_v", "v0.2.19-pk.58-ha.20261108.4", "0.2.19-pk.58", false},
++		{"different_date_revision", "0.2.19-pk.58-ha.20270101.1741256912", "0.2.19-pk.58", false},
++		{"ordinary_secondary", "0.2.19-pk.58-secondary.20261108.1741256912", "0.2.19-pk.58", false},
++		{"secondary_newer_release", "0.2.19-pk.58-secondary.20261108.1741256912", "0.2.19-pk.59", true},
++	} {
++		t.Run(tt.name, func(t *testing.T) {
++			cache := &updateServiceCacheStub{}
++			client := &updateServiceGitHubClientStub{release: &GitHubRelease{TagName: "v" + tt.latest}}
++			svc := NewUpdateService(cache, client, tt.current, "cluster-ha")
++			fresh, err := svc.CheckUpdate(context.Background(), true)
++			require.NoError(t, err)
++			require.False(t, fresh.Cached)
++			require.Equal(t, tt.wantUpdate, fresh.HasUpdate)
++			require.Equal(t, tt.current, fresh.CurrentVersion)
++			require.Equal(t, "cluster-ha", fresh.BuildType)
++			client.latestErr = errors.New("GitHub unavailable after fresh response")
++			cached, err := svc.CheckUpdate(context.Background(), false)
++			require.NoError(t, err)
++			require.True(t, cached.Cached)
++			require.Equal(t, tt.wantUpdate, cached.HasUpdate)
++			require.Equal(t, tt.current, cached.CurrentVersion)
++			require.Equal(t, tt.latest, cached.LatestVersion)
++			require.Equal(t, "cluster-ha", cached.BuildType)
++		})
++	}
++}
++
++func TestPrivateReleaseComparisonVersionOnlyKnownDeploymentSuffixes(t *testing.T) {
++	for _, version := range []string{
++		"0.2.19-pk.58-custom.20261108.4",
++		"0.2.19-pk.58-ha.2026118.4",
++		"0.2.19-pk.58-ha.202611080.4",
++		"0.2.19-pk.58-ha.20261108.0",
++		"0.2.19-pk.58-ha.20261108.4-extra",
++		"0.2.19-pk.58-ha.20261108.a",
++		"0.2.19-pk.58-ha.20261108.4 ",
++		" 0.2.19-pk.58-ha.20261108.4",
++		"vv0.2.19-pk.58-ha.20261108.4",
++		"0.2.19-ha.20261108.4",
++		"0.2.19-pk.58",
++	} {
++		t.Run(version, func(t *testing.T) {
++			require.Equal(t, version, privateReleaseComparisonVersion(version))
++		})
++	}
++	// Preserve the legacy treatment of an unknown private suffix.
++	require.Equal(t, -1, compareVersions("0.2.19-pk.58-custom.20261108.4", "0.2.19-pk.58"))
++	require.Equal(t, 0, compareVersions("0.2.19-pk.58-ha.20261108.4", "0.2.19-pk.58-ha.20261208.99"))
++}
++
++func TestUpdateServicePrivateDeploymentVersionDoesNotAuthorizeReleaseMutation(t *testing.T) {
++	for _, version := range []string{"0.2.19-pk.58-ha.20261108.4", "0.2.19-pk.58-secondary.20261108.1741256912"} {
++		t.Run(version, func(t *testing.T) {
++			require.False(t, isPrivateReleaseVersion(version))
++			require.False(t, isPrivateReleaseTag("v"+version))
++			svc := NewUpdateService(&updateServiceCacheStub{}, &updateServiceGitHubClientStub{}, version, "cluster-ha")
++			require.ErrorIs(t, svc.PerformUpdate(context.Background()), ErrUpdateNotAllowed)
++			_, err := svc.ListRollbackVersions(context.Background())
++			require.ErrorIs(t, err, ErrUpdateNotAllowed)
++			require.ErrorIs(t, svc.RollbackToVersion(context.Background(), "0.2.19-pk.57"), ErrUpdateNotAllowed)
++			require.ErrorIs(t, svc.Rollback(), ErrUpdateNotAllowed)
++		})
++	}
++}

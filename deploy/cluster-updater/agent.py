@@ -133,6 +133,15 @@ def public_receipt(value):
     return {key: value[key] for key in PUBLIC_RECEIPT if key in value}
 
 
+def historical_receipt(value):
+    # The initial r1 format omitted revision. The ordinary receipt validator
+    # still requires its exact r1 name and all pinned identity fields.
+    normalized = dict(value)
+    if 'revision' not in normalized:
+        normalized['revision'] = 1
+    return receipt(normalized)
+
+
 def baseline(version):
     return version.split('-ha.', 1)[0]
 
@@ -140,13 +149,16 @@ def baseline(version):
 def config(path):
     value = json.loads(read(path))
     required = {'node', 'root', 'gate_runtime_dir', 'worker_runtime_dir', 'edge_rollout_module', 'candidate_root'}
-    need(required.issubset(value) and set(value).issubset(required | {'schema', 'worker_unit'}), 'config_shape')
+    need(required.issubset(value) and set(value).issubset(required | {'schema', 'worker_unit', 'github_token_file'}), 'config_shape')
     need(type(value.get('schema', 1)) is int and value.get('schema', 1) == 1, 'config_schema')
     need(value['node'] in NODES, 'config_node')
     for key in required - {'node'}:
         need(isinstance(value[key], str) and Path(value[key]).is_absolute() and '..' not in Path(value[key]).parts, 'config_path')
         secure(value[key], directory=(key != 'edge_rollout_module'))
     value.setdefault('worker_unit', 'sub2api-storage-worker-runtime.service')
+    if value.get('github_token_file') is not None:
+        need(isinstance(value['github_token_file'], str) and Path(value['github_token_file']).is_absolute(), 'github_token_file_path')
+        secure(value['github_token_file'])
     need(re.fullmatch(r'[a-zA-Z0-9_.-]+\.service', value['worker_unit']), 'worker_unit')
     return value
 
@@ -321,6 +333,17 @@ class Agent:
         text = source.decode().split('\n# Generic receipt validation installed by the cluster updater.\n', 1)[0]
         return (text + suffix).encode()
 
+    def fill_release_credential(self, spec):
+        path = self.c.get('github_token_file')
+        if not path or any(entry.startswith('UPDATE_GITHUB_TOKEN=') and entry.split('=', 1)[1] for entry in spec['Env']):
+            return
+        raw = read(Path(path))
+        need(len(raw) <= 16384, 'github_token_too_large')
+        token = raw.decode('ascii').strip()
+        need(bool(re.fullmatch(r'[A-Za-z0-9_]+', token)), 'github_token_invalid')
+        spec['Env'] = [entry for entry in spec['Env'] if not entry.startswith('UPDATE_GITHUB_TOKEN=')]
+        spec['Env'].append('UPDATE_GITHUB_TOKEN=' + token)
+
     def clone(self, support, previous, row, binary, meta):
         role = previous['role']
         source = self.candidates / previous['name']
@@ -346,8 +369,10 @@ class Agent:
                 binds[i] = str(binary) + ':/app/sub2api:' + suffix
                 replaced += 1
         need(replaced == 1 and any(':/app/data:' in x for x in binds), 'source_mount_contract')
-        # Data/config/pages/plugins/TLS binds and every environment entry remain
-        # live shared paths. No earlier staging snapshot can overwrite edits.
+        # Data/config/pages/plugins/TLS binds remain live shared paths. An optional
+        # private source may fill a missing API release credential only.
+        if role == 'api':
+            self.fill_release_credential(spec)
         spec['Labels']['sub2api.storage-ha.binary-sha256'] = meta['sha256']
         name = 'sub2api-ha-{}-ha-{}-r{}'.format(self.node, role, meta['revision'])
         output = self.candidates / name
@@ -399,7 +424,7 @@ class Agent:
         versions[meta['revision']] = meta['version']
         identities = {}
         for path in self.candidates.glob('sub2api-ha-*-ha-*-r*/receipt.json'):
-            candidate = receipt(json.loads(read(path)))
+            candidate = historical_receipt(json.loads(read(path)))
             identities[candidate['name']] = candidate['source_id']
             if candidate.get('version'):
                 versions[candidate['revision']] = candidate['version']
@@ -523,7 +548,7 @@ class Agent:
             owned = held
             put(self.job / 'owned-hold.json', encoded(owned))
             self.log('api_held', generation=owned['generation'])
-            previous, oldrow = old.drain(self.node, support, current['revision'], owned)
+            previous, oldrow = old.drain(self.node, support, current['revision'], owned, seconds=900)
             old.terminate(self.node, support, previous, oldrow, owned)
             self.log('old_api_stopped', id=previous['id'])
             old.same_gate(old.gate(), owned, True)

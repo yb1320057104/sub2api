@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "source_commit": "6e13057867b496691a531989b9895ff216f12d95",
+  "files": [
+    {
+      "path": "backend/internal/service/update_service.go",
+      "before_sha256": "844d05881d2e9789684400e64ab0a6038e76f689f672506407d4197717fbc603",
+      "after_sha256": "d01e2a0ef08347f79e0c5b956aecf9980f119ae04d92a1c02101cb356f61c1df"
+    },
+    {
+      "path": "backend/internal/service/update_service_test.go",
+      "before_sha256": "16b00fc56c7059adb719ada5a588bcbf8daeb1951c6529375ea8fce004daa372",
+      "after_sha256": "d71537908421bc1a23b543ac09291114ed60659d1dd8b5826245f8742364c2a0"
+    }
+  ],
+  "patch_sha256": "5afd2bca2b28d19eebe22de84b78c0689efa161fdb82b87308f753b91bbeeb13",
+  "base_commit": "fd80b8314fc2ddb9ec6470755abed0f741b27680",
+  "patch": "version-baseline.patch",
+  "targeted_tests": [
+    {
+      "name": "version-baseline",
+      "packages": [
+        "./internal/service"
+      ],
+      "selection": "^Test(UpdateServicePrivateDeploymentVersion|PrivateReleaseComparisonVersion|UpdateServicePrivateRevisionUpdates|UpdateServicePrivateRepositoryCacheIsolation|UpdateServicePrivateCacheRoundTrip|UpdateServiceRejectsSourceBuildMutations|UpdateServiceRejectsMalformedLatestTags)"
+    }
+  ]
+}
