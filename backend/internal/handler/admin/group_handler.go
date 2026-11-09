@@ -25,6 +25,7 @@ type GroupHandler struct {
 	adminService         service.AdminService
 	dashboardService     *service.DashboardService
 	groupCapacityService *service.GroupCapacityService
+	antiDistillation     *service.GroupAntiDistillationService
 	cfg                  *config.Config
 }
 

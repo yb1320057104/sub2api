@@ -222,6 +222,9 @@ func (s *OpenAICodexUsageSnapshot) Normalize() *NormalizedCodexLimits {
 
 // OpenAIUsage represents OpenAI API response usage
 type OpenAIUsage struct {
+	// CacheReadKnown records explicit raw upstream cache evidence, independently of billing.
+	CacheReadKnown           bool `json:"-"`
+	cacheReadMediaObserved   bool
 	InputTokens              int `json:"input_tokens"`
 	ImageInputTokens         int `json:"image_input_tokens,omitempty"`
 	ImageCacheReadTokens     int `json:"image_cache_read_tokens,omitempty"`
@@ -233,6 +236,9 @@ type OpenAIUsage struct {
 
 // OpenAIForwardResult represents the result of forwarding
 type OpenAIForwardResult struct {
+	antiDistillationRequestID string
+	// Passthrough usage settles before terminal delivery; protection waits for delivery.
+	antiDistillationDelivery  *openAIGroupAntiDistillationDelivery
 	AuditSettlementNegotiated bool // Server-owned outgoing HTTP negotiation evidence.
 	// AuditAction is a server-owned deferred video snapshot, never parsed from upstream JSON.
 	AuditAction *CyberPolicyAuditBlockInput `json:"-"`
@@ -448,6 +454,7 @@ var ErrNoAvailableCompactAccounts = errors.New("no available accounts support /r
 
 // OpenAIGatewayService handles OpenAI API gateway operations
 type OpenAIGatewayService struct {
+	groupAntiDistillation   *GroupAntiDistillationService
 	accountRepo             AccountRepository
 	usageLogRepo            UsageLogRepository
 	usageBillingRepo        UsageBillingRepository

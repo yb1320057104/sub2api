@@ -964,6 +964,11 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	}
 
 	completedTurns := atomic.Int32{}
+	var pendingProtectionDelivery atomic.Pointer[openAIGroupAntiDistillationDelivery]
+	defer func() {
+		// Drain after disconnect has no successful terminal write callback.
+		pendingProtectionDelivery.Swap(nil).complete(false)
+	}()
 	turnLifecycle := newOpenAIWSPassthroughTurnLifecycle(true)
 	var acceptedTurnStartedAt atomic.Pointer[time.Time]
 	clientFrameConn := &openAIWSClientFrameConn{
@@ -1219,14 +1224,20 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 					hooks.TurnStarted(turnNo, turn.StartedAt)
 				}
 				turnRequestModel, turnUpstreamModel := usageMeta.turnModels(turn.RequestModel)
+				delivery := &openAIGroupAntiDistillationDelivery{}
+				pendingProtectionDelivery.Swap(delivery).complete(false)
 				turnResult := &OpenAIForwardResult{
-					RequestID: turn.RequestID,
+					// Billing settles here; only protection waits for terminal delivery.
+					antiDistillationDelivery: delivery,
+					RequestID:                turn.RequestID,
 					Usage: OpenAIUsage{
 						InputTokens:              turn.Usage.InputTokens,
 						ImageInputTokens:         turn.Usage.ImageInputTokens,
 						OutputTokens:             turn.Usage.OutputTokens,
 						CacheCreationInputTokens: turn.Usage.CacheCreationInputTokens,
 						CacheReadInputTokens:     turn.Usage.CacheReadInputTokens,
+						CacheReadKnown:           turn.Usage.CacheReadKnown,
+						cacheReadMediaObserved:   turn.Usage.ProtectionMediaObserved,
 						ImageOutputTokens:        turn.Usage.ImageOutputTokens,
 					},
 					Model:                         turnRequestModel,
@@ -1273,6 +1284,7 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 					markOpenAIWSClientVisibleFailure(c, eventType, payload)
 				}
 				if msgType == coderws.MessageText && openAIWSPassthroughIsTerminalOutput(payload) {
+					pendingProtectionDelivery.Swap(nil).complete(writeErr == nil)
 					turnLifecycle.finishTerminalWrite(writeErr == nil, clientFrameConn.markTurnCompleted)
 				}
 			},

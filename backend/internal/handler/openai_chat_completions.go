@@ -421,6 +421,9 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account, openAIAccountScheduleModel(c, account, reqModel, false, result), true, nil)
 		}
 
+		if service.GetOpsCyberPolicy(c) == nil {
+			h.gatewayService.ObserveGroupAntiDistillationUsage(c.Request.Context(), apiKey, account, result, time.Time{}, body)
+		}
 		submitChatUsage(result)
 		reqLog.Debug("openai_chat_completions.request_completed",
 			zap.Int64("account_id", account.ID),

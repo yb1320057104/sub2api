@@ -2045,6 +2045,11 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthrough(
 
 	needModelReplace := strings.TrimSpace(originalModel) != "" && strings.TrimSpace(mappedModel) != "" && strings.TrimSpace(originalModel) != strings.TrimSpace(mappedModel)
 	resultWithUsage := func() *openaiStreamingResultPassthrough {
+		// Keep drained usage for billing, but a disconnected client is not a
+		// successfully delivered protection sample.
+		if usage != nil && clientDisconnected {
+			usage.CacheReadKnown = false
+		}
 		return &openaiStreamingResultPassthrough{
 			usage:            usage,
 			firstTokenMs:     firstTokenMs,

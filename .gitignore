@@ -155,6 +155,7 @@ docs/*
 !docs/PK_AUTHORIZATION_GATE_REVIEW.md
 !docs/PK_UPSTREAM_0.2.18_REVIEW.md
 !docs/PK_BILLING_HEARTBEAT_0.2.18_REVIEW.md
+!docs/PK_GROUP_ANTI_DISTILLATION_PK59_REVIEW.md
 !docs/legal/
 !docs/legal/*.md
 !docs/screenshots/

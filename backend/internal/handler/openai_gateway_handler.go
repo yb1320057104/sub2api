@@ -80,7 +80,7 @@ func newOpenAIWSUnsupportedModelSwitchError(model string) error {
 }
 
 func shouldReportOpenAIWSProxyAccountFailure(err error) bool {
-	return err != nil && !errors.Is(err, errOpenAIWSUnsupportedModelSwitch) && !service.IsOpenAIWSSessionPreemptedError(err)
+	return err != nil && !errors.Is(err, errOpenAIWSUnsupportedModelSwitch) && !errors.Is(err, errGroupAntiDistillationPaused) && !service.IsOpenAIWSSessionPreemptedError(err)
 }
 
 // openAIWSIngressEndedByClient reports whether a finished ingress WebSocket turn
@@ -1008,6 +1008,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		}
 
 		// 使用量记录通过有界 worker 池提交，避免请求热路径创建无界 goroutine。
+		if service.GetOpsCyberPolicy(c) == nil {
+			h.gatewayService.ObserveGroupAntiDistillationUsage(c.Request.Context(), apiKey, account, result, time.Time{}, sessionHashBody)
+		}
 		submitResponsesUsage(result)
 		reqLog.Debug("openai.request_completed",
 			zap.Int64("account_id", account.ID),
@@ -1565,6 +1568,9 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account, openAIAccountScheduleModel(c, account, currentRoutingModel, false, result), true, nil)
 		}
 
+		if service.GetOpsCyberPolicy(c) == nil {
+			h.gatewayService.ObserveGroupAntiDistillationUsage(c.Request.Context(), apiKey, account, result, time.Time{}, body)
+		}
 		submitMessagesUsage(result)
 		reqLog.Debug("openai_messages.request_completed",
 			zap.Int64("account_id", account.ID),
@@ -1598,23 +1604,24 @@ func resolveOpenAIMessagesMetadataSession(c *gin.Context, sessionHash, promptCac
 }
 
 // anthropicErrorResponse writes an error in Anthropic Messages API format.
-func (h *OpenAIGatewayHandler) anthropicErrorResponse(c *gin.Context, status int, errType, message string) {
+func (h *OpenAIGatewayHandler) anthropicErrorResponse(c *gin.Context, status int, errType, message string, codes ...string) {
 	if service.StopEarlySSEHeartbeatCommitted(c) {
-		h.anthropicStreamingAwareError(c, status, errType, message, true)
+		h.anthropicStreamingAwareError(c, status, errType, message, true, codes...)
 		return
 	}
+	errorObject := gin.H{"type": errType, "message": message}
+	if len(codes) > 0 && codes[0] != "" {
+		errorObject["code"] = codes[0]
+	}
 	c.JSON(status, gin.H{
-		"type": "error",
-		"error": gin.H{
-			"type":    errType,
-			"message": message,
-		},
+		"type":  "error",
+		"error": errorObject,
 	})
 }
 
 // anthropicStreamingAwareError handles errors that may occur during streaming,
 // using Anthropic SSE error format.
-func (h *OpenAIGatewayHandler) anthropicStreamingAwareError(c *gin.Context, status int, errType, message string, streamStarted bool) {
+func (h *OpenAIGatewayHandler) anthropicStreamingAwareError(c *gin.Context, status int, errType, message string, streamStarted bool, codes ...string) {
 	if service.StopEarlySSEHeartbeatCommitted(c) {
 		streamStarted = true
 	}
@@ -1622,19 +1629,20 @@ func (h *OpenAIGatewayHandler) anthropicStreamingAwareError(c *gin.Context, stat
 		service.MarkOpsStreamError(c, errType, message, status)
 		flusher, ok := c.Writer.(http.Flusher)
 		if ok {
+			errorObject := gin.H{"type": errType, "message": message}
+			if len(codes) > 0 && codes[0] != "" {
+				errorObject["code"] = codes[0]
+			}
 			errPayload, _ := json.Marshal(gin.H{
-				"type": "error",
-				"error": gin.H{
-					"type":    errType,
-					"message": message,
-				},
+				"type":  "error",
+				"error": errorObject,
 			})
 			fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", errPayload) //nolint:errcheck
 			flusher.Flush()
 		}
 		return
 	}
-	h.anthropicErrorResponse(c, status, errType, message)
+	h.anthropicErrorResponse(c, status, errType, message, codes...)
 }
 
 // handleAnthropicFailoverExhausted maps upstream failover errors to Anthropic format.
@@ -2110,6 +2118,12 @@ func (h *OpenAIGatewayHandler) acquireResponsesUserSlot(
 		h.handleConcurrencyError(c, err, "user", *streamStarted)
 		return nil, false
 	}
+	if !h.groupAntiDistillationAdmitted(c, *streamStarted, nil) {
+		if userReleaseFunc != nil {
+			userReleaseFunc()
+		}
+		return nil, false
+	}
 	return wrapReleaseOnDone(ctx, userReleaseFunc), true
 }
 
@@ -2318,7 +2332,17 @@ func (h *OpenAIGatewayHandler) acquireOpenAIAccountSlot(
 	streamStarted *bool,
 	reqLog *zap.Logger,
 	writeError openAISlotErrorWriter,
-) (func(), openAISlotAcquireResult) {
+) (release func(), outcome openAISlotAcquireResult) {
+	// Covers scheduler-preacquired, fast and queued slots. The named return
+	// releases every successful acquisition if protection activated meanwhile.
+	defer func() {
+		if outcome == openAISlotAcquireOK && !h.groupAntiDistillationAdmitted(c, *streamStarted, writeError) {
+			if release != nil {
+				release()
+			}
+			release, outcome = nil, openAISlotAcquireFailed
+		}
+	}()
 	if writeError == nil {
 		writeError = func(status int, errType, code, message string) {
 			h.handleStreamingAwareErrorWithCode(c, status, errType, code, message, *streamStarted, false)
@@ -2570,6 +2594,12 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 	} else if selected != nil {
 		apiKey = selected
 		ctx = c.Request.Context()
+	}
+	ctx = middleware2.WithGroupAntiDistillationAPIKey(ctx, apiKey)
+	c.Request = c.Request.WithContext(ctx)
+	if err := checkOpenAIWSGroupAntiDistillation(ctx, c); err != nil {
+		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, middleware2.GroupAntiDistillationPausedCode)
+		return
 	}
 	// 必须在合成路由解析和上游模型映射之前执行。
 	// 与 HTTP 准入一致：帧内重复 model 键/大小写变体可能被上游按末值绑定，
@@ -3093,6 +3123,9 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				return mapping.MappedModel, nil
 			},
 			BeforeTurn: func(turn int) error {
+				if err := checkOpenAIWSGroupAntiDistillation(ctx, c); err != nil {
+					return err
+				}
 				// turn==1 的会话屏蔽已由握手层检查覆盖；连接内 flag 只拦截后续 turn。
 				if cyberBlockedThisConn && !h.cyberPolicyLogOnly(c, apiKey) {
 					return service.NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, cyberSessionBlockedClientMsg, nil)
@@ -3138,6 +3171,10 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				}
 				currentUserRelease = wrapReleaseOnDone(ctx, userReleaseFunc)
 				currentAccountRelease = wrapReleaseOnDone(ctx, accountReleaseFunc)
+				if err := checkOpenAIWSGroupAntiDistillation(ctx, c); err != nil {
+					releaseTurnSlots()
+					return err
+				}
 				return checkSimpleModeTurnBilling()
 			},
 			AfterTurn: func(turn int, result *service.OpenAIForwardResult, turnErr error) {
@@ -3219,6 +3256,9 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				turnRecordPricingAt := turnPricing.currentOr(turnStart)
 				turnBillingAPIKey := turnBillingAPIKeys.forTurn(turn, apiKey)
 				cyberBlocked := service.GetOpsCyberPolicy(c) != nil
+				if turnErr == nil && !cyberBlocked {
+					h.gatewayService.ObserveGroupAntiDistillationUsage(ctx, turnBillingAPIKey, account, result, turnStart, cyberBlockBody)
+				}
 				auditRequestSucceeded := turnErr == nil && ctx.Err() == nil
 				auditUsageParent := auditUsageTurns.take(turn, ctx)
 				h.submitOpenAIUsageRecordTask(auditUsageParent, result, func(taskCtx context.Context) {
@@ -3272,6 +3312,11 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		}
 
 		for {
+			// Passthrough skips BeforeTurn on its first frame, including retries.
+			if err := checkOpenAIWSGroupAntiDistillation(ctx, c); err != nil {
+				closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, middleware2.GroupAntiDistillationPausedCode)
+				return
+			}
 			err := h.gatewayService.ProxyResponsesWebSocketFromClient(ctx, c, wsConn, account, token, wsFirstMessage, hooks)
 			if err == nil {
 				reqLog.Info("openai.websocket_ingress_closed", zap.Int64("account_id", account.ID))

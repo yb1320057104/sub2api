@@ -314,6 +314,7 @@ func (s *OpenAIGatewayService) scanCCStream(
 
 		rawUsage := extractCCStreamUsage(payload)
 		if rawUsage != nil {
+			mergeOpenAIProtectionUsageEvidence(st.Usage, rawUsage)
 			st.Usage = *rawUsage
 		}
 

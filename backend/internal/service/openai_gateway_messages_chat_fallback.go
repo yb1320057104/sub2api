@@ -249,6 +249,9 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsAnthropic(
 	scan := s.scanCCStream(c, resp, "openai messages chat fallback", requestID, startTime, emitChunk, account)
 	usage := scan.Usage
 	resultWithUsage := func() *OpenAIForwardResult {
+		if !scan.SawDone || clientDisconnected || scan.Err != nil || conversionErr != nil {
+			usage.CacheReadKnown = false
+		}
 		return &OpenAIForwardResult{
 			RequestID:                   requestID,
 			AuditSettlementNegotiated:   auditSettlementWasNegotiated(resp),

@@ -377,6 +377,7 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 				observer.ObserveOpenAI([]byte(payload), strings.TrimSpace(gjson.Get(payload, "type").String()))
 				usageOnlyChunk := isOpenAIChatUsageOnlyStreamChunk(payload)
 				if u := extractCCStreamUsage(payload); u != nil {
+					mergeOpenAIProtectionUsageEvidence(usage, u)
 					usage = *u
 				}
 				if markNegotiatedAuditCyberPolicy(c, account, resp, []byte(payload), usage) {
@@ -500,6 +501,9 @@ func (s *OpenAIGatewayService) streamRawChatCompletions(
 		}
 	}
 
+	if clientAborted || clientDisconnected || scanErr != nil || (!terminal.sawDone && !terminal.sawFinishReason) {
+		usage.CacheReadKnown = false
+	}
 	return resultWithUsage(), nil
 }
 

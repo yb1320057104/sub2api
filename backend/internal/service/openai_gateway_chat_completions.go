@@ -960,10 +960,10 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 		if isTerminalEvent {
 			terminalEventType = strings.TrimSpace(event.Type)
 			if event.Usage != nil {
-				usage = copyOpenAIUsageFromResponsesUsage(event.Usage)
+				usage = copyOpenAIUsageFromResponsesUsage(event.Usage, usage)
 			}
 			if event.Response != nil && event.Response.Usage != nil {
-				usage = copyOpenAIUsageFromResponsesUsage(event.Response.Usage)
+				usage = copyOpenAIUsageFromResponsesUsage(event.Response.Usage, usage)
 			}
 		}
 		if strings.TrimSpace(event.Type) == "response.failed" || strings.TrimSpace(event.Type) == "error" {

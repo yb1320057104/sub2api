@@ -658,6 +658,10 @@
           />
           <p class="input-hint">{{ t("admin.groups.form.rpmLimitHint") }}</p>
         </div>
+        <div v-if="createForm.platform === 'openai'" class="rounded-lg border border-gray-200 p-4 dark:border-dark-600">
+          <h4 class="text-sm font-medium text-gray-900 dark:text-gray-100">{{ t("admin.groups.antiDistillation.title") }}</h4>
+          <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">{{ t("admin.groups.antiDistillation.createHint") }}</p>
+        </div>
         <ReasoningEffortPolicyFields
           v-if="supportsReasoningEffortPolicyPlatform(createForm.platform)"
           ref="createReasoningEffortPolicyRef"
@@ -2310,6 +2314,11 @@
           />
           <p class="input-hint">{{ t("admin.groups.form.rpmLimitHint") }}</p>
         </div>
+        <GroupAntiDistillationSettings
+          v-if="editForm.platform === 'openai'"
+          :group-id="editingGroup.id"
+          :active="showEditModal"
+        />
         <ReasoningEffortPolicyFields
           v-if="supportsReasoningEffortPolicyPlatform(editForm.platform)"
           ref="editReasoningEffortPolicyRef"
@@ -4352,6 +4361,7 @@ import Icon from "@/components/icons/Icon.vue";
 import GroupI18nField from "@/components/admin/group/GroupI18nField.vue";
 import GroupRateMultipliersModal from "@/components/admin/group/GroupRateMultipliersModal.vue";
 import GroupRPMOverridesModal from "@/components/admin/group/GroupRPMOverridesModal.vue";
+import GroupAntiDistillationSettings from "@/components/admin/group/GroupAntiDistillationSettings.vue";
 import GroupProxyPolicyDialog from "@/components/admin/group/GroupProxyPolicyDialog.vue";
 import { listGroupProxyPolicies, updateGroupProxyPolicy, type GroupProxyPolicy } from "@/api/admin/proxyGroups";
 import { useTableSelection } from "@/composables/useTableSelection";

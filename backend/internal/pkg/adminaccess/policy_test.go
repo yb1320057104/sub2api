@@ -23,6 +23,17 @@ func TestScopedAdminPolicyDefaultDeny(t *testing.T) {
 	}
 }
 
+func TestGroupAntiDistillationPermissionIsolation(t *testing.T) {
+	const path = "/api/v1/admin/groups/:id/anti-distillation"
+	read := Policy{GlobalPermissions: []string{"groups.read"}}
+	models := Policy{Rules: []Rule{{Permissions: []string{"groups.models.read", "groups.models.write"}, GroupIDs: []int64{1}}}}
+	require.True(t, RouteAllowed(read, "GET", path))
+	for _, policy := range []Policy{{}, read, models} {
+		require.False(t, RouteAllowed(policy, "PUT", path), "protection writes require full administrator access")
+	}
+	require.False(t, RouteAllowed(models, "GET", path), "model-only access does not expose protection settings")
+}
+
 func TestScopedAdminModelPermissionsAreIndependent(t *testing.T) {
 	write := Policy{Rules: []Rule{{Permissions: []string{"accounts.models.write"}, GroupIDs: []int64{1}, AccountTypes: []string{"oauth"}}}}
 	read := Policy{GlobalPermissions: []string{"models.defaults.read"}}

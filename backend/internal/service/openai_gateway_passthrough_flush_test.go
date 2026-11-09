@@ -253,7 +253,7 @@ func TestOpenAIStreamingPassthroughFailedAfterOutputFlushesAtBoundaryAndKeepsUsa
 
 func TestOpenAIStreamingPassthroughClientDisconnectStillDrainsTerminalUsage(t *testing.T) {
 	firstOutput := `data: {"type":"response.output_text.delta","delta":"partial"}` + "\n\n"
-	terminalEvent := `data: {"type":"response.completed","response":{"id":"resp_drain","usage":{"input_tokens":11,"output_tokens":4,"total_tokens":15}}}` + "\n\n"
+	terminalEvent := `data: {"type":"response.completed","response":{"id":"resp_drain","usage":{"input_tokens":11,"output_tokens":4,"total_tokens":15,"input_tokens_details":{"cached_tokens":0}}}}` + "\n\n"
 
 	result, recorder, writer, err := runPassthroughFlushTest(
 		t,
@@ -268,6 +268,8 @@ func TestOpenAIStreamingPassthroughClientDisconnectStillDrainsTerminalUsage(t *t
 	require.Equal(t, 1, writer.failedWrites)
 	require.Equal(t, 11, result.usage.InputTokens)
 	require.Equal(t, 4, result.usage.OutputTokens)
+	require.False(t, result.usage.CacheReadKnown, "drained terminal usage must not become a protection sample")
+	require.False(t, openAIGroupAntiDistillationUsageEligible(&OpenAIForwardResult{Usage: *result.usage}))
 }
 
 func TestOpenAIStreamingPassthroughScannerErrorFlushesWrittenResidual(t *testing.T) {

@@ -2,18 +2,109 @@ package middleware
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/httputil"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
 )
+
+func TestGroupAntiDistillationAdmission(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, tc := range []struct {
+		name, method, path, platform string
+		pause                        time.Duration
+		err                          error
+		status, checks               int
+	}{
+		{"paused responses", "POST", "/v1/responses", service.PlatformOpenAI, time.Minute, nil, 429, 1},
+		{"paused chat", "POST", "/chat/completions", service.PlatformOpenAI, time.Minute, nil, 429, 1},
+		{"paused messages", "POST", "/v1/messages", service.PlatformOpenAI, time.Minute, nil, 429, 1},
+		{"paused compact", "POST", "/backend-api/codex/responses/compact", service.PlatformOpenAI, time.Minute, nil, 429, 1},
+		{"paused websocket", "GET", "/responses", service.PlatformOpenAI, time.Minute, nil, 429, 1},
+		{"no pause", "POST", "/v1/responses", service.PlatformOpenAI, 0, nil, 204, 1},
+		{"cache unavailable", "POST", "/v1/responses", service.PlatformOpenAI, 0, errors.New("unavailable"), 204, 1},
+		{"usage readable", "GET", "/v1/usage", service.PlatformOpenAI, time.Minute, nil, 204, 0},
+		{"models readable", "GET", "/v1/models", service.PlatformOpenAI, time.Minute, nil, 204, 0},
+		{"count tokens excluded", "POST", "/v1/messages/count_tokens", service.PlatformOpenAI, time.Minute, nil, 204, 0},
+		{"media excluded", "POST", "/v1/images/generations", service.PlatformOpenAI, time.Minute, nil, 204, 0},
+		{"other platform", "POST", "/v1/messages", service.PlatformAnthropic, time.Minute, nil, 204, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			checks, forwarded := 0, false
+			r := gin.New()
+			r.Use(func(c *gin.Context) {
+				c.Set(string(ContextKeyAPIKey), &service.APIKey{UserID: 7, Group: &service.Group{ID: 3, Platform: tc.platform}})
+			})
+			r.Use(GroupAntiDistillation(func(ctx context.Context, key *service.APIKey) (time.Duration, error) {
+				checks++
+				require.EqualValues(t, 7, key.UserID)
+				deadline, ok := ctx.Deadline()
+				require.True(t, ok)
+				require.LessOrEqual(t, time.Until(deadline), 2*time.Second)
+				return tc.pause, tc.err
+			}))
+			r.Handle(tc.method, tc.path, func(c *gin.Context) { forwarded = true; c.Status(204) })
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, httptest.NewRequest(tc.method, tc.path, nil))
+			require.Equal(t, tc.status, w.Code)
+			require.Equal(t, tc.checks, checks)
+			require.Equal(t, tc.status == 204, forwarded)
+			if tc.status == 429 {
+				require.Equal(t, "60", w.Header().Get("Retry-After"))
+				require.Contains(t, w.Body.String(), GroupAntiDistillationPausedCode)
+				if tc.path == "/v1/messages" {
+					require.JSONEq(t, `{"type":"error","error":{"type":"rate_limit_error","code":"group_anti_distillation_paused","message":"`+GroupAntiDistillationPausedMessage+`"}}`, w.Body.String())
+				}
+			}
+		})
+	}
+}
+
+func TestGroupAntiDistillationWebSocketUsesSelectedGroup(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, platform := range []string{service.PlatformOpenAI, service.PlatformAnthropic} {
+		t.Run(platform, func(t *testing.T) {
+			checks := 0
+			r := gin.New()
+			r.Use(func(c *gin.Context) {
+				c.Set(string(ContextKeyAPIKey), &service.APIKey{UserID: 7, GroupIDs: []int64{1, 2}, Group: &service.Group{ID: 1, Platform: platform}})
+			})
+			r.Use(GroupAntiDistillation(func(_ context.Context, key *service.APIKey) (time.Duration, error) {
+				checks++
+				require.EqualValues(t, 2, key.Group.ID, "never check the provisional handshake group")
+				return time.Minute, nil
+			}))
+			r.GET("/responses", func(c *gin.Context) {
+				require.Zero(t, checks)
+				selected := &service.APIKey{UserID: 7, Group: &service.Group{ID: 2, Platform: service.PlatformOpenAI}}
+				ctx := WithGroupAntiDistillationAPIKey(c.Request.Context(), selected)
+				remaining, err := RecheckGroupAntiDistillation(ctx)
+				require.NoError(t, err)
+				require.Equal(t, time.Minute, remaining)
+				selected.Group.Platform = service.PlatformAnthropic
+				remaining, err = RecheckGroupAntiDistillation(ctx)
+				require.NoError(t, err)
+				require.Zero(t, remaining)
+				c.Status(204)
+			})
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, httptest.NewRequest("GET", "/responses", nil))
+			require.Equal(t, 204, w.Code)
+			require.Equal(t, 1, checks)
+		})
+	}
+}
 
 func newGroupModelAllowlistTestRouter(apiKey *service.APIKey, pathPrefix string) (*gin.Engine, *[]string) {
 	gin.SetMode(gin.TestMode)

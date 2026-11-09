@@ -9,17 +9,131 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
+	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 )
+
+func TestGroupAntiDistillationPostQueueReleasesSlot(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, unavailable := range []bool{false, true} {
+		t.Run(map[bool]string{false: "new pause rejects without reschedule", true: "cache outage fails open"}[unavailable], func(t *testing.T) {
+			checks, releases := 0, 0
+			r := gin.New()
+			r.Use(func(c *gin.Context) {
+				c.Set(string(middleware.ContextKeyAPIKey), &service.APIKey{UserID: 1, Group: &service.Group{ID: 1, Platform: service.PlatformOpenAI}})
+			})
+			r.Use(middleware.GroupAntiDistillation(func(context.Context, *service.APIKey) (time.Duration, error) {
+				checks++
+				if checks == 1 {
+					return 0, nil
+				}
+				if unavailable {
+					return 0, errors.New("cache offline")
+				}
+				return time.Minute, nil
+			}))
+			r.POST("/v1/responses", func(c *gin.Context) {
+				h := &OpenAIGatewayHandler{gatewayService: &service.OpenAIGatewayService{}}
+				selection := &service.AccountSelectionResult{Account: &service.Account{ID: 1}, Acquired: true, ReleaseFunc: func() { releases++ }}
+				streamStarted := false
+				release, outcome := h.acquireResponsesAccountSlot(c, nil, "", selection, false, &streamStarted, zap.NewNop())
+				if unavailable {
+					require.Equal(t, openAISlotAcquireOK, outcome)
+					require.NotNil(t, release)
+					release()
+					c.Status(204)
+				} else {
+					require.Equal(t, openAISlotAcquireFailed, outcome, "must not return profit veto or cause account reselection")
+					require.Nil(t, release)
+				}
+			})
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, httptest.NewRequest("POST", "/v1/responses", nil))
+			require.Equal(t, 2, checks)
+			require.Equal(t, 1, releases)
+			if unavailable {
+				require.Equal(t, 204, w.Code)
+			} else {
+				require.Equal(t, 429, w.Code)
+				require.Equal(t, "60", w.Header().Get("Retry-After"))
+				require.Contains(t, w.Body.String(), middleware.GroupAntiDistillationPausedCode)
+			}
+		})
+	}
+}
+
+func TestGroupAntiDistillationWSPauseDoesNotHarmAccount(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		c.Set(string(middleware.ContextKeyAPIKey), &service.APIKey{UserID: 1, Group: &service.Group{ID: 1, Platform: service.PlatformOpenAI}})
+	})
+	checks := 0
+	r.Use(middleware.GroupAntiDistillation(func(context.Context, *service.APIKey) (time.Duration, error) {
+		checks++
+		if checks == 1 {
+			return 0, nil
+		}
+		return time.Minute, nil
+	}))
+	r.GET("/responses", func(c *gin.Context) {
+		err := checkOpenAIWSGroupAntiDistillation(c.Request.Context(), c)
+		require.ErrorIs(t, err, errGroupAntiDistillationPaused)
+		require.False(t, shouldReportOpenAIWSProxyAccountFailure(err))
+		c.Status(204)
+	})
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/responses", nil))
+	require.Equal(t, 204, w.Code)
+	require.Equal(t, 2, checks)
+}
+
+func TestGroupAntiDistillationMessagesAfterQueueUsesNativeError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, streaming := range []bool{false, true} {
+		t.Run(map[bool]string{false: "json", true: "sse"}[streaming], func(t *testing.T) {
+			checks := 0
+			r := gin.New()
+			r.Use(func(c *gin.Context) {
+				c.Set(string(middleware.ContextKeyAPIKey), &service.APIKey{UserID: 1, Group: &service.Group{ID: 1, Platform: service.PlatformOpenAI}})
+			})
+			r.Use(middleware.GroupAntiDistillation(func(context.Context, *service.APIKey) (time.Duration, error) {
+				checks++
+				if checks == 1 {
+					return 0, nil
+				}
+				return time.Minute, nil
+			}))
+			r.POST("/v1/messages", func(c *gin.Context) {
+				h := &OpenAIGatewayHandler{}
+				if streaming {
+					c.Header("Content-Type", "text/event-stream")
+					c.Writer.WriteHeaderNow()
+				}
+				require.False(t, h.groupAntiDistillationAdmitted(c, streaming, nil))
+			})
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, httptest.NewRequest("POST", "/v1/messages", nil))
+			require.Contains(t, w.Body.String(), `"type":"error"`)
+			require.Contains(t, w.Body.String(), `"code":"group_anti_distillation_paused"`)
+			if streaming {
+				require.Contains(t, w.Body.String(), "event: error\n")
+			} else {
+				require.Equal(t, 429, w.Code)
+			}
+		})
+	}
+}
 
 type profitCountingConcurrencyCache struct {
 	fakeConcurrencyCache

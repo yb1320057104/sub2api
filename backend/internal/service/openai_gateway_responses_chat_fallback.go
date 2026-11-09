@@ -164,6 +164,9 @@ func (s *OpenAIGatewayService) bufferChatCompletionsAsResponses(
 		return nil, err
 	}
 	responsesResp := apicompat.ChatCompletionsResponseToResponses(ccResp, originalModel, customTools, functionTools, toolSearch, namespaceTools)
+	if responsesResp.Status != "completed" {
+		usage.CacheReadKnown = false
+	}
 	s.cacheReasoningItemsFromOutput(responsesResp.Output)
 
 	if s.responseHeaderFilter != nil {
@@ -250,7 +253,11 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 		s.cacheReasoningItemsFromEvents(events)
 		writeEvents(events)
 	}, account)
+	protectionFailed := false
 	resultWithUsage := func() *OpenAIForwardResult {
+		if !scan.SawDone || clientDisconnected || protectionFailed || scan.Err != nil || conversionErr != nil {
+			scan.Usage.CacheReadKnown = false
+		}
 		return &OpenAIForwardResult{
 			RequestID:                   requestID,
 			AuditSettlementNegotiated:   auditSettlementWasNegotiated(resp),
@@ -278,6 +285,15 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 	}
 
 	finalEvents := apicompat.FinalizeChatCompletionsResponsesStream(state)
+	for _, event := range finalEvents {
+		if isOpenAICompatResponsesTerminalEvent(event.Type) &&
+			(event.Type != "response.completed" && event.Type != "response.done" ||
+				event.Response != nil && event.Response.Status != "" && event.Response.Status != "completed") {
+			// The PK bridge can emit response.completed with status=incomplete
+			// for token exhaustion. Event name alone is not success evidence.
+			protectionFailed = true
+		}
+	}
 	s.cacheReasoningItemsFromEvents(finalEvents)
 	writeEvents(finalEvents)
 	if conversionErr != nil {
