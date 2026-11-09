@@ -103,3 +103,19 @@
 按正常排空流程切换到候选代次8，两个API和两个worker均运行`0.2.19-pk.58-ha.20261108.5`，两API就绪，唯一活动worker位于当前PostgreSQL writer；控制器状态已从失败回执校正为`in_sync`。更新只替换容器Image，保留原程序、用户、只读根、网络、TLS和业务挂载。
 
 授权代理106随后执行真实检查，HTTP请求成功，数据库状态为`passed`，消息为`chatgpt.com GET预检通过`。这确认本次报错由浏览器运行时缺失导致，代理本身的实际预检已通过；未修改数据库结构、账号凭据或正式Release。
+
+## 2026-11-09 pk.59 正式发行接入与 HA 滚动完成
+
+本节记录用户授权的后续实际更新，替代前文“下一正式 Release 尚未滚动验收”的阶段状态；不是页面点击流程或灾备演练的证明。正式源码为 `e32e861d1ed36af9ce580492dad7b27f83d24fa7`，`v0.2.19-pk.59` 的发布及正式二进制证据见 `PK_GROUP_ANTI_DISTILLATION_PK59_REVIEW.md`。
+
+现场实际运行 HA，旧单机容器已停止，不能借旧单机启动守卫制造健康回执。此次独立发布合同使用 `production-ha-cluster` / `github-publication-only`，固定版本、tree、制品及工具哈希，prepare/check 通过现有节点代理只读预检；复核双 API 就绪、四实例一致、唯一 writer/worker、gate/路由和浏览器映射。合同仅记录发布许可，不授启动或存储领导权、不替换应用；原 publisher 的来源、同制品验收、草稿上传与附件回读校验保持，应用仍交由原 HA builder/rollout。
+
+构建前修正了 Windows 行尾造成的元数据问题：172 份 overlay 输入中仅将两份环境示例规范为 LF；迁移目录仅修正非 SQL `README.md` 的行尾 pin。324 个 SQL pin 及其他 23 个目录 pin 不变。未修改的生产合并器完成 96 份输入合并，348 份迁移目录输入/输出哈希相同，行尾冲突与首次 pin 拒绝记录保留。
+
+operator 早期启动先因 systemd `209/STDOUT`、再因脚本名遮蔽 Python 标准库 `operator` 失败，均未执行应用更新；改用 journal 输出及 `python -I -B` 后进入正常构建。首次 HA 构建被 `cluster_test_package_uncovered` 拒绝：清单包含没有测试文件的 `redisclient`、`drainprobe`。只从新独立 overlay 的该清单移除这两个空包，未删除实际测试、未更改测试选择器、源码或 SQL；失败发生在滚动之前。最终 manifest SHA256 为 `b71c377ebf7ce06a8a3290ccfd7c236e65c9b6bd309445cc9c5110877f8b40f5`。配置仅切换 `overlay_dir`，原配置/目录与失败证据保留。
+
+第二次从正常入口重新构建，未用恢复或缓存绕过门禁。六组 HA 定向选择全部通过，最终合并源码另外完成防蒸馏专项补验，计数见功能记录。operator 记录真实 Unix 身份及固定计划，复用原 `Controller.execute` 和独占锁；临时状态入口沿用原认证、Origin 和 BUSY 检查，未伪造管理员/JWT。构建前后 Release 稳定、制品身份、候选准备和逐台滚动检查保持。流程依次切换副 API、主 API、worker，完成后恢复原更新管理服务。
+
+最终两个 API 与两个 worker 的程序版本均为 `0.2.19-pk.59-ha.20261109.1794212730`，代次均为 9，HA 二进制 SHA256 均为 `f1fd673906cf88ff34a11706fa7104b4f2714171433825413636f4fe160d694d`。两 API ready、gate 开放，浏览器镜像和新鲜 preflight 均通过；主节点是当前 writer、仅其 worker 运行，副 worker 待命。滚动任务 completed，控制器 in_sync，更新管理服务 active。
+
+旧主/副 API 均退出 0、无 OOM，旧主 worker 退出 0，旧副 worker 原本未启动；日志身份对应正常 hold、stop、replace 顺序，未回滚。两轮公开健康/设置观察分别 616/348 次检查，合计 964 次、0 失败；该采样不能证明所有请求零中断或真实模型成功。未执行全套源码回归、真实模型/邮件验证或存储故障接管演练。本补录不移动正式标签、版本分支或改写封存制品，也不提交私有运维回执、服务器身份及凭据。
