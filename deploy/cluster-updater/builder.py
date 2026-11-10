@@ -628,7 +628,15 @@ def trusted_migration_json(config, filename, expected):
          "migration_receipt_filename_invalid")
     root = Path(config["root"])
     need(root.is_absolute(), "migration_receipt_root_not_absolute")
-    path = root / "migration-receipts" / filename
+    receipt_root = root / "migration-receipts"
+    namespaces = config.get("migration_compatibility_receipt_namespaces", {})
+    need(isinstance(namespaces, dict), "migration_receipt_namespaces_invalid")
+    namespace = namespaces.get(filename[:40])
+    if namespace is not None:
+        need(isinstance(namespace, str) and DIGEST.fullmatch(namespace),
+             "migration_receipt_namespace_invalid")
+        receipt_root = receipt_root / namespace
+    path = receipt_root / filename
     # Check every parent: even a root-owned file can be replaced through an
     # untrusted writable ancestor. Symlinks are never accepted as trust roots.
     for parent in path.parents:
@@ -693,6 +701,10 @@ def migration_compatibility(config, actual, overlay_sha, overlay, files):
     need(isinstance(pins, dict) and COMMIT.fullmatch(commit) and commit in pins,
          "cluster_migrations_require_compatibility_review")
     pin = pins[commit]
+    namespaces = config.get("migration_compatibility_receipt_namespaces", {})
+    need(isinstance(namespaces, dict), "migration_receipt_namespaces_invalid")
+    if commit in namespaces:
+        need(namespaces[commit] == overlay_sha, "migration_receipt_namespace_overlay_mismatch")
     receipt = trusted_migration_json(config, commit + ".json", pin)
     need(receipt.get("schema") == 1 and receipt.get("source_commit") == commit
          and receipt.get("overlay_manifest_sha256") == overlay_sha,

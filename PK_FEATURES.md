@@ -1326,7 +1326,7 @@
 
 ## 新增条目模板
 
-新增独立能力使用下一个未用 ID，当前下一个为 `PK-076`；多项变更并行新增时在合并前消除 ID 冲突，已有 ID 不重用。同步更新索引、有效条目范围和此处的下一个 ID。
+新增独立能力使用下一个未用 ID，当前下一个为 `PK-077`；多项变更并行新增时在合并前消除 ID 冲突，已有 ID 不重用。同步更新索引、有效条目范围和此处的下一个 ID。
 
 ```markdown
 ## PK-NNN
@@ -1405,6 +1405,10 @@ pk.50追加PK-036联动：账号授权“入库账号出口”可设置每账号
 
 
 ## PK-047 独立站点与存储高可用部署
+
+2026-11-11 HA 恢复 r3：在 r2 备份 provider 修复上，补齐额度自动重置 provider 的内部启动门合同，保留 API 请求触发队列、手动备份配置和仅 worker 周期调度。原有两个测试文件新增共12个真实 provider 回归；最终候选183个顶层、468个pass事件通过，完整worker启动与生产更新另验。更新器允许可信配置 `migration_compatibility_receipt_namespaces` 按正式 commit 选择与实际 overlay SHA 完全相等的子目录；64位十六进制、完整路径信任、禁止软/硬链接及内容SHA规则保持，旧目录默认不变，29项Linux准入检查通过。详见现有后台恢复复核。
+
+2026-11-11 pk.62 HA 后台恢复：代次12的API运行观察通过，但新增现场验收揭示备份provider与HA服务内部重复启动门导致worker构造死锁，渠道/鹈鹕定时服务未启动。独立pk62-r2修复必须保留唯一启动门、API手动备份配置、单worker和排空边界，并增加真实provider及完整worker启动验证。正式应用与旧profile/制品不动；阶段记录见 [HA后台恢复复核](docs/PK_CLUSTER_UPDATER_PK62_R2_REVIEW.md)，不得以旧运行检查声称后台完整就绪。
 
 2026-11-11 pk.62 运维维护：应用版本不变，独立更新器增加可信操作配置的候选 commit/overlay/profile 三项基线 pin，兼容真实 pk.59 迁移回退证明；旧 r4 无配置仍固定 pk.58。API replace RPC 由 1200 提升为 2100 秒以覆盖排空和回退，保持正常 TERM、真实 ExitCode 及失败保留单节点摘流边界。20 项隔离 Linux 检查通过；安装与实际滚动各自留证，见 [运维维护复核](docs/PK_CLUSTER_UPDATER_PK62_OPERATIONS_REVIEW.md)。
 

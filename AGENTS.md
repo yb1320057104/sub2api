@@ -1,5 +1,9 @@
 # 项目约束入口
 
+2026-11-11 pk.62 HA 恢复追加复核：r2 实际 provider 回放又发现额度自动重置的同类嵌套启动门死锁，最终候选改用独立 pk62-r3，旧 r2 源码、profile 和失败证据保留。r3 仅修改 HA wire.go 的两处 provider，扩展原有测试；183 个顶层定向检查通过，完整同制品 worker 初始化与生产恢复仍须实际验收。独立更新工具新增按 overlay SHA 隔离迁移证明目录，29 项 Linux 准入检查通过，同一正式 commit 的旧证明不覆盖。正式 pk.62 标签/资产保持，API 逐台排空，旧 worker 的事故 TERM 143 需独立排空回执，普通 exit0 门禁不放宽。详见 docs/PK_CLUSTER_UPDATER_PK62_R2_REVIEW.md。
+
+2026-11-11 pk.62 HA 后台恢复进行中：正式 pk.62 发布及代次12滚动已完成，但现场验收发现 HA BackupService 的内外启动门重入死锁，worker 部分定时服务未启动。继续本轮已授权更新，独立新增 pk62-r2 HA profile 与唯一运行版本，正式 fdec 提交、pk.62标签/分支/十项资产及原profile不动；补真实provider及隔离同制品完整worker启动验收，随后逐节点恢复。当前卡死worker在信号处理注册前，须独立核对任务/记账排空和正常TERM真实退出，不伪造exit0、不强杀、不双gate停流。当前进度与失败实证见 docs/PK_CLUSTER_UPDATER_PK62_R2_REVIEW.md；未完成结果不得写成通过。
+
 2026-11-11 pk.62 独立运维维护：应用正式源码固定 fdec871f36b965dfc272b46bd12eca76ba448300，版本分支/标签与制品不移动。滚动前复核发现更新器把迁移证明基线固定为旧 pk.58、API RPC 1200 秒不足覆盖完整正常退出与回退；本次仅维护独立 Python 更新工具，可信操作配置按候选 commit/overlay/profile 三项 pin 选择实际已验证基线，未配置仍保持 pk.58；API RPC 改为 2100 秒，不改变应用 TERM 后 120 秒等待或任何强杀边界。20 项真实隔离 Linux 定向检查及独立审阅通过，后续安装须绑定工具自身源码/SHA并保留单节点排空。此记录不表示正式 Release 或生产切换已完成。详见 docs/PK_CLUSTER_UPDATER_PK62_OPERATIONS_REVIEW.md。
 
 2026-11-11 当前最终集成目标 v0.2.19-pk.62：按用户要求在集成完成后再次完整对比，发现上游在本轮期间从固定 d42bb4fc4b3eef9821994b4ad170d4eb881eca95 前进到 8545bf9ffac5a870ade18fbe7c4b61a48755c8db（2.20.4）。本轮最后冻结新提交，追加 OAuth 429 周用量保护、API Key 备用池与 managed BPS Responses 选号，适配 PK 原始计费、全局代理容量、审计与单 worker；不因集成自动开启新功能。pk.61 源码提交 79fa0fc375c52467cce3aecb47eba2085802122c 已推送但尚未发行或上线，其正式标签保持不可变；新变更使用唯一下一未占用版本 pk.62，本次最终只按逐节点流程更新。pk.61 已有源码/构建证据只作历史与未变输入参考，pk.62 的新前端、二进制、完整对应源码、HA overlay、同制品升级回退与发行必须重新绑定真实最终 commit/tree。新版本源码与适配阶段未完成，不将旧结果写为本版通过。
