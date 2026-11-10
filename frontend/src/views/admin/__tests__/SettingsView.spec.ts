@@ -1,6 +1,8 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { defineComponent, h } from "vue";
-import { flushPromises, mount } from "@vue/test-utils";
+import { excelBPSImageLimits } from "@/utils/excelBPSImageLimits";
+import { createPinia } from "pinia";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { defineComponent, h, reactive } from "vue";
+import { enableAutoUnmount, flushPromises, mount } from "@vue/test-utils";
 
 import enCommon from "@/i18n/locales/en/common";
 import enSettings from "@/i18n/locales/en/admin/settings";
@@ -9,6 +11,26 @@ import zhSettings from "@/i18n/locales/zh/admin/settings";
 import * as adminAccessKeysAPI from "@/api/admin/adminAccessKeys";
 import * as groupsAPI from "@/api/admin/groups";
 import SettingsView from "../SettingsView.vue";
+import { apiClient } from "@/api/client";
+import NewFeatureBadge from "@/components/common/NewFeatureBadge.vue";
+import { NEW_FEATURE_NOTICES } from "@/constants/newFeatureNotices";
+
+enableAutoUnmount(afterEach);
+
+const settingsRoute = reactive({ query: {} as Record<string, unknown>, hash: '' });
+vi.mock('vue-router', async (importOriginal) => ({
+  ...await importOriginal<typeof import('vue-router')>(),
+  useRoute: () => settingsRoute,
+  useRouter: () => ({ replace: vi.fn(async (location) => Object.assign(settingsRoute, location)) }),
+}));
+beforeEach(() => {
+  settingsRoute.query = {};
+  settingsRoute.hash = '';
+  Element.prototype.scrollIntoView = vi.fn();
+  getOpenAIResponseHeaderTimeoutSettings.mockReset().mockResolvedValue({ enabled: false, seconds: 20 });
+  updateOpenAIResponseHeaderTimeoutSettings.mockReset().mockImplementation(async (payload) => payload);
+  getAccountPerformanceSettings.mockReset().mockResolvedValue({ window_minutes: 60 });
+});
 
 const {
   getSettings,
@@ -22,6 +44,10 @@ const {
   getPanelRateLimitSettings,
   updatePanelRateLimitSettings,
   getStreamTimeoutSettings,
+  getOpenAIResponseHeaderTimeoutSettings,
+  updateOpenAIResponseHeaderTimeoutSettings,
+  getAccountPerformanceSettings,
+  updateAccountPerformanceSettings,
   getRectifierSettings,
   getBetaPolicySettings,
   getEmailTemplates,
@@ -58,6 +84,10 @@ const {
   }),
   updatePanelRateLimitSettings: vi.fn().mockImplementation(async (payload) => payload),
   getStreamTimeoutSettings: vi.fn(),
+  getOpenAIResponseHeaderTimeoutSettings: vi.fn(),
+  updateOpenAIResponseHeaderTimeoutSettings: vi.fn(),
+  getAccountPerformanceSettings: vi.fn(),
+  updateAccountPerformanceSettings: vi.fn().mockImplementation(async (payload) => payload),
   getRectifierSettings: vi.fn(),
   getBetaPolicySettings: vi.fn(),
   getEmailTemplates: vi.fn(),
@@ -101,6 +131,10 @@ vi.mock("@/api", () => ({
       getPanelRateLimitSettings,
       updatePanelRateLimitSettings,
       getStreamTimeoutSettings,
+      getOpenAIResponseHeaderTimeoutSettings,
+      updateOpenAIResponseHeaderTimeoutSettings,
+      getAccountPerformanceSettings,
+      updateAccountPerformanceSettings,
       getRectifierSettings,
       getBetaPolicySettings,
       getEmailTemplates,
@@ -128,6 +162,7 @@ vi.mock("@/api", () => ({
 }));
 
 vi.mock("@/stores", () => ({
+  useAuthStore: () => ({ user: { id: 41 }, isAdmin: true }),
   useAppStore: () => ({
     showError,
     showSuccess,
@@ -375,6 +410,7 @@ const ImageUploadStub = defineComponent({
 
 const baseSettingsResponse = {
   registration_enabled: true,
+  login_rate_limit_enabled: true,
   email_verify_enabled: false,
   registration_email_suffix_whitelist: [],
   promo_code_enabled: true,
@@ -397,6 +433,17 @@ const baseSettingsResponse = {
   doc_url: "",
   home_content: "",
   compact_home_enabled: false,
+  excel_bps_enabled: true,
+  excel_bps_image_mode: 'native',
+  excel_bps_image_relay_enabled: true,
+  excel_bps_image_base_url: '',
+  excel_bps_image_max_image_mib: 20,
+  excel_bps_image_max_images: 20,
+  excel_bps_image_max_total_mib: 32,
+  excel_bps_image_storage_mib: 1024,
+  excel_bps_image_storage_entries: 512,
+  excel_bps_image_ttl_minutes: 30,
+
   hide_ccs_import_button: false,
   table_default_page_size: 20,
   table_page_size_options: [10, 20, 50, 100],
@@ -464,6 +511,7 @@ const baseSettingsResponse = {
   fallback_model_antigravity: "",
   grok_default_text_model: "grok-4.5",
   grok_cross_client_model_map_enabled: false,
+  grok_video_source_url_enabled: false,
   enable_identity_patch: false,
   identity_patch_prompt: "",
   ops_monitoring_enabled: false,
@@ -576,7 +624,9 @@ function mountView(attachTo?: HTMLElement) {
         ProxySelector: true,
         ImageUpload: ImageUploadStub,
         BackupSettings: true,
+        EmailTemplateEditor: true,
       },
+      plugins: [createPinia()],
     },
   });
 }
@@ -676,6 +726,7 @@ describe("admin SettingsView payment visible method controls", () => {
     showError.mockReset();
     showSuccess.mockReset();
     localeRef.value = "zh-CN";
+    localStorage.removeItem("sub2api:new-feature-notices:v1:41");
 
     getSettings.mockResolvedValue({ ...baseSettingsResponse });
     updateSettings.mockImplementation(async (payload) => ({
@@ -742,6 +793,629 @@ describe("admin SettingsView payment visible method controls", () => {
     adminSettingsFetch.mockResolvedValue(undefined);
   });
 
+  it("offers DeepSeek alongside existing search providers and saves its settings", async () => {
+    getWebSearchEmulationConfig.mockResolvedValue({ enabled: true, providers: [] });
+    const wrapper = mountView();
+    await flushPromises();
+    await openGatewayTab(wrapper);
+    const add = wrapper.findAll('button').find(b => b.text() === 'admin.settings.webSearchEmulation.addProvider');
+    await add!.trigger('click');
+    const providerSelect = wrapper.findAll('select').find(s => s.find('option[value="deepseek"]').exists())!;
+    expect(providerSelect.findAll('option').map(o => o.attributes('value'))).toEqual(['brave', 'tavily', 'deepseek']);
+    await providerSelect.setValue('deepseek');
+    expect(wrapper.text()).toContain('admin.settings.webSearchEmulation.deepSeekHint');
+    await wrapper.get('input[placeholder="admin.settings.webSearchEmulation.apiKeyPlaceholder"]').setValue('fictional-deepseek-key');
+    await wrapper.get('form').trigger('submit');
+    await flushPromises();
+    expect(updateWebSearchEmulationConfig).toHaveBeenCalledWith({ enabled: true, providers: [expect.objectContaining({ type: 'deepseek', api_key: 'fictional-deepseek-key', proxy_id: null })] });
+    expect(zhSettings.settings.webSearchEmulation.deepSeekHint).toContain('1–128');
+    expect(enSettings.settings.webSearchEmulation.deepSeekHint).toContain('standalone DeepSeek Search API');
+  });
+
+  it.each([0, 1, 2])("dismisses DeepSeek notice at entry %s, persists it, and preserves other announcements", async (index) => {
+    const old = NEW_FEATURE_NOTICES.protocolFeatureSwitches;
+    const future = 'fixture-next-search-provider-announcement';
+    localStorage.setItem('sub2api:new-feature-notices:v1:41', JSON.stringify([old]));
+    getWebSearchEmulationConfig.mockResolvedValue({ enabled: true, providers: [{ type: 'deepseek', api_key: '', api_key_configured: true, quota_limit: null, proxy_id: null }] });
+    const wrapper = mountView();
+    await flushPromises();
+    await openGatewayTab(wrapper);
+    const badges = () => wrapper.findAllComponents(NewFeatureBadge)
+      .filter(b => b.props('noticeId') === NEW_FEATURE_NOTICES.deepSeekSearch)
+      .flatMap(b => b.findAll('[data-testid="new-feature-badge"]'));
+    expect(badges()).toHaveLength(3);
+    await badges()[index]!.trigger('click');
+    expect(badges()).toHaveLength(0);
+    expect(updateWebSearchEmulationConfig).not.toHaveBeenCalled();
+    wrapper.unmount();
+    const refreshed = mountView();
+    await flushPromises();
+    expect(refreshed.findAllComponents(NewFeatureBadge)
+      .filter(b => b.props('noticeId') === old || b.props('noticeId') === NEW_FEATURE_NOTICES.deepSeekSearch)
+      .flatMap(b => b.findAll('[data-testid="new-feature-badge"]'))).toHaveLength(0);
+    expect(refreshed.findAllComponents(NewFeatureBadge)
+      .filter(b => b.props('noticeId') === NEW_FEATURE_NOTICES.serverlessIPRouting)
+      .flatMap(b => b.findAll('[data-testid="new-feature-badge"]')).length).toBeGreaterThan(0);
+    const later = mount(NewFeatureBadge, { props: { noticeId: future, userId: 41 }, global: { plugins: [createPinia()] } });
+    expect(later.find('[data-testid="new-feature-badge"]').exists()).toBe(true);
+  });
+
+  it("shows the Mistral budget notice independently and keeps its dismissal on remount", async () => {
+    localStorage.setItem("sub2api:new-feature-notices:v1:41", JSON.stringify([NEW_FEATURE_NOTICES.protocolFeatureSwitches]));
+    const wrapper = mountView();
+    await flushPromises();
+    const badge = wrapper.findAllComponents(NewFeatureBadge)
+      .find(b => b.props('noticeId') === NEW_FEATURE_NOTICES.mistralBudgetUsage);
+    expect(badge).toBeDefined();
+    await badge!.get('[data-testid="new-feature-badge"]').trigger('click');
+    await flushPromises();
+    expect(badge!.find('[data-testid="new-feature-badge"]').exists()).toBe(false);
+    wrapper.unmount();
+    const refreshed = mountView();
+    await flushPromises();
+    expect(refreshed.findAllComponents(NewFeatureBadge)
+      .filter(b => b.props('noticeId') === NEW_FEATURE_NOTICES.mistralBudgetUsage)
+      .flatMap(b => b.findAll('[data-testid="new-feature-badge"]'))).toHaveLength(0);
+    refreshed.unmount();
+  });
+
+  it.each([0, 1])("dismisses the forecast notice from real entry %s and keeps it dismissed on remount", async (index) => {
+    const wrapper = mountView();
+    await flushPromises();
+    const badges = () => wrapper.findAllComponents(NewFeatureBadge)
+      .filter(b => b.props('noticeId') === NEW_FEATURE_NOTICES.balanceForecast)
+      .flatMap(b => b.findAll('[data-testid="new-feature-badge"]'));
+    expect(badges()).toHaveLength(2);
+    await badges()[index]!.trigger('click');
+    await flushPromises();
+    expect(badges()).toHaveLength(0);
+    wrapper.unmount();
+    const refreshed = mountView();
+    await flushPromises();
+    expect(refreshed.findAllComponents(NewFeatureBadge)
+      .filter(b => b.props('noticeId') === NEW_FEATURE_NOTICES.balanceForecast)
+      .flatMap(b => b.findAll('[data-testid="new-feature-badge"]'))).toHaveLength(0);
+  });
+
+  it.each([0, 1, 2])("dismisses the BEpusdt notice from real entry %s without changing payment settings", async (index) => {
+    const oldNotice = NEW_FEATURE_NOTICES.protocolFeatureSwitches;
+    localStorage.setItem("sub2api:new-feature-notices:v1:41", JSON.stringify([oldNotice]));
+    getSettings.mockResolvedValue({ ...baseSettingsResponse, payment_enabled_types: ["bepusdt"] });
+    const wrapper = mountView();
+    await flushPromises();
+    await openPaymentTab(wrapper);
+    const badges = () => wrapper.findAllComponents(NewFeatureBadge)
+      .filter(b => b.props('noticeId') === NEW_FEATURE_NOTICES.bepusdtPayment)
+      .flatMap(b => b.findAll('[data-testid="new-feature-badge"]'));
+    expect(badges()).toHaveLength(3);
+    await badges()[index]!.trigger('click');
+    await flushPromises();
+    expect(badges()).toHaveLength(0);
+    expect(wrapper.get('[data-testid="bepusdt-payment-type"]').classes()).toContain('bg-primary-500');
+    expect((wrapper.findComponent({ name: 'BEpusdtManager' }).get('details').element as HTMLDetailsElement).open).toBe(false);
+    expect(updateSettings).not.toHaveBeenCalled();
+    wrapper.unmount();
+    const refreshed = mountView();
+    await flushPromises();
+    expect(refreshed.findAllComponents(NewFeatureBadge)
+      .filter(b => b.props('noticeId') === oldNotice || b.props('noticeId') === NEW_FEATURE_NOTICES.bepusdtPayment)
+      .flatMap(b => b.findAll('[data-testid="new-feature-badge"]'))).toHaveLength(0);
+    expect(refreshed.findAllComponents(NewFeatureBadge)
+      .filter(b => b.props('noticeId') === NEW_FEATURE_NOTICES.balanceForecast)
+      .flatMap(b => b.findAll('[data-testid="new-feature-badge"]'))).toHaveLength(2);
+    expect(JSON.parse(localStorage.getItem("sub2api:new-feature-notices:v1:41") ?? '[]'))
+      .toEqual([oldNotice, NEW_FEATURE_NOTICES.bepusdtPayment]);
+  });
+
+  it("loads, saves, and disables forecast independently of amount notifications", async () => {
+    getSettings.mockResolvedValue({ ...baseSettingsResponse, balance_forecast_enabled: true, balance_forecast_threshold_hours: 6.5, balance_forecast_max_notifications: 2, balance_low_notify_enabled: true });
+    const wrapper = mountView();
+    await flushPromises();
+    expect((wrapper.get('[data-testid="forecast-hours"]').element as HTMLInputElement).value).toBe('6.5');
+    await wrapper.get('[data-testid="forecast-enabled"]').setValue(false);
+    await wrapper.get('form').trigger('submit');
+    await flushPromises();
+    expect(updateSettings).toHaveBeenCalledWith(expect.objectContaining({ balance_forecast_enabled: false, balance_forecast_threshold_hours: 6.5, balance_forecast_max_notifications: 2, balance_low_notify_enabled: true }));
+  });
+
+  it("rejects an invalid forecast lead time before updating any settings", async () => {
+    const wrapper = mountView();
+    await flushPromises();
+    await wrapper.get('[data-testid="forecast-hours"]').setValue('169');
+    await wrapper.get('form').trigger('submit');
+    await flushPromises();
+    expect(updateSettings).not.toHaveBeenCalled();
+    expect(showError).toHaveBeenCalled();
+  });
+
+  it("shares one dismissible notice between the feature tab and its settings section", async () => {
+    const wrapper = mountView();
+    await flushPromises();
+
+    const badges = wrapper.findAllComponents(NewFeatureBadge)
+      .filter((badge) => badge.props('noticeId') === NEW_FEATURE_NOTICES.protocolFeatureSwitches);
+    expect(badges).toHaveLength(2);
+    await badges[0]!.trigger("click");
+    await flushPromises();
+    expect(wrapper.findAllComponents(NewFeatureBadge)
+      .filter((badge) => badge.props('noticeId') === NEW_FEATURE_NOTICES.protocolFeatureSwitches)
+      .flatMap((badge) => badge.findAll('[data-testid="new-feature-badge"]'))).toHaveLength(0);
+    expect(wrapper.findAllComponents(NewFeatureBadge)
+      .filter((badge) => badge.props('noticeId') === NEW_FEATURE_NOTICES.serverlessIPRouting)
+      .flatMap((badge) => badge.findAll('[data-testid="new-feature-badge"]'))).toHaveLength(1);
+    expect(wrapper.get("#settings-tab-features").attributes("aria-selected")).toBe("false");
+    expect(updateSettings).not.toHaveBeenCalled();
+  });
+
+  it("keeps tab badges in the normal tab flow so dismissing one reserves no space", async () => {
+    const wrapper = mountView();
+    await flushPromises();
+    const tabBadge = (tab: string) => wrapper.find(`#settings-tab-${tab} + [data-testid="new-feature-badge"]`);
+    const tabBar = wrapper.get(".settings-tabs").element;
+
+    expect(["features", "gateway", "payment", "email"].filter((tab) => tabBadge(tab).exists())).toHaveLength(4);
+    expect(tabBar.querySelector("[style]")).toBeNull();
+    expect(tabBar.querySelector(".absolute")).toBeNull();
+
+    await tabBadge("gateway").trigger("click");
+    await flushPromises();
+
+    // Gateway has independent announcements; dismissing one leaves the other
+    // in normal flow until it is dismissed as well.
+    expect(tabBadge("gateway").exists()).toBe(true);
+    await tabBadge("gateway").trigger("click");
+    await flushPromises();
+    expect(tabBadge("gateway").exists()).toBe(false);
+    expect(tabBadge("email").exists()).toBe(true);
+    expect(tabBar.querySelector("[style]")).toBeNull();
+  });
+
+  it("dismisses the gateway notice across the tab and both routing controls without dismissing protocol settings", async () => {
+    const get = vi.spyOn(apiClient, 'get').mockResolvedValue({ data: { config: { enabled: false, pods: [], regions: [] }, pods: [], stats: {} } });
+    try {
+      const wrapper = mountView();
+      await flushPromises();
+      await openGatewayTab(wrapper);
+      const gatewayBadges = () => wrapper.findAllComponents(NewFeatureBadge)
+        .filter((badge) => badge.props('noticeId') === NEW_FEATURE_NOTICES.serverlessIPRouting)
+        .flatMap((badge) => badge.findAll('[data-testid="new-feature-badge"]'));
+      expect(gatewayBadges()).toHaveLength(3);
+      await gatewayBadges()[0]!.trigger('click');
+      await flushPromises();
+      expect(gatewayBadges()).toHaveLength(0);
+      expect(wrapper.findAllComponents(NewFeatureBadge)
+        .filter((badge) => badge.props('noticeId') === NEW_FEATURE_NOTICES.protocolFeatureSwitches)
+        .flatMap((badge) => badge.findAll('[data-testid="new-feature-badge"]'))).toHaveLength(2);
+      expect(wrapper.get('#settings-tab-gateway').attributes('aria-selected')).toBe('true');
+      expect(updateSettings).not.toHaveBeenCalled();
+    } finally {
+      get.mockRestore();
+    }
+  });
+
+  it("keeps the IP risk form on IP Audit without loading or saving it from Settings", async () => {
+    settingsRoute.query = { tab: 'security' };
+    const get = vi.spyOn(apiClient, 'get').mockResolvedValue({ data: {} });
+    const put = vi.spyOn(apiClient, 'put').mockResolvedValue({ data: {} });
+    try {
+      const wrapper = mountView();
+      await flushPromises();
+      expect(wrapper.find('[data-testid="ip-risk-settings"]').exists()).toBe(false);
+      expect(wrapper.find('#settings-section-registration').exists()).toBe(true);
+      expect(get.mock.calls.some(([url]) => String(url).startsWith('/admin/settings/ip-risk'))).toBe(false);
+      expect(put).not.toHaveBeenCalled();
+      expect(updateSettings).not.toHaveBeenCalled();
+    } finally {
+      get.mockRestore();
+      put.mockRestore();
+    }
+  });
+
+  it("opens the risk settings from a deep link after loading without changing switches", async () => {
+    settingsRoute.query = { tab: 'features' };
+    settingsRoute.hash = '#settings-section-features-risk-control';
+    getSettings.mockResolvedValueOnce({ ...baseSettingsResponse, risk_control_enabled: false, cyber_session_block_enabled: false });
+    const wrapper = mountView();
+    document.body.appendChild(wrapper.element);
+    await flushPromises();
+    expect(wrapper.get('#settings-tab-features').attributes('aria-selected')).toBe('true');
+    const heading = wrapper.get('#settings-section-features-risk-control');
+    expect(heading.isVisible()).toBe(true);
+    expect(Element.prototype.scrollIntoView).toHaveBeenCalled();
+    const vm = wrapper.vm as unknown as { form: { risk_control_enabled: boolean; cyber_session_block_enabled: boolean } };
+    expect(vm.form.risk_control_enabled).toBe(false);
+    expect(vm.form.cyber_session_block_enabled).toBe(false);
+    expect(updateSettings).not.toHaveBeenCalled();
+
+    await wrapper.get('#settings-tab-general').trigger('click');
+    await flushPromises();
+    expect(settingsRoute.hash).toBe('');
+    settingsRoute.query = { tab: 'features' };
+    settingsRoute.hash = '#settings-section-features-risk-control';
+    await flushPromises();
+    expect(heading.isVisible()).toBe(true);
+    expect(document.activeElement).toBe(heading.element);
+
+    settingsRoute.query = { tab: 'invalid' };
+    settingsRoute.hash = '#unknown';
+    await flushPromises();
+    expect(wrapper.get('#settings-tab-general').attributes('aria-selected')).toBe('true');
+    expect(updateSettings).not.toHaveBeenCalled();
+    wrapper.unmount();
+    document.body.innerHTML = '';
+  });
+
+  it("points to Smart Ops for the Pelican showcase and never saves its settings", async () => {
+    getSettings.mockResolvedValueOnce({
+      ...baseSettingsResponse,
+      pelican_showcase_enabled: true,
+      pelican_showcase_config: { max_items: 30, auto_cleanup: true, retention_days: 7 },
+    });
+    const wrapper = mountView();
+    await flushPromises();
+    const card = wrapper.get('[data-testid="pelican-showcase-moved"]');
+    expect(card.get("router-link").attributes("to")).toBe("/admin/pelican-tests");
+
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+    const payload = updateSettings.mock.calls[0]?.[0];
+    expect(payload).toBeDefined();
+    // Saving system settings must not overwrite what the Smart Ops page saved.
+    expect(payload).not.toHaveProperty("pelican_showcase_enabled");
+    expect(payload).not.toHaveProperty("pelican_showcase_config");
+    wrapper.unmount();
+  });
+
+  it("leaves the monitor mode alone unless it was changed here", async () => {
+    getSettings.mockResolvedValueOnce({ ...baseSettingsResponse, channel_monitor_enabled: true, channel_monitor_mode: "v3" });
+    const wrapper = mountView();
+    await flushPromises();
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+    // The monitor page may have switched the mode since this page loaded.
+    expect(updateSettings.mock.calls[0]?.[0]?.channel_monitor_mode).toBeUndefined();
+
+    const featuresTab = wrapper.findAll("button").find((node) => node.text().includes("admin.settings.tabs.features"));
+    await featuresTab?.trigger("click");
+    await flushPromises();
+    await wrapper.get('[data-testid="settings-monitor-mode-v1"]').trigger("click");
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+    expect(updateSettings.mock.calls[1]?.[0]).toMatchObject({ channel_monitor_mode: "v1" });
+    wrapper.unmount();
+  });
+
+  it("edits the support ticket card and sends a cleaned config", async () => {
+    getSettings.mockResolvedValueOnce({
+      ...baseSettingsResponse,
+      support_ticket_enabled: false,
+      support_ticket_config: { categories: ["账户与充值", "其他"], max_open_per_user: 5, notice: "" },
+    });
+    const wrapper = mountView();
+    await flushPromises();
+    const card = wrapper.get('[data-testid="support-ticket-settings"]');
+    expect(card.find('[data-testid="support-ticket-categories"]').exists()).toBe(false);
+    await wrapper.get("#support-ticket-enabled").setValue(true);
+    const inputs = () => wrapper.get('[data-testid="support-ticket-categories"]').findAll("input");
+    expect(inputs().map((input) => (input.element as HTMLInputElement).value)).toEqual(["账户与充值", "其他"]);
+    await wrapper.get('[data-testid="support-ticket-add-category"]').trigger("click");
+    await inputs()[2].setValue("  退款  ");
+    await wrapper.get('[data-testid="support-ticket-add-category"]').trigger("click");
+    await wrapper.get("#support-ticket-max-open").setValue("8");
+    await wrapper.get("#support-ticket-notice").setValue("工作时间 9–21 点");
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+    expect(updateSettings.mock.calls[0]?.[0]).toMatchObject({
+      support_ticket_enabled: true,
+      support_ticket_config: { categories: ["账户与充值", "其他", "退款"], max_open_per_user: 8, notice: "工作时间 9–21 点" },
+    });
+    wrapper.unmount();
+  });
+
+  it("saves expanded image capacity and rejects values above each ceiling", async () => {
+    getSettings.mockResolvedValueOnce({ ...baseSettingsResponse, excel_bps_image_mode: 'relay' });
+    const wrapper = mountView();
+    await flushPromises();
+    await wrapper.get('#excel-bps-image-enabled').setValue(true);
+    await wrapper.get('#excel-bps-image-base-url').setValue('https://images.example');
+    const fields = [
+      ['body-limit', 'body_limit_mib', excelBPSImageLimits.bodyMiB],
+      ['budget', 'budget_mib', excelBPSImageLimits.budgetMiB],
+      ['max-requests', 'max_requests', excelBPSImageLimits.requests],
+      ['max-image-mib', 'max_image_mib', excelBPSImageLimits.imageMiB],
+      ['max-total-mib', 'max_total_mib', excelBPSImageLimits.totalMiB],
+      ['max-images', 'max_images', excelBPSImageLimits.images],
+      ['storage-mib', 'storage_mib', excelBPSImageLimits.storageMiB],
+      ['storage-entries', 'storage_entries', excelBPSImageLimits.storageEntries],
+      ['ttl-minutes', 'ttl_minutes', excelBPSImageLimits.ttlMinutes],
+    ] as const;
+    for (const [id, , maximum] of fields) {
+      const input = wrapper.get('#excel-bps-image-' + id);
+      expect(input.attributes('max')).toBe(String(maximum));
+      await input.setValue(String(maximum));
+    }
+    // Check each invalid field independently while all other fields are valid.
+    for (const [id, , maximum] of fields) {
+      const input = wrapper.get('#excel-bps-image-' + id);
+      await input.setValue(String(maximum + 1));
+      await wrapper.find('form').trigger('submit.prevent');
+      await flushPromises();
+      expect(updateSettings).not.toHaveBeenCalled();
+      await input.setValue(String(maximum));
+    }
+    showError.mockClear();
+    await wrapper.find('form').trigger('submit.prevent');
+    await flushPromises();
+    expect(updateSettings).toHaveBeenCalledTimes(1);
+    for (const [, key, maximum] of fields) {
+      expect(updateSettings.mock.calls[0]?.[0]).toHaveProperty('excel_bps_image_' + key, maximum);
+    }
+    expect(showError).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  it("saves Excel BPS image relay from the feature switches tab", async () => {
+    getSettings.mockResolvedValueOnce({ ...baseSettingsResponse, excel_bps_image_mode: 'relay', excel_bps_image_relay_enabled: false });
+    const wrapper = mountView();
+    await flushPromises();
+    const tab = wrapper.findAll('button').find((node) => node.text().includes('admin.settings.tabs.features'));
+    expect(tab).toBeDefined();
+    await tab?.trigger('click');
+    const card = wrapper.get('[data-testid="excel-bps-image-settings"]');
+    expect(card.isVisible()).toBe(true);
+    expect(card.find('#excel-bps-image-base-url').exists()).toBe(false);
+    await card.get('#excel-bps-image-enabled').setValue(true);
+    await card.get('#excel-bps-image-base-url').setValue(' https://images.example/ ');
+    await card.get('#excel-bps-image-body-limit').setValue('32');
+    await card.get('#excel-bps-image-budget').setValue('768');
+    await card.get('#excel-bps-image-max-requests').setValue('512');
+    await card.get('#excel-bps-image-max-image-mib').setValue('30');
+    await card.get('#excel-bps-image-max-images').setValue('100');
+    await card.get('#excel-bps-image-max-total-mib').setValue('64');
+    await card.get('#excel-bps-image-storage-mib').setValue('2048');
+    await card.get('#excel-bps-image-storage-entries').setValue('2048');
+    await card.get('#excel-bps-image-ttl-minutes').setValue('60');
+
+    await wrapper.find('form').trigger('submit.prevent');
+    await flushPromises();
+    expect(updateSettings.mock.calls[0]?.[0]).toMatchObject({
+      excel_bps_image_relay_enabled: true,
+      excel_bps_image_base_url: 'https://images.example',
+      excel_bps_image_body_limit_mib: 32,
+      excel_bps_image_budget_mib: 768,
+      excel_bps_image_max_requests: 512,
+      excel_bps_image_max_image_mib: 30,
+      excel_bps_image_max_images: 100,
+      excel_bps_image_max_total_mib: 64,
+      excel_bps_image_storage_mib: 2048,
+      excel_bps_image_storage_entries: 2048,
+      excel_bps_image_ttl_minutes: 60,
+
+    });
+    expect(showError).not.toHaveBeenCalled();
+    expect(showSuccess).toHaveBeenCalledWith('admin.settings.settingsSaved');
+    wrapper.unmount();
+  });
+
+  it("saves the BPS and Prism protocol switches", async () => {
+    const wrapper = mountView();
+    await flushPromises();
+    const tab = wrapper.findAll('button').find((node) => node.text().includes('admin.settings.tabs.features'));
+    await tab?.trigger('click');
+    const protocolSwitches = wrapper.get('[data-testid="protocol-feature-switches"]');
+    await protocolSwitches.get('input').setValue(false);
+    await protocolSwitches.findAll('input')[1].setValue(true);
+    await wrapper.find('form').trigger('submit.prevent');
+    await flushPromises();
+    expect(updateSettings.mock.calls[0]?.[0]).toMatchObject({ excel_bps_enabled: false, prism_browser_enabled: true });
+    wrapper.unmount();
+  });
+
+  it("defaults to native image uploads without a public origin and reloads the mode", async () => {
+    const settings: Partial<typeof baseSettingsResponse> = { ...baseSettingsResponse };
+    delete settings.excel_bps_image_mode;
+    delete settings.excel_bps_image_relay_enabled;
+    getSettings.mockResolvedValueOnce(settings);
+    const wrapper = mountView();
+    await flushPromises();
+    expect((wrapper.get('#excel-bps-image-enabled').element as HTMLInputElement).checked).toBe(true);
+    expect((wrapper.get('#excel-bps-image-mode').element as HTMLSelectElement).value).toBe('native');
+    expect(wrapper.find('#excel-bps-image-base-url').exists()).toBe(false);
+    expect(wrapper.find('#excel-bps-image-max-images').exists()).toBe(true);
+    expect(wrapper.find('#excel-bps-image-storage-mib').exists()).toBe(false);
+    await wrapper.find('form').trigger('submit.prevent');
+    await flushPromises();
+    expect(updateSettings.mock.calls[0]?.[0]).toMatchObject({ excel_bps_image_mode: 'native', excel_bps_image_relay_enabled: true, excel_bps_image_base_url: '' });
+    expect(showError).not.toHaveBeenCalled();
+    wrapper.unmount();
+    getSettings.mockResolvedValueOnce({ ...baseSettingsResponse, excel_bps_image_mode: 'native', excel_bps_image_relay_enabled: true });
+    const loaded = mountView();
+    await flushPromises();
+    expect((loaded.get('#excel-bps-image-mode').element as HTMLSelectElement).value).toBe('native');
+    expect(loaded.find('#excel-bps-image-base-url').exists()).toBe(false);
+    expect(loaded.find('#excel-bps-image-max-images').exists()).toBe(true);
+    await loaded.get('#excel-bps-image-mode').setValue('relay');
+    expect(loaded.find('#excel-bps-image-max-images').exists()).toBe(true);
+    loaded.unmount();
+  });
+
+  it("preserves explicitly disabled BPS image support", async () => {
+    getSettings.mockResolvedValueOnce({ ...baseSettingsResponse, excel_bps_image_relay_enabled: false });
+    const wrapper = mountView();
+    await flushPromises();
+    expect((wrapper.get('#excel-bps-image-enabled').element as HTMLInputElement).checked).toBe(false);
+    expect(wrapper.find('#excel-bps-image-mode').exists()).toBe(false);
+    await wrapper.find('form').trigger('submit.prevent');
+    await flushPromises();
+    expect(updateSettings.mock.calls[0]?.[0]).toMatchObject({ excel_bps_image_relay_enabled: false });
+    wrapper.unmount();
+  });
+
+  it("defaults the image policy off and saves auto compaction", async () => {
+    const wrapper = mountView();
+    await flushPromises();
+    await wrapper.get('#excel-bps-image-enabled').setValue(true);
+    await wrapper.get('#excel-bps-image-mode').setValue('native');
+    expect((wrapper.get('#bps-image-limit-policy').element as HTMLSelectElement).value).toBe('off');
+    await wrapper.get('#bps-image-limit-policy').setValue('auto_compact');
+    expect(wrapper.find('#bps-image-compact-reserve').exists()).toBe(false);
+    await wrapper.find('form').trigger('submit.prevent');
+    await flushPromises();
+    expect(updateSettings.mock.calls[0]?.[0]).toMatchObject({ excel_bps_image_limit_policy: 'auto_compact', excel_bps_image_warning_remaining: 8, excel_bps_image_compact_reserve: 3 });
+    expect(showError).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  it("validates warning margins and reloads the policy", async () => {
+    getSettings.mockResolvedValueOnce({ ...baseSettingsResponse, excel_bps_image_relay_enabled: true, excel_bps_image_mode: 'native', excel_bps_image_limit_policy: 'warn', excel_bps_image_warning_remaining: 8, excel_bps_image_compact_reserve: 3 });
+    const wrapper = mountView();
+    await flushPromises();
+    expect((wrapper.get('#bps-image-limit-policy').element as HTMLSelectElement).value).toBe('warn');
+    for (const [selector, value, original] of [
+      ['#bps-image-warning-remaining', '20', '8'],
+      ['#bps-image-compact-reserve', '8', '3'],
+      ['#bps-image-compact-reserve', '0', '3'],
+      ['#bps-image-warning-remaining', '8.5', '8'],
+    ]) {
+      await wrapper.get(selector).setValue(value);
+      await wrapper.find('form').trigger('submit.prevent');
+      await flushPromises();
+      expect(updateSettings).not.toHaveBeenCalled();
+      expect(showError).toHaveBeenLastCalledWith('admin.settings.features.excelBpsImages.invalidLimits');
+      await wrapper.get(selector).setValue(original);
+    }
+    await wrapper.get('#bps-image-warning-remaining').setValue('9');
+    await wrapper.get('#bps-image-compact-reserve').setValue('4');
+    await wrapper.find('form').trigger('submit.prevent');
+    await flushPromises();
+    expect(updateSettings.mock.calls[0]?.[0]).toMatchObject({ excel_bps_image_limit_policy: 'warn', excel_bps_image_warning_remaining: 9, excel_bps_image_compact_reserve: 4 });
+    wrapper.unmount();
+  });
+
+  it("loads saved Excel BPS image settings and preserves the address when disabled", async () => {
+    getSettings.mockResolvedValueOnce({ ...baseSettingsResponse, excel_bps_image_mode: 'relay', excel_bps_image_relay_enabled: true, excel_bps_image_base_url: 'https://saved.example', excel_bps_image_body_limit_mib: 24, excel_bps_image_budget_mib: 896, excel_bps_image_max_requests: 40 });
+    const wrapper = mountView();
+    await flushPromises();
+    expect((wrapper.get('#excel-bps-image-base-url').element as HTMLInputElement).value).toBe('https://saved.example');
+    expect((wrapper.get('#excel-bps-image-body-limit').element as HTMLInputElement).value).toBe('24');
+    expect((wrapper.get('#excel-bps-image-budget').element as HTMLInputElement).value).toBe('896');
+    expect((wrapper.get('#excel-bps-image-max-requests').element as HTMLInputElement).value).toBe('40');
+    await wrapper.get('#excel-bps-image-enabled').setValue(false);
+    await wrapper.find('form').trigger('submit.prevent');
+    await flushPromises();
+    expect(updateSettings.mock.calls[0]?.[0]).toMatchObject({ excel_bps_image_relay_enabled: false, excel_bps_image_base_url: 'https://saved.example', excel_bps_image_body_limit_mib: 24, excel_bps_image_budget_mib: 896, excel_bps_image_max_requests: 40 });
+    wrapper.unmount();
+  });
+
+  it("rejects inconsistent image limits and preserves saved limits when disabling", async () => {
+    getSettings.mockResolvedValueOnce({ ...baseSettingsResponse, excel_bps_image_mode: 'relay', excel_bps_image_relay_enabled: true, excel_bps_image_base_url: 'https://images.example', excel_bps_image_max_images: 100, excel_bps_image_ttl_minutes: 60 });
+    const wrapper = mountView();
+    await flushPromises();
+    expect((wrapper.get('#excel-bps-image-max-images').element as HTMLInputElement).value).toBe('100');
+    for (const [id, value, original] of [
+      ['max-images', '0', '100'], ['max-images', String(excelBPSImageLimits.images + 1), '100'], ['ttl-minutes', String(excelBPSImageLimits.ttlMinutes + 1), '60'],
+      ['max-total-mib', '1', '32'], ['storage-entries', '99', '512'], ['storage-mib', '1', '1024'],
+    ]) {
+      await wrapper.get(`#excel-bps-image-${id}`).setValue(value);
+      await wrapper.find('form').trigger('submit.prevent');
+      await flushPromises();
+      expect(updateSettings).not.toHaveBeenCalled();
+      expect(showError).toHaveBeenLastCalledWith('admin.settings.features.excelBpsImages.invalidLimits');
+      await wrapper.get(`#excel-bps-image-${id}`).setValue(original);
+    }
+    await wrapper.get('#excel-bps-image-enabled').setValue(false);
+    await wrapper.find('form').trigger('submit.prevent');
+    await flushPromises();
+    expect(updateSettings.mock.calls[0]?.[0]).toMatchObject({ excel_bps_image_relay_enabled: false, excel_bps_image_max_images: 100, excel_bps_image_ttl_minutes: 60 });
+    wrapper.unmount();
+  });
+
+  it("rejects missing or unsafe Excel BPS image origins before saving", async () => {
+    getSettings.mockResolvedValueOnce({ ...baseSettingsResponse, excel_bps_image_mode: 'relay' });
+    const wrapper = mountView();
+    await flushPromises();
+    await wrapper.get('#excel-bps-image-enabled').setValue(true);
+    for (const value of ['', 'http://images.example', 'https://images.example/v1', 'https://user:secret@images.example', 'https://images.example?token=secret', 'https://images.example#']) {
+      await wrapper.get('#excel-bps-image-base-url').setValue(value);
+      await wrapper.find('form').trigger('submit.prevent');
+      await flushPromises();
+      expect(updateSettings).not.toHaveBeenCalled();
+      expect(showError).toHaveBeenLastCalledWith('admin.settings.features.excelBpsImages.invalidBaseUrl');
+    }
+    wrapper.unmount();
+  });
+
+  it("rejects out-of-range image relay capacity before saving", async () => {
+    getSettings.mockResolvedValueOnce({ ...baseSettingsResponse, excel_bps_image_mode: 'relay' });
+    const wrapper = mountView();
+    await flushPromises();
+    await wrapper.get('#excel-bps-image-enabled').setValue(true);
+    await wrapper.get('#excel-bps-image-base-url').setValue('https://images.example');
+    for (const [selector, value] of [
+      ['#excel-bps-image-body-limit', String(excelBPSImageLimits.bodyMiB + 1)],
+      ['#excel-bps-image-budget', '511'],
+      ['#excel-bps-image-max-requests', '0'],
+      ['#excel-bps-image-max-requests', String(excelBPSImageLimits.requests + 1)],
+      ['#excel-bps-image-max-requests', '1.5'],
+    ]) {
+      const input = wrapper.get(selector);
+      const original = (input.element as HTMLInputElement).value;
+      await input.setValue(value);
+      await wrapper.find('form').trigger('submit.prevent');
+      await flushPromises();
+      expect(updateSettings).not.toHaveBeenCalled();
+      expect(showError).toHaveBeenLastCalledWith('admin.settings.features.excelBpsImages.invalidCapacity');
+      await input.setValue(original);
+    }
+    await wrapper.get('#excel-bps-image-body-limit').setValue('128');
+    await wrapper.get('#excel-bps-image-budget').setValue('512');
+    await wrapper.find('form').trigger('submit.prevent');
+    await flushPromises();
+    expect(updateSettings).not.toHaveBeenCalled();
+    expect(showError).toHaveBeenLastCalledWith('admin.settings.features.excelBpsImages.invalidCapacity');
+    wrapper.unmount();
+  });
+
+  it.each([false, true])("loads and toggles request timezone binding from %s", async (enabled) => {
+    getSettings.mockResolvedValueOnce({ ...baseSettingsResponse, openai_request_timezone_enabled: enabled });
+    const wrapper = mountView();
+    await flushPromises();
+    const toggle = wrapper.get<HTMLInputElement>("#request-timezone-enabled");
+    expect(toggle.element.checked).toBe(enabled);
+    await toggle.setValue(!enabled);
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+    expect(updateSettings.mock.calls[0]?.[0].openai_request_timezone_enabled).toBe(!enabled);
+  });
+
+  it.each([false, true])("loads and saves timezone source from %s", async (auto) => {
+    getSettings.mockResolvedValueOnce({ ...baseSettingsResponse, openai_request_timezone_enabled: true, openai_request_timezone_auto: auto });
+    const wrapper = mountView();
+    await flushPromises();
+    expect(wrapper.get<HTMLSelectElement>('#request-timezone-mode').element.value).toBe(auto ? 'auto' : 'manual');
+    await wrapper.get('#request-timezone-mode').setValue(auto ? 'manual' : 'auto');
+    await wrapper.find('form').trigger('submit.prevent');
+    await flushPromises();
+    expect(updateSettings.mock.calls[0]?.[0].openai_request_timezone_auto).toBe(!auto);
+    wrapper.unmount();
+  });
+
+  it("keeps harvest policy and exit settings in their dedicated pages", async () => {
+    getSettings.mockResolvedValueOnce({ ...baseSettingsResponse,
+      openai_codex_ticket_enabled: true,
+      openai_codex_ticket_harvest_proxy_url: "ippool://active",
+    });
+    const wrapper = mountView();
+    await flushPromises();
+    expect(wrapper.find("#codex-ticket-enabled").exists()).toBe(false);
+    expect(wrapper.find("#codex-ticket-harvest-proxy").exists()).toBe(false);
+    expect(wrapper.find('[data-testid="codex-management-links"]').exists()).toBe(true);
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+    expect(Object.keys(updateSettings.mock.calls[0]?.[0] ?? {}).filter(key => key.startsWith('openai_codex_ticket_'))).toEqual([]);
+    wrapper.unmount();
+  });
+
   it("loads and saves the open button visibility for each custom menu", async () => {
     const menuItems = [
       { id: "docs", label: "Docs", url: "https://example.com/docs", icon_svg: "", visibility: "user", sort_order: 0 },
@@ -767,6 +1441,27 @@ describe("admin SettingsView payment visible method controls", () => {
     wrapper.unmount();
   });
 
+  it("saves localized custom menu names with a legacy fallback", async () => {
+    getSettings.mockResolvedValue({ ...baseSettingsResponse, custom_menu_items: [] });
+    const wrapper = mountView();
+    await flushPromises();
+
+    await wrapper.get('[data-testid="custom-menu-add"]').trigger("click");
+    await wrapper.get('[data-testid="custom-menu-label-zh"]').setValue("充值中心");
+    await wrapper.get('[data-testid="custom-menu-label-en"]').setValue("Recharge Center");
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+
+    expect(updateSettings.mock.calls[0]?.[0].custom_menu_items).toEqual([
+      expect.objectContaining({
+        label: "充值中心",
+        label_zh: "充值中心",
+        label_en: "Recharge Center",
+      }),
+    ]);
+    wrapper.unmount();
+  });
+
   it("submits the compact home page toggle", async () => {
     const wrapper = mountView();
     await flushPromises();
@@ -781,6 +1476,126 @@ describe("admin SettingsView payment visible method controls", () => {
     expect(updateSettings).toHaveBeenCalledWith(
       expect.objectContaining({ compact_home_enabled: true }),
     );
+  });
+
+  it("starts with the OpenAI header timeout disabled and retains seconds for manual enabling", async () => {
+    const wrapper = mountView();
+    const vm = wrapper.vm as unknown as {
+      openAIResponseHeaderTimeoutForm: { enabled: boolean; seconds: number };
+    };
+    expect(vm.openAIResponseHeaderTimeoutForm).toEqual({ enabled: false, seconds: 20, image_group_ids: [], image_seconds: 180 });
+
+    await flushPromises();
+    await openGatewayTab(wrapper);
+    expect((wrapper.get('[data-testid="openai-header-timeout-enabled"]').element as HTMLInputElement).checked).toBe(false);
+    expect(wrapper.find('[data-testid="openai-header-timeout-seconds"]').exists()).toBe(false);
+    await wrapper.get('[data-testid="openai-header-timeout-save"]').trigger('click');
+    await flushPromises();
+    expect(updateOpenAIResponseHeaderTimeoutSettings).toHaveBeenLastCalledWith({ enabled: false, seconds: 20, image_group_ids: [], image_seconds: 180 });
+
+    await wrapper.get('[data-testid="openai-header-timeout-enabled"]').setValue(true);
+    expect((wrapper.get('[data-testid="openai-header-timeout-seconds"]').element as HTMLInputElement).value).toBe('20');
+    await wrapper.get('[data-testid="openai-header-timeout-save"]').trigger('click');
+    await flushPromises();
+    expect(updateOpenAIResponseHeaderTimeoutSettings).toHaveBeenLastCalledWith({ enabled: true, seconds: 20, image_group_ids: [], image_seconds: 180 });
+  });
+
+  it("saves the image timeout groups with the OpenAI header timeout", async () => {
+    getOpenAIResponseHeaderTimeoutSettings.mockResolvedValueOnce({ enabled: true, seconds: 60, image_group_ids: [7], image_seconds: 150 });
+    getGroups.mockResolvedValue([
+      { id: 7, name: "image-a", platform: "openai", status: "active", rate_multiplier: 1, subscription_type: "standard" },
+      { id: 8, name: "image-b", platform: "openai", status: "active", rate_multiplier: 1, subscription_type: "standard" },
+      { id: 9, name: "claude", platform: "anthropic", status: "active", rate_multiplier: 1, subscription_type: "standard" },
+    ]);
+    const wrapper = mountView();
+    await flushPromises();
+    await openGatewayTab(wrapper);
+    const selector = wrapper.get('[data-testid="openai-image-header-timeout-groups"]');
+    const checkboxes = selector.findAll('input[type="checkbox"]');
+    expect(checkboxes).toHaveLength(2);
+    expect((checkboxes[0].element as HTMLInputElement).checked).toBe(true);
+    await checkboxes[1].setValue(true);
+    expect((wrapper.get('[data-testid="openai-image-header-timeout-seconds"]').element as HTMLInputElement).value).toBe('150');
+    await wrapper.get('[data-testid="openai-image-header-timeout-seconds"]').setValue('200');
+    await wrapper.get('[data-testid="openai-header-timeout-save"]').trigger('click');
+    await flushPromises();
+    expect(updateOpenAIResponseHeaderTimeoutSettings).toHaveBeenLastCalledWith({ enabled: true, seconds: 60, image_group_ids: [7, 8], image_seconds: 200 });
+  });
+
+  it("keeps the image timeout announcement independent and dismissed after remount", async () => {
+    const oldNotice = NEW_FEATURE_NOTICES.protocolFeatureSwitches;
+    const notice = NEW_FEATURE_NOTICES.openaiImageHeaderTimeoutGroups;
+    localStorage.setItem('sub2api:new-feature-notices:v1:41', JSON.stringify([oldNotice]));
+    getOpenAIResponseHeaderTimeoutSettings.mockResolvedValue({ enabled: true, seconds: 60, image_group_ids: [], image_seconds: 180 });
+    const wrapper = mountView();
+    await flushPromises();
+    await openGatewayTab(wrapper);
+    const badge = wrapper.findAllComponents(NewFeatureBadge).find(b => b.props('noticeId') === notice);
+    expect(badge).toBeDefined();
+    await badge!.get('[data-testid="new-feature-badge"]').trigger('click');
+    await flushPromises();
+    expect(badge!.find('[data-testid="new-feature-badge"]').exists()).toBe(false);
+    wrapper.unmount();
+    const refreshed = mountView();
+    await flushPromises();
+    expect(refreshed.findAllComponents(NewFeatureBadge).filter(b => b.props('noticeId') === notice)
+      .flatMap(b => b.findAll('[data-testid="new-feature-badge"]'))).toHaveLength(0);
+    const dismissed = JSON.parse(localStorage.getItem('sub2api:new-feature-notices:v1:41') ?? '[]');
+    expect(dismissed).toEqual(expect.arrayContaining([oldNotice, notice]));
+    refreshed.unmount();
+  });
+
+  it("loads, disables, enables and saves the OpenAI header timeout with server readback", async () => {
+    getOpenAIResponseHeaderTimeoutSettings.mockResolvedValueOnce({ enabled: false, seconds: 45 });
+    const wrapper = mountView();
+    await flushPromises();
+    await openGatewayTab(wrapper);
+    expect(wrapper.find('[data-testid="openai-header-timeout-seconds"]').exists()).toBe(false);
+    await wrapper.get('[data-testid="openai-header-timeout-enabled"]').setValue(true);
+    await wrapper.get('[data-testid="openai-header-timeout-seconds"]').setValue('60');
+    updateOpenAIResponseHeaderTimeoutSettings.mockResolvedValueOnce({ enabled: true, seconds: 61 });
+    await wrapper.get('[data-testid="openai-header-timeout-save"]').trigger('click');
+    await flushPromises();
+    expect(updateOpenAIResponseHeaderTimeoutSettings).toHaveBeenLastCalledWith({ enabled: true, seconds: 60, image_group_ids: [], image_seconds: 180 });
+    expect((wrapper.get('[data-testid="openai-header-timeout-seconds"]').element as HTMLInputElement).value).toBe('61');
+    expect(showSuccess).toHaveBeenCalledWith('admin.settings.openaiResponseHeaderTimeout.saved');
+    await wrapper.get('[data-testid="openai-header-timeout-enabled"]').setValue(false);
+    await wrapper.get('[data-testid="openai-header-timeout-save"]').trigger('click');
+    await flushPromises();
+    expect(updateOpenAIResponseHeaderTimeoutSettings).toHaveBeenLastCalledWith({ enabled: false, seconds: 61, image_group_ids: [], image_seconds: 180 });
+  });
+
+  it("keeps the edited timeout after a save error and allows retry", async () => {
+    getOpenAIResponseHeaderTimeoutSettings.mockResolvedValueOnce({ enabled: true, seconds: 20 });
+    const wrapper = mountView();
+    await flushPromises();
+    await openGatewayTab(wrapper);
+    await wrapper.get('[data-testid="openai-header-timeout-seconds"]').setValue('42');
+    updateOpenAIResponseHeaderTimeoutSettings.mockRejectedValueOnce(new Error('synthetic save failure'));
+    await wrapper.get('[data-testid="openai-header-timeout-save"]').trigger('click');
+    await flushPromises();
+    expect(showError).toHaveBeenCalledWith('error');
+    expect((wrapper.get('[data-testid="openai-header-timeout-seconds"]').element as HTMLInputElement).value).toBe('42');
+    expect(wrapper.get('[data-testid="openai-header-timeout-save"]').attributes('disabled')).toBeUndefined();
+    await wrapper.get('[data-testid="openai-header-timeout-save"]').trigger('click');
+    await flushPromises();
+    expect(updateOpenAIResponseHeaderTimeoutSettings).toHaveBeenLastCalledWith({ enabled: true, seconds: 42, image_group_ids: [], image_seconds: 180 });
+  });
+
+  it("requires a successful reload after a timeout settings load failure", async () => {
+    getOpenAIResponseHeaderTimeoutSettings.mockRejectedValueOnce(new Error('synthetic load failure'));
+    const wrapper = mountView();
+    await flushPromises();
+    await openGatewayTab(wrapper);
+    const card = wrapper.get('#settings-section-openai-response-header-timeout').element.closest('.card')!;
+    expect(card.textContent).toContain('admin.settings.openaiResponseHeaderTimeout.loadFailed');
+    expect(wrapper.find('[data-testid="openai-header-timeout-save"]').exists()).toBe(false);
+    const retry = card.querySelector('button')!;
+    retry.click();
+    await flushPromises();
+    expect(getOpenAIResponseHeaderTimeoutSettings).toHaveBeenCalledTimes(2);
+    expect(wrapper.find('[data-testid="openai-header-timeout-save"]').exists()).toBe(true);
+    expect(updateOpenAIResponseHeaderTimeoutSettings).not.toHaveBeenCalled();
   });
 
   it("renders panel rate limit card and saves settings", async () => {
@@ -829,6 +1644,82 @@ describe("admin SettingsView payment visible method controls", () => {
 
     expect(wrapper.text()).not.toContain("可见方式");
     expect(wrapper.text()).not.toContain("支付来源");
+  });
+
+  it("loads and saves the registration IP limit independently of login protection", async () => {
+    getSettings.mockResolvedValueOnce({
+      ...baseSettingsResponse,
+      registration_ip_limit_enabled: false,
+      login_rate_limit_enabled: true,
+    });
+    const wrapper = mountView();
+    await flushPromises();
+    await openSecurityTab(wrapper);
+    const toggle = wrapper.get('[data-testid="registration-ip-limit-toggle"]');
+    expect((toggle.element as HTMLInputElement).checked).toBe(false);
+    await toggle.setValue(true);
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+    expect(updateSettings).toHaveBeenLastCalledWith(
+      expect.objectContaining({ registration_ip_limit_enabled: true, login_rate_limit_enabled: true }),
+    );
+    await toggle.setValue(false);
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+    expect(updateSettings).toHaveBeenLastCalledWith(
+      expect.objectContaining({ registration_ip_limit_enabled: false, login_rate_limit_enabled: true }),
+    );
+  });
+
+  it.each([undefined, false, true])("loads and saves the email alias block switch from %s", async (enabled) => {
+    getSettings.mockResolvedValueOnce({
+      ...baseSettingsResponse,
+      registration_email_alias_block_enabled: enabled,
+    });
+    const wrapper = mountView();
+    await flushPromises();
+    await openSecurityTab(wrapper);
+    const toggle = wrapper.get<HTMLInputElement>('[data-testid="registration-email-alias-block-toggle"]');
+    const initial = enabled ?? true;
+    expect(toggle.element.checked).toBe(initial);
+    await toggle.setValue(!initial);
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+    expect(updateSettings).toHaveBeenLastCalledWith(
+      expect.objectContaining({ registration_email_alias_block_enabled: !initial }),
+    );
+    await toggle.setValue(initial);
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+    expect(updateSettings).toHaveBeenLastCalledWith(
+      expect.objectContaining({ registration_email_alias_block_enabled: initial }),
+    );
+  });
+
+  it("loads and saves the login rate limit switch in security settings", async () => {
+    getSettings.mockResolvedValueOnce({
+      ...baseSettingsResponse,
+      login_rate_limit_enabled: false,
+    });
+    const wrapper = mountView();
+    await flushPromises();
+    await openSecurityTab(wrapper);
+
+    const toggle = wrapper.get('[data-testid="login-rate-limit-toggle"]');
+    expect((toggle.element as HTMLInputElement).checked).toBe(false);
+    await toggle.setValue(true);
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+    expect(updateSettings).toHaveBeenCalledWith(
+      expect.objectContaining({ login_rate_limit_enabled: true }),
+    );
+
+    await toggle.setValue(false);
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+    expect(updateSettings).toHaveBeenLastCalledWith(
+      expect.objectContaining({ login_rate_limit_enabled: false }),
+    );
   });
 
   it("shows valid passkey RP configuration and persists the sign-in toggle", async () => {
@@ -1378,6 +2269,7 @@ describe("admin SettingsView payment visible method controls", () => {
           ImageUpload: ImageUploadStub,
           BackupSettings: true,
         },
+        plugins: [createPinia()],
       },
     });
 
@@ -1553,6 +2445,29 @@ describe("admin SettingsView payment visible method controls", () => {
     const payload = updateSettings.mock.calls.at(-1)?.[0] as Record<string, unknown>;
     expect(payload.grok_default_text_model).toBe("grok-custom-text");
     expect(payload.grok_cross_client_model_map_enabled).toBe(false);
+  });
+
+  it("loads and saves the Grok video source URL switch", async () => {
+    getSettings.mockResolvedValueOnce({
+      ...baseSettingsResponse,
+      grok_video_source_url_enabled: true,
+    });
+    const wrapper = mountView();
+
+    await flushPromises();
+    await openGatewayTab(wrapper);
+
+    const sourceURLToggle = wrapper.get(
+      '[data-testid="grok-video-source-url-toggle"]',
+    );
+    expect((sourceURLToggle.element as HTMLInputElement).checked).toBe(true);
+
+    await sourceURLToggle.setValue(false);
+    await wrapper.find("form").trigger("submit.prevent");
+    await flushPromises();
+
+    const payload = updateSettings.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(payload.grok_video_source_url_enabled).toBe(false);
   });
 
   it("loads and saves the OpenAI Responses first-token metric mode", async () => {
@@ -1926,8 +2841,10 @@ describe("admin SettingsView payment visible method controls", () => {
         },
       },
       setup(props) {
-        receivedProviders = props.providers as Array<Record<string, unknown>>;
-        return () => h("div", { class: "provider-list-capture" });
+        return () => {
+          receivedProviders = props.providers as Array<Record<string, unknown>>;
+          return h("div", { class: "provider-list-capture" });
+        };
       },
     });
 
@@ -1947,6 +2864,7 @@ describe("admin SettingsView payment visible method controls", () => {
           ImageUpload: ImageUploadStub,
           BackupSettings: true,
         },
+        plugins: [createPinia()],
       },
     });
 

@@ -108,6 +108,12 @@ const (
 	FieldFallbackGroupID = "fallback_group_id"
 	// FieldFallbackGroupIDOnInvalidRequest holds the string denoting the fallback_group_id_on_invalid_request field in the database.
 	FieldFallbackGroupIDOnInvalidRequest = "fallback_group_id_on_invalid_request"
+	// FieldBlockSubagents holds the string denoting the block_subagents field in the database.
+	FieldBlockSubagents = "block_subagents"
+	// FieldCodexCliOnly holds the string denoting the codex_cli_only field in the database.
+	FieldCodexCliOnly = "codex_cli_only"
+	// FieldStreamOnly holds the string denoting the stream_only field in the database.
+	FieldStreamOnly = "stream_only"
 	// FieldModelRouting holds the string denoting the model_routing field in the database.
 	FieldModelRouting = "model_routing"
 	// FieldModelRoutingEnabled holds the string denoting the model_routing_enabled field in the database.
@@ -273,6 +279,9 @@ var Columns = []string{
 	FieldClaudeCodeOnly,
 	FieldFallbackGroupID,
 	FieldFallbackGroupIDOnInvalidRequest,
+	FieldBlockSubagents,
+	FieldCodexCliOnly,
+	FieldStreamOnly,
 	FieldModelRouting,
 	FieldModelRoutingEnabled,
 	FieldMcpXMLInject,
@@ -396,6 +405,12 @@ var (
 	DefaultLongContextPricingEnabled bool
 	// DefaultClaudeCodeOnly holds the default value on creation for the "claude_code_only" field.
 	DefaultClaudeCodeOnly bool
+	// DefaultBlockSubagents holds the default value on creation for the "block_subagents" field.
+	DefaultBlockSubagents bool
+	// DefaultCodexCliOnly holds the default value on creation for the "codex_cli_only" field.
+	DefaultCodexCliOnly bool
+	// DefaultStreamOnly holds the default value on creation for the "stream_only" field.
+	DefaultStreamOnly bool
 	// DefaultModelRoutingEnabled holds the default value on creation for the "model_routing_enabled" field.
 	DefaultModelRoutingEnabled bool
 	// DefaultMcpXMLInject holds the default value on creation for the "mcp_xml_inject" field.
@@ -667,6 +682,21 @@ func ByFallbackGroupID(opts ...sql.OrderTermOption) OrderOption {
 // ByFallbackGroupIDOnInvalidRequest orders the results by the fallback_group_id_on_invalid_request field.
 func ByFallbackGroupIDOnInvalidRequest(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldFallbackGroupIDOnInvalidRequest, opts...).ToFunc()
+}
+
+// ByBlockSubagents orders the results by the block_subagents field.
+func ByBlockSubagents(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldBlockSubagents, opts...).ToFunc()
+}
+
+// ByCodexCliOnly orders the results by the codex_cli_only field.
+func ByCodexCliOnly(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldCodexCliOnly, opts...).ToFunc()
+}
+
+// ByStreamOnly orders the results by the stream_only field.
+func ByStreamOnly(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldStreamOnly, opts...).ToFunc()
 }
 
 // ByModelRoutingEnabled orders the results by the model_routing_enabled field.

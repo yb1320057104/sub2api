@@ -6,6 +6,18 @@
     @close="handleClose"
   >
     <div class="space-y-4">
+      <AccountTestTiming :timing="connectionTiming.timing.value" :delivery="connectionTiming.delivery.value" />
+      <div v-if="account?.extra?.openai_excel_bps_authorization_pending === true" role="status" class="text-sm text-amber-700 dark:text-amber-300">
+        {{ t('admin.accounts.bpsAuthorizing') }}
+        <a href="/admin/token-guard-v2" target="_blank" rel="noopener noreferrer" class="ml-2 underline">{{ t('admin.accounts.openCredentialOperations') }}</a>
+      </div>
+      <div v-if="modelLoadError" role="alert" class="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-900/20 dark:text-amber-200">
+        <p>{{ modelLoadError }}</p>
+        <div class="mt-2 flex gap-4">
+          <button type="button" :disabled="loadingModels" class="underline" @click="loadAvailableModels">{{ t('admin.accounts.retryModels') }}</button>
+          <a v-if="modelAuthError" href="/admin/token-guard-v2" target="_blank" rel="noopener noreferrer" class="underline">{{ t('admin.accounts.openCredentialOperations') }}</a>
+        </div>
+      </div>
       <!-- Account Info Card -->
       <div
         v-if="account"
@@ -365,8 +377,11 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch, nextTick } from 'vue'
+import { computed, ref, watch, nextTick, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
+import AccountTestTiming from '@/components/account/AccountTestTiming.vue'
+import { useAccountTestTiming, type AccountTestTiming as TimingPayload } from '@/composables/useAccountTestTiming'
+import { consumeAccountTestStream } from '@/utils/accountTestStream'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import Select from '@/components/common/Select.vue'
 import TextArea from '@/components/common/TextArea.vue'
@@ -378,6 +393,8 @@ import { adminAPI } from '@/api/admin'
 import type { Account, ClaudeModel } from '@/types'
 
 const { t } = useI18n()
+const connectionTiming = useAccountTestTiming()
+let streamGeneration = 0
 const { copyToClipboard } = useClipboard()
 
 interface OutputLine {
@@ -408,6 +425,9 @@ const availableModels = ref<ClaudeModel[]>([])
 const selectedModelId = ref('')
 const testPrompt = ref('')
 const loadingModels = ref(false)
+const modelLoadError = ref('')
+const modelAuthError = ref(false)
+let modelLoadGeneration = 0
 let abortController: AbortController | null = null
 const generatedImages = ref<PreviewMedia[]>([])
 const generatedAudios = ref<PreviewMedia[]>([])
@@ -734,8 +754,8 @@ const pickDefaultModelForMode = () => {
 }
 
 watch(
-  () => props.show,
-  async (newVal) => {
+  () => [props.show, props.account?.id] as const,
+  async ([newVal]) => {
     if (newVal && props.account) {
       testPrompt.value = ''
       testMode.value = 'default'
@@ -747,6 +767,9 @@ watch(
         applyDefaultPromptForMode()
       }
     } else {
+      ++modelLoadGeneration
+      modelLoadError.value = ''
+      modelAuthError.value = false
       abortStream()
     }
   }
@@ -763,10 +786,15 @@ watch(grokTestMode, () => {
 const loadAvailableModels = async () => {
   if (!props.account) return
 
+  const generation = ++modelLoadGeneration
   loadingModels.value = true
+  modelLoadError.value = ''
+  modelAuthError.value = false
+  availableModels.value = []
   selectedModelId.value = '' // Reset selection before loading
   try {
     const models = await adminAPI.accounts.getAvailableModels(props.account.id)
+    if (generation !== modelLoadGeneration) return
     availableModels.value = props.account.platform === 'gemini' || props.account.platform === 'antigravity'
       ? sortTestModels(models)
       : models
@@ -781,16 +809,22 @@ const loadAvailableModels = async () => {
       }
     }
   } catch (error) {
-    console.error('Failed to load available models:', error)
+    if (generation !== modelLoadGeneration) return
+    const reason = typeof error === 'object' && error !== null && 'reason' in error ? String(error.reason) : ''
+    modelAuthError.value = reason.startsWith('OPENAI_EXCEL_AUTH_')
+    const key = 'admin.accounts.excelAuthErrors.' + reason
+    const authReasons = ['OPENAI_EXCEL_AUTH_PENDING', 'OPENAI_EXCEL_AUTH_FAILED', 'OPENAI_EXCEL_AUTH_VERIFICATION_REQUIRED', 'OPENAI_EXCEL_AUTH_CONFIG_REQUIRED', 'OPENAI_EXCEL_AUTH_REQUIRED', 'OPENAI_EXCEL_AUTH_UNAVAILABLE']
+    modelLoadError.value = authReasons.includes(reason) ? t(key) : t('admin.accounts.modelsLoadFailed')
     // Fallback to empty list
     availableModels.value = []
     selectedModelId.value = ''
   } finally {
-    loadingModels.value = false
+    if (generation === modelLoadGeneration) loadingModels.value = false
   }
 }
 
 const resetState = () => {
+  connectionTiming.reset()
   status.value = 'idle'
   outputLines.value = []
   streamingContent.value = ''
@@ -807,7 +841,10 @@ const handleClose = () => {
 }
 
 const abortStream = () => {
+  streamGeneration++
   if (abortController) {
+    connectionTiming.cancel()
+    status.value = 'idle'
     abortController.abort()
     abortController = null
   }
@@ -828,7 +865,9 @@ const scrollToBottom = async () => {
 const startTest = async () => {
   if (!props.account || !canStartTest.value) return
 
+  abortStream()
   resetState()
+  connectionTiming.begin()
   status.value = 'connecting'
   addLine(t('admin.accounts.startingTestForAccount', { name: props.account.name }), 'text-blue-400')
   addLine(t('admin.accounts.testAccountTypeLabel', { type: props.account.type }), 'text-gray-400')
@@ -839,9 +878,9 @@ const startTest = async () => {
   }
   addLine('', 'text-gray-300')
 
-  abortStream()
-
-  abortController = new AbortController()
+  const generation = ++streamGeneration
+  const controller = new AbortController()
+  abortController = controller
 
   try {
     const requestBody: {
@@ -889,56 +928,40 @@ const startTest = async () => {
         [ADMIN_UI_REQUEST_HEADER]: '1'
       },
       body: JSON.stringify(requestBody),
-      signal: abortController.signal
+      signal: controller.signal
     })
 
     if (!response.ok) {
       throw new Error(`HTTP error! status: ${response.status}`)
     }
 
-    const reader = response.body?.getReader()
-    if (!reader) {
-      throw new Error(t('admin.accounts.grok.noResponseBody'))
-    }
-
-    const decoder = new TextDecoder()
-    let buffer = ''
-
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() || ''
-
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          const jsonStr = line.slice(6).trim()
-          if (jsonStr) {
-            try {
-              const event = JSON.parse(jsonStr)
-              handleEvent(event)
-            } catch (e) {
-              console.error('Failed to parse SSE event:', e)
-            }
-          }
-        }
-      }
+    await consumeAccountTestStream(response, controller.signal, (event) => {
+      if (generation === streamGeneration) handleEvent(event)
+    })
+    if (generation !== streamGeneration) return
+    connectionTiming.finish()
+    if (status.value === 'connecting') {
+      status.value = 'error'
+      errorMessage.value = t('accountTestTiming.delivery.incomplete')
     }
   } catch (error: unknown) {
+    if (generation !== streamGeneration) return
     if (error instanceof DOMException && error.name === 'AbortError') {
+      connectionTiming.cancel()
       status.value = 'idle'
       return
     }
+    connectionTiming.fail()
     status.value = 'error'
     const msg = error instanceof Error ? error.message : t('common.unknownError')
     errorMessage.value = msg
     addLine(t('admin.accounts.errorPrefix', { message: msg }), 'text-red-400')
   }
+  finally { if (generation === streamGeneration) abortController = null }
 }
 
 const handleEvent = (event: {
+  timing?: TimingPayload
   type: string
   text?: string
   model?: string
@@ -949,9 +972,10 @@ const handleEvent = (event: {
   video_url?: string
   mime_type?: string
 }) => {
+  connectionTiming.accept(event)
   switch (event.type) {
     case 'test_start':
-      addLine(t('admin.accounts.connectedToApi'), 'text-green-400')
+      addLine(t('admin.accounts.testRequestStarted'), 'text-gray-400')
       if (event.model) {
         addLine(t('admin.accounts.usingModel', { model: event.model }), 'text-cyan-400')
       }
@@ -1046,6 +1070,9 @@ const handleEvent = (event: {
       break
   }
 }
+
+onBeforeUnmount(abortStream)
+watch(() => props.account?.id, () => { abortStream(); resetState() })
 
 const copyOutput = () => {
   const text = outputLines.value.map((l) => l.text).join('\n')

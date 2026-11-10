@@ -73,6 +73,20 @@ func (_c *APIKeyCreate) SetUserID(v int64) *APIKeyCreate {
 	return _c
 }
 
+// SetConcurrencyLimit sets the "concurrency_limit" field.
+func (_c *APIKeyCreate) SetConcurrencyLimit(v int) *APIKeyCreate {
+	_c.mutation.SetConcurrencyLimit(v)
+	return _c
+}
+
+// SetNillableConcurrencyLimit sets the "concurrency_limit" field if the given value is not nil.
+func (_c *APIKeyCreate) SetNillableConcurrencyLimit(v *int) *APIKeyCreate {
+	if v != nil {
+		_c.SetConcurrencyLimit(*v)
+	}
+	return _c
+}
+
 // SetKey sets the "key" field.
 func (_c *APIKeyCreate) SetKey(v string) *APIKeyCreate {
 	_c.mutation.SetKey(v)
@@ -115,6 +129,40 @@ func (_c *APIKeyCreate) SetStatus(v string) *APIKeyCreate {
 func (_c *APIKeyCreate) SetNillableStatus(v *string) *APIKeyCreate {
 	if v != nil {
 		_c.SetStatus(*v)
+	}
+	return _c
+}
+
+// SetModelMapping sets the "model_mapping" field.
+func (_c *APIKeyCreate) SetModelMapping(v map[string]string) *APIKeyCreate {
+	_c.mutation.SetModelMapping(v)
+	return _c
+}
+
+// SetReasoningEffort sets the "reasoning_effort" field.
+func (_c *APIKeyCreate) SetReasoningEffort(v string) *APIKeyCreate {
+	_c.mutation.SetReasoningEffort(v)
+	return _c
+}
+
+// SetNillableReasoningEffort sets the "reasoning_effort" field if the given value is not nil.
+func (_c *APIKeyCreate) SetNillableReasoningEffort(v *string) *APIKeyCreate {
+	if v != nil {
+		_c.SetReasoningEffort(*v)
+	}
+	return _c
+}
+
+// SetAllowLongContext sets the "allow_long_context" field.
+func (_c *APIKeyCreate) SetAllowLongContext(v bool) *APIKeyCreate {
+	_c.mutation.SetAllowLongContext(v)
+	return _c
+}
+
+// SetNillableAllowLongContext sets the "allow_long_context" field if the given value is not nil.
+func (_c *APIKeyCreate) SetNillableAllowLongContext(v *bool) *APIKeyCreate {
+	if v != nil {
+		_c.SetAllowLongContext(*v)
 	}
 	return _c
 }
@@ -389,9 +437,25 @@ func (_c *APIKeyCreate) defaults() error {
 		v := apikey.DefaultUpdatedAt()
 		_c.mutation.SetUpdatedAt(v)
 	}
+	if _, ok := _c.mutation.ConcurrencyLimit(); !ok {
+		v := apikey.DefaultConcurrencyLimit
+		_c.mutation.SetConcurrencyLimit(v)
+	}
 	if _, ok := _c.mutation.Status(); !ok {
 		v := apikey.DefaultStatus
 		_c.mutation.SetStatus(v)
+	}
+	if _, ok := _c.mutation.ModelMapping(); !ok {
+		v := apikey.DefaultModelMapping
+		_c.mutation.SetModelMapping(v)
+	}
+	if _, ok := _c.mutation.ReasoningEffort(); !ok {
+		v := apikey.DefaultReasoningEffort
+		_c.mutation.SetReasoningEffort(v)
+	}
+	if _, ok := _c.mutation.AllowLongContext(); !ok {
+		v := apikey.DefaultAllowLongContext
+		_c.mutation.SetAllowLongContext(v)
 	}
 	if _, ok := _c.mutation.Quota(); !ok {
 		v := apikey.DefaultQuota
@@ -439,6 +503,14 @@ func (_c *APIKeyCreate) check() error {
 	if _, ok := _c.mutation.UserID(); !ok {
 		return &ValidationError{Name: "user_id", err: errors.New(`ent: missing required field "APIKey.user_id"`)}
 	}
+	if _, ok := _c.mutation.ConcurrencyLimit(); !ok {
+		return &ValidationError{Name: "concurrency_limit", err: errors.New(`ent: missing required field "APIKey.concurrency_limit"`)}
+	}
+	if v, ok := _c.mutation.ConcurrencyLimit(); ok {
+		if err := apikey.ConcurrencyLimitValidator(v); err != nil {
+			return &ValidationError{Name: "concurrency_limit", err: fmt.Errorf(`ent: validator failed for field "APIKey.concurrency_limit": %w`, err)}
+		}
+	}
 	if _, ok := _c.mutation.Key(); !ok {
 		return &ValidationError{Name: "key", err: errors.New(`ent: missing required field "APIKey.key"`)}
 	}
@@ -462,6 +534,20 @@ func (_c *APIKeyCreate) check() error {
 		if err := apikey.StatusValidator(v); err != nil {
 			return &ValidationError{Name: "status", err: fmt.Errorf(`ent: validator failed for field "APIKey.status": %w`, err)}
 		}
+	}
+	if _, ok := _c.mutation.ModelMapping(); !ok {
+		return &ValidationError{Name: "model_mapping", err: errors.New(`ent: missing required field "APIKey.model_mapping"`)}
+	}
+	if _, ok := _c.mutation.ReasoningEffort(); !ok {
+		return &ValidationError{Name: "reasoning_effort", err: errors.New(`ent: missing required field "APIKey.reasoning_effort"`)}
+	}
+	if v, ok := _c.mutation.ReasoningEffort(); ok {
+		if err := apikey.ReasoningEffortValidator(v); err != nil {
+			return &ValidationError{Name: "reasoning_effort", err: fmt.Errorf(`ent: validator failed for field "APIKey.reasoning_effort": %w`, err)}
+		}
+	}
+	if _, ok := _c.mutation.AllowLongContext(); !ok {
+		return &ValidationError{Name: "allow_long_context", err: errors.New(`ent: missing required field "APIKey.allow_long_context"`)}
 	}
 	if _, ok := _c.mutation.Quota(); !ok {
 		return &ValidationError{Name: "quota", err: errors.New(`ent: missing required field "APIKey.quota"`)}
@@ -529,6 +615,10 @@ func (_c *APIKeyCreate) createSpec() (*APIKey, *sqlgraph.CreateSpec) {
 		_spec.SetField(apikey.FieldDeletedAt, field.TypeTime, value)
 		_node.DeletedAt = &value
 	}
+	if value, ok := _c.mutation.ConcurrencyLimit(); ok {
+		_spec.SetField(apikey.FieldConcurrencyLimit, field.TypeInt, value)
+		_node.ConcurrencyLimit = value
+	}
 	if value, ok := _c.mutation.Key(); ok {
 		_spec.SetField(apikey.FieldKey, field.TypeString, value)
 		_node.Key = value
@@ -544,6 +634,18 @@ func (_c *APIKeyCreate) createSpec() (*APIKey, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.Status(); ok {
 		_spec.SetField(apikey.FieldStatus, field.TypeString, value)
 		_node.Status = value
+	}
+	if value, ok := _c.mutation.ModelMapping(); ok {
+		_spec.SetField(apikey.FieldModelMapping, field.TypeJSON, value)
+		_node.ModelMapping = value
+	}
+	if value, ok := _c.mutation.ReasoningEffort(); ok {
+		_spec.SetField(apikey.FieldReasoningEffort, field.TypeString, value)
+		_node.ReasoningEffort = value
+	}
+	if value, ok := _c.mutation.AllowLongContext(); ok {
+		_spec.SetField(apikey.FieldAllowLongContext, field.TypeBool, value)
+		_node.AllowLongContext = value
 	}
 	if value, ok := _c.mutation.LastUsedAt(); ok {
 		_spec.SetField(apikey.FieldLastUsedAt, field.TypeTime, value)
@@ -749,6 +851,24 @@ func (u *APIKeyUpsert) UpdateUserID() *APIKeyUpsert {
 	return u
 }
 
+// SetConcurrencyLimit sets the "concurrency_limit" field.
+func (u *APIKeyUpsert) SetConcurrencyLimit(v int) *APIKeyUpsert {
+	u.Set(apikey.FieldConcurrencyLimit, v)
+	return u
+}
+
+// UpdateConcurrencyLimit sets the "concurrency_limit" field to the value that was provided on create.
+func (u *APIKeyUpsert) UpdateConcurrencyLimit() *APIKeyUpsert {
+	u.SetExcluded(apikey.FieldConcurrencyLimit)
+	return u
+}
+
+// AddConcurrencyLimit adds v to the "concurrency_limit" field.
+func (u *APIKeyUpsert) AddConcurrencyLimit(v int) *APIKeyUpsert {
+	u.Add(apikey.FieldConcurrencyLimit, v)
+	return u
+}
+
 // SetKey sets the "key" field.
 func (u *APIKeyUpsert) SetKey(v string) *APIKeyUpsert {
 	u.Set(apikey.FieldKey, v)
@@ -818,6 +938,42 @@ func (u *APIKeyUpsert) SetStatus(v string) *APIKeyUpsert {
 // UpdateStatus sets the "status" field to the value that was provided on create.
 func (u *APIKeyUpsert) UpdateStatus() *APIKeyUpsert {
 	u.SetExcluded(apikey.FieldStatus)
+	return u
+}
+
+// SetModelMapping sets the "model_mapping" field.
+func (u *APIKeyUpsert) SetModelMapping(v map[string]string) *APIKeyUpsert {
+	u.Set(apikey.FieldModelMapping, v)
+	return u
+}
+
+// UpdateModelMapping sets the "model_mapping" field to the value that was provided on create.
+func (u *APIKeyUpsert) UpdateModelMapping() *APIKeyUpsert {
+	u.SetExcluded(apikey.FieldModelMapping)
+	return u
+}
+
+// SetReasoningEffort sets the "reasoning_effort" field.
+func (u *APIKeyUpsert) SetReasoningEffort(v string) *APIKeyUpsert {
+	u.Set(apikey.FieldReasoningEffort, v)
+	return u
+}
+
+// UpdateReasoningEffort sets the "reasoning_effort" field to the value that was provided on create.
+func (u *APIKeyUpsert) UpdateReasoningEffort() *APIKeyUpsert {
+	u.SetExcluded(apikey.FieldReasoningEffort)
+	return u
+}
+
+// SetAllowLongContext sets the "allow_long_context" field.
+func (u *APIKeyUpsert) SetAllowLongContext(v bool) *APIKeyUpsert {
+	u.Set(apikey.FieldAllowLongContext, v)
+	return u
+}
+
+// UpdateAllowLongContext sets the "allow_long_context" field to the value that was provided on create.
+func (u *APIKeyUpsert) UpdateAllowLongContext() *APIKeyUpsert {
+	u.SetExcluded(apikey.FieldAllowLongContext)
 	return u
 }
 
@@ -1185,6 +1341,27 @@ func (u *APIKeyUpsertOne) UpdateUserID() *APIKeyUpsertOne {
 	})
 }
 
+// SetConcurrencyLimit sets the "concurrency_limit" field.
+func (u *APIKeyUpsertOne) SetConcurrencyLimit(v int) *APIKeyUpsertOne {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.SetConcurrencyLimit(v)
+	})
+}
+
+// AddConcurrencyLimit adds v to the "concurrency_limit" field.
+func (u *APIKeyUpsertOne) AddConcurrencyLimit(v int) *APIKeyUpsertOne {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.AddConcurrencyLimit(v)
+	})
+}
+
+// UpdateConcurrencyLimit sets the "concurrency_limit" field to the value that was provided on create.
+func (u *APIKeyUpsertOne) UpdateConcurrencyLimit() *APIKeyUpsertOne {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.UpdateConcurrencyLimit()
+	})
+}
+
 // SetKey sets the "key" field.
 func (u *APIKeyUpsertOne) SetKey(v string) *APIKeyUpsertOne {
 	return u.Update(func(s *APIKeyUpsert) {
@@ -1266,6 +1443,48 @@ func (u *APIKeyUpsertOne) SetStatus(v string) *APIKeyUpsertOne {
 func (u *APIKeyUpsertOne) UpdateStatus() *APIKeyUpsertOne {
 	return u.Update(func(s *APIKeyUpsert) {
 		s.UpdateStatus()
+	})
+}
+
+// SetModelMapping sets the "model_mapping" field.
+func (u *APIKeyUpsertOne) SetModelMapping(v map[string]string) *APIKeyUpsertOne {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.SetModelMapping(v)
+	})
+}
+
+// UpdateModelMapping sets the "model_mapping" field to the value that was provided on create.
+func (u *APIKeyUpsertOne) UpdateModelMapping() *APIKeyUpsertOne {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.UpdateModelMapping()
+	})
+}
+
+// SetReasoningEffort sets the "reasoning_effort" field.
+func (u *APIKeyUpsertOne) SetReasoningEffort(v string) *APIKeyUpsertOne {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.SetReasoningEffort(v)
+	})
+}
+
+// UpdateReasoningEffort sets the "reasoning_effort" field to the value that was provided on create.
+func (u *APIKeyUpsertOne) UpdateReasoningEffort() *APIKeyUpsertOne {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.UpdateReasoningEffort()
+	})
+}
+
+// SetAllowLongContext sets the "allow_long_context" field.
+func (u *APIKeyUpsertOne) SetAllowLongContext(v bool) *APIKeyUpsertOne {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.SetAllowLongContext(v)
+	})
+}
+
+// UpdateAllowLongContext sets the "allow_long_context" field to the value that was provided on create.
+func (u *APIKeyUpsertOne) UpdateAllowLongContext() *APIKeyUpsertOne {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.UpdateAllowLongContext()
 	})
 }
 
@@ -1844,6 +2063,27 @@ func (u *APIKeyUpsertBulk) UpdateUserID() *APIKeyUpsertBulk {
 	})
 }
 
+// SetConcurrencyLimit sets the "concurrency_limit" field.
+func (u *APIKeyUpsertBulk) SetConcurrencyLimit(v int) *APIKeyUpsertBulk {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.SetConcurrencyLimit(v)
+	})
+}
+
+// AddConcurrencyLimit adds v to the "concurrency_limit" field.
+func (u *APIKeyUpsertBulk) AddConcurrencyLimit(v int) *APIKeyUpsertBulk {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.AddConcurrencyLimit(v)
+	})
+}
+
+// UpdateConcurrencyLimit sets the "concurrency_limit" field to the value that was provided on create.
+func (u *APIKeyUpsertBulk) UpdateConcurrencyLimit() *APIKeyUpsertBulk {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.UpdateConcurrencyLimit()
+	})
+}
+
 // SetKey sets the "key" field.
 func (u *APIKeyUpsertBulk) SetKey(v string) *APIKeyUpsertBulk {
 	return u.Update(func(s *APIKeyUpsert) {
@@ -1925,6 +2165,48 @@ func (u *APIKeyUpsertBulk) SetStatus(v string) *APIKeyUpsertBulk {
 func (u *APIKeyUpsertBulk) UpdateStatus() *APIKeyUpsertBulk {
 	return u.Update(func(s *APIKeyUpsert) {
 		s.UpdateStatus()
+	})
+}
+
+// SetModelMapping sets the "model_mapping" field.
+func (u *APIKeyUpsertBulk) SetModelMapping(v map[string]string) *APIKeyUpsertBulk {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.SetModelMapping(v)
+	})
+}
+
+// UpdateModelMapping sets the "model_mapping" field to the value that was provided on create.
+func (u *APIKeyUpsertBulk) UpdateModelMapping() *APIKeyUpsertBulk {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.UpdateModelMapping()
+	})
+}
+
+// SetReasoningEffort sets the "reasoning_effort" field.
+func (u *APIKeyUpsertBulk) SetReasoningEffort(v string) *APIKeyUpsertBulk {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.SetReasoningEffort(v)
+	})
+}
+
+// UpdateReasoningEffort sets the "reasoning_effort" field to the value that was provided on create.
+func (u *APIKeyUpsertBulk) UpdateReasoningEffort() *APIKeyUpsertBulk {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.UpdateReasoningEffort()
+	})
+}
+
+// SetAllowLongContext sets the "allow_long_context" field.
+func (u *APIKeyUpsertBulk) SetAllowLongContext(v bool) *APIKeyUpsertBulk {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.SetAllowLongContext(v)
+	})
+}
+
+// UpdateAllowLongContext sets the "allow_long_context" field to the value that was provided on create.
+func (u *APIKeyUpsertBulk) UpdateAllowLongContext() *APIKeyUpsertBulk {
+	return u.Update(func(s *APIKeyUpsert) {
+		s.UpdateAllowLongContext()
 	})
 }
 

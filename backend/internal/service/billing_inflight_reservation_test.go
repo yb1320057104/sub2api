@@ -6,8 +6,6 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"os"
-	"os/exec"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -436,32 +434,11 @@ func attachInflightSnapshot(svc *GatewayService, snap *inflightSnapshotCacheStub
 
 // 已定价模型永不查账号映射；随机未定价模型名不直接查库、不产生按模型名的缓存（内存有界）。
 func TestInflightEstimate_AccountMappingNoDBAndBoundedMemory(t *testing.T) {
-	// MemStats measures the entire process, including state and background work
-	// left by other service tests. Run the unchanged workload in this same test
-	// binary so the heap bound measures this fixture, including under -race.
-	const childEnv = "SUB2API_INFLIGHT_BOUNDED_MEMORY_TEST_CHILD"
-	if os.Getenv(childEnv) != "1" {
-		testBinary, err := os.Executable()
-		require.NoError(t, err)
-		timeout := 2 * time.Minute
-		if deadline, ok := t.Deadline(); ok {
-			if remaining := time.Until(deadline) - time.Second; remaining < timeout {
-				timeout = remaining
-			}
-		}
-		require.Greater(t, timeout, time.Duration(0), "insufficient time for the isolated memory check")
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
-		defer cancel()
-		cmd := exec.CommandContext(ctx, testBinary,
-			"-test.run=^TestInflightEstimate_AccountMappingNoDBAndBoundedMemory$",
-			"-test.count=1", "-test.timeout="+timeout.String(), "-test.v")
-		cmd.Env = append(os.Environ(), childEnv+"=1")
-		output, err := cmd.CombinedOutput()
-		require.NoError(t, ctx.Err(), "isolated memory check timed out:\n%s", output)
-		require.NoError(t, err, "isolated memory check failed:\n%s", output)
+	// HeapAlloc belongs to the entire process. Run the unchanged workload and
+	// 8 MiB assertion in a fresh test process, excluding other suites' workers.
+	if runInflightMemoryInSubprocess(t) {
 		return
 	}
-
 	groupID := int64(40)
 	svc := newInflightEstimateGateway(t, nil)
 	snap := &inflightSnapshotCacheStub{byBucket: map[string][]Account{inflightBucketKey(groupID, PlatformAnthropic): {
@@ -480,14 +457,27 @@ func TestInflightEstimate_AccountMappingNoDBAndBoundedMemory(t *testing.T) {
 	var before, after runtime.MemStats
 	runtime.GC()
 	runtime.ReadMemStats(&before)
+	goroutinesBefore := runtime.NumGoroutine()
+	// Test-only negative controls validate attribution and guard sensitivity.
+	unrelatedHeap := inflightMemoryUnrelatedHeapControl()
 	const n = 20000
 	for i := 0; i < n; i++ {
-		_, priced := svc.EstimateInflightReservation(ctx, apiKey, InflightEstimateRequest{Model: fmt.Sprintf("rand-%d-%d", i, time.Now().UnixNano()), BodyBytes: 4000, MaxTokens: 1000})
+		model := fmt.Sprintf("rand-%d-%d", i, time.Now().UnixNano())
+		_, priced := svc.EstimateInflightReservation(ctx, apiKey, InflightEstimateRequest{Model: model, BodyBytes: 4000, MaxTokens: 1000})
 		require.False(t, priced)
+		if inflightMemoryControl() == "retained_model_cache" {
+			svc.billingService.fallbackWarnSeen.Store(model, make([]byte, 1024))
+		}
 	}
 	runtime.GC()
 	runtime.ReadMemStats(&after)
-	runtime.KeepAlive(svc) // Keep any instance-owned cache live through the measurement.
+	// Keep the service alive through measurement so retained per-model state
+	// cannot disappear merely because the last request has finished.
+	runtime.KeepAlive(svc)
+	runtime.KeepAlive(unrelatedHeap)
+	retainedWarnings := 0
+	svc.billingService.fallbackWarnSeen.Range(func(_, _ any) bool { retainedWarnings++; return true })
+	t.Logf("inflight_heap_probe control=%q requests=%d heap_before=%d heap_after=%d delta=%d gc_before=%d gc_after=%d goroutines_before=%d goroutines_after=%d retained_warning_keys=%d snapshot_buckets=%d", inflightMemoryControl(), n, before.HeapAlloc, after.HeapAlloc, int64(after.HeapAlloc)-int64(before.HeapAlloc), before.NumGC, after.NumGC, goroutinesBefore, runtime.NumGoroutine(), retainedWarnings, len(snap.byBucket))
 	require.Zero(t, repo.dbCalls.Load(), "no direct DB query on the request path")
 	require.Equal(t, int64(n), snap.reads.Load(), "unpriced lookups read the scheduler snapshot only")
 	require.Less(t, int64(after.HeapAlloc)-int64(before.HeapAlloc), int64(8<<20), "no per-model cache growth")

@@ -103,6 +103,36 @@ func containsManifestModel(body []byte, id string) bool {
 	return false
 }
 
+func TestGPT55RetirementPreservesGroupProjection(t *testing.T) {
+	group := &Group{ID: 42, Platform: PlatformOpenAI}
+	account := &Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{"model_mapping": map[string]any{
+			"gpt-5.5": "gpt-6.1-sol", "retired": "gpt-5.5", "hidden": "gpt-6.1-sol",
+		}},
+		AccountGroups: []AccountGroup{{GroupID: group.ID, AllowedModels: []string{"gpt-5.5", "retired"}}},
+	}
+	for _, codex := range []bool{false, true} {
+		body := []byte(`{"data":[{"id":"gpt-5.5"},{"id":"gpt-6.1-sol"}]}`)
+		field, idField := "data", "id"
+		if codex {
+			body = []byte(`{"models":[{"slug":"gpt-5.5"},{"slug":"gpt-6.1-sol"}]}`)
+			field, idField = "models", "slug"
+		}
+		projected, err := projectAccountModelsBody(body, account, group, codex)
+		require.NoError(t, err)
+		entries := gjson.GetBytes(projected, field).Array()
+		require.Len(t, entries, 1)
+		require.Equal(t, "gpt-5.5", entries[0].Get(idField).String(), "replacement alias survives; retired target and group-hidden alias do not")
+	}
+	require.True(t, account.IsModelSupportedInGroup(&group.ID, "gpt-5.5"))
+	require.False(t, account.IsModelSupportedInGroup(&group.ID, "retired"))
+	require.False(t, account.IsModelSupportedInGroup(&group.ID, "hidden"))
+	account.Extra = map[string]any{"astra_model_disabled": true, "astra_model_empty_mapping": true}
+	require.False(t, supportsOpenAIRequestModel(account, "gpt-5.5", false), "retirement support must preserve the fork's disabled-mapping guard")
+}
+
 func TestGPT55RetirementAccountProjection(t *testing.T) {
 	body := []byte(`{"object":"list","data":[{"id":"gpt-5.5"},{"id":"gpt-6.1-sol","unknown":true}],"unknown_top":true}`)
 	for _, typ := range []string{AccountTypeOAuth, AccountTypeAPIKey} {
@@ -204,7 +234,7 @@ func TestGPT55RetirementSchedulerAndDiagnosis(t *testing.T) {
 		scheduler := &defaultOpenAIAccountScheduler{}
 		ok, _ := scheduler.isAccountRequestCompatibleReason(ctx, &account, OpenAIAccountScheduleRequest{RequestedModel: "gpt-5.5"})
 		require.Equal(t, typ == AccountTypeAPIKey, ok)
-		reason := openAICompatibleAccountEligibilityFailureReasonBeforeProfit(ctx, &account, PlatformOpenAI, "gpt-5.5", false, "")
+		reason := openAICompatibleAccountEligibilityFailureReasonBeforeProfit(ctx, &account, &groupID, PlatformOpenAI, "gpt-5.5", false, "")
 		require.Equal(t, typ == AccountTypeAPIKey, reason == "")
 	}
 	oauth.Credentials = map[string]any{"compact_model_mapping": map[string]any{"gpt-6.1-sol": "gpt-5.5"}}
@@ -233,4 +263,19 @@ func TestGPT55RetirementEmptyListingSource(t *testing.T) {
 	body, err := buildCodexModelsManifestForAccounts(PlatformComposite, []string{"gpt-5.5", "gpt-6.1-sol"}, []Account{account}, nil, nil, true)
 	require.NoError(t, err)
 	require.False(t, containsManifestModel(body, "gpt-5.5"))
+}
+
+func TestSubscriptionHiddenModelFamilies(t *testing.T) {
+	oauth := &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+	api := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+	for _, model := range []string{"gpt-5.4", "gpt-5.4-mini", "gpt-5.4-2026-03-05", "gpt-image-1.5", "gpt-image-1.5-2025-12-16"} {
+		require.True(t, isHiddenOpenAISubscriptionModel(oauth, model), model)
+		require.False(t, isHiddenOpenAISubscriptionModel(api, model), model)
+		require.True(t, oauth.IsModelSupported(model), "catalog filtering must not deny explicit requests")
+		require.Empty(t, filterRetiredOpenAIModelIDs([]Account{*oauth}, []string{model}))
+		require.Equal(t, []string{model}, filterRetiredOpenAIModelIDs([]Account{*oauth, *api}, []string{model}))
+	}
+	for _, model := range []string{"gpt-5.40", "gpt-image-1.50", "gpt-image-2.6-sunburst"} {
+		require.False(t, isHiddenOpenAISubscriptionModel(oauth, model), model)
+	}
 }

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -26,9 +27,11 @@ const (
 // separate from the final outbound request tier until usage recording resolves
 // the billable tier for the selected credential protocol.
 type upstreamResponseModelObserver struct {
-	first    string
-	terminal string
-	conflict bool
+	astraCompleted bool
+	astraHasText   bool
+	first          string
+	terminal       string
+	conflict       bool
 
 	// firstTier holds the first non-terminal tier declaration; it is discarded
 	// when later non-terminal declarations disagree. terminalTier comes from a
@@ -69,14 +72,20 @@ func normalizeObservedUpstreamResponseModel(model string) string {
 }
 
 func (o *upstreamResponseModelObserver) ObserveOpenAI(payload []byte, eventType string) {
+	switch eventType {
+	case "response.output_text.delta":
+		o.astraHasText = o.astraHasText || strings.TrimSpace(gjson.GetBytes(payload, "delta").String()) != ""
+	case "response.completed", "response.done":
+		r := gjson.ParseBytes(payload).Get("response")
+		o.astraCompleted = codexAstraCompleted(r) || (o.astraHasText && r.Get("model").String() == "gpt-6-astra" && r.Get("status").String() == "completed" && !r.Get("error").IsObject())
+	case "response.failed", "response.incomplete", "error":
+		o.astraCompleted = false
+	}
 	model := firstValidTrimmedGJSONString(payload, "response.model", "model")
 	terminal := isUpstreamResponseModelTerminalEvent(eventType)
 	o.Observe(model, terminal)
-	// Every payload that declares a service tier also declares a model, so
-	// model-free delta frames skip the extra lookups entirely.
-	if model == "" {
-		return
-	}
+	// Compatible upstreams may declare the actual tier without repeating model
+	// on the terminal event. Tier observation is independent of model presence.
 	// Non-terminal Responses API events echo the requested tier rather than the
 	// tier actually used. Only terminal events and untyped payloads (chat
 	// completions chunks, non-streaming bodies) report the processing tier.
@@ -141,7 +150,7 @@ func normalizeObservedOpenAIServiceTier(raw string) string {
 	switch value := strings.ToLower(strings.TrimSpace(raw)); value {
 	case "priority", "fast":
 		return OpenAIFastTierPriority
-	case "default", "flex", "scale":
+	case "default", "flex", "scale", OpenAIFastTierUltrafast:
 		return value
 	default:
 		return ""
@@ -207,6 +216,36 @@ func upstreamResponseModelObserverFromContext(c *gin.Context) *upstreamResponseM
 
 func observedUpstreamResponseModel(c *gin.Context) string {
 	return upstreamResponseModelObserverFromContext(c).Model()
+}
+
+// observeAnthropicUpstreamResponseModel records the model declared by a raw
+// Anthropic response body or SSE event. Protocol converters must call this on
+// the upstream payload before they rewrite the client-facing model.
+func observeAnthropicUpstreamResponseModel(c *gin.Context, payload []byte) {
+	if c == nil || len(bytes.TrimSpace(payload)) == 0 {
+		return
+	}
+	observer := upstreamResponseModelObserverFromContext(c)
+	if observer == nil {
+		observer = beginUpstreamResponseModelObservation(c)
+	}
+	observer.ObserveAnthropic(payload)
+}
+
+func applyObservedUpstreamResponseModel(c *gin.Context, result *OpenAIForwardResult) {
+	if result == nil {
+		return
+	}
+	result.UpstreamResponseModel = observedUpstreamResponseModel(c)
+	result.UpstreamResponseModelConflict = observedUpstreamResponseModelConflict(c)
+}
+
+func applyObservedGatewayResponseModel(c *gin.Context, result *ForwardResult) {
+	if result == nil {
+		return
+	}
+	result.UpstreamResponseModel = observedUpstreamResponseModel(c)
+	result.UpstreamResponseModelConflict = observedUpstreamResponseModelConflict(c)
 }
 
 func observedUpstreamResponseModelConflict(c *gin.Context) bool {

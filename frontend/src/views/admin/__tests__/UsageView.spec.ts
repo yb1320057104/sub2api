@@ -3,23 +3,35 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { defineComponent, reactive, ref } from 'vue'
 
 import UsageView from '../UsageView.vue'
+import AuditCenterView from '../AuditCenterView.vue'
+import UserAllowlistSelector from '@/components/admin/user/UserAllowlistSelector.vue'
+import type { AuditCenterConfig, AuditCenterUpdate } from '@/api/admin/auditCenter'
+import type { SecurityPolicyRankingSettings } from '@/types/securityPolicyRanking'
 import AdminDailyUsage from '@/components/admin/usage/AdminDailyUsage.vue'
 import SecurityPolicyRankingView from '../SecurityPolicyRankingView.vue'
-import UserAllowlistSelector from '@/components/admin/user/UserAllowlistSelector.vue'
 import zhRanking from '@/i18n/locales/zh/securityPolicyRanking'
+
+const auditCenterMocks = vi.hoisted(() => ({ getConfig: vi.fn(), updateConfig: vi.fn(), listGroups: vi.fn(), showError: vi.fn(), showSuccess: vi.fn() }))
+vi.mock('@/api/admin/auditCenter', () => ({ auditCenterAPI: auditCenterMocks }))
+vi.mock('@/features/prompt-audit/api', () => ({ default: auditCenterMocks }))
 
 const rankingMocks = vi.hoisted(() => ({
   getRanking: vi.fn(), getPublicRanking: vi.fn(), getSettings: vi.fn(),
   saveSettings: vi.fn(), preview: vi.fn(), deduct: vi.fn(),
   getRecords: vi.fn(), getGroups: vi.fn(),
-  auth: { isAdmin: true },
+  auth: { isAdmin: true, user: { id: 41 } },
 }))
 vi.mock('@/api/admin/securityPolicyRanking', () => ({ securityPolicyRankingAPI: rankingMocks }))
 const rankingAuth = reactive(rankingMocks.auth)
 vi.mock('@/stores/auth', () => ({ useAuthStore: () => rankingAuth }))
 vi.mock('@/api/admin/groups', () => ({ default: { getAllIncludingInactive: rankingMocks.getGroups } }))
+import DateRangePicker from '@/components/common/DateRangePicker.vue'
+import UsageStatsCards from '@/components/admin/usage/UsageStatsCards.vue'
+import UsageCleanupDialog from '@/components/admin/usage/UsageCleanupDialog.vue'
+import { usagePerMinute } from '@/utils/usageRate'
+import { formatDateLocalInput as formatLocalDate } from '@/utils/format'
 
-const { list, exportList, getStats, getSnapshotV2, getById, getModelStats, listErrorLogs, routeQuery, aoaToSheet, sheetAddAoa, saveAs, xlsxWrite } = vi.hoisted(() => {
+const { list, exportList, getStats, getSnapshotV2, getById, getModelStats, listErrorLogs, routeQuery, aoaToSheet, sheetAddAoa, saveAs, xlsxWrite, listCleanupTasks, createCleanupTask, showWarning } = vi.hoisted(() => {
   vi.stubGlobal('localStorage', {
     getItem: vi.fn(() => null),
     setItem: vi.fn(),
@@ -27,6 +39,9 @@ const { list, exportList, getStats, getSnapshotV2, getById, getModelStats, listE
   })
 
   return {
+    listCleanupTasks: vi.fn(),
+    createCleanupTask: vi.fn(),
+    showWarning: vi.fn(),
     list: vi.fn(),
 		exportList: vi.fn(),
     getStats: vi.fn(),
@@ -42,6 +57,12 @@ const { list, exportList, getStats, getSnapshotV2, getById, getModelStats, listE
   }
 })
 
+const own = vi.hoisted(() => ({
+  list: vi.fn(), getStats: vi.fn(), getModelStats: vi.fn(), getSnapshotV2: vi.fn(), listErrors: vi.fn(),
+  settings: { allow_user_view_error_requests: true },
+}))
+vi.mock('@/api/observerUsage', () => ({ observerUsageAPI: own }))
+
 const messages: Record<string, string> = {
   'admin.dashboard.timeRange': 'Time Range',
   'admin.dashboard.day': 'Day',
@@ -49,6 +70,9 @@ const messages: Record<string, string> = {
   'admin.usage.failedToLoadUser': 'Failed to load user',
 	'admin.usage.requestId': 'Request ID',
 	'admin.usage.upstreamRequestId': 'Upstream ID',
+	'latencyObservability.reasoning_first_ms': 'First reasoning event',
+	'latencyObservability.visible_text_first_ms': 'First visible text',
+	'latencyObservability.response_byte_first_ms': 'First response byte',
 	'usage.requestedModel': 'Requested model',
 	'usage.sentUpstreamModel': 'Sent upstream model',
 	'usage.upstreamResponseModel': 'Upstream response model',
@@ -60,13 +84,6 @@ const messages: Record<string, string> = {
   'securityPolicyRanking.chargeFormula': 'Calculated {cost} × {multiplier} = {amount}',
   'securityPolicyRanking.chargeDeducted': 'Actually deducted {amount}',
   'securityPolicyRanking.groupMultiplier': zhRanking.securityPolicyRanking.groupMultiplier,
-}
-
-const formatLocalDate = (date: Date): string => {
-  const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-  return `${year}-${month}-${day}`
 }
 
 vi.mock('@/api/admin', () => ({
@@ -87,6 +104,7 @@ vi.mock('@/api/admin', () => ({
 
 vi.mock('@/api/admin/usage', () => ({
   adminUsageAPI: {
+    listCleanupTasks, createCleanupTask,
 		list: exportList,
   },
 }))
@@ -109,14 +127,16 @@ vi.mock('@/api/admin/ops', () => ({
 
 vi.mock('@/stores/app', () => ({
   useAppStore: () => ({
-    showError: vi.fn(),
-    showWarning: vi.fn(),
-    showSuccess: vi.fn(),
+    cachedPublicSettings: own.settings,
+    showError: auditCenterMocks.showError,
+    showWarning,
+    showSuccess: auditCenterMocks.showSuccess,
     showInfo: vi.fn(),
   }),
 }))
 
-vi.mock('@/utils/format', () => ({
+vi.mock('@/utils/format', async () => ({
+  ...await vi.importActual<typeof import('@/utils/format')>('@/utils/format'),
   formatReasoningEffort: (value: string | null | undefined) => value ?? '-',
 }))
 
@@ -126,6 +146,8 @@ vi.mock('vue-i18n', async () => {
     ...actual,
     useI18n: () => ({
       t: (key: string, params?: Record<string, unknown>) => (messages[key] ?? key).replace(/\{(\w+)\}/g, (match, field: string) => String(params?.[field] ?? match)),
+      locale: ref('en'),
+      te: () => false,
     }),
   }
 })
@@ -138,6 +160,7 @@ vi.mock('vue-router', () => ({
 
 const AppLayoutStub = { template: '<div><slot /></div>' }
 const UsageFiltersStub = defineComponent({
+  emits: ['cleanup', 'update:modelValue', 'change', 'export'],
   setup(_, { expose }) {
     const userKeyword = ref('')
     let userSearchRevision = 0
@@ -152,12 +175,28 @@ const UsageFiltersStub = defineComponent({
     })
     return { userKeyword }
   },
-  template: '<div><span data-test="user-filter-label">{{ userKeyword }}</span><slot name="after-reset" /></div>',
+  template: '<div><button data-test="cleanup-open" @click="$emit(\'cleanup\')">cleanup</button><span data-test="user-filter-label">{{ userKeyword }}</span><slot name="after-reset" /></div>',
 })
 const UsageTableStub = {
   props: ['columns'],
   emits: ['userClick'],
   template: '<div data-test="usage-table"><button class="user-click" @click="$emit(\'userClick\', 2)">user</button></div>',
+}
+const UsageConnectionsStub = { props: ['filters', 'refreshKey'], template: '<div data-test="connection-tab" />' }
+const LatencyObservabilityPanelStub = {
+  props: {
+    startDate: String,
+    endDate: String,
+    model: String,
+    userId: Number,
+    apiKeyId: Number,
+    accountId: Number,
+    groupId: Number,
+    refreshToken: Number,
+    flat: Boolean,
+    hideTitle: Boolean,
+  },
+  template: '<div data-test="latency-tab" />',
 }
 const UserTokenRankingStub = {
   emits: ['select-user'],
@@ -184,14 +223,17 @@ const GroupDistributionChartStub = {
   `,
 }
 
-const mountRouteFilteredUsageView = () => mount(UsageView, {
+const mountRouteFilteredUsageView = (realDatePicker = false, realCleanupDialog = false) => mount(UsageView, {
   global: { stubs: {
     AppLayout: AppLayoutStub, UsageStatsCards: true, UsageFilters: UsageFiltersStub,
-    UsageTable: true, UsageExportProgress: true, UsageCleanupDialog: true,
+    UsageTable: true, UsageExportProgress: true, UsageCleanupDialog: !realCleanupDialog,
+    BaseDialog: { props: ['show'], template: '<div v-if="show"><slot /><slot name="footer" /></div>' },
+    ConfirmDialog: { props: ['show'], emits: ['confirm'], template: '<button v-if="show" data-test="cleanup-confirm" @click="$emit(\'confirm\')">confirm</button>' },
     UserBalanceHistoryModal: true, Pagination: true, Select: true,
-    DateRangePicker: true, Icon: true, TokenUsageTrend: true,
+    DateRangePicker: !realDatePicker, Icon: true, TokenUsageTrend: true,
     ModelDistributionChart: true, GroupDistributionChart: true,
     EndpointDistributionChart: true, UserTokenRanking: true,
+    LatencyObservabilityPanel: LatencyObservabilityPanelStub,
   } },
 })
 
@@ -218,6 +260,85 @@ describe('admin UsageView route filters', () => {
   afterEach(() => {
     Object.keys(routeQuery).forEach((key) => delete routeQuery[key])
     vi.useRealTimers()
+  })
+
+  it('mounts the latency panel only after selecting its tab and passes supported filters', async () => {
+    const wrapper = mountRouteFilteredUsageView()
+    await flushPromises()
+    expect(wrapper.find('[data-test="latency-tab"]').exists()).toBe(false)
+
+    const vm = wrapper.vm as any
+    vm.filters.model = 'gpt-5.6-sol'
+    vm.filters.user_id = 42
+    vm.filters.api_key_id = 8
+    vm.filters.account_id = 7
+    vm.filters.group_id = 3
+    await wrapper.vm.$nextTick()
+
+    const latencyTab = wrapper.findAll('[data-testid="usage-detail-tab"]').find(tab => tab.text() === 'latencyObservability.title')!
+    await latencyTab.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-test="latency-tab"]').exists()).toBe(true)
+    expect(wrapper.findComponent(LatencyObservabilityPanelStub).props()).toMatchObject({
+      startDate: expect.any(String),
+      endDate: expect.any(String),
+      model: 'gpt-5.6-sol',
+      userId: 42,
+      apiKeyId: 8,
+      accountId: 7,
+      groupId: 3,
+      flat: true,
+      hideTitle: true,
+    })
+    wrapper.unmount()
+  })
+
+  it('gives the RPM/TPM card the range its stats were loaded for, not a newer pending range', async () => {
+    const wrapper = mountRouteFilteredUsageView()
+    await flushPromises()
+    const cards = () => wrapper.findComponent(UsageStatsCards)
+    const vm = wrapper.vm as any
+    expect(cards().props('showRate')).toBe(true)
+    expect(cards().props('rateWindow')).toMatchObject({ start: vm.filters.start_date, end: vm.filters.end_date, now: expect.any(Number) })
+
+    let resolveStats!: (value: unknown) => void
+    getStats.mockReturnValueOnce(new Promise((resolve) => { resolveStats = resolve }))
+    const previousWindow = cards().props('rateWindow')
+    vm.onDateRangeChange({ startDate: '2026-11-01', endDate: '2026-11-07', preset: null })
+    await flushPromises()
+    expect(getStats).toHaveBeenLastCalledWith(expect.objectContaining({ start_date: '2026-11-01', end_date: '2026-11-07' }))
+    expect(cards().props('rateWindow')).toEqual(previousWindow)
+
+    resolveStats({ total_requests: 10_080, total_tokens: 0, total_cost: 0, total_actual_cost: 0, average_duration_ms: 0 })
+    await flushPromises()
+    expect(cards().props('rateWindow')).toMatchObject({ start: '2026-11-01', end: '2026-11-07' })
+    wrapper.unmount()
+  })
+
+  it.each([
+    { startDate: '', endDate: '2026-11-07' },
+    { startDate: '2026-11-01', endDate: '' },
+    { startDate: '', endDate: '' },
+  ])('pins the admin today-so-far default for partial dates: %j', async (dates) => {
+    const now = new Date(2026, 10, 10, 6, 30)
+    vi.setSystemTime(now)
+    const wrapper = mountRouteFilteredUsageView(true)
+    await flushPromises()
+    const picker = wrapper.findComponent(DateRangePicker)
+    await picker.get('.date-picker-trigger').trigger('click')
+    const inputs = picker.findAll('.date-picker-input')
+    await inputs[0].setValue(dates.startDate)
+    await inputs[1].setValue(dates.endDate)
+    await picker.get('.date-picker-apply').trigger('click')
+    await flushPromises()
+    const start = new Date(2026, 10, 10).toISOString()
+    const end = now.toISOString()
+    expect(getStats).toHaveBeenLastCalledWith(expect.objectContaining({ start_date: start, end_date: end }))
+    const window = wrapper.findComponent(UsageStatsCards).props('rateWindow')
+    expect(window).toEqual({ start, end, now: now.getTime() })
+    expect(usagePerMinute(390, window)).toBe(1)
+    wrapper.unmount()
   })
 
   it('shows the routed user while applying user_id to usage requests', async () => {
@@ -451,11 +572,11 @@ describe('admin UsageView distribution metric toggles', () => {
     await flushPromises()
 
     expect(getSnapshotV2).toHaveBeenCalledTimes(1)
-    const now = new Date()
+    const now = new Date(Date.now() - 120) // The applied snapshot was captured before advancing timers.
     const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000)
     expect(getSnapshotV2).toHaveBeenCalledWith(expect.objectContaining({
-      start_date: formatLocalDate(yesterday),
-      end_date: formatLocalDate(now),
+      start_date: yesterday.toISOString(),
+      end_date: now.toISOString(),
       granularity: 'hour'
     }))
 
@@ -526,6 +647,12 @@ describe('admin UsageView request ID column visibility', () => {
     await wrapper.vm.$nextTick()
 
     const usageTable = wrapper.findComponent(UsageTableStub)
+    const usageColumnKeys = usageTable.props('columns').map((column: { key: string }) => column.key)
+    const latencyColumnIndex = usageColumnKeys.indexOf('latency')
+    expect(usageColumnKeys[latencyColumnIndex + 1]).toBe('created_at')
+    expect(usageColumnKeys).not.toEqual(expect.arrayContaining([
+      'content_reasoning_first_ms', 'content_visible_text_first_ms', 'content_response_byte_first_ms',
+    ]))
     expect(usageTable.props('columns')).not.toEqual(
       expect.arrayContaining([expect.objectContaining({ key: 'request_id' })]),
     )
@@ -542,6 +669,10 @@ describe('admin UsageView request ID column visibility', () => {
       'usage-hidden-columns-version',
       'upstream-request-id-hidden-by-default',
     )
+
+    expect(wrapper.findAll('button').some(button =>
+      ['First reasoning event', 'First visible text', 'First response byte'].includes(button.text()),
+    )).toBe(false)
   })
 
   it('keeps upstream ID hidden by default and allows enabling it from column settings', async () => {
@@ -730,7 +861,9 @@ describe('admin UsageView ranking tab', () => {
         UserBalanceHistoryModal: true, Pagination: true, Select: true,
         DateRangePicker: true, Icon: true, TokenUsageTrend: true,
         ModelDistributionChart: true, GroupDistributionChart: true, EndpointDistributionChart: true,
-        UserTokenRanking: UserTokenRankingStub, OpsErrorLogTable: true, OpsErrorDetailModal: true,
+        UserTokenRanking: UserTokenRankingStub,
+        UsageConnections: UsageConnectionsStub, OpsErrorLogTable: true, OpsErrorDetailModal: true,
+        LatencyObservabilityPanel: LatencyObservabilityPanelStub,
       } },
     })
     vi.advanceTimersByTime(120)
@@ -740,8 +873,13 @@ describe('admin UsageView ranking tab', () => {
     expect(wrapper.find('[data-test="ranking"]').exists()).toBe(false)
 
     const tabs = wrapper.findAll('[data-testid="usage-detail-tab"]')
-    expect(tabs).toHaveLength(3)
+    expect(tabs).toHaveLength(6)
+    expect(wrapper.find('[data-test="connection-tab"]').exists()).toBe(false)
     await tabs[2].trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-test="connection-tab"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="ranking"]').exists()).toBe(false)
+    await tabs[3].trigger('click')
     await flushPromises()
     expect(wrapper.find('[data-test="ranking"]').exists()).toBe(true)
 
@@ -817,6 +955,9 @@ describe('admin UsageView model audit export', () => {
 		])
 		const row = sheetAddAoa.mock.calls[0][1][0]
 		expect(row.slice(4, 8)).toEqual(['gpt-5.6-sol', 'gpt-5.5', 'gpt-5.4', 'Yes'])
+		const cacheRateIndex = headers.indexOf('usage.latencyCacheRate')
+		expect(cacheRateIndex).toBe(headers.indexOf('admin.usage.cacheCreationTokens') + 1)
+		expect(row[cacheRateIndex]).toBe('0%')
 		expect(saveAs).toHaveBeenCalledTimes(1)
 	})
 })
@@ -885,9 +1026,9 @@ describe('PKSecurityPolicyRanking', () => {
     const wrapper = mountRanking()
     await flushPromises()
     expect(rankingMocks.getRanking).toHaveBeenCalledWith(expect.objectContaining({ start_date: '2026-10-03', end_date: '2026-10-03', timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC', page: 1, page_size: 50 }), expect.any(AbortSignal))
-    expect(wrapper.find('#ranking-multiplier').element).toHaveProperty('value', '6.700000')
-    expect(wrapper.find('[data-testid="ranking-auto-disable"]').element).toHaveProperty('checked', false)
-    expect(wrapper.find('[data-testid="ranking-reset-on-enable"]').element).toHaveProperty('checked', true)
+    expect(wrapper.get('[data-testid="ranking-manual-deduction-info"]').text()).toContain('securityPolicyRanking.savedMultiplier')
+    expect(rankingMocks.getSettings).toHaveBeenCalledOnce()
+    expect(wrapper.find('form').exists()).toBe(false)
     const pending = deferred<{ data: ReturnType<typeof rankingData> }>()
     rankingMocks.getRanking.mockImplementationOnce(() => pending.promise)
     vi.advanceTimersByTime(5000)
@@ -898,12 +1039,12 @@ describe('PKSecurityPolicyRanking', () => {
     pending.resolve({ data: rankingData(6) })
     await flushPromises()
     expect(wrapper.find('[data-testid="ranking-user-7"]').text()).toContain('6')
-    await wrapper.find('[data-testid="ranking-auto-refresh"]').setValue(false)
+    await wrapper.find('[data-testid="ranking-auto-refresh"]').trigger('click')
     vi.advanceTimersByTime(30000)
     await flushPromises()
     expect(rankingMocks.getRanking).toHaveBeenCalledTimes(2)
     await wrapper.find('[data-testid="ranking-refresh-seconds"]').setValue('2')
-    await wrapper.find('[data-testid="ranking-auto-refresh"]').setValue(true)
+    await wrapper.find('[data-testid="ranking-auto-refresh"]').trigger('click')
     vi.advanceTimersByTime(2000)
     await flushPromises()
     expect(rankingMocks.getRanking).toHaveBeenCalledTimes(3)
@@ -983,110 +1124,13 @@ describe('PKSecurityPolicyRanking', () => {
     expect(wrapper.find('[data-testid="ranking-count-summary"]').exists()).toBe(false)
   })
 
-  it('saves exact multiplier and automatic disable options, rejecting invalid input', async () => {
+  it('keeps manual deduction totals independent from the current automatic detection scope', async () => {
     const wrapper = mountRanking()
     await flushPromises()
-    await wrapper.find('#ranking-multiplier').setValue('1e2')
-    await wrapper.find('form').trigger('submit')
-    expect(rankingMocks.saveSettings).not.toHaveBeenCalled()
-    await wrapper.find('#ranking-multiplier').setValue('0.290001')
-    await wrapper.find('[data-testid="ranking-auto-disable"]').setValue(true)
-    await wrapper.find('[data-testid="ranking-threshold"]').setValue('1000000000')
-    await wrapper.find('[data-testid="ranking-reset-on-enable"]').setValue(false)
-    await wrapper.find('form').trigger('submit')
-    await flushPromises()
-    expect(rankingMocks.saveSettings).toHaveBeenCalledWith({ multiplier: '0.290001', auto_disable_enabled: true, auto_disable_threshold: 1000000000, reset_on_manual_enable: false, group_ids: [], user_allowlist_ids: [], group_rules: [], settings_revision: 1 })
-  })
-
-  it('saves only selected detection groups, clears the scope explicitly and keeps deduction totals independent', async () => {
-    const wrapper = mountRanking()
-    await flushPromises()
-    expect(wrapper.find('[data-testid="ranking-empty-scope"]').exists()).toBe(true)
-    expect(wrapper.get('[data-testid="ranking-group-2"]').attributes()).toHaveProperty('disabled')
-    expect(wrapper.get('[data-testid="ranking-counts-7"]').text()).toBe('counted 1 / skipped 1 / unknown 2')
-    expect(wrapper.get('[data-testid="ranking-count-summary"]').text()).toBe('counted 1 / skipped 1 / unknown 2')
-    await wrapper.get('[data-testid="ranking-group-1"]').setValue(true)
-    await wrapper.get('form').trigger('submit')
-    await flushPromises()
-    expect(rankingMocks.saveSettings).toHaveBeenLastCalledWith(expect.objectContaining({ group_ids: [1] }))
-    await wrapper.get('[data-testid="ranking-group-1"]').setValue(false)
-    await wrapper.get('form').trigger('submit')
-    await flushPromises()
-    expect(rankingMocks.saveSettings).toHaveBeenLastCalledWith(expect.objectContaining({ group_ids: [] }))
     await wrapper.get('[data-testid="ranking-deduct-7"]').trigger('click')
     await flushPromises()
     expect(wrapper.get('[data-testid="ranking-preview-formula"]').text()).toBe('3 triggers × 6.7 = 20.1')
     expect(rankingMocks.preview).toHaveBeenLastCalledWith(7, expect.objectContaining({ start_date: '2026-10-03', end_date: '2026-10-03' }), expect.any(AbortSignal))
-  })
-
-  it('preserves saved inactive and missing groups until explicitly removed and can search by group ID', async () => {
-    rankingMocks.getSettings.mockResolvedValue({ data: { ...settingsData(), group_ids: [2, 99] } })
-    const wrapper = mountRanking()
-    await flushPromises()
-    expect(wrapper.get('[data-testid="ranking-group-2"]').attributes()).not.toHaveProperty('disabled')
-    expect(wrapper.get('[data-testid="ranking-missing-group-99"]').element).toHaveProperty('checked', true)
-    await wrapper.get('[data-testid="ranking-group-search"]').setValue('1')
-    expect(wrapper.find('[data-testid="ranking-group-1"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="ranking-group-2"]').exists()).toBe(false)
-    await wrapper.get('[data-testid="ranking-group-search"]').setValue('')
-    await wrapper.get('[data-testid="ranking-group-2"]').setValue(false)
-    await wrapper.get('[data-testid="ranking-missing-group-99"]').setValue(false)
-    await wrapper.get('form').trigger('submit')
-    await flushPromises()
-    expect(rankingMocks.saveSettings).toHaveBeenLastCalledWith(expect.objectContaining({ group_ids: [] }))
-  })
-
-  it('preserves group rules outside detection scope and saves auto deductions independently from automatic disabling', async () => {
-    const rule = { group_id: 1, multiplier: '0.290001', auto_deduct_enabled: false }
-    rankingMocks.getSettings.mockResolvedValue({ data: { ...settingsData(), group_ids: [1], group_rules: [rule], user_allowlist_ids: [7, 9] } })
-    const wrapper = mountRanking()
-    await flushPromises()
-    expect(wrapper.get('[data-testid="ranking-group-multiplier-1"]').element).toHaveProperty('value', '0.290001')
-    const multiplierInput = wrapper.get('[data-testid="ranking-group-multiplier-1"]')
-    expect(multiplierInput.classes()).toEqual(expect.arrayContaining(['font-semibold', '!text-red-700', 'dark:!text-red-300']))
-    expect(multiplierInput.element.closest('label')?.textContent).toContain('破甲倍率')
-    expect(multiplierInput.element.closest('label')?.querySelector('span')?.classList.contains('text-red-700')).toBe(true)
-    expect(wrapper.findComponent(UserAllowlistSelector).props('modelValue')).toEqual([7, 9])
-    await wrapper.get('[data-testid="ranking-group-auto-deduct-1"]').setValue(true)
-    await wrapper.get('[data-testid="ranking-group-1"]').setValue(false)
-    await wrapper.get('form').trigger('submit')
-    await flushPromises()
-    expect(rankingMocks.saveSettings).toHaveBeenLastCalledWith(expect.objectContaining({
-      group_ids: [], auto_disable_enabled: false, user_allowlist_ids: [7, 9],
-      group_rules: [{ ...rule, auto_deduct_enabled: true }],
-    }))
-    expect(rule.auto_deduct_enabled).toBe(false)
-    wrapper.findComponent(UserAllowlistSelector).vm.$emit('update:modelValue', [])
-    await wrapper.get('[data-testid="ranking-clear-rule-1"]').trigger('click')
-    await wrapper.get('form').trigger('submit')
-    await flushPromises()
-    expect(rankingMocks.saveSettings).toHaveBeenLastCalledWith(expect.objectContaining({ user_allowlist_ids: [], group_rules: [] }))
-  })
-
-  it.each(['0', '0.0000001', '1000.000001', '1e2', '-1', 'not a number'])('rejects invalid group multiplier %s even when the group is not selected', async multiplier => {
-    const wrapper = mountRanking()
-    await flushPromises()
-    await wrapper.get('[data-testid="ranking-group-multiplier-1"]').setValue(multiplier)
-    await wrapper.get('form').trigger('submit')
-    await flushPromises()
-    expect(rankingMocks.saveSettings).not.toHaveBeenCalled()
-    expect(wrapper.text()).toContain('securityPolicyRanking.invalidGroupMultiplier')
-  })
-
-  it('keeps exact boundary decimals and removes missing rules only on explicit action', async () => {
-    const missing = { group_id: 99, multiplier: '1000.000000', auto_deduct_enabled: true }
-    rankingMocks.getSettings.mockResolvedValue({ data: { ...settingsData(), group_rules: [missing] } })
-    const wrapper = mountRanking()
-    await flushPromises()
-    await wrapper.get('[data-testid="ranking-group-multiplier-1"]').setValue('0.000001')
-    await wrapper.get('form').trigger('submit')
-    await flushPromises()
-    expect(rankingMocks.saveSettings).toHaveBeenLastCalledWith(expect.objectContaining({ group_rules: [missing, { group_id: 1, multiplier: '0.000001', auto_deduct_enabled: false }] }))
-    await wrapper.get('[data-testid="ranking-remove-missing-rule-99"]').trigger('click')
-    await wrapper.get('form').trigger('submit')
-    await flushPromises()
-    expect(rankingMocks.saveSettings).toHaveBeenLastCalledWith(expect.objectContaining({ group_rules: [{ group_id: 1, multiplier: '0.000001', auto_deduct_enabled: false }] }))
-    expect(wrapper.find('[data-testid="ranking-remove-missing-rule-99"]').exists()).toBe(false)
   })
 
   it('distinguishes exact calculated amounts, actual automatic deductions, skipped exemptions and unknown history', async () => {
@@ -1112,7 +1156,7 @@ describe('PKSecurityPolicyRanking', () => {
     expect(wrapper.get('[data-testid="ranking-record-502"] [data-testid="ranking-record-charge-formula"]').text()).toBe('Calculated 0 × 0.290001 = 0')
     expect(wrapper.get('[data-testid="ranking-record-504"]').text()).toContain('securityPolicyRanking.recordExemptSkipped')
     expect(wrapper.get('[data-testid="ranking-record-504"]').text()).toContain('securityPolicyRanking.chargeReasons.user_exempt')
-    expect(wrapper.get('[data-testid="ranking-record-506"] [data-testid="ranking-record-charge-formula"]').text()).toBe('Calculated — × — = —')
+    expect(wrapper.find('[data-testid="ranking-record-506"] [data-testid="ranking-record-charge-formula"]').exists()).toBe(false)
     expect(wrapper.get('[data-testid="ranking-record-507"]').text()).toContain('securityPolicyRanking.chargeReasons.charge_failed')
   })
 
@@ -1240,7 +1284,7 @@ describe('PKSecurityPolicyRanking', () => {
     vi.advanceTimersByTime(5000)
     await flushPromises()
     expect(rankingMocks.getRanking.mock.calls.at(-1)?.[0]).toMatchObject({ start_date: '2026-10-01', end_date: '2026-10-02' })
-    await wrapper.find('[data-testid="ranking-auto-refresh"]').setValue(false)
+    await wrapper.find('[data-testid="ranking-auto-refresh"]').trigger('click')
     const calls = rankingMocks.getRanking.mock.calls.length
     visibility.mockReturnValue('hidden')
     document.dispatchEvent(new Event('visibilitychange'))
@@ -1462,16 +1506,454 @@ describe('PKBinance daily usage tab', () => {
   })
 
   it('preserves the standalone usage page default date range and does not auto-refresh it', async () => {
+    const today = new Date()
     const wrapper = mountRouteFilteredUsageView()
     mountedViews.push(wrapper)
     vi.advanceTimersByTime(120)
     await flushPromises()
-    const today = new Date()
-    expect(list.mock.calls[0][0].start_date).toBe(formatLocalDate(new Date(today.getTime() - 86400000)))
-    expect(list.mock.calls[0][0].end_date).toBe(formatLocalDate(today))
+    expect(list.mock.calls[0][0].start_date).toBe(new Date(today.getTime() - 86400000).toISOString())
+    expect(list.mock.calls[0][0].end_date).toBe(today.toISOString())
     vi.advanceTimersByTime(30000)
     await flushPromises()
     expect(list).toHaveBeenCalledTimes(1)
     expect(wrapper.findComponent(AppLayoutStub).exists()).toBe(true)
+  })
+})
+
+
+describe('observer own usage view', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.clearAllMocks()
+    Object.keys(routeQuery).forEach(key => delete routeQuery[key])
+    own.settings.allow_user_view_error_requests = true
+    own.list.mockResolvedValue({ items: [], total: 0 })
+    own.getStats.mockResolvedValue({ total_requests: 2, total_account_cost: 3 })
+    own.getModelStats.mockResolvedValue({ models: [] })
+    own.getSnapshotV2.mockResolvedValue({ trend: [], groups: [] })
+    own.listErrors.mockResolvedValue({ items: [], total: 0 })
+  })
+  afterEach(() => { vi.useRealTimers() })
+  const mountObserver = (realDatePickerAndCards = false) => mount(UsageView, {
+    props: { observerMode: true },
+    global: { stubs: {
+      AppLayout: AppLayoutStub, UsageStatsCards: !realDatePickerAndCards, UsageFilters: UsageFiltersStub,
+      UsageTable: UsageTableStub, UsageExportProgress: true, UsageCleanupDialog: true,
+      UserBalanceHistoryModal: true, Pagination: true, Select: true, DateRangePicker: !realDatePickerAndCards,
+      Icon: true, TokenUsageTrend: true, ModelDistributionChart: true, GroupDistributionChart: true,
+      EndpointDistributionChart: true, UserTokenRanking: true, OpsErrorLogTable: true, OpsErrorDetailModal: true,
+      LatencyObservabilityPanel: LatencyObservabilityPanelStub,
+    } },
+  })
+  it.each([
+    { startDate: '', endDate: '2026-11-05', start: '2026-11-03', end: '2026-11-05', minutes: 4320 },
+    { startDate: '2026-11-04', endDate: '', start: '2026-11-04', end: '2026-11-10', minutes: 9030 },
+    { startDate: '', endDate: '', start: '2026-11-03', end: '2026-11-10', minutes: 10470 },
+  ])('uses the observer stats range after clearing picker dates: %j', async ({ startDate, endDate, start, end, minutes }) => {
+    const now = new Date(2026, 10, 10, 6, 30)
+    vi.setSystemTime(now)
+    const wrapper = mountObserver(true)
+    await flushPromises()
+    const picker = wrapper.findComponent(DateRangePicker)
+    await picker.get('.date-picker-trigger').trigger('click')
+    const inputs = picker.findAll('.date-picker-input')
+    await inputs[0].setValue(startDate)
+    await inputs[1].setValue(endDate)
+    own.getStats.mockResolvedValueOnce({ total_requests: minutes, total_tokens: minutes * 100 })
+    await picker.get('.date-picker-apply').trigger('click')
+    await flushPromises()
+    expect(own.getStats).toHaveBeenLastCalledWith(expect.objectContaining({ start_date: start, end_date: end }))
+    expect(wrapper.findComponent(UsageStatsCards).props('rateWindow')).toEqual({ start, end, now: now.getTime() })
+    expect(wrapper.get('[data-testid="usage-rpm"]').text()).toBe('1.00')
+    expect(wrapper.get('[data-testid="usage-tpm"]').text()).toBe('100.0')
+    expect(getStats).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('keeps old stats on their window while pending or failed and discards out-of-order responses', async () => {
+    const now = new Date(2026, 10, 10, 6, 30)
+    vi.setSystemTime(now)
+    const wrapper = mountObserver()
+    await flushPromises()
+    const cards = () => wrapper.findComponent(UsageStatsCards)
+    const originalStats = { ...cards().props('stats')! }
+    const originalWindow = { ...cards().props('rateWindow')! }
+    let resolveA!: (stats: unknown) => void
+    let resolveB!: (stats: unknown) => void
+    own.getStats.mockReturnValueOnce(new Promise(resolve => { resolveA = resolve }))
+    own.getStats.mockReturnValueOnce(new Promise(resolve => { resolveB = resolve }))
+
+    ;(wrapper.vm as any).onDateRangeChange({ startDate: '', endDate: '2026-11-05', preset: null })
+    await flushPromises()
+    expect(own.getStats).toHaveBeenLastCalledWith(expect.objectContaining({ start_date: '2026-11-03', end_date: '2026-11-05' }))
+    expect(cards().props('stats')).toEqual(originalStats)
+    expect(cards().props('rateWindow')).toEqual(originalWindow)
+
+    const newerNow = new Date(2026, 10, 11, 7)
+    vi.setSystemTime(newerNow)
+    ;(wrapper.vm as any).onDateRangeChange({ startDate: '2026-11-04', endDate: '', preset: null })
+    await flushPromises()
+    expect(own.getStats).toHaveBeenLastCalledWith(expect.objectContaining({ start_date: '2026-11-04', end_date: '2026-11-11' }))
+    expect(cards().props('stats')).toEqual(originalStats)
+    expect(cards().props('rateWindow')).toEqual(originalWindow)
+
+    const newerStats = { total_requests: 21000, total_tokens: 42000 }
+    const newerWindow = { start: '2026-11-04', end: '2026-11-11', now: newerNow.getTime() }
+    vi.setSystemTime(new Date(2026, 10, 12, 8))
+    resolveB(newerStats)
+    await flushPromises()
+    expect(cards().props('stats')).toEqual(newerStats)
+    expect(cards().props('rateWindow')).toEqual(newerWindow)
+    expect(usagePerMinute(cards().props('stats')!.total_requests, cards().props('rateWindow'))).toBe(2)
+
+    resolveA({ total_requests: 4320, total_tokens: 432000 })
+    await flushPromises()
+    expect(cards().props('stats')).toEqual(newerStats)
+    expect(cards().props('rateWindow')).toEqual(newerWindow)
+
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      own.getStats.mockRejectedValueOnce(new Error('fixture stats unavailable'))
+      ;(wrapper.vm as any).onDateRangeChange({ startDate: '', endDate: '', preset: null })
+      await flushPromises()
+      expect(consoleError).toHaveBeenCalled()
+      expect(cards().props('stats')).toEqual(newerStats)
+      expect(cards().props('rateWindow')).toEqual(newerWindow)
+    } finally {
+      consoleError.mockRestore()
+      wrapper.unmount()
+    }
+  })
+
+  it('uses own APIs for filters, charts and export, without admin actions', async () => {
+    routeQuery.user_id = '999'
+    const wrapper = mountObserver()
+    await vi.advanceTimersByTimeAsync(150)
+    await flushPromises()
+    expect(own.list).toHaveBeenCalledWith(expect.objectContaining({ user_id: undefined }), expect.anything())
+    expect(own.getStats).toHaveBeenCalled()
+    expect(own.getModelStats).toHaveBeenCalled()
+    expect(own.getSnapshotV2).toHaveBeenCalled()
+    expect(wrapper.find('usage-cleanup-dialog-stub').exists()).toBe(false)
+    expect(wrapper.find('user-balance-history-modal-stub').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('usage.tabs.ranking')
+    expect(wrapper.text()).not.toContain('connections.title')
+    expect(wrapper.text()).not.toContain('latencyObservability.title')
+    for (const name of ['model-distribution-chart-stub', 'group-distribution-chart-stub', 'endpoint-distribution-chart-stub']) {
+      expect(wrapper.findComponent(name).props('enableBreakdown')).toBe(false)
+    }
+    await wrapper.find('.user-click').trigger('click')
+    const filter = wrapper.findComponent(UsageFiltersStub)
+    filter.vm.$emit('update:modelValue', { account_id: 7, group_id: 8, api_key_id: 9, model: 'gpt', start_date: '2026-09-01', end_date: '2026-09-02' })
+    filter.vm.$emit('change')
+    await flushPromises()
+    expect(own.list).toHaveBeenLastCalledWith(expect.objectContaining({ account_id: 7, group_id: 8, api_key_id: 9 }), expect.anything())
+    filter.vm.$emit('cleanup')
+    filter.vm.$emit('export')
+    await flushPromises()
+    expect(own.list).toHaveBeenLastCalledWith(expect.objectContaining({ page_size: 100, exact_total: true, account_id: 7 }), expect.anything())
+    expect(saveAs).toHaveBeenCalled()
+    const errorTab = wrapper.findAll('[data-testid="usage-detail-tab"]').find(tab => tab.text() === 'usage.tabs.errors')!
+    await errorTab.trigger('click')
+    await flushPromises()
+    expect(own.listErrors).toHaveBeenCalledWith(expect.objectContaining({ start_date: '2026-09-01', account_id: 7, group_id: 8 }))
+    for (const fn of [list, exportList, getStats, getModelStats, getSnapshotV2, getById, listErrorLogs]) expect(fn).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+  it('honors the user error visibility switch', async () => {
+    own.settings.allow_user_view_error_requests = false
+    const wrapper = mountObserver()
+    await vi.advanceTimersByTimeAsync(150)
+    await flushPromises()
+    expect(wrapper.findAll('[data-testid="usage-detail-tab"]')).toHaveLength(1)
+    expect(own.listErrors).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+})
+
+describe('admin UsageView rolling 24 hour requests', () => {
+  let wrapper: ReturnType<typeof mountRouteFilteredUsageView> | undefined
+  const now = new Date('2026-10-01T00:01:02.123+09:00')
+
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(now)
+    Object.keys(routeQuery).forEach(key => delete routeQuery[key])
+    list.mockReset().mockResolvedValue({ items: [], total: 0, pages: 0 })
+    exportList.mockReset().mockResolvedValue({ items: [], total: 0, pages: 0 })
+    getStats.mockReset().mockResolvedValue({ total_requests: 2, total_cost: 12, total_actual_cost: 3, total_account_cost: 5 })
+    getModelStats.mockReset().mockResolvedValue({ models: [] })
+    getSnapshotV2.mockReset().mockResolvedValue({ trend: [], groups: [] })
+    listErrorLogs.mockReset().mockResolvedValue({ items: [], total: 0 })
+  })
+  afterEach(() => {
+    wrapper?.unmount()
+    wrapper = undefined
+    Object.keys(routeQuery).forEach(key => delete routeQuery[key])
+    vi.useRealTimers()
+  })
+
+  const expectRequests = (end: Date) => {
+    const range = { start_date: new Date(end.getTime() - 86_400_000).toISOString(), end_date: end.toISOString() }
+    for (const request of [list, getStats, getModelStats, getSnapshotV2]) {
+      expect(request.mock.lastCall?.[0]).toMatchObject(range)
+      const params = request.mock.lastCall![0]
+      expect(Date.parse(params.end_date) - Date.parse(params.start_date)).toBe(86_400_000)
+    }
+    expect(getSnapshotV2.mock.lastCall?.[0].granularity).toBe('hour')
+    return range
+  }
+
+  it.each([
+    ['rolling', undefined, undefined],
+    ['routed exact', '2026-09-30T00:00:00Z', '2026-10-01T00:00:00Z'],
+    ['mixed', '2026-09-30', '2026-10-01T00:00:00Z'],
+  ])('blocks %s cleanup until calendar dates are explicitly selected', async (_, start, end) => {
+    if (start) routeQuery.start_date = start
+    if (end) routeQuery.end_date = end
+    listCleanupTasks.mockReset().mockResolvedValue({ items: [], total: 0 })
+    createCleanupTask.mockReset()
+    showWarning.mockClear()
+    wrapper = mountRouteFilteredUsageView(true, true)
+    await flushPromises()
+    await wrapper.get('[data-test="cleanup-open"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('button').some(b => b.text() === 'admin.usage.cleanup.submit')).toBe(false)
+    expect(wrapper.find('[data-test="cleanup-confirm"]').exists()).toBe(false)
+    expect(listCleanupTasks).not.toHaveBeenCalled()
+    expect(createCleanupTask).not.toHaveBeenCalled()
+    expect(showWarning).toHaveBeenCalledWith('admin.usage.cleanup.calendarRangeRequired')
+  })
+
+  it('submits unchanged natural dates after an explicit picker selection', async () => {
+    listCleanupTasks.mockReset().mockResolvedValue({ items: [], total: 0 })
+    createCleanupTask.mockReset().mockResolvedValue({ id: 1 })
+    wrapper = mountRouteFilteredUsageView(true, true)
+    await flushPromises()
+    await wrapper.get('[data-test="cleanup-open"]').trigger('click')
+    const picker = wrapper.findComponent(DateRangePicker)
+    await picker.get('.date-picker-trigger').trigger('click')
+    await picker.findAll('.date-picker-preset').find(b => b.text() === 'dates.today')!.trigger('click')
+    await picker.get('.date-picker-apply').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-test="cleanup-open"]').trigger('click')
+    await flushPromises()
+    const dialog = wrapper.findComponent(UsageCleanupDialog)
+    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+    expect(dialog.props()).toMatchObject({ show: true, startDate: today, endDate: today })
+    await dialog.findAll('button').find(b => b.text() === 'admin.usage.cleanup.submit')!.trigger('click')
+    await wrapper.get('[data-test="cleanup-confirm"]').trigger('click')
+    await flushPromises()
+    expect(createCleanupTask).toHaveBeenCalledOnce()
+    expect(createCleanupTask).toHaveBeenCalledWith({ start_date: today, end_date: today, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone })
+  })
+
+  it('uses the same precise cross-midnight window for list, cards and charts on initial load', async () => {
+    wrapper = mountRouteFilteredUsageView(true)
+    vi.advanceTimersByTime(120)
+    await flushPromises()
+    expectRequests(now)
+    expect(wrapper.findComponent(DateRangePicker).get('.date-picker-trigger').text()).toContain('dates.last24Hours')
+    expect(wrapper.findComponent(UsageStatsCards).props('stats')).toMatchObject({
+      total_actual_cost: 3, total_cost: 12, total_account_cost: 5
+    })
+  })
+
+  it('refreshes the rolling window once and keeps pagination/export on that applied snapshot', async () => {
+    wrapper = mountRouteFilteredUsageView()
+    await flushPromises()
+    const refreshedAt = new Date('2026-10-02T00:00:00.456+09:00')
+    vi.setSystemTime(refreshedAt)
+    ;(wrapper.vm as any).refreshData()
+    await flushPromises()
+    const range = expectRequests(refreshedAt)
+    vi.setSystemTime(new Date('2026-10-02T00:05:00.789+09:00'))
+    ;(wrapper.vm as any).handlePageChange(2)
+    await flushPromises()
+    expect(list.mock.lastCall?.[0]).toMatchObject({ ...range, page: 2 })
+    await (wrapper.vm as any).exportToExcel()
+    expect(exportList.mock.lastCall?.[0]).toMatchObject(range)
+    expect((wrapper.vm as any).connectionFilters).toMatchObject({ start_time: range.start_date, end_time: range.end_date })
+    ;(wrapper.vm as any).switchTab('errors')
+    await flushPromises()
+    expect(listErrorLogs.mock.lastCall?.[0]).toMatchObject({ start_time: range.start_date, end_time: range.end_date })
+  })
+
+  it('applies the actual picker selection after midnight and resets back to rolling time', async () => {
+    routeQuery.start_date = '2026-09-20'
+    routeQuery.end_date = '2026-09-25'
+    wrapper = mountRouteFilteredUsageView(true)
+    await flushPromises()
+    const picker = wrapper.findComponent(DateRangePicker)
+    await picker.get('.date-picker-trigger').trigger('click')
+    await picker.findAll('.date-picker-preset').find(b => b.text() === 'dates.last24Hours')!.trigger('click')
+    await picker.get('.date-picker-apply').trigger('click')
+    await flushPromises()
+    expectRequests(now)
+    const resetAt = new Date('2026-10-02T00:00:00.789+09:00')
+    vi.setSystemTime(resetAt)
+    ;(wrapper.vm as any).resetFilters()
+    await flushPromises()
+    expectRequests(resetAt)
+  })
+
+  it('preserves manual/routed calendar dates on refresh', async () => {
+    routeQuery.start_date = '2026-09-30'
+    routeQuery.end_date = '2026-10-01'
+    wrapper = mountRouteFilteredUsageView(true)
+    await flushPromises()
+    ;(wrapper.vm as any).refreshData()
+    await flushPromises()
+    for (const request of [list, getStats, getModelStats, getSnapshotV2]) {
+      expect(request.mock.lastCall?.[0]).toMatchObject({ start_date: '2026-09-30', end_date: '2026-10-01' })
+    }
+    expect(wrapper.findComponent(DateRangePicker).get('.date-picker-trigger').text()).not.toContain('dates.last24Hours')
+  })
+})
+
+
+const auditMountedViews: ReturnType<typeof mount>[] = []
+const auditSettingsData = (): SecurityPolicyRankingSettings => ({ multiplier: '6.700000', auto_disable_enabled: false, auto_disable_threshold: 10, reset_on_manual_enable: true, group_ids: [], user_allowlist_ids: [], group_rules: [], settings_revision: 1 })
+function configData(ranking: SecurityPolicyRankingSettings = auditSettingsData()): AuditCenterConfig {
+  return {
+    revision: 'saved-revision', risk_control_enabled: true, differences: [], groups: [], charge_summary: [],
+    content: { enabled: true, mode: 'monitor_only', group_ids: [...ranking.group_ids], user_allowlist_ids: [...ranking.user_allowlist_ids ?? []], risk_policy: null, blocked_keywords: [], thresholds: {} },
+    prompt: { enabled: false, blocking_enabled: false, blocking_latest_turn_only: false, store_pass_events: false, strategy: 'priority', worker_count: 4, queue_capacity: 100, scanners: [], group_ids: [...ranking.group_ids], user_allowlist_ids: [...ranking.user_allowlist_ids ?? []], endpoints: [], config_version: 1, engine: 'local_rules', local_rules: [], risk_policy: null },
+    ranking,
+  } as AuditCenterConfig
+}
+
+const ToggleStub = { props: ['modelValue'], emits: ['update:modelValue'], template: '<input type="checkbox" :checked="modelValue" @change="$emit(\'update:modelValue\', $event.target.checked)" />' }
+async function mountCenter(ranking = auditSettingsData()) {
+  let saved = configData(ranking)
+  auditCenterMocks.getConfig.mockResolvedValue(saved)
+  auditCenterMocks.updateConfig.mockImplementation(async (payload: AuditCenterUpdate) => {
+    saved = structuredClone(saved)
+    if (payload.ranking) saved.ranking = structuredClone(payload.ranking)
+    if (payload.shared) {
+      for (const source of ['content', 'prompt', 'ranking'] as const) Object.assign(saved[source], payload.shared)
+    }
+    return saved
+  })
+  const wrapper = mount(AuditCenterView, { global: { stubs: {
+    AppLayout: { template: '<div><slot /></div>' }, Toggle: ToggleStub, UserAllowlistSelector: true,
+    RiskControlView: true, PromptAuditView: true, LocalRulePanel: true, EndpointPool: true, PolicyPanel: true, AuditRiskPolicyPanel: true,
+  } } })
+  auditMountedViews.push(wrapper)
+  await flushPromises()
+  return wrapper
+}
+async function save(wrapper: ReturnType<typeof mount>) {
+  await wrapper.get('[data-test="audit-save-all"]').trigger('click')
+  await flushPromises()
+}
+// These settings moved out of the ranking table into the shared Audit Center.
+// Keep the previous validation, scope, precision and explicit-removal contracts here.
+describe('AuditCenter shared ranking settings', () => {
+beforeEach(() => {
+  vi.clearAllMocks()
+  for (const key of Object.keys(routeQuery)) delete routeQuery[key]
+  auditCenterMocks.listGroups.mockResolvedValue([
+    { id: 1, name: 'Selected group', platform: 'openai', status: 'active' },
+    { id: 2, name: 'Unselected group', platform: 'openai', status: 'inactive' },
+  ])
+})
+
+  afterEach(() => { auditMountedViews.splice(0).forEach(wrapper => wrapper.unmount()) })
+
+  it('loads saved automatic disable options and does not overwrite unrelated policies', async () => {
+    const wrapper = await mountCenter()
+    expect(wrapper.get('[data-test="audit-upstream-minimum-input"]').element).toHaveProperty('value', '6.700000')
+    expect(wrapper.get('[data-test="audit-auto-disable"]').element).toHaveProperty('checked', false)
+    expect(wrapper.get('[data-test="audit-reset-on-enable"]').element).toHaveProperty('checked', true)
+    expect(auditCenterMocks.updateConfig).not.toHaveBeenCalled()
+  })
+
+  it('saves exact multiplier and automatic disable options, rejecting invalid input', async () => {
+    const wrapper = await mountCenter()
+    await wrapper.get('[data-test="audit-upstream-minimum-input"]').setValue('1e2')
+    await save(wrapper)
+    expect(auditCenterMocks.updateConfig).not.toHaveBeenCalled()
+    expect(auditCenterMocks.showError).toHaveBeenCalledWith('securityPolicyRanking.invalidMultiplier')
+    await wrapper.get('[data-test="audit-upstream-minimum-input"]').setValue('0.290001')
+    await wrapper.get('[data-test="audit-auto-disable"]').setValue(true)
+    await wrapper.get('[data-test="audit-disable-threshold"]').setValue('1000000000')
+    await wrapper.get('[data-test="audit-reset-on-enable"]').setValue(false)
+    await save(wrapper)
+    expect(auditCenterMocks.updateConfig).toHaveBeenCalledWith({ expected_revision: 'saved-revision', ranking: { ...auditSettingsData(), multiplier: '0.290001', auto_disable_enabled: true, auto_disable_threshold: 1000000000, reset_on_manual_enable: false } })
+  })
+
+  it.each([0, 1.5, 1000000001])('rejects invalid automatic disable threshold %s', async threshold => {
+    const wrapper = await mountCenter()
+    await wrapper.get('[data-test="audit-disable-threshold"]').setValue(threshold)
+    await save(wrapper)
+    expect(auditCenterMocks.updateConfig).not.toHaveBeenCalled()
+    expect(auditCenterMocks.showError).toHaveBeenCalledWith('securityPolicyRanking.invalidThreshold')
+  })
+
+  it('saves only selected detection groups and clears the scope explicitly without replacing ranking settings', async () => {
+    const wrapper = await mountCenter()
+    await wrapper.get('[data-test="audit-shared-group-1"]').setValue(true)
+    await save(wrapper)
+    expect(auditCenterMocks.updateConfig).toHaveBeenLastCalledWith({ expected_revision: 'saved-revision', shared: { group_ids: [1] } })
+    await wrapper.get('[data-test="audit-shared-group-1"]').setValue(false)
+    await save(wrapper)
+    expect(auditCenterMocks.updateConfig).toHaveBeenLastCalledWith({ expected_revision: 'saved-revision', shared: { group_ids: [] } })
+  })
+
+  it('preserves saved inactive and missing groups until explicitly removed and can search by group ID', async () => {
+    const wrapper = await mountCenter({ ...auditSettingsData(), group_ids: [2, 99] })
+    expect(wrapper.get('[data-test="audit-shared-group-2"]').attributes()).not.toHaveProperty('disabled')
+    expect(wrapper.get('[data-test="audit-missing-group-99"]').element).toHaveProperty('checked', true)
+    const search = wrapper.get('input[placeholder="admin.auditCenter.searchGroups"]')
+    await search.setValue('1')
+    expect(wrapper.find('[data-test="audit-shared-group-1"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="audit-shared-group-2"]').exists()).toBe(false)
+    await search.setValue('')
+    await wrapper.get('[data-test="audit-shared-group-2"]').setValue(false)
+    await wrapper.get('[data-test="audit-missing-group-99"]').setValue(false)
+    await save(wrapper)
+    expect(auditCenterMocks.updateConfig).toHaveBeenLastCalledWith({ expected_revision: 'saved-revision', shared: { group_ids: [] } })
+  })
+
+  it('preserves group rules outside detection scope and saves auto deductions independently from automatic disabling', async () => {
+    const rule = { group_id: 1, multiplier: '0.290001', auto_deduct_enabled: false }
+    const wrapper = await mountCenter({ ...auditSettingsData(), group_ids: [1], group_rules: [rule], user_allowlist_ids: [7, 9] })
+    expect(wrapper.findComponent(UserAllowlistSelector).props('modelValue')).toEqual([7, 9])
+    await wrapper.get('[data-test="audit-charge-group-1"]').setValue(true)
+    const multiplier = wrapper.get('[data-test="audit-group-multiplier-1"]')
+    expect(multiplier.element).toHaveProperty('value', '0.290001')
+    expect(multiplier.classes()).toEqual(expect.arrayContaining(['!text-red-700', 'dark:!text-red-300']))
+    expect(multiplier.element.closest('label')?.textContent).toContain('破甲倍率')
+    await wrapper.get('[data-test="audit-shared-group-1"]').setValue(false)
+    await save(wrapper)
+    expect(auditCenterMocks.updateConfig).toHaveBeenLastCalledWith(expect.objectContaining({ shared: { group_ids: [] }, ranking: expect.objectContaining({ auto_disable_enabled: false, user_allowlist_ids: [7, 9], group_rules: [{ ...rule, auto_deduct_enabled: true }] }) }))
+    expect(rule.auto_deduct_enabled).toBe(false)
+    wrapper.findComponent(UserAllowlistSelector).vm.$emit('update:modelValue', [])
+    await wrapper.get('[data-test="audit-clear-rule-1"]').trigger('click')
+    await save(wrapper)
+    expect(auditCenterMocks.updateConfig).toHaveBeenLastCalledWith(expect.objectContaining({ shared: { user_allowlist_ids: [] }, ranking: expect.objectContaining({ group_rules: [] }) }))
+  })
+
+  it.each(['0', '0.0000001', '1000.000001', '1e2', '-1', 'not a number'])('rejects invalid group multiplier %s even when the group is not selected', async multiplier => {
+    const wrapper = await mountCenter({ ...auditSettingsData(), group_rules: [{ group_id: 1, multiplier: '1', auto_deduct_enabled: true }] })
+    await wrapper.get('[data-test="audit-group-multiplier-1"]').setValue(multiplier)
+    await save(wrapper)
+    expect(auditCenterMocks.updateConfig).not.toHaveBeenCalled()
+    expect(auditCenterMocks.showError).toHaveBeenCalledWith('securityPolicyRanking.invalidGroupMultiplier')
+  })
+
+  it('keeps exact boundary decimals and removes missing rules only on explicit action', async () => {
+    const missing = { group_id: 99, multiplier: '1000.000000', auto_deduct_enabled: true }
+    const wrapper = await mountCenter({ ...auditSettingsData(), group_ids: [1], group_rules: [missing] })
+    await wrapper.get('[data-test="audit-charge-group-1"]').setValue(true)
+    await wrapper.get('[data-test="audit-group-multiplier-1"]').setValue('0.000001')
+    await wrapper.get('[data-test="audit-charge-group-1"]').setValue(false)
+    await save(wrapper)
+    expect(auditCenterMocks.updateConfig).toHaveBeenLastCalledWith(expect.objectContaining({ ranking: expect.objectContaining({ group_rules: [missing, { group_id: 1, multiplier: '0.000001', auto_deduct_enabled: false }] }) }))
+    await wrapper.get('[data-test="audit-clear-rule-99"]').trigger('click')
+    await save(wrapper)
+    expect(auditCenterMocks.updateConfig).toHaveBeenLastCalledWith(expect.objectContaining({ ranking: expect.objectContaining({ group_rules: [{ group_id: 1, multiplier: '0.000001', auto_deduct_enabled: false }] }) }))
+    expect(wrapper.find('[data-test="audit-clear-rule-99"]').exists()).toBe(false)
   })
 })

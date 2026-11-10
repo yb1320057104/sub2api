@@ -20,13 +20,14 @@
             <p class="text-sm text-red-700 dark:text-red-400" role="alert">{{ t('intelligenceTest.loadFailed') }}</p>
             <button type="button" class="text-sm font-medium text-red-700 underline underline-offset-4 dark:text-red-400" @click="reload">{{ t('intelligenceTest.retry') }}</button>
           </div>
-          <div v-if="loading && !results.length" class="card px-6 py-16 text-center text-sm text-gray-400" role="status">{{ t('intelligenceTest.loading') }}</div>
-          <div v-else-if="!resultGroups.length || !results.length" class="card px-6 py-16 text-center">
+          <QualityHistoryTimeline v-if="useQualityRead" :history="qualityHistory" :enabled="qualityEnabled" :loading="loading" />
+          <div v-if="!useQualityRead && loading && !results.length" class="card px-6 py-16 text-center text-sm text-gray-400" role="status">{{ t('intelligenceTest.loading') }}</div>
+          <div v-else-if="!useQualityRead && (!resultGroups.length || !results.length)" class="card px-6 py-16 text-center">
             <svg class="mx-auto mb-5 h-12 w-12 text-primary-300 dark:text-primary-700" viewBox="0 0 48 48" fill="none" aria-hidden="true"><rect x="7" y="10" width="34" height="28" rx="8" stroke="currentColor" stroke-width="2"/><path d="M15 28l6-7 6 4 6-9M16 16h1M31 32h2" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
             <h2 class="font-medium text-gray-700 dark:text-dark-200">{{ t(resultGroups.length ? 'intelligenceTest.empty' : 'intelligenceTest.noGroups') }}</h2>
             <p class="mt-2 text-sm leading-6 text-gray-400">{{ t(resultGroups.length ? 'intelligenceTest.emptyHint' : 'intelligenceTest.noGroupsHint') }}</p>
           </div>
-          <template v-else>
+          <template v-else-if="results.length">
             <div class="mb-4 flex flex-wrap items-center justify-between gap-2 text-xs text-gray-400"><span>{{ t('intelligenceTest.latest') }}</span><span v-if="mode === 'svg'">{{ t('intelligenceTest.previewHint') }}</span></div>
             <div class="grid grid-cols-1 items-start gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
               <article v-for="result in results" :key="`${selectedGroup}-${mode}-${result.id}`" class="card min-w-0 overflow-hidden">
@@ -57,7 +58,7 @@
                   <div class="flex flex-wrap items-center gap-x-2 gap-y-1"><dt class="text-gray-400">{{ t('intelligenceTest.duration') }}</dt><dd class="font-mono text-gray-600 dark:text-dark-300">{{ formatDuration(result) }}</dd></div>
                 </dl>
                 <ResultDetails
-                  v-if="!result.empty_pool && result.status !== 'running' && (mode === 'candy' || (auth.isAdmin && result.status === 'failed'))"
+                  v-if="!result.empty_pool && ((mode === 'candy' && result.status === 'completed') || (auth.isAdmin && result.status === 'failed'))"
                   :group-id="result.group_id"
                   :result-id="result.id"
                   :mode="mode"
@@ -76,28 +77,38 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import ResultArtifact from '@/components/intelligenceTest/ResultArtifact.vue'
 import ResultDetails from '@/components/intelligenceTest/ResultDetails.vue'
-import { intelligenceTestAPI, type IntelligenceTestGroup, type IntelligenceTestMode, type IntelligenceTestResult } from '@/api/intelligenceTest'
+import QualityHistoryTimeline from '@/components/intelligenceTest/QualityHistoryTimeline.vue'
+import { intelligenceTestAPI, type IntelligenceTestGroup, type IntelligenceTestMode, type IntelligenceTestResult, type IntelligenceTestQualityGroups, type IntelligenceTestQualityHistory } from '@/api/intelligenceTest'
 import { useAuthStore } from '@/stores/auth'
 import { useIntelligenceTestStore } from '@/stores/intelligenceTest'
 
 const { t, locale } = useI18n()
 const router = useRouter()
+const route = useRoute()
 const auth = useAuthStore()
 const status = useIntelligenceTestStore()
 const modes: IntelligenceTestMode[] = ['svg', 'candy']
-const mode = ref<IntelligenceTestMode>('svg')
+const mode = ref<IntelligenceTestMode>(route.query.mode === 'candy' ? 'candy' : 'svg')
+// Administrator history keeps its existing scope. User candy reads use a
+// separate server-filtered projection, including failures and empty pools.
+const useQualityRead = computed(() => mode.value === 'candy' && !auth.isAdmin)
 const selectedGroup = ref<number | null>(null)
 const groups = ref<IntelligenceTestGroup[]>([])
-const resultGroups = computed(() => groups.value.filter(group => group.selected === true))
+const qualityGroups = ref<IntelligenceTestQualityGroups['groups']>([])
+const qualityEnabled = ref(true)
+const qualityHistory = ref<IntelligenceTestQualityHistory | null>(null)
+const resultGroups = computed(() => useQualityRead.value ? qualityGroups.value : groups.value.filter(group => group.selected === true))
 const results = ref<IntelligenceTestResult[]>([])
 const loading = ref(true)
 const readError = ref(false)
 let resultRequest: AbortController | undefined
+let groupsRequest: AbortController | undefined
+let loadingGroups = false
 let timer: ReturnType<typeof setTimeout> | undefined
 let disposed = false
 let groupsLoadedAt = 0
@@ -106,14 +117,27 @@ let resultsGeneration = 0
 
 async function loadGroups() {
   const requestID = ++groupsRequestID
+  groupsRequest?.abort()
+  const controller = new AbortController()
+  groupsRequest = controller
+  const quality = useQualityRead.value
+  loadingGroups = true
   try {
-    const response = await intelligenceTestAPI.groups()
-    if (disposed || requestID !== groupsRequestID) return
-    groups.value = response
+    if (quality) {
+      const response = await intelligenceTestAPI.qualityGroups(controller.signal)
+      if (disposed || controller.signal.aborted || requestID !== groupsRequestID) return
+      qualityEnabled.value = response.enabled
+      qualityGroups.value = response.enabled ? response.groups : []
+    } else {
+      const response = await intelligenceTestAPI.groups(controller.signal)
+      if (disposed || controller.signal.aborted || requestID !== groupsRequestID) return
+      groups.value = response
+    }
     groupsLoadedAt = Date.now()
     if (!resultGroups.value.some(group => group.id === selectedGroup.value)) {
       resultRequest?.abort()
       results.value = []
+      qualityHistory.value = null
       selectedGroup.value = resultGroups.value[0]?.id ?? null
     }
     if (!selectedGroup.value) {
@@ -121,24 +145,36 @@ async function loadGroups() {
       loading.value = false
     }
   } catch {
-    if (!disposed && requestID === groupsRequestID) {
+    if (!disposed && !controller.signal.aborted && requestID === groupsRequestID) {
+      if (quality) {
+        qualityHistory.value = null
+        qualityGroups.value = []
+        results.value = []
+      }
       readError.value = true
       loading.value = false
     }
+  } finally {
+    if (requestID === groupsRequestID) loadingGroups = false
   }
 }
 
 async function loadResults(clear = false) {
   resultRequest?.abort()
-  if (clear) results.value = []
+  if (clear) {
+    results.value = []
+    qualityHistory.value = null
+  }
   const groupID = selectedGroup.value
   if (disposed) return
   if (!groupID || !resultGroups.value.some(group => group.id === groupID)) {
     results.value = []
+    qualityHistory.value = null
     loading.value = false
     return
   }
   const requestedMode = mode.value
+  const quality = useQualityRead.value
   const generation = resultsGeneration
   const controller = new AbortController()
   resultRequest = controller
@@ -148,14 +184,29 @@ async function loadResults(clear = false) {
     selectedGroup.value === groupID && mode.value === requestedMode &&
     resultGroups.value.some(group => group.id === groupID)
   try {
-    const response = await intelligenceTestAPI.results(groupID, requestedMode, controller.signal)
-    if (!isCurrentRequest()) return
-    results.value = response.slice(0, 30)
+    if (quality) {
+      const response = await intelligenceTestAPI.qualityResults(groupID, controller.signal)
+      if (!isCurrentRequest()) return
+      qualityEnabled.value = response.enabled
+      qualityHistory.value = response.enabled ? response : null
+      results.value = response.enabled ? response.results.slice(0, 30).map(result => ({ ...result, group_id: groupID, mode: 'candy' as const })) : []
+      if (!response.enabled) qualityGroups.value = []
+    } else {
+      const response = await intelligenceTestAPI.results(groupID, requestedMode, controller.signal)
+      if (!isCurrentRequest()) return
+      results.value = response.slice(0, 30)
+    }
     readError.value = false
   } catch {
-    if (isCurrentRequest()) readError.value = true
+    if (isCurrentRequest()) {
+      readError.value = true
+      if (quality) {
+        qualityHistory.value = null
+        results.value = []
+      }
+    }
   } finally {
-    if (isCurrentRequest()) loading.value = false
+    if (!disposed && !controller.signal.aborted && resultRequest === controller && generation === resultsGeneration) loading.value = false
   }
 }
 
@@ -166,6 +217,8 @@ async function reload() {
   if (!enabled && !auth.isAdmin) {
     results.value = []
     groups.value = []
+    qualityGroups.value = []
+    qualityHistory.value = null
     await router.replace('/dashboard')
     return
   }
@@ -182,6 +235,8 @@ async function poll() {
       if (disposed || generation !== resultsGeneration) return
       if (!status.enabled && !auth.isAdmin) {
         results.value = []
+        qualityHistory.value = null
+        qualityGroups.value = []
         await router.replace('/dashboard')
         return
       }
@@ -199,7 +254,7 @@ function resultLabel(result: IntelligenceTestResult) {
   if (result.status === 'running') return t('intelligenceTest.running')
   if (result.status === 'failed') return t('intelligenceTest.failed')
   if (mode.value === 'svg') return t('intelligenceTest.completed')
-  return t(result.passed === true ? 'intelligenceTest.passed' : result.passed === false ? 'intelligenceTest.notPassed' : 'intelligenceTest.failed')
+  return t(result.passed === true ? 'intelligenceTest.passed' : result.passed === false ? 'intelligenceTest.notPassed' : 'intelligenceTest.quality.states.unknown')
 }
 
 function statusClass(result: IntelligenceTestResult) {
@@ -244,11 +299,31 @@ function moveGroup(event: KeyboardEvent) {
   void nextTick(() => document.getElementById(`intelligence-group-${selectedGroup.value}`)?.focus())
 }
 
-watch([selectedGroup, mode], () => void loadResults(true))
+watch(selectedGroup, () => {
+  if (!loadingGroups) void loadResults(true)
+}, { flush: 'sync' })
+watch(mode, () => {
+  resultsGeneration++
+  groupsRequestID++
+  groupsRequest?.abort()
+  resultRequest?.abort()
+  results.value = []
+  qualityHistory.value = null
+  qualityGroups.value = []
+  loading.value = true
+  readError.value = false
+  void reload()
+})
+watch(() => route.query.mode, (value) => {
+  if (value === 'candy' || value === 'svg') mode.value = value
+})
 watch(() => status.enabled, (enabled) => {
   if (!enabled && !auth.isAdmin) {
     resultRequest?.abort()
+    groupsRequest?.abort()
     results.value = []
+    qualityGroups.value = []
+    qualityHistory.value = null
     void router.replace('/dashboard')
   }
 })
@@ -261,6 +336,7 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   disposed = true
   resultRequest?.abort()
+  groupsRequest?.abort()
   if (timer) clearTimeout(timer)
 })
 </script>

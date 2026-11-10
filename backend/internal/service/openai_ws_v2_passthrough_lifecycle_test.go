@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -160,8 +161,14 @@ func startPassthroughLifecycleServer(
 	controlCtx context.Context,
 	svc *OpenAIGatewayService,
 	account *Account,
+	hooks ...*OpenAIWSIngressHooks,
 ) (*httptest.Server, <-chan error) {
-	return startPassthroughLifecycleServerWithHooks(t, controlCtx, svc, account, nil)
+	return startPassthroughLifecycleServerWithHooks(t, controlCtx, svc, account, func(*gin.Context) *OpenAIWSIngressHooks {
+		if len(hooks) > 0 {
+			return hooks[0]
+		}
+		return nil
+	})
 }
 
 func startPassthroughLifecycleServerWithHooks(
@@ -212,58 +219,171 @@ func startPassthroughLifecycleServerWithHooks(
 }
 
 func TestPassthroughLifecycle_LaterTurnPreOutputRateLimitRequestsReconnect(t *testing.T) {
+	for _, accountType := range []string{AccountTypeAPIKey, AccountTypeOAuth, AccountTypeSetupToken} {
+		t.Run(accountType, func(t *testing.T) {
+			gin.SetMode(gin.TestMode)
+			controlCtx, cancelControl := context.WithCancelCause(context.Background())
+			defer cancelControl(context.Canceled)
+			upstream := newStagedPassthroughConn()
+			account := passthroughLifecycleAccount()
+			account.Type = accountType
+			account.Credentials = openAIWSQuotaTestCredentials(accountType, "")
+			if account.IsOpenAIOAuthLike() {
+				account.Extra = map[string]any{"openai_oauth_responses_websockets_v2_mode": OpenAIWSIngressModePassthrough}
+			}
+			repo := &openAIWSRateLimitSignalRepo{stubOpenAIAccountRepo: stubOpenAIAccountRepo{accounts: []Account{*account}}}
+			cfg := passthroughLifecycleConfig()
+			cfg.Gateway.OpenAIWS.OAuthEnabled = true
+			svc := newPassthroughLifecycleService(cfg, upstream)
+			svc.accountRepo = repo
+			svc.rateLimitService = &RateLimitService{accountRepo: repo}
+
+			svc.rateLimitService.SetAccountRuntimeBlocker(svc)
+			type turnSettlement struct {
+				turn           int
+				result         *OpenAIForwardResult
+				err            error
+				upstreamClosed bool
+			}
+			settlements := make(chan turnSettlement, 3)
+			admissions := make(chan int, 2)
+			var heldSlots atomic.Int32
+			// The ingress handler has already admitted the first turn.
+			heldSlots.Store(1)
+			hooks := &OpenAIWSIngressHooks{
+				BeforeTurn: func(turn int) error {
+					heldSlots.Add(1)
+					admissions <- turn
+					return nil
+				},
+				AfterTurn: func(turn int, result *OpenAIForwardResult, err error) {
+					heldSlots.Add(-1)
+					closed := false
+					select {
+					case <-upstream.closed:
+						closed = true
+					default:
+					}
+					settlements <- turnSettlement{turn, result, err, closed}
+				},
+			}
+			server, serverErr := startPassthroughLifecycleServer(t, controlCtx, svc, account, hooks)
+			defer server.Close()
+			clientConn := dialPassthroughLifecycleClient(t, server)
+			defer func() { _ = clientConn.CloseNow() }()
+			firstRequest := requirePassthroughUpstreamWrite(t, upstream, time.Second)
+			require.Equal(t, "response.create", gjson.GetBytes(firstRequest, "type").String())
+
+			upstream.Send(`{"type":"response.completed","response":{"id":"resp_first","model":"gpt-5.1","usage":{"input_tokens":1,"output_tokens":1}}}`)
+			completed, err := readPassthroughLifecycleFrame(t, clientConn, time.Second)
+			require.NoError(t, err)
+			require.Equal(t, "response.completed", gjson.GetBytes(completed, "type").String())
+
+			writeCtx, cancelWrite := context.WithTimeout(context.Background(), time.Second)
+			err = clientConn.Write(writeCtx, coderws.MessageText, []byte(`{"type":"response.create","model":"gpt-5.1","stream":false}`))
+			cancelWrite()
+			require.NoError(t, err)
+			secondRequest := requirePassthroughUpstreamWrite(t, upstream, time.Second)
+			require.Equal(t, "response.create", gjson.GetBytes(secondRequest, "type").String())
+
+			resetAt := time.Now().Add(90 * time.Minute).Unix()
+			before := time.Now()
+			upstream.Send(fmt.Sprintf(`{"type":"error","error":{"code":"rate_limit_exceeded","type":"usage_limit_reached","message":"The usage limit has been reached","resets_at":%d}}`, resetAt))
+			_, err = readPassthroughLifecycleFrame(t, clientConn, time.Second)
+			var websocketCloseErr coderws.CloseError
+			require.ErrorAs(t, err, &websocketCloseErr)
+			require.Equal(t, coderws.StatusTryAgainLater, websocketCloseErr.Code)
+			require.Equal(t, "upstream rate limit exceeded; please reconnect", websocketCloseErr.Reason)
+
+			select {
+			case err := <-serverErr:
+				var closeErr *OpenAIWSClientCloseError
+				require.ErrorAs(t, err, &closeErr)
+				require.Equal(t, coderws.StatusTryAgainLater, closeErr.StatusCode())
+			case <-time.After(time.Second):
+				t.Fatal("later-turn rate limit did not terminate passthrough")
+			}
+			after := time.Now()
+			require.Len(t, repo.rateLimitCalls, 1)
+			requireOpenAIWSQuotaCooldown(t, accountType, repo.rateLimitCalls[0], before, after, time.Unix(resetAt, 0))
+			require.Empty(t, repo.updateExtra, "body-only 429 must not invent a Codex snapshot")
+			requireOpenAIWSQuotaRuntimeBlock(t, svc, account, repo.rateLimitCalls[0])
+			require.Len(t, admissions, 1, "only the second turn may consume another admission")
+			require.Equal(t, 2, <-admissions)
+			require.Zero(t, heldSlots.Load(), "both admitted turns must release their concurrency slots")
+			require.Len(t, settlements, 2, "each admitted turn must settle exactly once")
+			first := <-settlements
+			require.Equal(t, 1, first.turn)
+			require.NoError(t, first.err)
+			require.NotNil(t, first.result)
+			require.Equal(t, OpenAIUsage{InputTokens: 1, OutputTokens: 1}, first.result.Usage)
+			second := <-settlements
+			require.Equal(t, 2, second.turn)
+			require.Error(t, second.err)
+			require.Nil(t, second.result, "rejected pre-output turn must not reuse the first turn's usage")
+			require.True(t, second.upstreamClosed, "close upstream before releasing the rejected turn's slots")
+			select {
+			case replay := <-upstream.writes:
+				t.Fatalf("later-turn reconnect must not replay the retained first request: %s", replay)
+			default:
+			}
+		})
+	}
+}
+
+func TestPassthroughLifecycle_AdmissionFailureClearsResponseAffinity(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	controlCtx, cancelControl := context.WithCancelCause(context.Background())
 	defer cancelControl(context.Canceled)
+
 	upstream := newStagedPassthroughConn()
 	account := passthroughLifecycleAccount()
-	repo := &openAIWSRateLimitSignalRepo{stubOpenAIAccountRepo: stubOpenAIAccountRepo{accounts: []Account{*account}}}
+	repo := &turnAdmissionRepo{account: account}
 	svc := newPassthroughLifecycleService(passthroughLifecycleConfig(), upstream)
 	svc.accountRepo = repo
-	svc.rateLimitService = &RateLimitService{accountRepo: repo}
+	svc.requireLatestTurnAdmission = true
+	stateStore := NewOpenAIWSStateStore(nil)
+	svc.openaiWSStateStore = stateStore
+	const responseID = "resp_passthrough_admission_rejected"
+	require.NoError(t, stateStore.BindResponseAccount(context.Background(), 0, responseID, account.ID, time.Hour))
+	stateStore.BindResponseConn(responseID, "conn-passthrough-admission", time.Hour)
 
 	server, serverErr := startPassthroughLifecycleServer(t, controlCtx, svc, account)
 	defer server.Close()
 	clientConn := dialPassthroughLifecycleClient(t, server)
 	defer func() { _ = clientConn.CloseNow() }()
-	firstRequest := requirePassthroughUpstreamWrite(t, upstream, time.Second)
-	require.Equal(t, "response.create", gjson.GetBytes(firstRequest, "type").String())
 
-	upstream.Send(`{"type":"response.completed","response":{"id":"resp_first","model":"gpt-5.1","usage":{"input_tokens":1,"output_tokens":1}}}`)
+	require.Equal(t, "response.create", gjson.GetBytes(requirePassthroughUpstreamWrite(t, upstream, time.Second), "type").String())
+	upstream.Send(fmt.Sprintf(`{"type":"response.completed","response":{"id":%q,"model":"gpt-5.1","usage":{"input_tokens":1,"output_tokens":1}}}`, responseID))
 	completed, err := readPassthroughLifecycleFrame(t, clientConn, time.Second)
 	require.NoError(t, err)
 	require.Equal(t, "response.completed", gjson.GetBytes(completed, "type").String())
 
+	account.Schedulable = false
 	writeCtx, cancelWrite := context.WithTimeout(context.Background(), time.Second)
-	err = clientConn.Write(writeCtx, coderws.MessageText, []byte(`{"type":"response.create","model":"gpt-5.1","stream":false}`))
+	err = clientConn.Write(writeCtx, coderws.MessageText, []byte(
+		fmt.Sprintf(`{"type":"response.create","model":"gpt-5.1","previous_response_id":%q,"stream":false}`, responseID),
+	))
 	cancelWrite()
 	require.NoError(t, err)
-	secondRequest := requirePassthroughUpstreamWrite(t, upstream, time.Second)
-	require.Equal(t, "response.create", gjson.GetBytes(secondRequest, "type").String())
-
-	resetAt := time.Now().Add(90 * time.Minute).Unix()
-	upstream.Send(fmt.Sprintf(`{"type":"error","error":{"code":"rate_limit_exceeded","type":"usage_limit_reached","message":"The usage limit has been reached","resets_at":%d}}`, resetAt))
-	_, err = readPassthroughLifecycleFrame(t, clientConn, time.Second)
-	var websocketCloseErr coderws.CloseError
-	require.ErrorAs(t, err, &websocketCloseErr)
-	require.Equal(t, coderws.StatusTryAgainLater, websocketCloseErr.Code)
-	require.Equal(t, "upstream rate limit exceeded; please reconnect", websocketCloseErr.Reason)
-	require.Len(t, repo.rateLimitCalls, 1)
-	require.WithinDuration(t, time.Unix(resetAt, 0), repo.rateLimitCalls[0], 2*time.Second)
 
 	select {
 	case err := <-serverErr:
-		var closeErr *OpenAIWSClientCloseError
-		require.ErrorAs(t, err, &closeErr)
-		require.Equal(t, coderws.StatusTryAgainLater, closeErr.StatusCode())
-	case <-time.After(time.Second):
-		t.Fatal("later-turn rate limit did not terminate passthrough")
+		require.True(t, IsOpenAITurnAdmissionError(err), "%v", err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("passthrough admission failure did not terminate")
 	}
 	select {
-	case replay := <-upstream.writes:
-		t.Fatalf("later-turn reconnect must not replay the retained first request: %s", replay)
+	case payload := <-upstream.writes:
+		t.Fatalf("ineligible later turn reached upstream: %s", payload)
 	default:
 	}
+
+	accountID, err := stateStore.GetResponseAccount(context.Background(), 0, responseID)
+	require.NoError(t, err)
+	require.Zero(t, accountID)
+	_, responseConnExists := stateStore.GetResponseConn(responseID)
+	require.False(t, responseConnExists)
 }
 
 func TestPassthroughLifecycle_CyberTerminalEventsMarkBeforeAfterTurn(t *testing.T) {
@@ -502,6 +622,284 @@ func requirePassthroughUpstreamWrite(t *testing.T, upstream *stagedPassthroughCo
 	case <-time.After(timeout):
 		t.Fatal("passthrough request was not forwarded upstream")
 		return nil
+	}
+}
+
+func TestOpenAIWSPassthroughBareErrorAuthoritativeUsageSettlesOnce(t *testing.T) {
+	for _, completed := range []bool{true, false} {
+		t.Run(fmt.Sprint("completed=", completed), func(t *testing.T) {
+			upstream := newStagedPassthroughConn()
+			results := make(chan *OpenAIForwardResult, 4)
+			turnErrors := make(chan error, 4)
+			var releases atomic.Int32
+			var heldSlots atomic.Int32
+			heldSlots.Store(1)
+			hooks := &OpenAIWSIngressHooks{AfterTurn: func(_ int, result *OpenAIForwardResult, err error) {
+				releases.Add(1)
+				heldSlots.Add(-1)
+				results <- result
+				turnErrors <- err
+			}}
+			server, done := startPassthroughLifecycleServer(t, context.Background(), newPassthroughLifecycleService(passthroughLifecycleConfig(), upstream), passthroughLifecycleAccount(), hooks)
+			defer server.Close()
+			client := dialPassthroughLifecycleClient(t, server)
+			defer func() { _ = client.CloseNow() }()
+			requirePassthroughUpstreamWrite(t, upstream, time.Second)
+			upstream.Send(`{"type":"response.created","response":{"id":"resp_recovered"}}`)
+			_, err := readPassthroughLifecycleFrame(t, client, time.Second)
+			require.NoError(t, err)
+			upstream.Send(`{"type":"error","usage":{"input_tokens":2,"output_tokens":1},"error":{"code":"invalid_request_error","message":"recoverable request error"}}`)
+			event, err := readPassthroughLifecycleFrame(t, client, time.Second)
+			require.NoError(t, err)
+			require.Equal(t, "error", gjson.GetBytes(event, "type").String())
+			require.Equal(t, "invalid_request_error", gjson.GetBytes(event, "error.code").String())
+			require.Zero(t, releases.Load(), "provisional error must not release the active slot")
+			if completed {
+				upstream.Send(`{"type":"response.completed","response":{"id":"resp_recovered","usage":{"input_tokens":9,"output_tokens":4,"input_tokens_details":{"cached_tokens":3,"cache_write_tokens":2}}}}`)
+				event, err = readPassthroughLifecycleFrame(t, client, time.Second)
+				require.NoError(t, err)
+				require.Equal(t, "response.completed", gjson.GetBytes(event, "type").String())
+				require.NoError(t, client.CloseNow())
+			} else {
+				upstream.Fail(io.EOF)
+				// Keep reading so the client acknowledges the relay's close frame.
+				_, err = readPassthroughLifecycleFrame(t, client, time.Second)
+				require.Error(t, err)
+			}
+			select {
+			case err := <-done:
+				require.NoError(t, err)
+			case <-time.After(4 * time.Second):
+				t.Fatal("bare-error relay did not finish")
+			}
+			require.EqualValues(t, 1, releases.Load(), "usage settlement must release the slot exactly once")
+			require.Zero(t, heldSlots.Load())
+			require.Len(t, results, 1)
+			result := <-results
+			require.NotNil(t, result)
+			require.NoError(t, <-turnErrors)
+			require.Equal(t, "resp_recovered", result.RequestID)
+			if completed {
+				require.Equal(t, "response.completed", result.UpstreamTerminalEvent)
+				require.Equal(t, OpenAIUsage{InputTokens: 9, OutputTokens: 4, CacheReadInputTokens: 3, CacheCreationInputTokens: 2, CacheReadKnown: true}, result.Usage)
+			} else {
+				require.Empty(t, result.UpstreamTerminalEvent, "bare error is not normalized to a response terminal")
+				require.Equal(t, OpenAIUsage{InputTokens: 2, OutputTokens: 1}, result.Usage)
+			}
+		})
+	}
+}
+
+func TestOpenAIWSPassthroughSilentDisconnectReleasesAfterUpstreamClose(t *testing.T) {
+	cfg := passthroughLifecycleConfig()
+	cfg.Gateway.OpenAIFirstOutputTimeoutSeconds = 60
+	cfg.Gateway.OpenAIWS.ReadTimeoutSeconds = 60
+	upstream := newStagedPassthroughConn()
+	after := make(chan bool, 2)
+	cleanupErrors := make(chan error, 2)
+	cleanupResults := make(chan *OpenAIForwardResult, 2)
+	hooks := &OpenAIWSIngressHooks{AfterTurn: func(_ int, result *OpenAIForwardResult, err error) {
+		cleanupErrors <- err
+		cleanupResults <- result
+		select {
+		case <-upstream.closed:
+			after <- true
+		default:
+			after <- false
+		}
+	}}
+	server, done := startPassthroughLifecycleServer(t, context.Background(), newPassthroughLifecycleService(cfg, upstream), passthroughLifecycleAccount(), hooks)
+	defer server.Close()
+	client := dialPassthroughLifecycleClient(t, server)
+	requirePassthroughUpstreamWrite(t, upstream, time.Second)
+	require.NoError(t, client.CloseNow())
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(4 * time.Second):
+		t.Fatal("silent upstream retained turn")
+	}
+	require.True(t, <-after, "upstream must close before slot cleanup")
+	require.NoError(t, <-cleanupErrors)
+	require.Nil(t, <-cleanupResults)
+	require.Empty(t, after, "cleanup must run once")
+}
+
+type ingressDrainTestConn struct{ *stagedPassthroughConn }
+
+func (c *ingressDrainTestConn) WriteJSON(ctx context.Context, value any) error {
+	payload, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	return c.WriteFrame(ctx, coderws.MessageText, payload)
+}
+
+func TestOpenAIGatewayService_ProxyResponsesWebSocketFromClient_SilentDisconnectDrain(t *testing.T) {
+	for _, terminal := range []bool{false, true} {
+		t.Run(fmt.Sprint("terminal=", terminal), func(t *testing.T) {
+			cfg := passthroughLifecycleConfig()
+			cfg.Gateway.OpenAIWS.ReadTimeoutSeconds = 60
+			upstream := newStagedPassthroughConn()
+			pool := newOpenAIWSConnPool(cfg)
+			pool.setClientDialerForTest(&stagedPassthroughDialer{conn: &ingressDrainTestConn{upstream}})
+			defer pool.Close()
+			svc := newPassthroughLifecycleService(cfg, upstream)
+			svc.openaiWSPool = pool
+			account := passthroughLifecycleAccount()
+			account.Extra["openai_apikey_responses_websockets_v2_mode"] = OpenAIWSIngressModeCtxPool
+			after := make(chan *OpenAIForwardResult, 2)
+			cleanupErrors := make(chan error, 2)
+			closedAtCleanup := make(chan bool, 2)
+			hooks := &OpenAIWSIngressHooks{AfterTurn: func(_ int, result *OpenAIForwardResult, err error) {
+				cleanupErrors <- err
+				select {
+				case <-upstream.closed:
+					closedAtCleanup <- true
+				default:
+					closedAtCleanup <- false
+				}
+				after <- result
+			}}
+			server, done := startPassthroughLifecycleServer(t, context.Background(), svc, account, hooks)
+			defer server.Close()
+			client := dialPassthroughLifecycleClient(t, server)
+			requirePassthroughUpstreamWrite(t, upstream, time.Second)
+			require.NoError(t, client.CloseNow())
+			if terminal {
+				upstream.Send(`{"type":"response.completed","response":{"id":"resp_drain","usage":{"input_tokens":9,"output_tokens":2}}}`)
+			}
+			select {
+			case err := <-done:
+				require.NoError(t, err)
+			case <-time.After(4 * time.Second):
+				t.Fatal("silent ctx_pool upstream retained turn")
+			}
+			closed := <-closedAtCleanup
+			if !terminal {
+				require.True(t, closed, "unfinished upstream must close before cleanup")
+			}
+			result := <-after
+			require.NoError(t, <-cleanupErrors)
+			if terminal {
+				require.NotNil(t, result)
+				require.Equal(t, 9, result.Usage.InputTokens)
+			} else {
+				require.Nil(t, result, "no usage result may be fabricated")
+			}
+			require.Empty(t, after)
+		})
+	}
+}
+
+func TestOpenAIWSPassthroughLaterTurnAdmission(t *testing.T) {
+	for _, reject := range []bool{false, true} {
+		t.Run(fmt.Sprint("reject=", reject), func(t *testing.T) {
+			cfg := passthroughLifecycleConfig()
+			upstream := newStagedPassthroughConn()
+			before := make(chan int, 2)
+			after := make(chan int, 3)
+			hooks := &OpenAIWSIngressHooks{
+				BeforeTurn: func(turn int) error {
+					before <- turn
+					if reject {
+						return errors.New("api key concurrency exhausted")
+					}
+					return nil
+				},
+				AfterTurn: func(turn int, _ *OpenAIForwardResult, _ error) { after <- turn },
+			}
+			server, done := startPassthroughLifecycleServer(t, context.Background(), newPassthroughLifecycleService(cfg, upstream), passthroughLifecycleAccount(), hooks)
+			defer server.Close()
+			client := dialPassthroughLifecycleClient(t, server)
+			defer func() { _ = client.CloseNow() }()
+			requirePassthroughUpstreamWrite(t, upstream, time.Second)
+			upstream.Send(`{"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":4,"output_tokens":2}}}`)
+			_, err := readPassthroughLifecycleFrame(t, client, time.Second)
+			require.NoError(t, err)
+			require.Equal(t, 1, <-after)
+			require.NoError(t, client.Write(context.Background(), coderws.MessageText, []byte(`{"type":"response.create","model":"gpt-5.1"}`)))
+			select {
+			case turn := <-before:
+				require.Equal(t, 2, turn)
+			case <-time.After(time.Second):
+				t.Fatal("missing later turn admission")
+			}
+			if reject {
+				_ = client.CloseNow()
+				select {
+				case err := <-done:
+					require.ErrorContains(t, err, "api key concurrency exhausted")
+				case <-time.After(4 * time.Second):
+					t.Fatal("rejected relay did not stop")
+				}
+				require.Empty(t, upstream.writes)
+				require.Equal(t, 2, <-after, "rejected request must finalize its audit state")
+				require.Empty(t, after, "the completed first turn must not be finalized again")
+			} else {
+				requirePassthroughUpstreamWrite(t, upstream, time.Second)
+				upstream.Send(`{"type":"response.completed","response":{"id":"resp_2","usage":{"input_tokens":7,"output_tokens":3}}}`)
+				_, err = readPassthroughLifecycleFrame(t, client, time.Second)
+				require.NoError(t, err)
+				require.Equal(t, 2, <-after)
+				_ = client.CloseNow()
+				select {
+				case <-done:
+				case <-time.After(4 * time.Second):
+					t.Fatal("relay did not stop")
+				}
+			}
+		})
+	}
+}
+
+func TestOpenAIWSPassthroughActiveTurnFailureCleanup(t *testing.T) {
+	for _, failure := range []string{"overlap", "cancellation"} {
+		t.Run(failure, func(t *testing.T) {
+			cfg := passthroughLifecycleConfig()
+			cfg.Gateway.OpenAIFirstOutputTimeoutSeconds = 60
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			upstream := newStagedPassthroughConn()
+			after := make(chan int, 2)
+			before := make(chan int, 2)
+			closed := make(chan bool, 2)
+			hooks := &OpenAIWSIngressHooks{
+				BeforeTurn: func(turn int) error { before <- turn; return nil },
+				AfterTurn: func(turn int, _ *OpenAIForwardResult, _ error) {
+					select {
+					case <-upstream.closed:
+						closed <- true
+					default:
+						closed <- false
+					}
+					after <- turn
+				},
+			}
+			server, done := startPassthroughLifecycleServer(t, ctx, newPassthroughLifecycleService(cfg, upstream), passthroughLifecycleAccount(), hooks)
+			defer server.Close()
+			client := dialPassthroughLifecycleClient(t, server)
+			defer func() { _ = client.CloseNow() }()
+			requirePassthroughUpstreamWrite(t, upstream, time.Second)
+			if failure == "overlap" {
+				require.NoError(t, client.Write(context.Background(), coderws.MessageText, []byte(`{"type":"response.create","model":"gpt-5.1"}`)))
+			} else {
+				cancel()
+			}
+			_, err := readPassthroughLifecycleFrame(t, client, 4*time.Second)
+			require.Error(t, err)
+			select {
+			case err := <-done:
+				require.Error(t, err)
+			case <-time.After(4 * time.Second):
+				t.Fatal("failed relay retained turn")
+			}
+			require.Equal(t, 1, <-after)
+			require.True(t, <-closed)
+			require.Empty(t, before)
+			require.Empty(t, after)
+			require.Empty(t, upstream.writes)
+		})
 	}
 }
 

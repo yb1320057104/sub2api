@@ -47,6 +47,15 @@ describe('ccswitchImport utils', () => {
     expect(params.get('app')).toBe('codex')
     expect(params.get('endpoint')).toBe(endpoint)
     expect(params.get('model')).toBe(OPENAI_CC_SWITCH_CODEX_MODEL)
+    const embedded = JSON.parse(atob(params.get('config')!)) as {
+      auth: { OPENAI_API_KEY: string }
+      config: string
+    }
+    expect(params.get('configFormat')).toBe('json')
+    expect(embedded.auth.OPENAI_API_KEY).toBe(baseInput.apiKey)
+    expect(embedded.config.split('\n[')[0]).toContain('service_tier = "fast"')
+    expect(embedded.config.match(/^service_tier = /gm)).toHaveLength(1)
+    expect(embedded.config).toContain(`base_url = "${endpoint}"`)
     expect(atob(params.get('usageScript') || '')).toBe(baseInput.usageScript)
   })
 
@@ -68,6 +77,7 @@ describe('ccswitchImport utils', () => {
     expect(params.get('app')).toBe('grokbuild')
     expect(params.get('endpoint')).toBe('https://api.example.com/v1')
     expect(params.get('model')).toBe(GROK_CC_SWITCH_MODEL)
+    expect(params.has('config')).toBe(false)
   })
 
   it.each([
@@ -85,6 +95,7 @@ describe('ccswitchImport utils', () => {
     expect(params.get('app')).toBe(app)
     expect(params.get('endpoint')).toBe(baseInput.baseUrl)
     expect(params.has('model')).toBe(false)
+    expect(params.has('config')).toBe(false)
   })
 
   it('keeps Antigravity imports on the selected client endpoint without a model parameter', () => {
@@ -99,6 +110,52 @@ describe('ccswitchImport utils', () => {
     expect(params.get('app')).toBe('gemini')
     expect(params.get('endpoint')).toBe(`${baseInput.baseUrl}/antigravity`)
     expect(params.has('model')).toBe(false)
+  })
+
+  it('encodes Unicode provider names and TOML string escapes in Codex config', () => {
+    const providerName = '中文 "Fast" \\ provider'
+    const params = paramsFromDeeplink(buildCcSwitchImportDeeplink({
+      ...baseInput, platform: 'openai', clientType: 'claude', providerName
+    }))
+    const bytes = Uint8Array.from(atob(params.get('config')!), (character) => character.charCodeAt(0))
+    const embedded = JSON.parse(new TextDecoder().decode(bytes)) as { config: string }
+    expect(embedded.config).toContain(`name = ${JSON.stringify(providerName)}`)
+    expect(embedded.config.split('\n[')[0]).toContain('service_tier = "fast"')
+  })
+})
+
+describe('CC Switch usage script', () => {
+  // Mirrors CC Switch: substitute the template vars as text, evaluate, read request.url.
+  function usageUrlFor(baseUrl: string): string {
+    const script = CC_SWITCH_USAGE_SCRIPT.split('{{baseUrl}}').join(baseUrl).split('{{apiKey}}').join('sk-test')
+    // eslint-disable-next-line no-new-func
+    const config = new Function(`return ${script}`)() as { request: { url: string } }
+    return config.request.url
+  }
+
+  it.each([
+    'https://api.example.com',
+    'https://api.example.com/',
+    'https://api.example.com/v1',
+    'https://api.example.com/v1/'
+  ])('queries exactly one /v1/usage for base URL %s', (baseUrl) => {
+    expect(usageUrlFor(baseUrl)).toBe('https://api.example.com/v1/usage')
+  })
+
+  it('works against the endpoint every platform import stores', () => {
+    for (const platform of ['anthropic', 'openai', 'grok', 'gemini'] as GroupPlatform[]) {
+      const endpoint = paramsFromDeeplink(
+        buildCcSwitchImportDeeplink({
+          baseUrl: 'https://api.example.com',
+          platform,
+          clientType: platform === 'gemini' ? 'gemini' : 'claude',
+          providerName: 'Sub2API',
+          apiKey: 'sk-test',
+          usageScript: CC_SWITCH_USAGE_SCRIPT
+        })
+      ).get('endpoint') as string
+      expect(usageUrlFor(endpoint)).toBe('https://api.example.com/v1/usage')
+    }
   })
 })
 

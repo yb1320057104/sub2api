@@ -21,6 +21,9 @@ import (
 
 func normalizeOpenAIWSLogValue(value string) string {
 	trimmed := strings.TrimSpace(value)
+	if trimmed != "invalid_encrypted_content" && trimmed != "thinking_signature_invalid" {
+		trimmed = redactOpenAIEncryptedDiagnostic(trimmed)
+	}
 	if trimmed == "" {
 		return "-"
 	}
@@ -232,6 +235,9 @@ func parseOpenAIWSErrorEventFields(message []byte) (code string, errType string,
 func summarizeOpenAIWSErrorEventFieldsFromRaw(codeRaw, errTypeRaw, errMessageRaw string) (code string, errType string, errMessage string) {
 	code = truncateOpenAIWSLogValue(codeRaw, openAIWSLogValueMaxLen)
 	errType = truncateOpenAIWSLogValue(errTypeRaw, openAIWSLogValueMaxLen)
+	if openAIEncryptedErrorCode(codeRaw) {
+		errMessageRaw = openAIEncryptedErrorRedacted
+	}
 	errMessage = truncateOpenAIWSLogValue(errMessageRaw, openAIWSLogValueMaxLen)
 	return code, errType, errMessage
 }
@@ -666,6 +672,12 @@ func summarizeOpenAIWSDialError(err error) (
 
 func isOpenAIWSClientDisconnectError(err error) bool {
 	if err == nil {
+		return false
+	}
+	// Local policy/control closes can unwrap context.Canceled or an IO error;
+	// they must not be mistaken for an actual downstream disconnection.
+	var closeErr *OpenAIWSClientCloseError
+	if errors.As(err, &closeErr) {
 		return false
 	}
 	if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) || errors.Is(err, context.Canceled) {

@@ -59,12 +59,41 @@ export interface IntelligenceTestDetails {
   error_detail?: string
 }
 
+export type IntelligenceTestQualityState = 'correct' | 'incorrect' | 'error' | 'unknown' | 'empty_pool' | 'running'
+
+export interface IntelligenceTestQualityGroups {
+  enabled: boolean
+  groups: Pick<IntelligenceTestGroup, 'id' | 'name' | 'platform'>[]
+}
+
+export interface IntelligenceTestQualityResult extends Omit<IntelligenceTestResult, 'group_id' | 'mode' | 'has_artifact'> {
+  state: IntelligenceTestQualityState
+}
+
+export interface IntelligenceTestQualityHistory {
+  enabled: boolean
+  group_id: number
+  interval_minutes: number
+  history_limit: number
+  stale_after_seconds: number
+  observed_at: string
+  results: IntelligenceTestQualityResult[]
+}
+
 export const intelligenceTestAPI = {
   async status() {
     return (await apiClient.get<{ enabled: boolean }>('/intelligence-test/status')).data
   },
-  async groups() {
-    return (await apiClient.get<IntelligenceTestGroup[]>('/intelligence-test/groups')).data
+  async groups(signal?: AbortSignal) {
+    return (await apiClient.get<IntelligenceTestGroup[]>('/intelligence-test/groups', { signal })).data
+  },
+  async qualityGroups(signal?: AbortSignal) {
+    return (await apiClient.get<IntelligenceTestQualityGroups>('/intelligence-test/quality/groups', { signal })).data
+  },
+  async qualityResults(groupID: number, signal?: AbortSignal) {
+    return (await apiClient.get<IntelligenceTestQualityHistory>('/intelligence-test/quality/results', {
+      params: { group_id: groupID }, signal,
+    })).data
   },
   async results(groupID: number, mode: IntelligenceTestMode, signal?: AbortSignal) {
     return (await apiClient.get<IntelligenceTestResult[]>('/intelligence-test/results', {

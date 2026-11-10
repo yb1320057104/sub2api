@@ -111,7 +111,7 @@ func (s *OpenAIGatewayService) failoverOpenAIUpstreamHTTPError(
 		shouldFailover = s.shouldFailoverGrokUpstreamError(resp.StatusCode, respBody)
 	}
 	if account != nil && account.Platform == PlatformGrok {
-		s.handleGrokAccountUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
+		s.handleGrokAccountUpstreamError(withGrokTeamRateLimitModel(ctx, upstreamModel), account, resp.StatusCode, resp.Header, respBody)
 	}
 	if !shouldFailover {
 		return nil
@@ -148,7 +148,7 @@ func (s *OpenAIGatewayService) failoverOpenAIUpstreamHTTPError(
 		upstreamMsg,
 		shouldDisable,
 		!shouldDisable && account.IsPoolMode() && (account.IsPoolModeRetryableStatus(resp.StatusCode) || isOpenAITransientProcessingError(resp.StatusCode, upstreamMsg, respBody)),
-	)
+	).WithGrokForbiddenPolicy(account)
 }
 
 // openAIChatCompletionsTargetURL 解析账号的（非 Grok）Chat Completions 上游端点。
@@ -200,6 +200,15 @@ func (s *OpenAIGatewayService) sendCCUpstreamRequest(
 	// 字段，上游 400 "The `reasoning_content` in the thinking mode must be
 	// passed back to the API"。在共用出站点补空格占位，真实明文不覆盖。
 	body = ensureDeepSeekChatReasoningPlaceholders(account, body)
+	body = stripDisallowedMistralChatMessageExtras(account, body)
+	// Mistral answers 400 for efforts outside the model allow-list. Every caller
+	// already normalizes; this keeps any future CC send path safe as well.
+	body = enforceMistralChatReasoningEffort(account, body)
+	// Check after every conversion and account model mapping, including hidden
+	// reasoning replay and the provider-specific placeholders added above.
+	if err := s.checkAPIKeyLongContextBeforeSend(context.WithoutCancel(ctx), c, body, extractOpenAICodexTicketModel(body)); err != nil {
+		return nil, err
+	}
 	upstreamCtx, releaseUpstreamCtx := detachUpstreamContext(ctx)
 	upstreamReq, err := http.NewRequestWithContext(upstreamCtx, http.MethodPost, targetURL, bytes.NewReader(body))
 	releaseUpstreamCtx()
@@ -238,6 +247,8 @@ func (s *OpenAIGatewayService) sendCCUpstreamRequest(
 		}
 		applyGrokCacheHeaders(upstreamReq.Header, grokCacheIdentity)
 	}
+	applyOpenAIAPIKeyIdentityHeaders(upstreamReq.Header, account, s.codexIdentityOverrideUA(account))
+
 	// 官方 OpenCode / Command Code 上游收敛为规范客户端 UA：客户端透传的编程库
 	// UA 会命中其前置 Cloudflare bot 拦截（CF 1010/403），并被计入账号 403 strike。
 	applyOpenCodeUpstreamUserAgent(account, targetURL, upstreamReq.Header)
@@ -281,14 +292,13 @@ type ccStreamScanState struct {
 func (s *OpenAIGatewayService) scanCCStream(
 	c *gin.Context,
 	resp *http.Response,
+	account *Account,
 	logPrefix string,
 	requestID string,
 	startTime time.Time,
 	emit func(*apicompat.ChatCompletionsChunk),
-	accounts ...*Account,
 ) ccStreamScanState {
 	var st ccStreamScanState
-	account := firstCacheConversionAccount(accounts)
 
 	scanner := s.newUpstreamSSEScanner(resp.Body)
 	for scanner.Scan() {
@@ -318,8 +328,17 @@ func (s *OpenAIGatewayService) scanCCStream(
 			st.Usage = *rawUsage
 		}
 
+		normalized, err := normalizeMistralChatResponse(account, []byte(payload), true)
+		if err != nil {
+			st.Err = err
+			return st
+		}
 		var chunk apicompat.ChatCompletionsChunk
-		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+		if err := json.Unmarshal(normalized, &chunk); err != nil {
+			if account != nil && account.Platform == PlatformMistral {
+				st.Err = errMistralContent
+				return st
+			}
 			logger.L().Warn(logPrefix+": failed to parse chat stream chunk",
 				zap.Error(err),
 				zap.String("request_id", requestID),
@@ -360,8 +379,8 @@ func logCCStreamMissingDoneSentinel(logPrefix, requestID string) {
 func (s *OpenAIGatewayService) readCCUpstreamJSONResponse(
 	c *gin.Context,
 	resp *http.Response,
+	account *Account,
 	writeError compatErrorWriter,
-	accounts ...*Account,
 ) (*apicompat.ChatCompletionsResponse, OpenAIUsage, error) {
 	respBody, err := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
 	if err != nil {
@@ -371,6 +390,11 @@ func (s *OpenAIGatewayService) readCCUpstreamJSONResponse(
 		return nil, OpenAIUsage{}, fmt.Errorf("read upstream body: %w", err)
 	}
 
+	respBody, err = normalizeMistralChatResponse(account, respBody, true)
+	if err != nil {
+		writeError(c, http.StatusBadGateway, "api_error", "Failed to parse upstream response")
+		return nil, OpenAIUsage{}, err
+	}
 	var ccResp apicompat.ChatCompletionsResponse
 	if err := json.Unmarshal(respBody, &ccResp); err != nil {
 		writeError(c, http.StatusBadGateway, "api_error", "Failed to parse upstream response")
@@ -385,7 +409,7 @@ func (s *OpenAIGatewayService) readCCUpstreamJSONResponse(
 	usage := OpenAIUsage{}
 	if parsed, ok := extractOpenAIUsageFromJSONBytes(respBody); ok {
 		usage = parsed
-		alignChatCacheUsageForConversion(firstCacheConversionAccount(accounts), ccResp.Usage, usage)
+		alignChatCacheUsageForConversion(account, ccResp.Usage, usage)
 	}
 	return &ccResp, usage, nil
 }

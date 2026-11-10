@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/handler/dto"
@@ -21,11 +22,13 @@ import (
 
 // UsageHandler handles admin usage-related requests
 type UsageHandler struct {
-	usageService   *service.UsageService
-	apiKeyService  *service.APIKeyService
-	adminService   service.AdminService
-	cleanupService *service.UsageCleanupService
-	cyberPolicy    *service.CyberPolicyService
+	trafficUninitializedDrops atomic.Int64
+	trafficDelivery           *service.TrafficDelivery
+	usageService              *service.UsageService
+	apiKeyService             *service.APIKeyService
+	adminService              service.AdminService
+	cleanupService            *service.UsageCleanupService
+	cyberPolicy *service.CyberPolicyService
 }
 
 // NewUsageHandler creates a new admin usage handler
@@ -164,23 +167,26 @@ func (h *UsageHandler) List(c *gin.Context) {
 	var startTime, endTime *time.Time
 	userTZ := c.Query("timezone") // Get user's timezone from request
 	if startDateStr := c.Query("start_date"); startDateStr != "" {
-		t, err := timezone.ParseInUserLocation("2006-01-02", startDateStr, userTZ)
+		t, err := parseUsageDateBoundary(startDateStr, userTZ, false)
 		if err != nil {
-			response.BadRequest(c, "Invalid start_date format, use YYYY-MM-DD")
+			response.BadRequest(c, "Invalid start_date format, use YYYY-MM-DD or RFC3339 with timezone")
 			return
 		}
 		startTime = &t
 	}
 
 	if endDateStr := c.Query("end_date"); endDateStr != "" {
-		t, err := timezone.ParseInUserLocation("2006-01-02", endDateStr, userTZ)
+		t, err := parseUsageDateBoundary(endDateStr, userTZ, true)
 		if err != nil {
-			response.BadRequest(c, "Invalid end_date format, use YYYY-MM-DD")
+			response.BadRequest(c, "Invalid end_date format, use YYYY-MM-DD or RFC3339 with timezone")
 			return
 		}
-		// Use half-open range [start, end), move to next calendar day start (DST-safe).
-		t = t.AddDate(0, 0, 1)
 		endTime = &t
+	}
+
+	if startTime != nil && endTime != nil && !startTime.Before(*endTime) {
+		response.BadRequest(c, "start_date must be before end_date")
+		return
 	}
 
 	params := pagination.PaginationParams{
@@ -214,6 +220,7 @@ func (h *UsageHandler) List(c *gin.Context) {
 		return
 	}
 
+	h.usageService.EnrichContentTiming(c.Request.Context(), records)
 	response.Paginated(c, adminUsageLogResponses(c, records), result.Total, page, pageSize)
 }
 
@@ -317,18 +324,16 @@ func (h *UsageHandler) Stats(c *gin.Context) {
 
 	if startDateStr != "" && endDateStr != "" {
 		var err error
-		startTime, err = timezone.ParseInUserLocation("2006-01-02", startDateStr, userTZ)
+		startTime, err = parseUsageDateBoundary(startDateStr, userTZ, false)
 		if err != nil {
-			response.BadRequest(c, "Invalid start_date format, use YYYY-MM-DD")
+			response.BadRequest(c, "Invalid start_date format, use YYYY-MM-DD or RFC3339 with timezone")
 			return
 		}
-		endTime, err = timezone.ParseInUserLocation("2006-01-02", endDateStr, userTZ)
+		endTime, err = parseUsageDateBoundary(endDateStr, userTZ, true)
 		if err != nil {
-			response.BadRequest(c, "Invalid end_date format, use YYYY-MM-DD")
+			response.BadRequest(c, "Invalid end_date format, use YYYY-MM-DD or RFC3339 with timezone")
 			return
 		}
-		// 与 SQL 条件 created_at < end 对齐，使用次日 00:00 作为上边界（DST-safe）。
-		endTime = endTime.AddDate(0, 0, 1)
 	} else {
 		period := c.DefaultQuery("period", "today")
 		switch period {
@@ -342,6 +347,11 @@ func (h *UsageHandler) Stats(c *gin.Context) {
 			startTime = timezone.StartOfDayInUserLocation(now, userTZ)
 		}
 		endTime = now
+	}
+
+	if !startTime.Before(endTime) {
+		response.BadRequest(c, "start_date must be before end_date")
+		return
 	}
 
 	// Build filters and call GetStatsWithFilters
@@ -644,4 +654,19 @@ func (h *UsageHandler) CancelCleanupTask(c *gin.Context) {
 	}
 	logger.LegacyPrintf("handler.admin.usage", "[UsageCleanup] 清理任务已取消: task=%d operator=%d", taskID, subject.UserID)
 	response.Success(c, gin.H{"id": taskID, "status": service.UsageCleanupStatusCanceled})
+}
+
+// Timing returns bounded diagnostic traces only after the usage record lookup.
+func (h *UsageHandler) Timing(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		response.BadRequest(c, "Invalid usage ID")
+		return
+	}
+	traces, err := h.usageService.RequestTimings(c.Request.Context(), id)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, gin.H{"traces": traces, "retention_days": 30, "end_to_end_ms": nil, "end_to_end_status": "not_collected", "end_to_end_source": "none", "client_upload_ms": nil, "client_upload_status": "not_collected"})
 }

@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"compress/gzip"
 	"compress/zlib"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"github.com/Wei-Shaw/sub2api/internal/requestcapture"
 	"io"
 	"net/http"
 	"strings"
@@ -63,7 +65,23 @@ func (p *PrereadBody) Bytes() []byte {
 // client used to compress the body (zstd, gzip, deflate).
 // 已由 PrereadBody 回填的请求体直接返回其完整切片（零拷贝），不检查内部
 // reader 是否已被消费——见 PrereadBody 的文档说明。
-func ReadRequestBodyWithPrealloc(req *http.Request) ([]byte, error) {
+func ReadRequestBodyWithPrealloc(req *http.Request) (result []byte, resultErr error) {
+	return readRequestBodyWithPrealloc(req, maxDecompressedBodySize, false)
+}
+
+// ReadRequestBodyWithPreallocLimit applies a caller-specific decoded body cap.
+// It rejects compressed input that exceeds the cap instead of truncating it.
+func ReadRequestBodyWithPreallocLimit(req *http.Request, maxDecodedBytes int64) (result []byte, resultErr error) {
+	return readRequestBodyWithPrealloc(req, maxDecodedBytes, true)
+}
+
+func readRequestBodyWithPrealloc(req *http.Request, maxDecodedBytes int64, strict bool) (result []byte, resultErr error) {
+	defer func() {
+		if resultErr == nil && req != nil {
+			requestcapture.FromContext(req.Context()).ClientRequest(result, req.Header.Get("Content-Type"), req.Header)
+		}
+	}()
+
 	if req == nil || req.Body == nil {
 		return nil, nil
 	}
@@ -93,7 +111,7 @@ func ReadRequestBodyWithPrealloc(req *http.Request) ([]byte, error) {
 		return raw, nil
 	}
 
-	decoded, err := decompressRequestBody(enc, raw)
+	decoded, err := decompressRequestBody(enc, raw, maxDecodedBytes, strict)
 	if err != nil {
 		return nil, fmt.Errorf("decode Content-Encoding %q: %w", enc, err)
 	}
@@ -165,7 +183,18 @@ func ReadLenientJSONRequestBodyWithPrealloc(req *http.Request, maxNormalizedByte
 	return NormalizeLenientJSONRequestBody(body, maxNormalizedBytes)
 }
 
-func decompressRequestBody(encoding string, raw []byte) ([]byte, error) {
+func decompressRequestBody(encoding string, raw []byte, maxDecodedBytes int64, strict bool) ([]byte, error) {
+	readDecoded := func(reader io.Reader) ([]byte, error) {
+		limit := maxDecodedBytes
+		if strict {
+			limit++
+		}
+		decoded, err := io.ReadAll(io.LimitReader(reader, limit))
+		if strict && int64(len(decoded)) > maxDecodedBytes {
+			return nil, &http.MaxBytesError{Limit: maxDecodedBytes}
+		}
+		return decoded, err
+	}
 	switch encoding {
 	case "zstd":
 		dec, err := zstd.NewReader(bytes.NewReader(raw))
@@ -173,21 +202,21 @@ func decompressRequestBody(encoding string, raw []byte) ([]byte, error) {
 			return nil, err
 		}
 		defer dec.Close()
-		return io.ReadAll(io.LimitReader(dec, maxDecompressedBodySize))
+		return readDecoded(dec)
 	case "gzip", "x-gzip":
 		gr, err := gzip.NewReader(bytes.NewReader(raw))
 		if err != nil {
 			return nil, err
 		}
 		defer func() { _ = gr.Close() }()
-		return io.ReadAll(io.LimitReader(gr, maxDecompressedBodySize))
+		return readDecoded(gr)
 	case "deflate":
 		zr, err := zlib.NewReader(bytes.NewReader(raw))
 		if err != nil {
 			return nil, err
 		}
 		defer func() { _ = zr.Close() }()
-		return io.ReadAll(io.LimitReader(zr, maxDecompressedBodySize))
+		return readDecoded(zr)
 	default:
 		return nil, errors.New("unsupported Content-Encoding")
 	}
@@ -206,6 +235,9 @@ func NormalizeLenientJSONRequestBody(body []byte, maxNormalizedBytes int64) ([]b
 	}
 	if int64(len(body)) > maxNormalizedBytes {
 		return nil, &http.MaxBytesError{Limit: maxNormalizedBytes}
+	}
+	if len(body) >= 64<<10 && !hasJSONControlBytes(body) {
+		return body, nil
 	}
 
 	var out []byte
@@ -260,6 +292,26 @@ func trimUTF8BOM(body []byte) []byte {
 
 func isJSONControlByte(b byte) bool {
 	return b < 0x20 || b == 0x7f
+}
+
+func hasJSONControlBytes(body []byte) bool {
+	const ones, high = uint64(0x0101010101010101), uint64(0x8080808080808080)
+	for len(body) >= 8 {
+		word := binary.LittleEndian.Uint64(body)
+		// A zero byte identifies either a value below 0x20 or the DEL byte.
+		low := word & 0xe0e0e0e0e0e0e0e0
+		del := word ^ 0x7f7f7f7f7f7f7f7f
+		if (low-ones)&^low&high != 0 || (del-ones)&^del&high != 0 {
+			return true
+		}
+		body = body[8:]
+	}
+	for _, b := range body {
+		if isJSONControlByte(b) {
+			return true
+		}
+	}
+	return false
 }
 
 func appendJSONUnicodeEscape(dst []byte, b byte) []byte {

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 
 import UsageView from '../UsageView.vue'
+import TrafficPanel from '@/components/usage/TrafficPanel.vue'
 import Select, { type SelectOption } from '@/components/common/Select.vue'
 import DateRangePicker from '@/components/common/DateRangePicker.vue'
 import UsageTable from '@/components/admin/usage/UsageTable.vue'
@@ -161,6 +162,7 @@ function mountUsageView() {
         UsageStatsCards: chartStub,
         UsageTable: { ...chartStub, props: ['columns'] },
         UserErrorRequestsTable: chartStub,
+        TrafficPanel: true,
         ModelDistributionChart: chartStub,
         GroupDistributionChart: chartStub,
         EndpointDistributionChart: chartStub,
@@ -172,6 +174,7 @@ function mountUsageView() {
 
 describe('user UsageView', () => {
   beforeEach(() => {
+    appStoreState.cachedPublicSettings = { allow_user_view_error_requests: true }
     query.mockReset()
     getStats.mockReset()
     getDashboardModels.mockReset()
@@ -216,11 +219,27 @@ describe('user UsageView', () => {
     getAvailable.mockResolvedValue([{ id: 1, name: 'default' }])
   })
 
+  it('passes the same own API key choices to traffic and usage details', async () => {
+    const wrapper = mountUsageView(); await flushPromises()
+    const usageOptions = wrapper.findAllComponents(Select).find(select =>
+      (select.props('options') as SelectOption[]).some(option => option.label === 'demo-key')
+    )!.props('options')
+    await wrapper.findAll('button').find(button => button.text() === 'traffic.title')!.trigger('click')
+    expect(wrapper.getComponent(TrafficPanel).props('apiKeyOptions')).toEqual(usageOptions)
+    wrapper.unmount()
+  })
+
   it('loads logs, stats, model stats, and snapshot on first render', async () => {
     const wrapper = mountUsageView()
     await flushPromises()
 
-    expect(wrapper.findComponent(UsageTable).props('columns').map((column: { key: string }) => column.key)).toContain('latency')
+    const usageColumnKeys = wrapper.findComponent(UsageTable).props('columns').map((column: { key: string }) => column.key)
+    expect(usageColumnKeys).toContain('latency')
+    expect(usageColumnKeys).not.toEqual(expect.arrayContaining([
+      'content_reasoning_first_ms',
+      'content_visible_text_first_ms',
+      'content_response_byte_first_ms',
+    ]))
     expect(query).toHaveBeenCalled()
     expect(getStats).toHaveBeenCalled()
     expect(getDashboardModels).toHaveBeenCalled()
@@ -402,6 +421,7 @@ describe('user UsageView', () => {
       'Time,API Key Name,Model,Reasoning Effort,Inbound Endpoint,IP Address,Type,Billing Mode,Input Tokens,Output Tokens,Cache Read Tokens,Cache Creation Tokens,Rate Multiplier,Billed Cost,Original Cost,First Token (ms),Duration (ms)',
       '2026-03-08T00:00:00Z,demo-key,gpt-5.4,-,,203.0.113.10,Sync,Token,4057,101,278272,4,1,0.09288300,0.09288300,12,345',
     ].join('\n'))
+    expect(csvContent).not.toContain('Cache Rate')
     expect(csvContent).toContain('IP Address')
     expect(csvContent).toContain('203.0.113.10')
     expect(csvContent).toContain('Billed Cost')
@@ -414,6 +434,71 @@ describe('user UsageView', () => {
     window.URL.revokeObjectURL = originalRevokeObjectURL
     vi.unstubAllGlobals()
     clickSpy.mockRestore()
+  })
+
+  it('includes cache rate in csv only when users are allowed to see it', async () => {
+    appStoreState.cachedPublicSettings = { allow_user_view_error_requests: true, usage_show_cache_rate_to_users: true }
+    const wrapper = mountUsageView()
+    await flushPromises()
+
+    let csvContent = ''
+    const OriginalBlob = globalThis.Blob
+    vi.stubGlobal('Blob', vi.fn((parts: BlobPart[], options?: BlobPropertyBag) => {
+      csvContent = parts.map((part) => String(part)).join('')
+      return new OriginalBlob(parts, options)
+    }))
+    const originalCreateObjectURL = window.URL.createObjectURL
+    const originalRevokeObjectURL = window.URL.revokeObjectURL
+    window.URL.createObjectURL = vi.fn(() => 'blob:usage-export') as typeof window.URL.createObjectURL
+    window.URL.revokeObjectURL = vi.fn(() => {}) as typeof window.URL.revokeObjectURL
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+
+    await (wrapper.vm as any).exportToCSV()
+
+    expect(csvContent).toContain('Cache Rate')
+    expect(csvContent).toContain('98.6%')
+    expect(csvContent).not.toContain('Upstream Response Model')
+    appStoreState.cachedPublicSettings = { allow_user_view_error_requests: true }
+    window.URL.createObjectURL = originalCreateObjectURL
+    window.URL.revokeObjectURL = originalRevokeObjectURL
+    vi.unstubAllGlobals()
+    clickSpy.mockRestore()
+    wrapper.unmount()
+  })
+
+  it('includes the upstream response model in csv only when users are allowed to see it', async () => {
+    query.mockResolvedValue({
+      items: [{ ...usageLog, upstream_response_model: 'gpt-5.4-actual' }],
+      total: 1,
+      pages: 1,
+    })
+    appStoreState.cachedPublicSettings = { usage_show_upstream_response_model_to_users: true }
+    const wrapper = mountUsageView()
+    await flushPromises()
+
+    let csvContent = ''
+    const OriginalBlob = globalThis.Blob
+    vi.stubGlobal('Blob', vi.fn((parts: BlobPart[], options?: BlobPropertyBag) => {
+      csvContent = parts.map((part) => String(part)).join('')
+      return new OriginalBlob(parts, options)
+    }))
+    const originalCreateObjectURL = window.URL.createObjectURL
+    const originalRevokeObjectURL = window.URL.revokeObjectURL
+    window.URL.createObjectURL = vi.fn(() => 'blob:usage-export') as typeof window.URL.createObjectURL
+    window.URL.revokeObjectURL = vi.fn(() => {}) as typeof window.URL.revokeObjectURL
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+
+    await (wrapper.vm as any).exportToCSV()
+
+    expect(csvContent).toContain('Upstream Response Model')
+    expect(csvContent).toContain('gpt-5.4,gpt-5.4-actual,')
+    expect(csvContent).not.toContain('upstream_model')
+    appStoreState.cachedPublicSettings = { allow_user_view_error_requests: true }
+    window.URL.createObjectURL = originalCreateObjectURL
+    window.URL.revokeObjectURL = originalRevokeObjectURL
+    vi.unstubAllGlobals()
+    clickSpy.mockRestore()
+    wrapper.unmount()
   })
 
   it('keeps formula-injection protection for dangerous exported values', async () => {

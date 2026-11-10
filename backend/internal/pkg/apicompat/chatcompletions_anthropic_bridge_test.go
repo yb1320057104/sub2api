@@ -403,7 +403,7 @@ func TestChatCompletionsResponseToAnthropic_ToolUse(t *testing.T) {
 	require.Equal(t, "tool_use", AnthropicStopReasonString(out.StopReason))
 }
 
-func TestChatCompletionsResponseToAnthropic_ReasoningOnlyFallback(t *testing.T) {
+func TestChatCompletionsResponseToAnthropic_ReasoningOnlyNeverBecomesAnswer(t *testing.T) {
 	resp := &ChatCompletionsResponse{
 		ID:    "chatcmpl-3",
 		Model: "deepseek-v4-pro",
@@ -418,12 +418,38 @@ func TestChatCompletionsResponseToAnthropic_ReasoningOnlyFallback(t *testing.T) 
 	}
 
 	out := ChatCompletionsResponseToAnthropic(resp, "claude-sonnet-4-20250514")
-	// thinking block + text block (fallback uses reasoning as visible text)
+	// The genuine thinking block is retained; no answer is synthesized.
 	require.Len(t, out.Content, 2)
 	require.Equal(t, "thinking", out.Content[0].Type)
 	require.Equal(t, "I should think about this", out.Content[0].Thinking)
 	require.Equal(t, "text", out.Content[1].Type)
-	require.Equal(t, "I should think about this", out.Content[1].Text)
+	require.Empty(t, out.Content[1].Text)
+	require.Equal(t, "upstream_reasoning_only", ChatCompletionsReasoningOnlyError(resp).Code)
+}
+
+func TestChatCompletionsAnthropicStream_ReasoningOnlyFailsWithoutAnswer(t *testing.T) {
+	for _, content := range []string{"", " \n\t"} {
+		t.Run(content, func(t *testing.T) {
+			state := NewChatCompletionsToAnthropicStreamState("deepseek-v4-pro")
+			reasoning := "I should think about this"
+			events := ChatCompletionsChunkToAnthropicEvents(&ChatCompletionsChunk{
+				Choices: []ChatChunkChoice{{Delta: ChatDelta{ReasoningContent: &reasoning, Content: &content}}},
+				Usage:   &ChatUsage{PromptTokens: 7, CompletionTokens: 4},
+			}, state)
+			events = append(events, FinalizeChatCompletionsAnthropicStream(state)...)
+			require.Equal(t, 7, state.InputTokens)
+			require.Equal(t, 4, state.OutputTokens)
+			require.Equal(t, "error", events[len(events)-1].Type)
+			require.Equal(t, "upstream_reasoning_only", events[len(events)-1].Error.Code)
+			for _, event := range events {
+				require.NotEqual(t, "message_stop", event.Type)
+				if event.Delta != nil {
+					require.Empty(t, strings.TrimSpace(event.Delta.Text))
+				}
+			}
+			require.Empty(t, FinalizeChatCompletionsAnthropicStream(state))
+		})
+	}
 }
 
 func TestChatCompletionsResponseToAnthropic_FinishReasonLength(t *testing.T) {

@@ -29,7 +29,7 @@ func ProvideOpenAIGatewayServiceWithGroupProtection(
 	userPlatformQuotaRepo UserPlatformQuotaRepository,
 	protection *GroupAntiDistillationService,
 ) *OpenAIGatewayService {
-	svc := NewOpenAIGatewayService(accountRepo, usageLogRepo, usageBillingRepo, userRepo, userSubRepo, userGroupRateRepo, cache, cfg, schedulerSnapshot, concurrencyService, billingService, rateLimitService, billingCacheService, httpUpstream, deferredService, openAITokenProvider, grokTokenProvider, resolver, channelService, balanceNotifyService, settingService, userPlatformQuotaRepo)
+	svc := NewOpenAIGatewayService(accountRepo, nil, usageLogRepo, usageBillingRepo, userRepo, userSubRepo, userGroupRateRepo, cache, cfg, schedulerSnapshot, concurrencyService, billingService, rateLimitService, billingCacheService, httpUpstream, deferredService, openAITokenProvider, grokTokenProvider, resolver, channelService, balanceNotifyService, settingService, userPlatformQuotaRepo)
 	svc.SetGroupAntiDistillationService(protection)
 	return svc
 }

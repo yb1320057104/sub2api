@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -19,6 +20,36 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
+
+func TestCompactChatFallbackConversionFailureKeepsOriginalUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, enabled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("conversion=%t", enabled), func(t *testing.T) {
+			account := &Account{Platform: PlatformOpenAI, Extra: map[string]any{
+				AccountExtraCacheConversionEnabled: enabled, AccountExtraCacheConversionMultiplier: math.MaxFloat64,
+			}}
+			response := &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}, "X-Request-Id": {"compact-usage"}},
+				Body: io.NopCloser(strings.NewReader(`{"id":"chat_summary","model":"deepseek-v4","choices":[{"message":{"role":"assistant","content":"summary"},"finish_reason":"stop"}],"usage":{"prompt_tokens":100,"completion_tokens":20,"prompt_tokens_details":{"cached_tokens":5,"cache_creation_tokens":10}}}`))}
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig()}
+			result, err := svc.bufferChatCompletionsAsResponses(c, response, account, "client-model", nil, nil, false, nil, "deepseek-v4", "deepseek-v4", nil, nil, false, time.Now(), true, nil)
+			require.NotNil(t, result, "conversion failure must not lose authoritative upstream usage")
+			require.Equal(t, 100, result.Usage.InputTokens)
+			require.Equal(t, 20, result.Usage.OutputTokens)
+			require.Equal(t, 5, result.Usage.CacheReadInputTokens)
+			require.Equal(t, 10, result.Usage.CacheCreationInputTokens)
+			if enabled {
+				require.ErrorContains(t, err, "rewrite compact cache usage")
+				require.Empty(t, rec.Body.String(), "an unrepresentable converted response must not appear successful")
+			} else {
+				require.NoError(t, err)
+				require.Contains(t, rec.Body.String(), "response.completed")
+			}
+		})
+	}
+}
 
 func TestForwardResponses_ChatFallbackPreservesProvidedStartTime(t *testing.T) {
 	for _, stream := range []bool{false, true} {
@@ -249,7 +280,7 @@ func TestForwardResponses_ChatFallbackRejectsInvalidToolArgumentsAtOutputLimit(t
 	require.NotContains(t, rec.Body.String(), "data: [DONE]")
 }
 
-func TestForwardResponses_DeepSeekReasoningOnlyStreamProducesVisibleText(t *testing.T) {
+func TestForwardResponses_DeepSeekReasoningOnlyStreamFailsWithoutVisibleText(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	body := []byte(`{"model":"deepseek-reasoner","input":"hello","stream":true}`)
@@ -282,9 +313,10 @@ func TestForwardResponses_DeepSeekReasoningOnlyStreamProducesVisibleText(t *test
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.True(t, result.Stream)
-	require.Contains(t, rec.Body.String(), "event: response.output_text.delta")
-	require.Contains(t, rec.Body.String(), `"delta":"visible fallback"`)
-	require.Contains(t, rec.Body.String(), `"status":"incomplete"`)
+	require.NotContains(t, rec.Body.String(), "event: response.output_text.delta")
+	require.Contains(t, rec.Body.String(), "event: response.failed")
+	require.Contains(t, rec.Body.String(), `"code":"upstream_reasoning_only"`)
+	require.Len(t, upstream.requests, 1)
 	require.Contains(t, rec.Body.String(), "data: [DONE]")
 }
 

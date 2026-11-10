@@ -4,7 +4,7 @@
 
 <div align="center">
 
-<img src="assets/logo.svg" alt="Sub2API Logo" width="128" />
+中文已作为本仓库的默认文档，请阅读 [README.md](README.md)。
 
 # Sub2API
 

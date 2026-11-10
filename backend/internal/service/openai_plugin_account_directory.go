@@ -108,9 +108,21 @@ func accountReadableSnapshotJSON(account *Account) []byte {
 		return nil
 	}
 	clone := *account
+	// Creation-only quality policy is not part of the plugin account directory.
+	clone.InitialQualityPlan = nil
+	clone.InitialAdmissionPlan = nil
 	clone.Credentials = nil
+	// Only the legacy resolved Proxy metadata is public. The complete binding
+	// pool can contain credentials for alternate egresses not given to a plugin.
+	clone.ProxyBindings = nil
 	clone.Groups = nil
 	clone.AccountGroups = nil
+	clone.Extra = make(map[string]any, len(account.Extra))
+	for key, value := range account.Extra {
+		if !IsOpenAICodexTicketPrivateExtraKey(key) {
+			clone.Extra[key] = value
+		}
+	}
 	data, err := json.Marshal(&clone)
 	if err != nil {
 		return nil

@@ -125,6 +125,9 @@ func (s *OpenAIGatewayService) forwardResponsesViaNativeAnthropic(
 	reasoningEffort := NormalizeClaudeOutputEffort(gjson.GetBytes(forwardedBody, "output_config.effort").String())
 	reasoningEffort = ApplyThinkingEnabledFallback(reasoningEffort, forwardedBody, upstreamModel)
 
+	if _, err := s.admitOpenAITurn(ctx, c, account, upstreamModel, forwardedBody); err != nil {
+		return nil, err
+	}
 	resp, err := s.doOpenAIUpstream(upstreamReq, proxyURL, account)
 	if err != nil {
 		return nil, s.handleOpenAIUpstreamTransportError(ctx, c, account, err, true)
@@ -222,6 +225,7 @@ func (s *OpenAIGatewayService) handleResponsesBufferedFromNativeAnthropic(
 			continue
 		}
 
+		observeAnthropicUpstreamResponseModel(c, []byte(payload))
 		var event apicompat.AnthropicStreamEvent
 		if err := json.Unmarshal([]byte(payload), &event); err != nil {
 			continue
@@ -319,6 +323,7 @@ func (s *OpenAIGatewayService) handleResponsesBufferedFromNativeAnthropic(
 	}
 
 	result.Duration = time.Since(startTime)
+	applyObservedUpstreamResponseModel(c, result)
 	return result, nil
 }
 
@@ -382,21 +387,23 @@ func (s *OpenAIGatewayService) handleResponsesStreamingFromNativeAnthropic(
 	scanner.Buffer(make([]byte, 0, 64*1024), maxLineSize)
 
 	resultWithUsage := func() *OpenAIForwardResult {
-		return &OpenAIForwardResult{
-			RequestID:                 requestID,
+		result := &OpenAIForwardResult{
+			RequestID:        requestID,
 			AuditSettlementNegotiated: auditSettlementWasNegotiated(resp),
-			UpstreamHeaders:           resp.Header,
-			Usage:                     claudeUsageToOpenAIUsage(&usage),
-			Model:                     originalModel,
-			BillingModel:              billingModel,
-			UpstreamModel:             upstreamModel,
-			UpstreamEndpoint:          "/v1/messages",
-			ReasoningEffort:           reasoningEffort,
-			Stream:                    true,
-			Duration:                  time.Since(startTime),
-			FirstTokenMs:              firstTokenMs,
-			ClientDisconnect:          clientDisconnected,
+			UpstreamHeaders:  resp.Header,
+			Usage:            claudeUsageToOpenAIUsage(&usage),
+			Model:            originalModel,
+			BillingModel:     billingModel,
+			UpstreamModel:    upstreamModel,
+			UpstreamEndpoint: "/v1/messages",
+			ReasoningEffort:  reasoningEffort,
+			Stream:           true,
+			Duration:         time.Since(startTime),
+			FirstTokenMs:     firstTokenMs,
+			ClientDisconnect: clientDisconnected,
 		}
+		applyObservedUpstreamResponseModel(c, result)
+		return result
 	}
 
 	// 读间隔上限：上游挂住 SSE（不发数据也不断连）时结束转换循环。上游 ctx 为
@@ -498,6 +505,7 @@ func (s *OpenAIGatewayService) handleResponsesStreamingFromNativeAnthropic(
 			continue
 		}
 
+		observeAnthropicUpstreamResponseModel(c, []byte(payload))
 		var event apicompat.AnthropicStreamEvent
 		if err := json.Unmarshal([]byte(payload), &event); err != nil {
 			continue

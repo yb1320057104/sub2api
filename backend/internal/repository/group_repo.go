@@ -77,10 +77,10 @@ func newGroupRepositoryWithSQL(client *dbent.Client, sqlq sqlExecutor) *groupRep
 }
 
 func (r *groupRepository) Create(ctx context.Context, groupIn *service.Group) error {
-	if err := createGroupRecord(ctx, r.client, groupIn); err != nil {
+	if err := createGroupRecord(ctx, clientFromContext(ctx, r.client), groupIn); err != nil {
 		return err
 	}
-	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventGroupChanged, nil, &groupIn.ID, nil); err != nil {
+	if err := enqueueSchedulerOutbox(ctx, txAwareSQLExecutor(ctx, r.sql, r.client), service.SchedulerOutboxEventGroupChanged, nil, &groupIn.ID, nil); err != nil {
 		logger.LegacyPrintf("repository.group", "[SchedulerOutbox] enqueue group create failed: group=%d err=%v", groupIn.ID, err)
 	}
 	return nil
@@ -131,6 +131,9 @@ func createGroupRecord(ctx context.Context, client *dbent.Client, groupIn *servi
 		SetModelPricing(modelPricing).
 		SetDefaultValidityDays(groupIn.DefaultValidityDays).
 		SetClaudeCodeOnly(groupIn.ClaudeCodeOnly).
+		SetStreamOnly(groupIn.StreamOnly).
+		SetCodexCliOnly(groupIn.CodexCLIOnly).
+		SetBlockSubagents(groupIn.BlockSubagents).
 		SetNillableFallbackGroupID(groupIn.FallbackGroupID).
 		SetNillableFallbackGroupIDOnInvalidRequest(groupIn.FallbackGroupIDOnInvalidRequest).
 		SetModelRoutingEnabled(groupIn.ModelRoutingEnabled).
@@ -201,7 +204,8 @@ func (r *groupRepository) FindByDuplicateOperationID(ctx context.Context, operat
 }
 
 // CreateFromSource atomically persists a copied group, clones the source
-// account bindings with their exact priorities, and writes its scheduler event.
+// account bindings with their exact priorities and per-group model limits,
+// and writes its scheduler event.
 func (r *groupRepository) CreateFromSource(ctx context.Context, groupIn *service.Group, sourceGroupID int64) error {
 	if groupIn == nil {
 		return errors.New("group is nil")
@@ -225,8 +229,8 @@ func (r *groupRepository) CreateFromSource(ctx context.Context, groupIn *service
 	}
 	result, err := txClient.ExecContext(
 		ctx,
-		`INSERT INTO account_groups (account_id, group_id, priority, created_at)
-		 SELECT ag.account_id, $2, ag.priority, NOW()
+		`INSERT INTO account_groups (account_id, group_id, priority, allowed_models, created_at)
+		 SELECT ag.account_id, $2, ag.priority, ag.allowed_models, NOW()
 		 FROM account_groups ag
 		 JOIN accounts a ON a.id = ag.account_id
 		 WHERE ag.group_id = $1
@@ -318,6 +322,9 @@ func (r *groupRepository) Update(ctx context.Context, groupIn *service.Group) er
 		SetModelPricing(modelPricing).
 		SetDefaultValidityDays(groupIn.DefaultValidityDays).
 		SetClaudeCodeOnly(groupIn.ClaudeCodeOnly).
+		SetStreamOnly(groupIn.StreamOnly).
+		SetCodexCliOnly(groupIn.CodexCLIOnly).
+		SetBlockSubagents(groupIn.BlockSubagents).
 		SetModelRoutingEnabled(groupIn.ModelRoutingEnabled).
 		SetMcpXMLInject(groupIn.MCPXMLInject).
 		SetAllowMessagesDispatch(groupIn.AllowMessagesDispatch).
@@ -965,6 +972,13 @@ func (r *groupRepository) deleteCascade(ctx context.Context, id int64, requireEm
 		return nil, err
 	}
 
+	// Soft deletion does not trigger the join table's ON DELETE CASCADE.
+	// Remove additional key bindings in this transaction so editing a key does
+	// not submit an inaccessible group left behind by the deletion.
+	if _, err := exec.ExecContext(ctx, "DELETE FROM api_key_groups WHERE group_id = $1", id); err != nil {
+		return nil, err
+	}
+
 	// 5. Soft-delete group itself.
 	if _, err := txClient.Group.Delete().Where(group.IDEQ(id)).Exec(ctx); err != nil {
 		return nil, err
@@ -1125,6 +1139,22 @@ func (r *groupRepository) BindAccountsToGroup(ctx context.Context, groupID int64
 	if err := lockLiveGroups(ctx, exec, []int64{groupID}); err != nil {
 		return err
 	}
+
+	// Account locks serialize bulk binding with a concurrently committed
+	// degradation action. Use a stable order for overlapping bulk operations.
+	accountIDs = uniquePositiveInt64s(accountIDs)
+	sort.Slice(accountIDs, func(i, j int) bool { return accountIDs[i] < accountIDs[j] })
+	allowedAccounts := make([]int64, 0, len(accountIDs))
+	for _, id := range accountIDs {
+		allowed, err := lockOAuthDegradationGroupBindings(ctx, exec, id, []int64{groupID})
+		if err != nil {
+			return err
+		}
+		if len(allowed) > 0 {
+			allowedAccounts = append(allowedAccounts, id)
+		}
+	}
+	accountIDs = allowedAccounts
 
 	// 使用 INSERT ... ON CONFLICT DO NOTHING 忽略已存在的绑定
 	_, err = exec.ExecContext(

@@ -27,16 +27,16 @@ func TestAuditSettlementImportedEventInsertPaths(t *testing.T) {
 			AuditSettlementImportedEvent: true, CreatedAt: time.Now().UTC()}
 		prepared := prepareUsageLogInsert(log)
 		require.Len(t, prepared.args, len(usageLogInsertArgTypes))
-		require.Equal(t, "boolean", usageLogInsertArgTypes[len(usageLogInsertArgTypes)-1])
-		require.Equal(t, requestType == service.RequestTypeCyberBlocked, prepared.args[len(prepared.args)-1])
+		require.Equal(t, "boolean", usageLogInsertArgTypes[len(usageLogInsertArgTypes)-3])
+		require.Equal(t, requestType == service.RequestTypeCyberBlocked, prepared.args[len(prepared.args)-3])
 		key := usageLogBatchKey(log.RequestID, log.APIKeyID)
 		batch, batchArgs := buildUsageLogBatchInsertQuery([]string{key}, map[string]usageLogInsertPrepared{key: prepared})
 		best, bestArgs := buildUsageLogBestEffortInsertQuery([]usageLogInsertPrepared{prepared})
 		for _, query := range []string{batch, best} {
 			require.Equal(t, 3, strings.Count(query, "audit_settlement_imported_event"))
 		}
-		require.Equal(t, prepared.args[len(prepared.args)-1], batchArgs[len(batchArgs)-1])
-		require.Equal(t, prepared.args[len(prepared.args)-1], bestArgs[len(bestArgs)-1])
+		require.Equal(t, prepared.args[len(prepared.args)-3], batchArgs[len(batchArgs)-3])
+		require.Equal(t, prepared.args[len(prepared.args)-3], bestArgs[len(bestArgs)-3])
 	}
 }
 
@@ -148,7 +148,7 @@ func TestPrepareUsageLogInsert_UpstreamRequestIDArgWiring(t *testing.T) {
 	})
 	require.Len(t, prepared.args, len(usageLogInsertArgTypes))
 
-	idx := len(prepared.args) - 6
+	idx := len(prepared.args) - 8
 	arg, ok := prepared.args[idx].(sql.NullString)
 	require.True(t, ok, "upstream_request_id arg should be sql.NullString, got %T", prepared.args[idx])
 	require.True(t, arg.Valid)
@@ -173,8 +173,8 @@ func TestPKUsageFirstResponseInsertPaths(t *testing.T) {
 	}
 	prepared := prepareUsageLogInsert(log)
 	require.Len(t, prepared.args, len(usageLogInsertArgTypes))
-	require.Equal(t, "integer", usageLogInsertArgTypes[len(usageLogInsertArgTypes)-2])
-	require.Equal(t, sql.NullInt64{Int64: 17, Valid: true}, prepared.args[len(prepared.args)-2])
+	require.Equal(t, "integer", usageLogInsertArgTypes[len(usageLogInsertArgTypes)-4])
+	require.Equal(t, sql.NullInt64{Int64: 17, Valid: true}, prepared.args[len(prepared.args)-4])
 	require.Equal(t, sql.NullInt64{Int64: 9876, Valid: true}, prepared.args[34], "upstream TTFT keeps its existing position")
 	require.Equal(t, 100, prepared.args[11])
 	require.Equal(t, 20, prepared.args[12])
@@ -188,12 +188,12 @@ func TestPKUsageFirstResponseInsertPaths(t *testing.T) {
 	for _, query := range []string{batch, bestEffort} {
 		require.Equal(t, 3, strings.Count(query, "first_response_ms"), "input CTE, INSERT and SELECT must agree")
 	}
-	require.Equal(t, prepared.args[len(prepared.args)-2], batchArgs[len(batchArgs)-2])
-	require.Equal(t, prepared.args[len(prepared.args)-2], bestEffortArgs[len(bestEffortArgs)-2])
+	require.Equal(t, prepared.args[len(prepared.args)-4], batchArgs[len(batchArgs)-4])
+	require.Equal(t, prepared.args[len(prepared.args)-4], bestEffortArgs[len(bestEffortArgs)-4])
 	for _, response := range []*int{nil, new(int)} {
 		log.FirstResponseMs = response
 		args := prepareUsageLogInsert(log).args
-		value := args[len(args)-2].(sql.NullInt64)
+		value := args[len(args)-4].(sql.NullInt64)
 		require.Equal(t, response != nil, value.Valid, "unrecorded and measured zero must remain distinct")
 	}
 }

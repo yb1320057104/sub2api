@@ -147,6 +147,19 @@ func TestStablePluginBucketIsDeterministicAndBounded(t *testing.T) {
 	}
 }
 
+func TestOpenAIGatewaySelectedPluginRequiresProxyAdmission(t *testing.T) {
+	manager := &PluginManager{}
+	manager.route.Store(&pluginRoute{pluginID: 1, rolloutPercent: 100, unavailable: "must not reach plugin"})
+	upstream := &pluginRoutingHTTPUpstream{proxyRouter: NewAccountProxyRouter(nil, nil)}
+	gateway := &OpenAIGatewayService{pluginManager: manager, httpUpstream: upstream}
+	request, err := http.NewRequestWithContext(WithAccountProxyRouting(context.Background()), http.MethodPost, "https://example.invalid/v1/responses", nil)
+	require.NoError(t, err)
+	response, err := gateway.doOpenAIUpstream(request, "", &Account{ID: 7, Platform: PlatformOpenAI, Type: AccountTypeOAuth})
+	require.ErrorIs(t, err, ErrProxyLeaseUnavailable)
+	require.Nil(t, response)
+	require.Zero(t, upstream.doCalls)
+}
+
 type statusStubRepository struct {
 	PluginRepository
 }

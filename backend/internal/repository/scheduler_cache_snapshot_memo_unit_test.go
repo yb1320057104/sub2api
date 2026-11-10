@@ -4,6 +4,7 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -232,12 +233,22 @@ func TestSchedulerCacheSnapshotMemoSecondReadOnlyFetchesTagsAndLastUsed(t *testi
 	recorder.reset()
 	second := memoRead(t, cache, bucket)
 	require.Equal(t, []string{
-		"mget " + schedulerBucketKey(schedulerReadyPrefix, bucket),
+		"get " + schedulerBucketKey(schedulerReadyPrefix, bucket),
+		"get " + schedulerBucketKey(schedulerActivePrefix, bucket),
+		"get " + schedulerAccountMetaRevisionKey,
+		"get " + schedulerAccountMetaRevisionKeyForPlatform(bucket.Platform),
+		"exists " + schedulerAccountMetaKey("1"),
 		"mget " + schedulerLastUsedKey("1"),
 	}, recorder.recorded())
 
 	require.Equal(t, []int64{1, 2, 3}, memoIDs(second))
-	require.Equal(t, first, second)
+	// Memo copies intentionally have different private map-pointer cache keys.
+	// Compare every wire-visible field and separately assert independent objects.
+	firstJSON, err := json.Marshal(first)
+	require.NoError(t, err)
+	secondJSON, err := json.Marshal(second)
+	require.NoError(t, err)
+	require.JSONEq(t, string(firstJSON), string(secondJSON))
 	for i := range first {
 		require.NotSame(t, first[i], second[i])
 	}
@@ -412,17 +423,29 @@ func TestSchedulerCacheSnapshotMemoEmptyAndNilMetadataAreNotCached(t *testing.T)
 	ctx := context.Background()
 	cache, _, _ := newSchedulerCacheMemoUnit(t, defaultSchedulerSnapshotWriteChunkSize)
 
-	t.Run("empty zset", func(t *testing.T) {
+	t.Run("published empty snapshot", func(t *testing.T) {
 		bucket := memoTestBucket(110)
 		_, err := cache.writeAccountIDs(ctx, []service.Account{memoTestAccount(81, "a")})
 		require.NoError(t, err)
 		memoPublish(t, cache, bucket)
-		memoRequireMiss(t, cache, bucket)
+		snapshot, hit, err := cache.GetSnapshot(ctx, bucket)
+		require.NoError(t, err)
+		require.True(t, hit)
+		require.Empty(t, snapshot)
+		require.Nil(t, cache.lookupSnapshotEntry(bucket.String()), "empty pools need no account memo")
 
 		active := cache.rdb.Get(ctx, schedulerBucketKey(schedulerActivePrefix, bucket)).Val()
 		require.NotEmpty(t, active)
-		require.NoError(t, cache.rdb.ZAdd(ctx, schedulerSnapshotKey(bucket, active), redis.Z{Score: 0, Member: "81"}).Err())
+		memoPublish(t, cache, bucket, memoTestAccount(81, "a"))
 		require.Equal(t, []int64{81}, memoIDs(memoRead(t, cache, bucket)))
+	})
+
+	t.Run("missing nonempty zset", func(t *testing.T) {
+		bucket := memoTestBucket(112)
+		memoPublish(t, cache, bucket, memoTestAccount(93, "a"))
+		active := cache.rdb.Get(ctx, schedulerBucketKey(schedulerActivePrefix, bucket)).Val()
+		require.NoError(t, cache.rdb.Del(ctx, schedulerSnapshotKey(bucket, active)).Err())
+		memoRequireMiss(t, cache, bucket)
 	})
 
 	t.Run("nil metadata", func(t *testing.T) {
@@ -552,7 +575,7 @@ func TestSchedulerCacheSnapshotMemoWriteAccountIDsAdvancesRevision(t *testing.T)
 		require.Len(t, batches, 2, "one execution per chunk")
 		require.Equal(t, []string{
 			"set " + schedulerAccountKey("133"),
-			"set " + schedulerAccountMetaKey("133"),
+			"getset " + schedulerAccountMetaKey("133"),
 			"set " + memoAnthropicRevisionKey,
 			"set " + geminiRevisionKey,
 		}, batches[1])
@@ -582,9 +605,9 @@ func TestSchedulerCacheSnapshotMemoWriteAccountIDsAdvancesRevision(t *testing.T)
 		require.Len(t, batches, 2, "no extra execution for the revision")
 		require.Equal(t, []string{
 			"set " + schedulerAccountKey("143"),
-			"set " + schedulerAccountMetaKey("143"),
+			"getset " + schedulerAccountMetaKey("143"),
 			"set " + schedulerAccountKey("144"),
-			"set " + schedulerAccountMetaKey("144"),
+			"getset " + schedulerAccountMetaKey("144"),
 			"set " + memoAnthropicRevisionKey,
 		}, batches[1])
 		require.Len(t, recorder.recorded(), 9, "every command travels inside the two pipelines")
@@ -671,7 +694,11 @@ func TestSchedulerCacheSnapshotMemoPlatformRevisionScopesInvalidation(t *testing
 	recorder.reset()
 	memoRead(t, cache, geminiSingle)
 	require.Equal(t, []string{
-		"mget " + schedulerBucketKey(schedulerReadyPrefix, geminiSingle),
+		"get " + schedulerBucketKey(schedulerReadyPrefix, geminiSingle),
+		"get " + schedulerBucketKey(schedulerActivePrefix, geminiSingle),
+		"get " + schedulerAccountMetaRevisionKey,
+		"get " + schedulerAccountMetaRevisionKeyForPlatform(geminiSingle.Platform),
+		"exists " + schedulerAccountMetaKey("211"),
 		"mget " + schedulerLastUsedKey("211"),
 	}, recorder.recorded(), "an Anthropic account write must not invalidate a Gemini bucket")
 
@@ -882,8 +909,8 @@ func TestSchedulerCacheSnapshotMemoKeepsNewerEntryOnLateStore(t *testing.T) {
 	require.Same(t, newer, cache.lookupSnapshotEntry("b"))
 }
 
-// 母本在发布前预解析了模型映射：副本命中时不计算签名。此处故意原地改写共享的原始映射，
-// 只用来观察副本走的是免签名路径（生产代码不会原地修改该 map）。
+// Prepared mappings are reused while request-local edits retain signature checking.
+// Mutations must remain isolated from the master and subsequent reads.
 func TestSchedulerCacheSnapshotMemoPreparesSharedModelMapping(t *testing.T) {
 	cache, _, _ := newSchedulerCacheMemoUnit(t, defaultSchedulerSnapshotWriteChunkSize)
 	bucket := memoTestBucket(121)
@@ -901,7 +928,8 @@ func TestSchedulerCacheSnapshotMemoPreparesSharedModelMapping(t *testing.T) {
 	rawMapping, ok := probe.Credentials["model_mapping"].(map[string]any)
 	require.True(t, ok)
 	rawMapping["claude-sonnet"] = "sonnet-mutated-in-place"
-	require.Equal(t, "sonnet-a", probe.GetMappedModel("claude-sonnet"))
+	require.Equal(t, "sonnet-mutated-in-place", probe.GetMappedModel("claude-sonnet"))
+	require.Equal(t, "sonnet-a", memoRead(t, cache, bucket)[0].GetMappedModel("claude-sonnet"), "request-local edits cannot poison the memo")
 }
 
 func TestSchedulerCacheSnapshotMemoRevisionValuesAreUnique(t *testing.T) {
@@ -950,7 +978,7 @@ func TestSchedulerCacheSnapshotMemoNilBeforeRealPipelineError(t *testing.T) {
 		memoTestAccount(261, "fresh"),
 		memoTestAccount(262, "wrong-type"),
 	})
-	require.Error(t, err, "a WRONGTYPE reply after a nil SET ... GET reply must fail the write")
+	require.Error(t, err, "a WRONGTYPE reply after a nil GETSET reply must fail the write")
 	require.Eventually(t, func() bool {
 		return memoRevisionValue(cache, schedulerAccountMetaRevisionKey) != ""
 	}, 2*time.Second, 5*time.Millisecond, "the global revision is advanced in the background")

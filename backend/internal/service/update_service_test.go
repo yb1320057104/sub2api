@@ -73,14 +73,15 @@ func (s *updateServiceGitHubClientStub) FetchChecksumFile(ctx context.Context, u
 }
 
 func TestUpdateServicePerformUpdateNoUpdateReturnsSentinel(t *testing.T) {
+	githubClient := &updateServiceGitHubClientStub{
+		release: &GitHubRelease{
+			TagName: "v0.1.132-pk.1",
+			Name:    "v0.1.132-pk.1",
+		},
+	}
 	svc := NewUpdateService(
 		&updateServiceCacheStub{},
-		&updateServiceGitHubClientStub{
-			release: &GitHubRelease{
-				TagName: "v0.1.132-pk.1",
-				Name:    "v0.1.132-pk.1",
-			},
-		},
+		githubClient,
 		"0.1.132-pk.1",
 		"release",
 	)
@@ -90,6 +91,7 @@ func TestUpdateServicePerformUpdateNoUpdateReturnsSentinel(t *testing.T) {
 	require.Error(t, err)
 	require.True(t, errors.Is(err, ErrNoUpdateAvailable))
 	require.ErrorIs(t, err, ErrNoUpdateAvailable)
+	require.Equal(t, "yb1320057104/sub2api", githubClient.latestRepo)
 }
 
 func newRollbackTestService(current string, releases []*GitHubRelease) *UpdateService {
@@ -479,6 +481,7 @@ func TestUpdateServiceRepeatedUpdatesAndRollbacksKeepInstallPath(t *testing.T) {
 	// The injected resolver lets this exercise real file replacement safely.
 	reportedPath := installPath
 	resolveCalls := 0
+	expectedResolveCalls := 1
 	svc := newUpdateServiceWithExecutable(&updateServiceCacheStub{}, client, "0.2.10-pk.3", "release", func() (string, error) {
 		resolveCalls++
 		return reportedPath, nil
@@ -496,19 +499,38 @@ func TestUpdateServiceRepeatedUpdatesAndRollbacksKeepInstallPath(t *testing.T) {
 			require.Equal(t, backup, string(data))
 		}
 		require.NoFileExists(t, installPath+".backup.backup")
-		require.Equal(t, 1, resolveCalls)
+		require.Equal(t, expectedResolveCalls, resolveCalls)
+	}
+	restart := func(version string) {
+		t.Helper()
+		// A new process resolves the installed executable again; the old
+		// process must preserve both paths and reject all further mutations.
+		reportedPath = installPath
+		expectedResolveCalls++
+		svc = newUpdateServiceWithExecutable(&updateServiceCacheStub{}, client, version, "release", func() (string, error) {
+			resolveCalls++
+			return reportedPath, nil
+		})
 	}
 
 	require.NoError(t, svc.PerformUpdate(context.Background()))
 	assertFiles("updated pk.4", "original pk.3")
 	reportedPath = installPath + ".backup"
 	client.release = second
+	require.ErrorIs(t, svc.PerformUpdate(context.Background()), ErrSystemRestartRequired)
+	require.ErrorIs(t, svc.Rollback(), ErrSystemRestartRequired)
+	require.ErrorIs(t, svc.RollbackToVersion(context.Background(), "0.2.10-pk.2"), ErrSystemRestartRequired)
+	assertFiles("updated pk.4", "original pk.3")
+	restart("0.2.10-pk.4")
 	require.NoError(t, svc.PerformUpdate(context.Background()))
 	assertFiles("updated pk.5", "updated pk.4")
+	restart("0.2.10-pk.5")
 	require.NoError(t, svc.Rollback())
 	assertFiles("updated pk.4", "")
+	restart("0.2.10-pk.4")
 	require.NoError(t, svc.RollbackToVersion(context.Background(), "0.2.10-pk.2"))
 	assertFiles("older pk.2", "updated pk.4")
+	restart("0.2.10-pk.2")
 	require.NoError(t, svc.Rollback())
 	assertFiles("updated pk.4", "")
 }

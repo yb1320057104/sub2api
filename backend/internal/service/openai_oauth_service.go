@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
@@ -14,10 +15,18 @@ import (
 
 // OpenAIOAuthService handles OpenAI OAuth authentication flows
 type OpenAIOAuthService struct {
-	sessionStore         *openai.SessionStore
-	proxyRepo            ProxyRepository
-	oauthClient          OpenAIOAuthClient
-	privacyClientFactory PrivacyClientFactory // 用于调用 chatgpt.com/backend-api（ImpersonateChrome）
+	sessionStore           *openai.SessionStore
+	proxyRepo              ProxyRepository
+	oauthClient            OpenAIOAuthClient
+	privacyClientFactory   PrivacyClientFactory               // 用于调用 chatgpt.com/backend-api（ImpersonateChrome）
+	refreshFailureRecorder CredentialOperationRefreshRecorder // wired before serving
+	refreshRecorderMu      sync.RWMutex
+}
+
+func (s *OpenAIOAuthService) SetRefreshFailureRecorder(recorder CredentialOperationRefreshRecorder) {
+	s.refreshRecorderMu.Lock()
+	defer s.refreshRecorderMu.Unlock()
+	s.refreshFailureRecorder = recorder
 }
 
 // NewOpenAIOAuthService creates a new OpenAI OAuth service
@@ -42,7 +51,32 @@ type OpenAIAuthURLResult struct {
 }
 
 // GenerateAuthURL generates an OpenAI OAuth authorization URL
-func (s *OpenAIOAuthService) GenerateAuthURL(ctx context.Context, proxyID *int64, redirectURI, platform string) (*OpenAIAuthURLResult, error) {
+func (s *OpenAIOAuthService) GenerateAuthURL(ctx context.Context, proxyID *int64, redirectURI, platform string, oauthClient ...string) (*OpenAIAuthURLResult, error) {
+	var proxyURL string
+	if proxyID != nil {
+		proxy, err := s.proxyRepo.GetByID(ctx, *proxyID)
+		if err != nil {
+			return nil, infraerrors.Newf(http.StatusBadRequest, "OPENAI_OAUTH_PROXY_NOT_FOUND", "proxy not found: %v", err)
+		}
+		if proxy != nil {
+			proxyURL = proxy.URL()
+		}
+	}
+	return s.GenerateAuthURLWithProxyURL(ctx, proxyURL, redirectURI, platform, oauthClient...)
+}
+
+// GenerateAuthURLWithProxyURL creates a session with an already resolved egress URL.
+func (s *OpenAIOAuthService) GenerateAuthURLWithProxyURL(ctx context.Context, proxyURL, redirectURI, platform string, oauthClient ...string) (*OpenAIAuthURLResult, error) {
+	profile := "codex"
+	if len(oauthClient) > 0 && strings.TrimSpace(oauthClient[0]) != "" {
+		profile = strings.TrimSpace(oauthClient[0])
+	}
+	if profile != "codex" && profile != "excel" {
+		return nil, infraerrors.New(http.StatusBadRequest, "OPENAI_OAUTH_INVALID_CLIENT", "unsupported OAuth client")
+	}
+	if profile == "excel" && redirectURI != "" && redirectURI != openai.ExcelRedirectURI {
+		return nil, infraerrors.New(http.StatusBadRequest, "OPENAI_OAUTH_INVALID_REDIRECT", "Excel OAuth requires the official callback URI")
+	}
 	// Generate PKCE values
 	state, err := openai.GenerateState()
 	if err != nil {
@@ -62,24 +96,17 @@ func (s *OpenAIOAuthService) GenerateAuthURL(ctx context.Context, proxyID *int64
 		return nil, infraerrors.Newf(http.StatusInternalServerError, "OPENAI_OAUTH_SESSION_FAILED", "failed to generate session ID: %v", err)
 	}
 
-	// Get proxy URL if specified
-	var proxyURL string
-	if proxyID != nil {
-		proxy, err := s.proxyRepo.GetByID(ctx, *proxyID)
-		if err != nil {
-			return nil, infraerrors.Newf(http.StatusBadRequest, "OPENAI_OAUTH_PROXY_NOT_FOUND", "proxy not found: %v", err)
-		}
-		if proxy != nil {
-			proxyURL = proxy.URL()
-		}
-	}
-
 	// Use default redirect URI if not specified
 	if redirectURI == "" {
 		redirectURI = openai.DefaultRedirectURI
 	}
 	normalizedPlatform := normalizeOpenAIOAuthPlatform(platform)
 	clientID, _ := openai.OAuthClientConfigByPlatform(normalizedPlatform)
+	if profile == "excel" {
+		clientID = openai.ExcelClientID
+		redirectURI = openai.ExcelRedirectURI
+		state = "bps." + state + ".PC"
+	}
 
 	// Store session
 	session := &openai.OAuthSession{
@@ -87,13 +114,16 @@ func (s *OpenAIOAuthService) GenerateAuthURL(ctx context.Context, proxyID *int64
 		CodeVerifier: codeVerifier,
 		ClientID:     clientID,
 		RedirectURI:  redirectURI,
-		ProxyURL:     proxyURL,
+		ProxyURL:     strings.TrimSpace(proxyURL),
 		CreatedAt:    time.Now(),
 	}
 	s.sessionStore.Set(sessionID, session)
 
 	// Build authorization URL
 	authURL := openai.BuildAuthorizationURLForPlatform(state, codeChallenge, redirectURI, normalizedPlatform)
+	if profile == "excel" {
+		authURL = openai.BuildExcelAuthorizationURL(state, codeChallenge)
+	}
 
 	return &OpenAIAuthURLResult{
 		AuthURL:   authURL,
@@ -136,6 +166,9 @@ func (s *OpenAIOAuthService) ExchangeCode(ctx context.Context, input *OpenAIExch
 	if !ok {
 		return nil, infraerrors.New(http.StatusBadRequest, "OPENAI_OAUTH_SESSION_NOT_FOUND", "session not found or expired")
 	}
+	if session.SIWCAccountID != 0 {
+		return nil, infraerrors.BadRequest("OPENAI_SIWC_BOUND_SESSION", "Complete SIWC authorization on the bound account")
+	}
 	if input.State == "" {
 		return nil, infraerrors.New(http.StatusBadRequest, "OPENAI_OAUTH_STATE_REQUIRED", "oauth state is required")
 	}
@@ -158,6 +191,9 @@ func (s *OpenAIOAuthService) ExchangeCode(ctx context.Context, input *OpenAIExch
 	// Use redirect URI from session or input
 	redirectURI := session.RedirectURI
 	if input.RedirectURI != "" {
+		if session.ClientID == openai.ExcelClientID && input.RedirectURI != session.RedirectURI {
+			return nil, infraerrors.New(http.StatusBadRequest, "OPENAI_OAUTH_INVALID_REDIRECT", "callback URI does not match the OAuth session")
+		}
 		redirectURI = input.RedirectURI
 	}
 	clientID := strings.TrimSpace(session.ClientID)
@@ -386,7 +422,22 @@ func (s *OpenAIOAuthService) RefreshAccountToken(ctx context.Context, account *A
 	}
 
 	clientID := account.GetCredential("client_id")
-	return s.RefreshTokenWithClientID(ctx, refreshToken, proxyURL, clientID)
+	info, err := s.RefreshTokenWithClientID(ctx, refreshToken, proxyURL, clientID)
+	s.refreshRecorderMu.RLock()
+	recorder := s.refreshFailureRecorder
+	s.refreshRecorderMu.RUnlock()
+	if err != nil && recorder != nil && !account.IsCredentialShadow() {
+		// This is an observed failed attempt, not a claim about the final
+		// background retry outcome or the account's present health.
+		at := time.Now()
+		failure := refreshOperationFailure(err, &at)
+		persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+		defer cancel()
+		if recordErr := recorder.RecordRefreshFailure(persistCtx, account.ID, failure.Code, at); recordErr != nil {
+			slog.Warn("credential_operation_refresh_failure_save_failed", "account_id", account.ID)
+		}
+	}
+	return info, err
 }
 
 // BuildAccountCredentials builds credentials map from token info

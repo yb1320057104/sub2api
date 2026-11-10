@@ -39,6 +39,14 @@ SERVICE_NAME="sub2api"
 SERVICE_USER="sub2api"
 CONFIG_DIR="/etc/sub2api"
 
+# Optional Codex ticket exit pool. The kernel can be installed automatically
+# when a provider subscription URL is supplied; the provider itself is never
+# created or purchased by this installer.
+MIHOMO_CODEX_SUBSCRIPTION_URL="${MIHOMO_CODEX_SUBSCRIPTION_URL:-}"
+MIHOMO_CODEX_USER_AGENT="${MIHOMO_CODEX_USER_AGENT:-clash.meta}"
+MIHOMO_CODEX_PORT="${MIHOMO_CODEX_PORT:-3101}"
+MIHOMO_CODEX_SECRET="${MIHOMO_CODEX_SECRET:-}"
+
 # Server configuration (will be set by user)
 SERVER_HOST="0.0.0.0"
 SERVER_PORT="8080"
@@ -642,6 +650,47 @@ download_and_extract() {
     private_deployment_required
 }
 
+# Install or reuse the optional Mihomo sidecar used only for Codex ticket
+# harvesting. A subscription URL is required for a first install; without it
+# an existing healthy sidecar is left untouched and the normal app install
+# continues.
+configure_mihomo_codex() {
+    local installer="$INSTALL_DIR/install-mihomo-codex.sh"
+
+    if [ -f "$INSTALL_DIR/migrate-mihomo-managed.sh" ] && [ -f /etc/mihomo-codex/config.yaml ]; then
+        INSTALL_DIR="$INSTALL_DIR" bash "$INSTALL_DIR/migrate-mihomo-managed.sh"
+        # The managed kernel now owns this configuration. Do not start another
+        # systemd instance on the same ports during an application upgrade.
+        if [ -f "${DATA_DIR:-$INSTALL_DIR}/mihomo-codex/settings.json" ]; then
+            return 0
+        fi
+    fi
+
+    if [ -z "$MIHOMO_CODEX_SUBSCRIPTION_URL" ]; then
+        if systemctl is-active --quiet mihomo-codex.service 2>/dev/null; then
+            print_info "Mihomo Codex sidecar is already active on 127.0.0.1:${MIHOMO_CODEX_PORT}"
+        else
+            print_info "Mihomo Codex sidecar not configured; set MIHOMO_CODEX_SUBSCRIPTION_URL to enable airport rotation"
+        fi
+        return 0
+    fi
+
+    if [ ! -f "$installer" ]; then
+        print_error "Mihomo installer missing from release package: $installer"
+        return 1
+    fi
+
+    print_info "Configuring Mihomo Codex ticket sidecar..."
+    MIHOMO_CODEX_SUBSCRIPTION_URL="$MIHOMO_CODEX_SUBSCRIPTION_URL" \
+        MIHOMO_CODEX_USER_AGENT="$MIHOMO_CODEX_USER_AGENT" \
+        MIHOMO_CODEX_PORT="$MIHOMO_CODEX_PORT" \
+        MIHOMO_CODEX_SECRET="$MIHOMO_CODEX_SECRET" \
+        bash "$installer"
+    if [ -f "$INSTALL_DIR/migrate-mihomo-managed.sh" ]; then
+        INSTALL_DIR="$INSTALL_DIR" bash "$INSTALL_DIR/migrate-mihomo-managed.sh"
+    fi
+}
+
 # Create system user
 create_user() {
     if id "$SERVICE_USER" &>/dev/null; then
@@ -853,6 +902,7 @@ upgrade() {
     # Download and install new version
     get_latest_version
     download_and_extract
+    configure_mihomo_codex
 
     # Set permissions
     chown "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR/sub2api"
@@ -915,6 +965,7 @@ install_version() {
 
     # Download and install
     download_and_extract
+    configure_mihomo_codex
 
     # Set permissions
     chown "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR/sub2api"
@@ -1061,6 +1112,17 @@ main() {
 
     # Parse commands
     case "${1:-}" in
+        manage-worker)
+            check_root
+            local worker_migration="$INSTALL_DIR/migrate-reauth-managed.py"
+            if [ ! -f "$worker_migration" ]; then
+                print_error "Worker migration helper missing; install a release containing migrate-reauth-managed.py first."
+                exit 1
+            fi
+            shift
+            python3 "$worker_migration" "$@"
+            exit $?
+            ;;
         upgrade|update)
             check_root
             detect_platform
@@ -1092,6 +1154,7 @@ main() {
                     create_user
                     setup_directories
                     install_service
+                    configure_mihomo_codex
                     prepare_for_setup
                     get_public_ip
                     start_service
@@ -1106,6 +1169,7 @@ main() {
                 create_user
                 setup_directories
                 install_service
+                configure_mihomo_codex
                 prepare_for_setup
                 get_public_ip
                 start_service
@@ -1162,6 +1226,7 @@ main() {
             echo "  $0                        # Install latest version"
             echo "  $0 install -v v0.1.0      # Install specific version"
             echo "  $0 upgrade                # Upgrade to latest"
+            echo "  $0 manage-worker --data-dir /opt/sub2api/data --drained  # Migrate a drained legacy Worker to automatic management"
             echo "  $0 upgrade -v v0.2.0      # Upgrade to specific version"
             echo "  $0 rollback v0.1.0        # Rollback to v0.1.0"
             echo "  $0 list-versions          # List available versions"
@@ -1186,6 +1251,7 @@ main() {
             create_user
             setup_directories
             install_service
+            configure_mihomo_codex
             prepare_for_setup
             get_public_ip
             start_service
@@ -1200,6 +1266,7 @@ main() {
         create_user
         setup_directories
         install_service
+        configure_mihomo_codex
         prepare_for_setup
         get_public_ip
         start_service

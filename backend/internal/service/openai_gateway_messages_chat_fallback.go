@@ -101,6 +101,11 @@ func (s *OpenAIGatewayService) forwardAnthropicViaRawChatCompletions(
 			chatBody = policyBody
 		}
 	}
+	chatBody, err = normalizeMistralChatRequest(account, chatBody)
+	if err != nil {
+		writeAnthropicError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return nil, err
+	}
 	// Provider normalization and policy caps can both change the converted effort.
 	// Use the final outbound value for usage logs and billing.
 	reasoningEffort := extractOpenAIReasoningEffortFromBody(chatBody, upstreamModel, billingModel, originalModel)
@@ -153,25 +158,24 @@ func (s *OpenAIGatewayService) forwardAnthropicViaRawChatCompletions(
 
 	// 5. Convert response
 	if clientStream {
-		return s.streamChatCompletionsAsAnthropic(c, resp, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime, account)
+		return s.streamChatCompletionsAsAnthropic(c, resp, account, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
 	}
-	return s.bufferChatCompletionsAsAnthropic(c, resp, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime, account)
+	return s.bufferChatCompletionsAsAnthropic(c, resp, account, originalModel, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
 }
 
 func (s *OpenAIGatewayService) bufferChatCompletionsAsAnthropic(
 	c *gin.Context,
 	resp *http.Response,
+	account *Account,
 	originalModel string,
 	billingModel string,
 	upstreamModel string,
 	reasoningEffort *string,
 	serviceTier *string,
 	startTime time.Time,
-	accounts ...*Account,
 ) (*OpenAIForwardResult, error) {
-	account := firstCacheConversionAccount(accounts)
 	requestID := resp.Header.Get("x-request-id")
-	ccResp, usage, err := s.readCCUpstreamJSONResponse(c, resp, writeAnthropicError, account)
+	ccResp, usage, err := s.readCCUpstreamJSONResponse(c, resp, account, writeAnthropicError)
 	if err != nil {
 		return nil, err
 	}
@@ -180,36 +184,43 @@ func (s *OpenAIGatewayService) bufferChatCompletionsAsAnthropic(
 	if s.responseHeaderFilter != nil {
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	}
-	writeErr := writeCacheConvertedJSON(c, account, anthropicResp, cacheconversion.Anthropic)
+	var writeErr error
+	if failure := apicompat.ChatCompletionsReasoningOnlyError(ccResp); failure != nil {
+		recordChatMessagesReasoningOnlyFailure(c, requestID, upstreamModel, failure)
+		writeAnthropicError(c, http.StatusBadGateway, "api_error", failure.Message)
+	} else {
+		writeErr = writeCacheConvertedJSON(c, account, anthropicResp, cacheconversion.Anthropic)
+	}
 
 	return &OpenAIForwardResult{
-		RequestID:                   requestID,
-		AuditSettlementNegotiated:   auditSettlementWasNegotiated(resp),
-		UpstreamHeaders:             resp.Header,
-		Usage:                       usage,
-		Model:                       originalModel,
-		BillingModel:                billingModel,
-		UpstreamModel:               upstreamModel,
-		ReasoningEffort:             reasoningEffort,
-		UpstreamResponseServiceTier: observedUpstreamResponseServiceTier(c),
-		ServiceTier:                 resolvedOpenAIUpstreamServiceTier(c, serviceTier),
-		Stream:                      false,
-		Duration:                    time.Since(startTime),
+		RequestID:                     requestID,
+		AuditSettlementNegotiated:     auditSettlementWasNegotiated(resp),
+		UpstreamHeaders:               resp.Header,
+		Usage:                         usage,
+		Model:                         originalModel,
+		BillingModel:                  billingModel,
+		UpstreamModel:                 upstreamModel,
+		ReasoningEffort:               reasoningEffort,
+		UpstreamResponseModel:         observedUpstreamResponseModel(c),
+		UpstreamResponseModelConflict: observedUpstreamResponseModelConflict(c),
+		UpstreamResponseServiceTier:   observedUpstreamResponseServiceTier(c),
+		ServiceTier:                   resolvedOpenAIUpstreamServiceTier(c, serviceTier),
+		Stream:                        false,
+		Duration:                      time.Since(startTime),
 	}, writeErr
 }
 
 func (s *OpenAIGatewayService) streamChatCompletionsAsAnthropic(
 	c *gin.Context,
 	resp *http.Response,
+	account *Account,
 	originalModel string,
 	billingModel string,
 	upstreamModel string,
 	reasoningEffort *string,
 	serviceTier *string,
 	startTime time.Time,
-	accounts ...*Account,
 ) (*OpenAIForwardResult, error) {
-	account := firstCacheConversionAccount(accounts)
 	requestID := resp.Header.Get("x-request-id")
 	writeStreamHeaders := s.newStreamHeaderWriter(c, resp.Header)
 
@@ -246,27 +257,29 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsAnthropic(
 		}
 	}
 
-	scan := s.scanCCStream(c, resp, "openai messages chat fallback", requestID, startTime, emitChunk, account)
+	scan := s.scanCCStream(c, resp, account, "openai messages chat fallback", requestID, startTime, emitChunk)
 	usage := scan.Usage
 	resultWithUsage := func() *OpenAIForwardResult {
 		if !scan.SawDone || clientDisconnected || scan.Err != nil || conversionErr != nil {
 			usage.CacheReadKnown = false
 		}
 		return &OpenAIForwardResult{
-			RequestID:                   requestID,
-			AuditSettlementNegotiated:   auditSettlementWasNegotiated(resp),
-			UpstreamHeaders:             resp.Header,
-			Usage:                       usage,
-			Model:                       originalModel,
-			BillingModel:                billingModel,
-			UpstreamModel:               upstreamModel,
-			ReasoningEffort:             reasoningEffort,
-			UpstreamResponseServiceTier: observedUpstreamResponseServiceTier(c),
-			ServiceTier:                 resolvedOpenAIUpstreamServiceTier(c, serviceTier),
-			Stream:                      true,
-			Duration:                    time.Since(startTime),
-			FirstTokenMs:                scan.FirstTokenMs,
-			ClientDisconnect:            clientDisconnected,
+			RequestID:                     requestID,
+			AuditSettlementNegotiated:     auditSettlementWasNegotiated(resp),
+			UpstreamHeaders:               resp.Header,
+			Usage:                         usage,
+			Model:                         originalModel,
+			BillingModel:                  billingModel,
+			UpstreamModel:                 upstreamModel,
+			UpstreamResponseModel:         observedUpstreamResponseModel(c),
+			UpstreamResponseModelConflict: observedUpstreamResponseModelConflict(c),
+			ReasoningEffort:               reasoningEffort,
+			UpstreamResponseServiceTier:   observedUpstreamResponseServiceTier(c),
+			ServiceTier:                   resolvedOpenAIUpstreamServiceTier(c, serviceTier),
+			Stream:                        true,
+			Duration:                      time.Since(startTime),
+			FirstTokenMs:                  scan.FirstTokenMs,
+			ClientDisconnect:              clientDisconnected,
 		}
 	}
 	if conversionErr != nil {
@@ -282,6 +295,7 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsAnthropic(
 
 	// Finalize: close open blocks + emit message_delta/message_stop.
 	finalEvents := apicompat.FinalizeChatCompletionsAnthropicStream(anthropicState)
+	recordChatMessagesReasoningOnlyFailure(c, requestID, upstreamModel, anthropicState.ReasoningOnlyError())
 	if !clientDisconnected {
 		for _, aEvt := range finalEvents {
 			sse, err := apicompat.ResponsesAnthropicEventToSSE(aEvt)
@@ -303,6 +317,21 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsAnthropic(
 	if !scan.SawDone {
 		logCCStreamMissingDoneSentinel("openai messages chat fallback", requestID)
 	}
+	if !scan.SawDone || clientDisconnected {
+		usage.CacheReadKnown = false
+	}
 
 	return resultWithUsage(), nil
+}
+
+func recordChatMessagesReasoningOnlyFailure(c *gin.Context, requestID, model string, failure *apicompat.ResponsesError) {
+	if failure == nil {
+		return
+	}
+	// Preserve the actual upstream usage and return it through the usual billing
+	// path. A semantic failure must not trigger a second upstream request.
+	setOpsUpstreamError(c, http.StatusOK, failure.Code, failure.Message)
+	logger.L().Warn("openai.messages_reasoning_only",
+		zap.String("request_id", requestID), zap.String("upstream_model", model),
+		zap.String("error_code", failure.Code))
 }

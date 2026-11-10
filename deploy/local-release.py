@@ -156,12 +156,14 @@ def validate(directory: Path) -> tuple[dict, list[Asset]]:
             and not data.get("jenkins_build_url"),
             "Manifest must identify local compilation and server-isolated validation truthfully")
     control.verify_artifacts(directory, data)
+    control.corresponding_source.verify(directory, data, checkout=Path(__file__).resolve().parents[1])
     control.package_evidence(directory, data)
     proof = json.loads(regular(directory, "artifact-validation.json").read_bytes())
     require(len(proof["checks"]) == 11 and {item["name"] for item in proof["checks"]} == control.RUNTIME_CHECKS,
             "All eleven isolated exact-artifact checks are required")
     names = [data["binary_archive"], data["image_archive"], "checksums.txt",
              "manifest.json", "artifact-validation.json"]
+    names.extend(control.corresponding_source.assets(data))
     if data.get("schema_version") == 2:
         names.extend([control.dependencies.REPORT, *control.dependencies.FILES.values()])
     for name in OPTIONAL_EVIDENCE:

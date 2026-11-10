@@ -5,19 +5,23 @@ package main
 
 import (
 	"context"
+	"github.com/Wei-Shaw/sub2api/internal/requestcapture"
 	"log"
 	"net/http"
 	"sync"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/ent"
+	"github.com/Wei-Shaw/sub2api/internal/bepusdt"
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/handler"
 	"github.com/Wei-Shaw/sub2api/internal/payment"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/upstreamstats"
 	"github.com/Wei-Shaw/sub2api/internal/repository"
 	"github.com/Wei-Shaw/sub2api/internal/securityaudit"
 	"github.com/Wei-Shaw/sub2api/internal/server"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
+	"github.com/Wei-Shaw/sub2api/internal/serverless"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/google/wire"
@@ -25,6 +29,7 @@ import (
 )
 
 type Application struct {
+	Lifecycle     *server.Lifecycle
 	Server        *http.Server
 	PromptAudit   *securityaudit.PromptService
 	PluginManager *service.PluginManager
@@ -35,6 +40,8 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 	wire.Build(
 		// Infrastructure layer ProviderSets
 		config.ProviderSet,
+		serverless.NewGeoJSResolver,
+		wire.Bind(new(serverless.CountryResolver), new(*serverless.GeoJSResolver)),
 
 		// Business layer ProviderSets
 		repository.ProviderSet,
@@ -58,7 +65,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 		provideCleanup,
 
 		// Application struct
-		wire.Struct(new(Application), "Server", "PromptAudit", "PluginManager", "Cleanup"),
+		wire.Struct(new(Application), "Server", "PromptAudit", "PluginManager", "Lifecycle", "Cleanup"),
 	)
 	return nil, nil
 }
@@ -82,6 +89,9 @@ func providePluginHostInfo(buildInfo handler.BuildInfo) service.PluginHostInfo {
 }
 
 func provideCleanup(
+	balanceNotify *service.BalanceNotifyService,
+	cfg *config.Config,
+	requestCaptures *requestcapture.Manager,
 	entClient *ent.Client,
 	rdb *redis.Client,
 	opsMetricsCollector *service.OpsMetricsCollector,
@@ -93,6 +103,7 @@ func provideCleanup(
 	opsService *service.OpsService,
 	opsIngressReject *service.OpsIngressRejectAggregator,
 	apiKeyService *service.APIKeyService,
+	concurrencyService *service.ConcurrencyService,
 	authCacheInvalidationWorker *service.AuthCacheInvalidationWorker,
 	cyberPolicyBalanceWorker *service.CyberPolicyBalanceWorker,
 	schedulerSnapshot *service.SchedulerSnapshotService,
@@ -119,7 +130,13 @@ func provideCleanup(
 	antigravityOAuth *service.AntigravityOAuthService,
 	grokOAuth *service.GrokOAuthService,
 	openAIGateway *service.OpenAIGatewayService,
+	rateLimitService *service.RateLimitService,
 	scheduledTestRunner *service.ScheduledTestRunnerService,
+	controlledExperiment *service.ControlledExperimentService,
+	accountOps *service.AccountOpsService,
+	accountPerformance *service.AccountPerformanceService,
+	accountTokenGuard *service.AccountTokenGuardService,
+	accountTokenGuardV2 *service.AccountTokenGuardV2Service,
 	backupSvc *service.BackupService,
 	paymentOrderExpiry *service.PaymentOrderExpiryService,
 	binanceRecharge *service.BinanceRechargeService,
@@ -129,6 +146,7 @@ func provideCleanup(
 	accountAuthorization *service.AccountAuthorizationService,
 	accountUsage *service.AccountUsageService,
 	channelMonitorV2Aggregator *service.ChannelMonitorV2Aggregator,
+	channelMonitorV3Prober *service.ChannelMonitorV3Prober,
 	quotaFlusher *service.UserPlatformQuotaUsageFlusher,
 	upstreamBillingProbe *service.UpstreamBillingProbeService,
 	ollamaCloudUsage *service.OllamaCloudUsageService,
@@ -137,10 +155,22 @@ func provideCleanup(
 	openAIAutoReset *service.OpenAIQuotaAutoResetService,
 	promptAudit *securityaudit.PromptService,
 	pluginManager *service.PluginManager,
+	cyberModeration *service.ContentModerationService,
 ) func() {
+	if openAIGateway != nil {
+		openAIGateway.StartBPSWarmPool()
+		service.StartBackgroundJob(cfg, "BPS403Recovery", openAIGateway.StartBPS403Recovery)
+	}
 	return func() {
 		service.StopPendingBackgroundStarts()
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+
+		if controlledExperiment != nil {
+			controlledExperiment.Stop()
+		}
+		if scheduledTestRunner != nil {
+			scheduledTestRunner.Stop()
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 		defer cancel()
 
 		type cleanupStep struct {
@@ -153,6 +183,19 @@ func provideCleanup(
 			{"CyberPolicyBalanceWorker", func() error {
 				if cyberPolicyBalanceWorker != nil {
 					cyberPolicyBalanceWorker.Stop()
+				}
+				return nil
+			}},
+			{"BPSWarmPool", func() error {
+				if openAIGateway != nil {
+					openAIGateway.StopBPS403Recovery()
+					openAIGateway.StopBPSWarmPool()
+				}
+				return nil
+			}},
+			{"AccountTokenGuardService", func() error {
+				if accountTokenGuard != nil {
+					accountTokenGuard.Stop()
 				}
 				return nil
 			}},
@@ -192,6 +235,18 @@ func provideCleanup(
 				}
 				return nil
 			}},
+			{"APIKeyQueueWaiters", func() error {
+				if concurrencyService != nil {
+					concurrencyService.StopAPIKeyQueue()
+				}
+				return nil
+			}},
+			{"CyberEvidence", func() error {
+				if cyberModeration != nil && cyberModeration.CyberEvidence() != nil {
+					cyberModeration.CyberEvidence().Close()
+				}
+				return nil
+			}},
 			{"PromptAuditService", func() error {
 				if promptAudit != nil {
 					return promptAudit.Shutdown(ctx)
@@ -204,6 +259,7 @@ func provideCleanup(
 				}
 				return nil
 			}},
+			{"RequestCapture", func() error { requestCaptures.Close(); return nil }},
 			{"OpsCleanupService", func() error {
 				if opsCleanup != nil {
 					opsCleanup.Stop()
@@ -352,15 +408,31 @@ func provideCleanup(
 				}
 				return nil
 			}},
+			{"ExcelBPSImages", func() error {
+				return openAIGateway.CloseExcelBPSImages()
+			}},
 			{"OpenAIWSPool", func() error {
 				if openAIGateway != nil {
 					openAIGateway.CloseOpenAIWSPool()
 				}
 				return nil
 			}},
-			{"ScheduledTestRunnerService", func() error {
-				if scheduledTestRunner != nil {
-					scheduledTestRunner.Stop()
+			{"OpenAICodexTicketHarvester", func() error {
+				if openAIGateway != nil {
+					openAIGateway.StopOpenAICodexTicketHarvester()
+				}
+				return nil
+			}},
+			{"AccountPerformanceService", func() error { accountPerformance.Stop(); return nil }},
+			{"AccountOpsService", func() error {
+				if accountOps != nil {
+					accountOps.Stop()
+				}
+				return nil
+			}},
+			{"AccountTokenGuardV2Service", func() error {
+				if accountTokenGuardV2 != nil {
+					accountTokenGuardV2.Stop()
 				}
 				return nil
 			}},
@@ -409,6 +481,12 @@ func provideCleanup(
 			{"AccountCandyTestService", func() error {
 				if accountCandyTest != nil {
 					accountCandyTest.Stop()
+				}
+				return nil
+			}},
+			{"ChannelMonitorV3Prober", func() error {
+				if channelMonitorV3Prober != nil {
+					channelMonitorV3Prober.Stop()
 				}
 				return nil
 			}},
@@ -487,13 +565,69 @@ func provideCleanup(
 			}
 		}
 
-		runParallel(parallelSteps)
+		// Stop producers while their gateway, billing, audit, and notification
+		// dependencies remain usable. A probe may still be saving its final usage.
+		producerNames := map[string]bool{
+			"CyberPolicyBalanceWorker": true, "AccountTokenGuardService": true,
+			"AccountTokenGuardV2Service": true, "OpenAIQuotaAutoResetService": true,
+			"OpsScheduledReportService": true, "OpsAlertEvaluatorService": true,
+			"SchedulerSnapshotService": true, "UsageCleanupService": true,
+			"IdempotencyCleanupService": true, "GeminiCachedContentService": true,
+			"BatchImageCleanupService": true, "BatchImageWorkerRuntime": true,
+			"TokenRefreshService": true, "AccountExpiryService": true,
+			"CNProviderBalanceCheckService": true, "OpenAICodexVersionSyncService": true,
+			"ClaudeCodeVersionSyncService": true, "ProxyExpiryService": true,
+			"SubscriptionExpiryService": true, "AccountPerformanceService": true,
+			"BackupService": true, "PaymentOrderExpiryService": true,
+			"BinanceRechargeService": true, "ChannelMonitorV2Aggregator": true,
+			"IntelligenceTestService": true, "AccountHealthService": true,
+			"AccountAuthorizationService": true, "AccountCandyTestService": true,
+			"ChannelMonitorV3Prober": true, "ChannelMonitorRunner": true,
+			"UpstreamBillingProbeService": true, "OllamaCloudUsageService": true,
+			"OpenCodeGoUsageService": true,
+		}
+		var producers, dependencies []cleanupStep
+		for _, step := range parallelSteps {
+			if producerNames[step.name] {
+				producers = append(producers, step)
+			} else if step.name != "UsageRecordWorkerPool" {
+				dependencies = append(dependencies, step)
+			}
+		}
+		runParallel(producers)
+		if usageRecordWorkerPool != nil {
+			usageRecordWorkerPool.Stop()
+		}
+		// Producers and queued usage can still settle regional reservations.
+		// Join funds only after those callers drain, before closing its stores.
+		if openAIGateway != nil {
+			stopCtx, stopCancel := context.WithTimeout(ctx, 5*time.Second)
+			err := stopRegionalFunds(stopCtx, openAIGateway.RegionalFundsReadiness())
+			stopCancel()
+			if err != nil {
+				log.Printf("[Cleanup] Funds join failed; dependencies retained: %v", err)
+				return
+			}
+		}
+		if rateLimitService != nil {
+			rateLimitService.CloseQualitySignals()
+		}
+		if balanceNotify != nil {
+			balanceNotify.Stop()
+		}
+		runParallel(dependencies)
+		bepusdt.Stop()
+		statsCtx, statsCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := upstreamstats.CloseShared(statsCtx); err != nil {
+			log.Printf("[Cleanup] Shared upstream statistics flush incomplete: %v", err)
+		}
+		statsCancel()
 		runSequential(infraSteps)
 
 		// Check if context timed out
 		select {
 		case <-ctx.Done():
-			log.Printf("[Cleanup] Warning: cleanup timed out after 10 seconds")
+			log.Printf("[Cleanup] Warning: cleanup exceeded its 15 minute budget")
 		default:
 			log.Printf("[Cleanup] All cleanup steps completed")
 		}

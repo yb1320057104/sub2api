@@ -19,6 +19,9 @@ func (s *GatewayService) getUserGroupRateMultiplier(ctx context.Context, userID,
 	}
 	resolver := s.userGroupRateResolver
 	if resolver == nil {
+		if s.userGroupRateRepo == nil && s.userGroupRateCache == nil {
+			return groupDefaultMultiplier
+		}
 		resolver = newUserGroupRateResolver(
 			s.userGroupRateRepo,
 			s.userGroupRateCache,
@@ -301,6 +304,8 @@ func buildUsageBillingCommand(requestID string, usageLog *UsageLog, p *postUsage
 		AccountType:        p.Account.Type,
 		RequestPayloadHash: strings.TrimSpace(p.RequestPayloadHash),
 	}
+	quoted := p.Cost.ActualCost
+	cmd.QuotedActualCost = &quoted
 	if usageLog != nil {
 		cmd.Model = usageLog.Model
 		cmd.BillingType = usageLog.BillingType
@@ -350,6 +355,14 @@ func buildUsageBillingCommand(requestID string, usageLog *UsageLog, p *postUsage
 		cmd.AccountQuotaHasDailyLimit = p.Account.GetQuotaDailyLimit() > 0
 		cmd.AccountQuotaHasWeeklyLimit = p.Account.GetQuotaWeeklyLimit() > 0
 	}
+	if !p.IsSubscriptionBill && p.Platform != "" && p.Cost.ActualCost > 0 {
+		cmd.PlatformQuotaPlatform = p.Platform
+		cmd.PlatformQuotaCost = p.Cost.ActualCost
+		cmd.PlatformUsageAt = time.Now().UTC()
+		if usageLog != nil && !usageLog.CreatedAt.IsZero() {
+			cmd.PlatformUsageAt = usageLog.CreatedAt
+		}
+	}
 
 	cmd.Normalize()
 	return cmd
@@ -361,6 +374,19 @@ func applyUsageBilling(ctx context.Context, requestID string, usageLog *UsageLog
 	}
 
 	cmd := buildUsageBillingCommand(requestID, usageLog, p)
+	// The fingerprint above retains the original monetary inputs. From here on,
+	// every customer-facing amount uses the exact same quantum as the SQL charge.
+	// Keep TotalCost and the independent account-cost multiplier untouched.
+	if p.Cost != nil {
+		canonicalParams := *p
+		canonicalCost := *p.Cost
+		canonicalCost.ActualCost = QuantizeUsageBillingAmount(p.Cost.ActualCost)
+		canonicalParams.Cost = &canonicalCost
+		p = &canonicalParams
+		if usageLog != nil {
+			usageLog.ActualCost = canonicalCost.ActualCost
+		}
+	}
 	if cmd == nil || cmd.RequestID == "" || repo == nil {
 		if p.SimpleModeKeyRateLimitOnly {
 			return false, ErrSimpleModeKeyRateLimitBillingUnavailable
@@ -374,6 +400,9 @@ func applyUsageBilling(ctx context.Context, requestID string, usageLog *UsageLog
 	billingCtx, cancel := detachedBillingContext(ctx)
 	defer cancel()
 
+	if durable, ok := repo.(DurableUsageBillingRepository); ok && usageLog != nil {
+		return applyDurableUsageBilling(billingCtx, durable, cmd, usageLog, p, deps)
+	}
 	result, err := repo.Apply(billingCtx, cmd)
 	if err != nil {
 		return false, err
@@ -434,12 +463,16 @@ func finalizePostUsageBilling(ctx context.Context, p *postUsageBillingParams, de
 	//     限制在并发 in-flight 请求数量内（旧实现的异步入队会让超支无限累积直到 worker 处理）
 	//   - DB 异步(flusher_enabled=false):在独立 goroutine 中走 detached context,失败用 ALERT log 触发 oncall 对账
 	//   - flusher_enabled=true:不直写 DB,由 flusher 异步批量刷（markDirty 已在 IncrementUserPlatformQuotaUsage 内部完成）
-	if !p.IsSubscriptionBill && p.Platform != "" && p.Cost.ActualCost > 0 && p.User != nil && deps.userPlatformQuotaRepo != nil && deps.billingCacheService != nil {
+	if result != nil && result.PlatformQuotaApplied && deps.billingCacheService != nil && p.User != nil {
+		if err := deps.billingCacheService.InvalidateDurablePlatformQuota(ctx, p.User.ID, p.Platform); err != nil {
+			logger.LegacyPrintf("service.gateway", "durable platform quota cache invalidation failed: %v", err)
+		}
+	} else if !p.IsSubscriptionBill && p.Platform != "" && p.Cost.ActualCost > 0 && p.User != nil && deps.userPlatformQuotaRepo != nil && deps.billingCacheService != nil {
 		if deps.billingCacheService.HasUserPlatformQuotaLimit(ctx, p.User.ID, p.Platform) {
 			deps.billingCacheService.IncrementUserPlatformQuotaUsage(p.User.ID, p.Platform, p.Cost.ActualCost)
 			if deps.cfg == nil || !deps.cfg.Database.UserPlatformQuotaFlusherEnabled {
 				// 降级路径:flusher 未启用时保留原有异步直写 DB
-				dbCtx, dbCancel := detachUpstreamContext(ctx)
+				dbCtx, dbCancel := detachedBillingContext(ctx)
 				userID, platform, cost := p.User.ID, p.Platform, p.Cost.ActualCost
 				go func() {
 					defer func() {
@@ -471,7 +504,7 @@ func syncBalanceCacheAfterDeduction(ctx context.Context, p *postUsageBillingPara
 	if p == nil || p.Cost == nil || p.User == nil || deps == nil || deps.billingCacheService == nil {
 		return
 	}
-	if result != nil && result.NewBalance != nil && deps.billingCacheService.balanceBelowEligibilityThreshold(*result.NewBalance) {
+	if result != nil && (result.AutoCreditIssued || result.NewBalance != nil && deps.billingCacheService.balanceBelowEligibilityThreshold(*result.NewBalance)) {
 		if err := deps.billingCacheService.InvalidateUserBalance(ctx, p.User.ID); err != nil {
 			slog.Warn("invalidate balance cache after exhausted deduction failed",
 				"user_id", p.User.ID,
@@ -587,14 +620,14 @@ func detachStreamUpstreamContext(ctx context.Context, stream bool) (context.Cont
 	if !stream {
 		return ctx, func() {}
 	}
-	return context.WithoutCancel(ctx), func() {}
+	return detachAPIKeyUpstreamContext(ctx)
 }
 
 func detachUpstreamContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	if ctx == nil {
 		return context.Background(), func() {}
 	}
-	return context.WithoutCancel(ctx), func() {}
+	return detachAPIKeyUpstreamContext(ctx)
 }
 
 // billingDeps 扣费逻辑依赖的服务（由各 gateway service 提供）
@@ -629,11 +662,22 @@ func writeUsageLogBestEffort(ctx context.Context, repo UsageLogRepository, usage
 	}
 	usageCtx, cancel := detachedBillingContext(ctx)
 	defer cancel()
+	defer func() {
+		if recorder, ok := repo.(interface {
+			RecordRequestTiming(context.Context, string, int64)
+		}); ok {
+			recorder.RecordRequestTiming(usageCtx, usageLog.RequestID, usageLog.APIKeyID)
+		}
+	}()
 	snapshot, hasAudit := cyberPolicyAuditUsageFromContext(usageCtx, usageLog)
 	if hasAudit || HasAuditSettlement(usageCtx) || HasAuditSettlementUsageObserver(usageCtx) {
 		// Negotiated settlement requires a persisted usage identity before the
 		// receipt is complete. Original billing has already committed.
-		inserted, err := repo.Create(usageCtx, usageLog)
+		inserted := usageLog.durableBillingCommitted && usageLog.durableBillingFresh && usageLog.ID > 0
+		var err error
+		if !usageLog.durableBillingCommitted {
+			inserted, err = repo.Create(usageCtx, usageLog)
+		}
 		if err != nil {
 			logger.LegacyPrintf(logKey, "Create usage log failed: %v", err)
 			FailAuditSettlement(usageCtx)
@@ -659,6 +703,9 @@ func writeUsageLogBestEffort(ctx context.Context, repo UsageLogRepository, usage
 		}
 		recordAuditSettlementUsageObserver(usageCtx, usageLog)
 		RecordAuditSettlementUsage(usageCtx, usageLog)
+		return
+	}
+	if usageLog.durableBillingCommitted {
 		return
 	}
 	writeUsageLogUnsettledBestEffort(usageCtx, repo, usageLog, logKey)
@@ -687,6 +734,14 @@ func writeUsageLogUnsettledBestEffort(usageCtx context.Context, repo UsageLogRep
 
 	if _, err := repo.Create(usageCtx, usageLog); err != nil {
 		logger.LegacyPrintf(logKey, "Create usage log failed: %v", err)
+	}
+}
+
+func recordDurableUsageTiming(ctx context.Context, repo UsageLogRepository, usage *UsageLog) {
+	if recorder, ok := repo.(interface {
+		RecordRequestTiming(context.Context, string, int64)
+	}); ok && usage != nil {
+		recorder.RecordRequestTiming(ctx, usage.RequestID, usage.APIKeyID)
 	}
 }
 
@@ -776,7 +831,8 @@ func responseModelBillingAdoptable(baseline, response *CostBreakdown, baselineCh
 	if baseline == nil || response == nil {
 		return false
 	}
-	if response.TotalCost > baseline.TotalCost+responseModelBillingCostEpsilon {
+	if response.TotalCost > baseline.TotalCost+responseModelBillingCostEpsilon ||
+		response.ActualCost > baseline.ActualCost+responseModelBillingCostEpsilon {
 		return false
 	}
 	if response.TotalCost <= 0 && baseline.TotalCost > 0 {
@@ -828,6 +884,10 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 	ApplyForwardImageBillingResolution(result)
 	logServiceTierBillingDowngrade("service.gateway", account, result.RequestID, ApplyForwardServiceTierBillingResolution(result))
 
+	// 仅在管理员开启估算扣减且本次补入身份句时扣减用量。
+	// 放在强制缓存计费之前，按模型和上游汇总用量估算。
+	deductClaudeCodeMimicUsage(result)
+
 	// 强制缓存计费：将 input_tokens 转为 cache_read_input_tokens
 	// 用于粘性会话切换时的特殊计费处理
 	if input.ForceCacheBilling && result.Usage.InputTokens > 0 {
@@ -845,7 +905,8 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 		cacheTTLOverridden = (result.Usage.CacheCreation5mTokens + result.Usage.CacheCreation1hTokens) > 0
 	}
 
-	multiplier, imageMultiplier, pricingAt := s.recordUsageMultipliers(ctx, apiKey, user, input.PricingAt)
+	ctx = withModelBillingConfig(ctx, s.settingService)
+	multiplier, imageMultiplier, pricingAt := s.recordUsageMultipliers(ctx, apiKey, user, input.PricingAt, account)
 	billingModel := s.recordUsageBillingModel(ctx, apiKey, result, input.ChannelUsageFields)
 	cacheStorageCost := s.cacheStorageCost(result, billingModel)
 
@@ -894,6 +955,7 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 		usageLog.RequestType = RequestTypeCyberBlocked
 		usageLog.AuditSettlementImportedEvent = true
 	}
+	usageLog.RateMultiplier *= costModelBillingMultiplier(cost)
 
 	// 计算账号统计定价费用（使用最终上游模型匹配自定义规则）。纯存储费不是一次模型请求，
 	// 账号统计成本回落 total_cost（官方存储价）。
@@ -949,8 +1011,12 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 	}, s.billingDeps(), s.usageBillingRepo)
 
 	if billingErr != nil {
-		usageLog.ActualCost = 0
-		writeUsageLogBestEffort(WithoutCyberPolicyAuditUsage(ctx), s.usageLogRepo, usageLog, "service.gateway")
+		if !s.DurableUsageBillingEnabled() {
+			usageLog.ActualCost = 0
+			writeUsageLogBestEffort(WithoutCyberPolicyAuditUsage(ctx), s.usageLogRepo, usageLog, "service.gateway")
+		} else {
+			FailAuditSettlement(ctx)
+		}
 		return billingErr
 	}
 	if simpleModeKeyRateLimitOnly {
@@ -966,7 +1032,7 @@ func (s *GatewayService) recordUsageCore(ctx context.Context, input *recordUsage
 
 // recordUsageMultipliers 返回 token / 图片售价倍率（用户专属 > 分组默认 > 系统默认，token 倍率叠加高峰因子）
 // 与计价时刻；pricingAt 为零值时取当前时刻。
-func (s *GatewayService) recordUsageMultipliers(ctx context.Context, apiKey *APIKey, user *User, pricingAt time.Time) (float64, float64, time.Time) {
+func (s *GatewayService) recordUsageMultipliers(ctx context.Context, apiKey *APIKey, user *User, pricingAt time.Time, accounts ...*Account) (float64, float64, time.Time) {
 	multiplier := 1.0
 	if s.cfg != nil {
 		multiplier = s.cfg.Default.RateMultiplier
@@ -976,6 +1042,9 @@ func (s *GatewayService) recordUsageMultipliers(ctx context.Context, apiKey *API
 		if user != nil {
 			multiplier = s.ResolveUserGroupRateMultiplier(ctx, user.ID, *apiKey.GroupID, multiplier)
 		}
+	}
+	if len(accounts) > 0 && accounts[0] != nil {
+		multiplier *= accounts[0].UserGroupRateMultiplier()
 	}
 	// 高峰因子按请求时刻现算，不并入 getUserGroupRateMultiplier，以免污染 user:group 倍率缓存。
 	if pricingAt.IsZero() {
@@ -988,12 +1057,19 @@ func (s *GatewayService) recordUsageMultipliers(ctx context.Context, apiKey *API
 // recordUsageBillingModel 按计费模型来源、composite 规则与无价兜底确定计费模型。
 func (s *GatewayService) recordUsageBillingModel(ctx context.Context, apiKey *APIKey, result *ForwardResult, fields ChannelUsageFields) string {
 	concreteBillingModel := forwardResultBillingModel(result.Model, result.UpstreamModel)
+	requestedBillingModel := fields.OriginalModel
+	if fields.APIKeyMappedModel != "" {
+		requestedBillingModel = fields.APIKeyMappedModel
+	}
 	billingModel := concreteBillingModel
 	if fields.BillingModelSource == BillingModelSourceChannelMapped && fields.ChannelMappedModel != "" {
 		billingModel = fields.ChannelMappedModel
+		if !fields.ChannelMappingApplied && billingModel == fields.OriginalModel {
+			billingModel = requestedBillingModel
+		}
 	}
 	if fields.BillingModelSource == BillingModelSourceRequested && fields.OriginalModel != "" {
-		billingModel = fields.OriginalModel
+		billingModel = requestedBillingModel
 	}
 	// composite 分组的公开别名（如 all/claude）会经 OriginalModel/ChannelMappedModel
 	// 进入上面的来源覆盖：任意别名查无价会静默落 $0，含家族词的别名则被价格表的
@@ -1047,11 +1123,12 @@ func (s *GatewayService) CacheStoragePriced(ctx context.Context, input *RecordUs
 
 // QuoteUsageCost 按与 RecordUsage 相同的倍率、计费模型与定价计算 input.Result 的应付金额（倍率后 USD），不记录也不扣费。
 func (s *GatewayService) QuoteUsageCost(ctx context.Context, input *RecordUsageInput) float64 {
+	ctx = withModelBillingConfig(ctx, s.settingService)
 	user := input.User
 	if user == nil {
 		user = input.APIKey.User
 	}
-	multiplier, imageMultiplier, pricingAt := s.recordUsageMultipliers(ctx, input.APIKey, user, input.PricingAt)
+	multiplier, imageMultiplier, pricingAt := s.recordUsageMultipliers(ctx, input.APIKey, user, input.PricingAt, input.Account)
 	billingModel := s.recordUsageBillingModel(ctx, input.APIKey, input.Result, input.ChannelUsageFields)
 	cost := s.calculateRecordUsageCost(ctx, input.Result, input.APIKey, billingModel, multiplier, imageMultiplier, pricingAt)
 	if cost == nil {
@@ -1351,6 +1428,7 @@ func (s *GatewayService) calculateTokenCost(
 		logger.LegacyPrintf("service.gateway", "Calculate cost failed: %v", err)
 		return &CostBreakdown{ActualCost: 0}
 	}
+	applyModelBillingMultiplier(cost, s.settingService.modelBillingConfigForUsage(ctx), billingModel, apiKey.GroupID)
 	return cost
 }
 

@@ -181,7 +181,7 @@ func (s *OpenAIGatewayService) prepareOpenAIProxyPriority(ctx context.Context, r
 		if a.Platform != NormalizeOpenAICompatiblePlatform(req.Platform) || !a.IsSchedulableForModelWithContext(checkCtx, req.RequestedModel) {
 			return false
 		}
-		if !s.isOpenAIAccountTransportCompatible(a, req.RequiredTransport) {
+		if !s.isOpenAIAccountTransportCompatible(a, req.RequiredTransport, req.RequestedModel) {
 			return false
 		}
 		ok, _ := checker.isAccountRequestCompatibleReason(checkCtx, a, req)

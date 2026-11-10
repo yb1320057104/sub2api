@@ -18,6 +18,25 @@ func moderationRiskTestPolicy() *auditrisk.Policy {
 		LowAction: auditrisk.Allow, MediumAction: auditrisk.ChargeAllow, HighAction: auditrisk.Block}
 }
 
+func TestContentModerationRiskOptionalCategoriesRespectEnabledSetting(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		for _, category := range []string{"jailbreak", "control_bypass"} {
+			cfg := defaultContentModerationConfig()
+			cfg.Engine = ContentModerationEngineTypeSafe
+			cfg.Mode = ContentModerationModePreBlock
+			cfg.RiskPolicy = moderationRiskTestPolicy()
+			cfg.CategorySettings = map[string]ContentModerationCategorySetting{category: {Enabled: enabled}}
+			svc := &ContentModerationService{asyncQueue: make(chan contentModerationTask, 1)}
+			result := &moderationAPIResult{CategoryScores: map[string]float64{category: 1}}
+			decision := svc.apiRiskDecision(context.Background(), ContentModerationCheckInput{}, cfg,
+				ContentModerationInput{Text: "synthetic category fixture"}, result, 0, nil, true, false)
+			require.Equal(t, enabled, decision.Blocked)
+			require.Equal(t, enabled, decision.Flagged)
+			require.Equal(t, float64(1), result.CategoryScores[category], "disabled evidence remains visible without causing a penalty")
+		}
+	}
+}
+
 func TestContentModerationRiskConfigRoundTrip(t *testing.T) {
 	settings := &contentModerationTestSettingRepo{}
 	svc := &ContentModerationService{settingRepo: settings}

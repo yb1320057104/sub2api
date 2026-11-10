@@ -179,3 +179,49 @@ func pk50KiloMessagesRetryAccount() *Account {
 		Extra: map[string]any{AccountExtraKiloBridgeEnabled: true},
 	}
 }
+
+func TestKiloMessagesFixedKeyEffortPrecedesClientAliasPolicy(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, tc := range []struct {
+		name, extra, max, over, want string
+		denied                       bool
+	}{
+		{name: "client alias is replaced", extra: `,"output_config":{"effort":"ultra"}`, want: "high"},
+		{name: "omitted effort is recorded", want: "high"},
+		{name: "disabled thinking still uses key policy", extra: `,"thinking":{"type":"disabled"}`, want: "high"},
+		{name: "group ceiling still caps fixed effort", extra: `,"output_config":{"effort":"persistent"}`, max: "medium", over: "downgrade", want: "medium"},
+		{name: "group ceiling still denies fixed effort", extra: `,"output_config":{"effort":"ultra"}`, max: "medium", over: ReasoningEffortOverLimitDeny, denied: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			account := pk50KiloMessagesRetryAccount()
+			upstream := &httpUpstreamRecorder{responses: []*http.Response{openAICompatSSECompletedResponse("resp_fixed", "gpt-6-astra")}}
+			svc := &OpenAIGatewayService{cfg: &config.Config{}, httpUpstream: upstream}
+			body := []byte(`{"model":"client-model","max_tokens":64,"messages":[{"role":"user","content":"hello"}],"stream":false` + tc.extra + `}`)
+			original := append([]byte(nil), body...)
+			ctx := WithAPIKeyOpenAIReasoningEffortPolicy(context.Background(), "high", tc.max, []ReasoningEffortMapping{
+				{From: "ultra", To: ReasoningEffortMappingDeny},
+				{From: "persistent", To: ReasoningEffortMappingDeny},
+				{From: "high", To: ReasoningEffortMappingDeny},
+			}, tc.over)
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body)).WithContext(ctx)
+			result, err := svc.ForwardAsAnthropic(ctx, c, account, body, "", "")
+			require.Equal(t, original, body)
+			if tc.denied {
+				require.True(t, IsReasoningEffortPolicyDenied(err))
+				require.Equal(t, http.StatusForbidden, rec.Code)
+				require.Empty(t, upstream.requests)
+				return
+			}
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.Len(t, upstream.bodies, 1)
+			require.Equal(t, tc.want, gjson.GetBytes(upstream.bodies[0], "reasoning.effort").String())
+			require.NotNil(t, result.ReasoningEffort)
+			require.Equal(t, tc.want, *result.ReasoningEffort)
+			require.Equal(t, 5, result.Usage.InputTokens)
+			require.Equal(t, 2, result.Usage.OutputTokens)
+		})
+	}
+}

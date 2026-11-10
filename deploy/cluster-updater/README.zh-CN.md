@@ -18,7 +18,15 @@ GitHub 私库发布正式 Release 后，管理员在 `/cluster-update/` 确认�
 
 本控制器适配已经部署的两应用节点与专用存储集群：已接受的 gate/runtime、候选 Docker 规格、HAProxy 入口及 worker supervisor。它不是新机安装器；新站安装见 `deploy/cluster-kit/`。节点地址、域名、私钥、GitHub令牌和已运行容器身份从本机私有配置或现有运行记录读取，不进入源码。
 
-自动更新要求目标 Release 的迁移目录全部文件及 SHA256 与已审查 HA 基线一致，目前共348个文件，其中324份SQL。新增、删除或修改任一文件都会在构建和部署前拒绝，并提示 `cluster_migrations_require_compatibility_review`；需先审查新旧程序兼容性并维护新的 HA 基线。程序回滚不撤销迁移；不自动升级 PostgreSQL、Redis、etcd 或操作系统。
+默认仍要求目标 Release 的迁移目录全部文件及 SHA256 与已审查 HA 基线一致，共348个文件，其中324份SQL。发生变化且没有独立兼容回执时，在构建前拒绝并提示 `cluster_migrations_require_compatibility_review`。旧r4清单及安装包不修改；新增迁移通过下述每发布回执准入。程序回滚不撤销迁移；不自动升级 PostgreSQL、Redis、etcd 或操作系统。
+
+控制器私有配置可用 `migration_compatibility_receipts` 保存“确定源码commit → 已审核回执SHA256”。回执只能位于 `<root>/migration-receipts/<commit>.json`，证据只能位于同目录的 `<commit>.fresh.json`、`<commit>.upgrade.json`、`<commit>.rollback.json`；不能从Release内或构建目录读取自证JSON。Linux验证每层父目录及文件为root持有、无组/其他用户写权限、无软链接，回执文件还必须为单硬链接。管理员先完成真实隔离验证、审核证据，再将回执SHA写入私有控制器配置；本实现不生成已通过的空白回执。
+
+回执 `schema=1` 绑定 `source_commit`、原 `overlay_manifest_sha256`、完整 `candidate_migrations`（路径→SHA256）、原基线全部SQL的 `preserved_sql`，以及 `evidence` 三种场景的文件SHA256。旧SQL缺失或改字节仍拒绝。各证据绑定同一源码、`baseline_commit`、overlay与完整候选映射的规范JSON哈希 `candidate_migrations_sha256`，且声明真实隔离执行 `result=passed`、`isolated=true`、`production_changed=false`。`checks` 必须逐项为true：fresh包括 `fresh_migrations/current_application_ready`；upgrade包括 `baseline_to_candidate_migrations/old_application_compatibility/mixed_version_billing_invariants/current_application_ready`；rollback包括 `previous_application_after_new_schema/billing_idempotency_preserved/no_schema_rollback`。原始测试日志应与证据一并私下保留，不把生产数据写入公开回执。
+
+构建开始和结束均重新核对可信回执、证据与完整候选文件映射，HA overlay仍不得改迁移。制品manifest记录回执及证据SHA；构建中途任何候选、证据或overlay变化均拒绝。此门禁的定向测试使用合成数据，只验证准入逻辑，不能替代某次发布的实际fresh/upgrade/rollback验证。
+
+worker升级正常停止预算为15分钟：代理非阻塞请求systemd停止后，独立等待容器退出码0及旧supervisor进程退出，才写新配置、启动新worker；超时只拒绝，不发送SIGKILL。新supervisor候选的 `stop_grace_seconds=900`，协调器RPC覆盖正向及失败回退两次停止预算。发布前需核对worker单元 `KillMode=process`、`KillSignal=SIGTERM`、`SendSIGKILL=no`，`TimeoutStopSec` 至少900秒或infinity；旧90秒单元会被预检拒绝。修改停止预算采用已备份的限定systemd drop-in并daemon-reload，不因此重启worker。既有部署45秒supervisor先TERM后退出时，代理仍等待实际容器正常结束，不抢先启动替代进程。
 
 ## 运维
 
@@ -37,6 +45,8 @@ GitHub 私库发布正式 Release 后，管理员在 `/cluster-update/` 确认�
 历史r1候选回执没有 `revision` 字段时，代理补为1后仍通过原身份校验；名称必须精确属于r1，容器、镜像、规格、程序及网络等原有固定信息继续核对，不放宽其他候选代次。
 
 HA 补丁源由 `prepare_overlay.py` 从固定私库提交与已校验源码生成。更新器不读取开发者未提交的工作区改动。历史 ordinary-secondary 更新器保持停用发布能力。
+
+pk.61 的新接口使用独立 `overlays/pk61` 适配清单，不修改已发布 r4 包、补丁和 manifest。按该目录 README 使用 `prepare_candidate_overlay.py` 从完整已提交 commit 生成：核对原 overlay SHA、全部 96 路径的输入/输出 SHA 和固定补丁，再绑定候选 commit。构建器拒绝把该适配沿用到另一个 commit；源码改变需重新审阅。新适配仍保留原迁移映射，并须满足本文的真实迁移兼容回执要求。
 
 `patches/version-baseline.patch` 补充应用后台的版本比较修复：运行版本的严格 `-ha.YYYYMMDD.N` 或 `-secondary.YYYYMMDD.N` 后缀只在比较时归一到正式基线，实际版本显示和构建类型保持。未知／畸形后缀不归一；正式发行标签准入及非release构建禁止原地升级／回退的规则保持。生成器从已验证r4源码在隔离临时目录应用此补丁，核对补丁与修改前后SHA，最终生成96份合并输入（原94份加2份版本比较源码／测试），并加入独立版本比较测试组。原cluster-kit的r4清单和安装包保持。
 

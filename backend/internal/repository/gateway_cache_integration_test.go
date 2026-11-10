@@ -4,6 +4,7 @@ package repository
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,6 +21,52 @@ type GatewayCacheSuite struct {
 func (s *GatewayCacheSuite) SetupTest() {
 	s.IntegrationRedisSuite.SetupTest()
 	s.cache = NewGatewayCache(s.rdb)
+}
+
+func (s *GatewayCacheSuite) TestHTTPResponseOwnerSharedRecord() {
+	t := s.T()
+	// Two independent stores use the actual Redis adapter, not a local map.
+	writer := service.NewOpenAIWSStateStore(NewGatewayCache(s.rdb))
+	reader := service.NewOpenAIWSStateStore(NewGatewayCache(s.rdb))
+	require.NoError(t, writer.BindHTTPResponseOwner(s.ctx, 17, "resp_shared_fixture", 101, 201, time.Minute))
+	user, key, found, err := reader.GetHTTPResponseOwner(s.ctx, 17, "resp_shared_fixture")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.EqualValues(t, 101, user)
+	require.EqualValues(t, 201, key)
+	keys := httpResponseOwnerKeys(17, "resp_shared_fixture")
+	for _, ownerKey := range keys {
+		ttl, err := s.rdb.PTTL(s.ctx, ownerKey).Result()
+		require.NoError(t, err)
+		require.Greater(t, ttl, time.Duration(0))
+		require.LessOrEqual(t, ttl, time.Minute)
+	}
+	require.NoError(t, s.rdb.Set(s.ctx, keys[0], "v99:101:201", time.Minute).Err())
+	_, _, found, err = writer.GetHTTPResponseOwner(s.ctx, 17, "resp_shared_fixture")
+	require.ErrorIs(t, err, errHTTPResponseOwnerUnavailable)
+	require.False(t, found, "a warm writer must honor authoritative version rejection")
+	require.NoError(t, s.rdb.Del(s.ctx, keys...).Err())
+	_, _, found, err = writer.GetHTTPResponseOwner(s.ctx, 17, "resp_shared_fixture")
+	require.NoError(t, err)
+	require.False(t, found)
+}
+
+func (s *GatewayCacheSuite) TestWSNodeOwnerFencesForeignBoot() {
+	cache := &gatewayCache{rdb: s.rdb}
+	ref := service.WSNodeOwnerRef{GroupID: 17, APIKeyID: 101, AccountID: 201, ResponseID: "resp_ws_fixture"}
+	claimed, err := cache.ClaimWSNodeOwner(s.ctx, ref, "v1:node-a:boot-a:conn-digest-a", time.Minute)
+	require.NoError(s.T(), err)
+	require.True(s.T(), claimed)
+	claimed, err = cache.ClaimWSNodeOwner(s.ctx, ref, "v1:node-a:boot-b:conn-digest-a", time.Minute)
+	require.NoError(s.T(), err)
+	require.False(s.T(), claimed)
+	matched, err := cache.MatchesWSNodeOwner(s.ctx, ref, "v1:node-a:boot-a:conn-digest-a")
+	require.NoError(s.T(), err)
+	require.True(s.T(), matched)
+	require.NoError(s.T(), s.rdb.Del(s.ctx, wsNodeOwnerKey(ref)).Err())
+	matched, err = cache.MatchesWSNodeOwner(s.ctx, ref, "v1:node-a:boot-a:conn-digest-a")
+	require.NoError(s.T(), err)
+	require.False(s.T(), matched)
 }
 
 func (s *GatewayCacheSuite) TestGetSessionAccountID_Missing() {
@@ -105,4 +152,41 @@ func (s *GatewayCacheSuite) TestGetSessionAccountID_CorruptedValue() {
 
 func TestGatewayCacheSuite(t *testing.T) {
 	suite.Run(t, new(GatewayCacheSuite))
+}
+
+func (s *GatewayCacheSuite) TestIssue715AgentOwnership() {
+	cache := &gatewayCache{rdb: s.rdb}
+	other := &gatewayCache{rdb: s.rdb}
+	key := strings.Repeat("7", 64)
+	require.NoError(s.T(), cache.PublishOpenAIAgentRecovery(s.ctx, key, "route-a", time.Minute))
+	value, err := other.GetOpenAIAgentRecovery(s.ctx, key)
+	require.NoError(s.T(), err)
+	require.Equal(s.T(), "route-a", value)
+	require.NoError(s.T(), other.PublishOpenAIAgentRecovery(s.ctx, key, "route-b", 2*time.Minute))
+	require.NoError(s.T(), cache.PublishOpenAIAgentRecovery(s.ctx, key, "route-a", time.Second))
+	value, err = other.GetOpenAIAgentRecovery(s.ctx, key)
+	require.NoError(s.T(), err)
+	require.Equal(s.T(), "conflict", value, "real Redis must retain a conflict after further successes")
+	redisKey, err := openAIAgentRecoveryKey(key)
+	require.NoError(s.T(), err)
+	ttl, err := s.rdb.PTTL(s.ctx, redisKey).Result()
+	require.NoError(s.T(), err)
+	require.Greater(s.T(), ttl, time.Minute, "a shorter refresh must not truncate conflict retention")
+	require.NoError(s.T(), s.rdb.Del(s.ctx, redisKey).Err())
+	value, err = cache.GetOpenAIAgentRecovery(s.ctx, key)
+	require.NoError(s.T(), err)
+	require.Empty(s.T(), value)
+	pendingKey := strings.Repeat("d", 64)
+	require.NoError(s.T(), cache.ReserveOpenAIAgentRecovery(s.ctx, pendingKey, "route-a", "pending:first", time.Minute))
+	require.Error(s.T(), other.FinishOpenAIAgentRecovery(s.ctx, pendingKey, "route-a", "pending:other", false, time.Minute))
+	require.NoError(s.T(), other.FinishOpenAIAgentRecovery(s.ctx, pendingKey, "route-a", "pending:first", true, time.Minute))
+	raw, err := cache.GetOpenAIAgentRecovery(s.ctx, pendingKey)
+	require.NoError(s.T(), err)
+	require.Equal(s.T(), "route-a", raw)
+	require.NoError(s.T(), other.ReserveOpenAIAgentRecovery(s.ctx, pendingKey, "route-a", "pending:next", time.Minute))
+	require.NoError(s.T(), other.FinishOpenAIAgentRecovery(s.ctx, pendingKey, "route-a", "pending:next", false, time.Minute))
+	raw, err = cache.GetOpenAIAgentRecovery(s.ctx, pendingKey)
+	require.NoError(s.T(), err)
+	require.Equal(s.T(), "route-a", raw, "abort cannot revoke an existing grant")
+
 }

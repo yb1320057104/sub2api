@@ -1,30 +1,34 @@
-# Release matrix
+# Private release tools and retained upstream helpers
 
-The release workflow builds the frontend once, then runs each configured Go target on its own Linux runner. `CGO_ENABLED=0` permits cross-compilation. The target matrix is read from `.goreleaser.yaml`, including its exclusions; simple releases select Linux amd64 only.
+This directory retains upstream release-matrix utilities for source compatibility and review. It is not the release entry point for this private fork. Do not trigger an upstream `release.yml` workflow, use an Actions dry run as private release evidence, or infer that GHCR images were published from the presence of these scripts.
 
-Each build uses GoReleaser OSS in snapshot mode with the selected release version and one target. Archive naming, bundled files, Go flags and release templates remain in the existing GoReleaser configurations. Every archive is accompanied by its source commit, target, version and SHA256. The publishing job verifies the complete matrix before building images or publishing. It uses GoReleaser's `extra_files` support to publish existing archives and checksums, with builds disabled. No Pro license is needed.
+## Current private workflow
 
-Go caches are isolated by target and refreshed on each source commit, with fallback to the preceding target cache. Save uses the original restore key, even if a build hook changes `go.sum`. Matrix jobs upload uniquely named artifacts. The publishing job extracts only the regular Linux binary from each verified archive and restores its executable permission before constructing Docker contexts. QEMU remains limited to runtime-image instructions. DockerHub images are omitted when its credentials are absent; GHCR is always retained. Simple mode still publishes only the amd64 GHCR image and the simple release description.
+The current pk.61 authorization permits local builds followed by isolated verification on the server and publication of the verified package to the private `yb1320057104/sub2api` repository. See [project constraints](../../PROJECT_CONSTRAINTS.md), [maintenance](../../PK_MAINTENANCE.md), and the [pk.61 review](../../docs/PK_UPSTREAM_INTEGRATION_PK61_REVIEW.md) for the effective scope and actual progress. Jenkins remains an available runner when authorized; historical Jenkins-only instructions do not prohibit the current authorized local workflow.
 
-All build jobs use the commit resolved by `prepare`, including a manual release's selected tag. Helper scripts come from the workflow revision and are passed as a run-local artifact, so older application tags do not need to contain the new scripts. The workflow serializes release runs to prevent simultaneous updates to moving image tags.
+The package must retain its fixed source commit/tree, an unused formal `vX.Y.Z-pk.N` tag in private `main` history, the supported `linux/amd64` target, SHA256 inventory, and all eleven passing `pk-artifact-v2` runtime checks against the exact artifacts being published. The update archive and image must contain the same binary. Existing tags, Release assets, package profiles and evidence must not be rewritten or downgraded.
 
-## Validate without publication
-
-From a branch containing this workflow:
+[`deploy/local-release.py`](../../deploy/local-release.py) publishes already validated packages. It does not build, run Docker, deploy services, or push a registry image. With the required private credential supplied outside tracked files, its entries are:
 
 ```bash
-gh workflow run release.yml --ref <branch> \
-  -f tag=<branch> -f dry_run=true -f simple_release=false
+python deploy/local-release.py check --artifact-dir <sealed-package-directory>
+python deploy/local-release.py publish --artifact-dir <sealed-package-directory>
 ```
 
-A dry run builds all selected archives and both runtime images, verifies artifact provenance and produces the final checksum file. It exports images locally as OCI archives instead of pushing them. It skips registry logins, GitHub Release publication, DockerHub description updates, Telegram notifications and VERSION synchronization. Test the simple path separately with `simple_release=true`.
+`check` performs the artifact gates and read-only GitHub checks. `publish` stages a private copy, creates a new draft, uploads and verifies each asset, rechecks provenance and publishes. A failure may leave a draft for investigation; the tool does not overwrite or resume an existing Release. The Docker image archive is a Release asset for `docker load`, not evidence of a GHCR push. Check the selected Release's actual inventory before choosing a deployment source.
 
-Dry-run artifacts are available in the Actions run, including `release-dry-run-report`. Compare job start/end times, GoReleaser's build duration and cache restore results. Do not present an initial cold-cache run as a warmed-cache benchmark; publishing network time is not measured by dry runs.
+For the Jenkins runner, follow [its instructions](../../deploy/jenkins/README.md). A formal release uses `ACTION=release`, `SOURCE_REF=vX.Y.Z-pk.N` without `origin/`, and empty `COMMIT_SHA`/`PACKAGE_ID`. Production HA rollout is a separate controlled step under [cluster-updater review](../../docs/PK_CLUSTER_UPDATER_REVIEW.md); publishing a package does not establish that nodes are updated or healthy.
 
-Helper checks:
+## Scope of the retained helpers
+
+`release_matrix.py` reads GoReleaser target definitions and validates per-target archive metadata. `release-images.sh` contains the upstream image assembly/publication path. Their upstream assumptions, platform matrix, registry operations and workflow artifacts do not override this fork's private source, amd64, authorization or runtime gates.
+
+The helper checks below validate those utilities only. They do not build a private release, execute the eleven runtime checks, certify the current source tree, or establish production capacity:
 
 ```bash
 python -m pip install -r .github/release-tools/requirements-release.txt
 python -m unittest discover -s .github/release-tools -p 'test_release_matrix.py'
 bash -n .github/release-tools/release-images.sh
 ```
+
+No helper tests or publication commands were executed as part of this documentation correction. The actual build, verification and release results are recorded separately when completed.

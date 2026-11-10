@@ -212,6 +212,7 @@ func ProvideAccountHandler(
 	tokenCacheInvalidator service.TokenCacheInvalidator,
 	grokQuotaService *service.GrokQuotaService,
 	proxyRouter *service.AccountProxyRouter,
+	performance *service.AccountPerformanceService,
 ) *AccountHandler {
 	handler := NewAccountHandler(
 		adminService,
@@ -232,5 +233,6 @@ func ProvideAccountHandler(
 	handler.grokImportProber = grokQuotaService
 	handler.cfg = cfg
 	handler.SetProxyConcurrencyReader(proxyRouter)
+	handler.performance = performance
 	return handler
 }

@@ -24,6 +24,23 @@ func (s *OpenAIGatewayService) ForwardEmbeddings(
 	body []byte,
 	defaultMappedModel string,
 ) (*OpenAIForwardResult, error) {
+	managed := account.HasManagedOpenAIConnections()
+	if account != nil && account.Platform == PlatformOpenAI && s.excelOAuthReauth != nil {
+		if repo, ok := s.excelOAuthReauth.repo.(OpenAIAuthConnectionRepository); ok {
+			var err error
+			managed, err = repo.AuthConnectionsManaged(ctx, account.ID)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	if managed {
+		latest, err := s.admitOpenAITurn(ctx, c, account, gjson.GetBytes(body, "model").String(), body)
+		if err != nil {
+			return nil, err
+		}
+		account = latest
+	}
 	startTime := time.Now()
 
 	originalModel := strings.TrimSpace(gjson.GetBytes(body, "model").String())
@@ -86,6 +103,7 @@ func (s *OpenAIGatewayService) ForwardEmbeddings(
 	}
 
 	// 账号级请求头覆写（仅 openai api_key 账号启用时生效）
+	applyOpenAIAPIKeyIdentityHeaders(upstreamReq.Header, account, s.codexIdentityOverrideUA(account))
 	account.ApplyHeaderOverrides(upstreamReq.Header)
 
 	proxyURL := ""
@@ -171,6 +189,7 @@ func (s *OpenAIGatewayService) ForwardEmbeddings(
 	writeOpenAIEmbeddingsUpstreamResponse(c, resp, respBody, s.responseHeaderFilter, account)
 
 	return &OpenAIForwardResult{
+		AuthConnectionID: account.AuthConnectionID,
 		RequestID:       firstNonEmptyString(resp.Header.Get("x-request-id"), resp.Header.Get("request-id")),
 		UpstreamHeaders: resp.Header,
 		Usage:           usage,

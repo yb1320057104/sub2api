@@ -154,6 +154,9 @@ type WindowStats struct {
 	Cost         float64 `json:"cost"`
 	StandardCost float64 `json:"standard_cost"`
 	UserCost     float64 `json:"user_cost"`
+	// Lifetime totals (no time filter); only populated by today-stats queries.
+	LifetimeTokens int64   `json:"lifetime_tokens,omitempty"`
+	LifetimeCost   float64 `json:"lifetime_cost,omitempty"`
 }
 
 // UsageProgress 使用量进度
@@ -487,10 +490,12 @@ func (s *AccountUsageService) getUsageForAccount(ctx context.Context, account *A
 		return usage, nil
 	}
 
-	// Setup Token账号：根据session_window推算（没有profile scope，无法调用usage API）
+	// Setup Token 没有 profile scope，复用响应头采样的窗口数据，不能主动调用 usage API。
 	if account.Type == AccountTypeSetupToken {
+		if supportsAnthropicPassiveUsage(account) {
+			return s.getPassiveUsageForAccount(ctx, account)
+		}
 		usage := s.estimateSetupTokenUsage(account)
-		// 添加窗口统计
 		s.addWindowStats(ctx, account, usage)
 		return usage, nil
 	}
@@ -501,7 +506,7 @@ func (s *AccountUsageService) getUsageForAccount(ctx context.Context, account *A
 
 // GetUsage 获取账号使用量
 // OAuth账号: 调用Anthropic API获取真实数据（需要profile scope），API响应缓存10分钟，窗口统计缓存1分钟
-// Setup Token账号: 根据session_window推算5h窗口，7d数据不可用（没有profile scope）
+// Setup Token账号: 返回响应头采样的5h/7d窗口；无5h采样时回退到session_window估算
 // API Key账号: 不支持usage查询
 func (s *AccountUsageService) GetUsage(ctx context.Context, accountID int64, force ...bool) (*UsageInfo, error) {
 	forceProbe := len(force) > 0 && force[0]
@@ -730,16 +735,14 @@ func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Accou
 	applyExtraToUsage(usage, account.Extra, now)
 
 	if (force || shouldRefreshOpenAICodexSnapshot(account, usage, now)) && s.shouldProbeOpenAICodexSnapshot(account.ID, now, force) {
-		if account.IsShadow() {
-			// Spark shadow accounts fetch usage from /wham/usage (bengalfox channel)
-			// via the shared OpenAIQuotaService, which resolves credentials from the
-			// parent account.  The result is written to the shadow row's own codex_*
-			// Extra keys and immediately reflected in the returned UsageInfo.
+		if account.IsShadow() || account.IsExcelBPSEnabled() {
+			// BPS queries reuse quota OAuth authentication, never a model probe
+			// or the independent BPS grant. Spark resolves parent credentials
+			// but persists only its own bengalfox windows on the shadow row.
 			if s.openAIQuotaService != nil {
 				if quotaUsage, err := s.openAIQuotaService.QueryUsage(ctx, account.ID); err == nil {
-					if updates := buildCodexSparkWindowExtraUpdates(quotaUsage, now); len(updates) > 0 {
+					if updates := quotaUsage.schedulingUpdates; len(updates) > 0 {
 						mergeAccountExtra(account, updates)
-						s.persistOpenAICodexProbeSnapshot(account.ID, updates)
 						if account.ParentAccountID != nil {
 							notifyOpenAIAutoReset(*account.ParentAccountID)
 						}
@@ -802,11 +805,10 @@ func isOpenAICodexSnapshotStale(account *Account, now time.Time) bool {
 	if account == nil || !account.IsOpenAIOAuth() {
 		return false
 	}
-	// 普通账号的 codex 刷新走 probe(/responses 头),要求 WSv2;但 spark 影子走 QueryUsage
-	// (/wham/usage body 的 codex_bengalfox),与 WSv2 无关——不能用 WSv2 门控其 staleness,否则首刷后
-	// codex_5h/7d 已存在→staleness 恒 false→spark 窗口永久冻结(外审第9轮 P1)。影子改按
-	// codex_usage_updated_at TTL 判定;实际查询频率仍由 shouldProbeOpenAICodexSnapshot 的缓存 TTL 节流。
-	if !account.IsShadow() && !account.IsOpenAIResponsesWebSocketV2Enabled() {
+	// Native probes retain their WSv2 eligibility. BPS and Spark use the quota
+	// endpoint independently of transport; their complete windows still expire.
+	// shouldProbeOpenAICodexSnapshot bounds concurrent/stale automatic reads.
+	if !account.IsShadow() && !account.IsExcelBPSEnabled() && !account.IsOpenAIResponsesWebSocketV2Enabled() {
 		return false
 	}
 	if account.Extra == nil {
@@ -828,21 +830,26 @@ func (s *AccountUsageService) shouldProbeOpenAICodexSnapshot(accountID int64, no
 		return true
 	}
 	forceProbe := len(force) > 0 && force[0]
-	if !forceProbe {
-		if cached, ok := s.cache.openAIProbeCache.Load(accountID); ok {
-			if ts, ok := cached.(time.Time); ok && now.Sub(ts) < openAIProbeCacheTTL {
-				return false
-			}
+	for {
+		cached, loaded := s.cache.openAIProbeCache.LoadOrStore(accountID, now)
+		if !loaded {
+			return true
+		}
+		ts, valid := cached.(time.Time)
+		if !forceProbe && valid && now.Sub(ts) < openAIProbeCacheTTL {
+			return false
+		}
+		if s.cache.openAIProbeCache.CompareAndSwap(accountID, cached, now) {
+			return true
 		}
 	}
-	s.cache.openAIProbeCache.Store(accountID, now)
-	return true
 }
 
 func (s *AccountUsageService) probeOpenAICodexSnapshot(ctx context.Context, account *Account) (map[string]any, error) {
 	if account == nil || !account.IsOAuth() {
 		return nil, nil
 	}
+	observed := observeOpenAIQuotaRecovery(account, time.Now())
 	accessToken := ""
 	if !account.IsOpenAIAgentIdentity() {
 		accessToken = account.GetOpenAIAccessToken()
@@ -913,18 +920,27 @@ func (s *AccountUsageService) probeOpenAICodexSnapshot(ctx context.Context, acco
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	return s.persistOpenAICodexProbeResponse(account.ID, resp, observed)
+}
+
+func (s *AccountUsageService) persistOpenAICodexProbeResponse(accountID int64, resp *http.Response, observed *openAIQuotaRecoveryObservation) (map[string]any, error) {
 	updates, err := extractOpenAICodexProbeUpdates(resp)
 	if err != nil {
 		return nil, err
 	}
 	if len(updates) > 0 {
-		s.persistOpenAICodexProbeSnapshot(account.ID, updates)
+		// Error responses can carry zero-usage headers too. Keep their display
+		// snapshot, but never use them to undo the account's cooldown.
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			observed = nil
+		}
+		s.persistOpenAICodexProbeSnapshot(accountID, updates, observed)
 		return updates, nil
 	}
 	return nil, nil
 }
 
-func (s *AccountUsageService) persistOpenAICodexProbeSnapshot(accountID int64, updates map[string]any) {
+func (s *AccountUsageService) persistOpenAICodexProbeSnapshot(accountID int64, updates map[string]any, observed *openAIQuotaRecoveryObservation) {
 	if s == nil || s.accountRepo == nil || accountID <= 0 {
 		return
 	}
@@ -935,7 +951,8 @@ func (s *AccountUsageService) persistOpenAICodexProbeSnapshot(accountID int64, u
 	go func() {
 		updateCtx, updateCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer updateCancel()
-		if err := s.accountRepo.UpdateExtra(updateCtx, accountID, updates); err == nil {
+		if written, err := persistCodexUsageUpdates(updateCtx, s.accountRepo, accountID, updates); err == nil && written {
+			recoverOpenAIQuotaRateLimit(updateCtx, s.accountRepo, observed, updates)
 			notifyOpenAIAutoReset(accountID)
 		}
 	}()
@@ -1403,20 +1420,24 @@ func (s *AccountUsageService) addWindowStats(ctx context.Context, account *Accou
 	}
 }
 
-// GetTodayStats 获取账号今日统计
+// GetTodayStats 获取账号今日统计，并附带账号累计 Token/费用。
 func (s *AccountUsageService) GetTodayStats(ctx context.Context, accountID int64) (*WindowStats, error) {
 	stats, err := s.usageLogRepo.GetAccountTodayStats(ctx, accountID)
 	if err != nil {
 		return nil, fmt.Errorf("get today stats failed: %w", err)
 	}
 
-	return &WindowStats{
+	ws := &WindowStats{
 		Requests:     stats.Requests,
 		Tokens:       stats.Tokens,
 		Cost:         stats.Cost,
 		StandardCost: stats.StandardCost,
 		UserCost:     stats.UserCost,
-	}, nil
+	}
+	if lifetime, lerr := s.usageLogRepo.GetAccountWindowStats(ctx, accountID, time.Time{}); lerr == nil {
+		attachLifetimeStats(ws, lifetime)
+	}
+	return ws, nil
 }
 
 // GetTodayStatsBatch 批量获取账号今日统计，优先走批量 SQL，失败时回退单账号查询。
@@ -1443,8 +1464,13 @@ func (s *AccountUsageService) GetTodayStatsBatch(ctx context.Context, accountIDs
 	if batchReader, ok := s.usageLogRepo.(accountWindowStatsBatchReader); ok {
 		statsByAccount, err := batchReader.GetAccountWindowStatsBatch(ctx, uniqueIDs, startTime)
 		if err == nil {
+			lifetimeByAccount, lerr := batchReader.GetAccountWindowStatsBatch(ctx, uniqueIDs, time.Time{})
 			for _, accountID := range uniqueIDs {
-				result[accountID] = windowStatsFromAccountStats(statsByAccount[accountID])
+				ws := windowStatsFromAccountStats(statsByAccount[accountID])
+				if lerr == nil {
+					attachLifetimeStats(ws, lifetimeByAccount[accountID])
+				}
+				result[accountID] = ws
 			}
 			return result, nil
 		}
@@ -1471,8 +1497,13 @@ func (s *AccountUsageService) GetTodayStatsBatch(ctx context.Context, accountIDs
 	_ = g.Wait()
 
 	for _, accountID := range uniqueIDs {
-		if _, ok := result[accountID]; !ok {
-			result[accountID] = &WindowStats{}
+		ws, ok := result[accountID]
+		if !ok {
+			ws = &WindowStats{}
+			result[accountID] = ws
+		}
+		if lifetime, err := s.usageLogRepo.GetAccountWindowStats(ctx, accountID, time.Time{}); err == nil {
+			attachLifetimeStats(ws, lifetime)
 		}
 	}
 	return result, nil
@@ -1489,6 +1520,14 @@ func windowStatsFromAccountStats(stats *usagestats.AccountStats) *WindowStats {
 		StandardCost: stats.StandardCost,
 		UserCost:     stats.UserCost,
 	}
+}
+
+func attachLifetimeStats(ws *WindowStats, lifetime *usagestats.AccountStats) {
+	if ws == nil || lifetime == nil {
+		return
+	}
+	ws.LifetimeTokens = lifetime.Tokens
+	ws.LifetimeCost = lifetime.Cost
 }
 
 func buildCodexUsageProgressFromExtra(extra map[string]any, window string, now time.Time) *UsageProgress {
@@ -1773,7 +1812,6 @@ func (s *AccountUsageService) estimateSetupTokenUsage(account *Account) *UsageIn
 		}
 	}
 
-	// Setup Token无法获取7d数据
 	return info
 }
 

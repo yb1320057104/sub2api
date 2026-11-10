@@ -1126,6 +1126,37 @@ func TestAccountTestService_OpenAI429BodyOnlyPersistsRateLimitAndClearsStaleErro
 	require.Empty(t, repo.updatedExtra)
 }
 
+func TestAccountTestService_OpenAIAPIKey429DoesNotSyncUpstreamPlanType(t *testing.T) {
+	for _, currentPlan := range []string{"", "plus"} {
+		for _, errorType := range []string{"usage_limit_reached", "rate_limit_exceeded"} {
+			t.Run(currentPlan+"/"+errorType, func(t *testing.T) {
+				repo := &openAIAccountTestRepo{}
+				svc := &AccountTestService{accountRepo: repo}
+				credentials := map[string]any{"api_key": "test-key"}
+				if currentPlan != "" {
+					credentials["plan_type"] = currentPlan
+				}
+				account := &Account{ID: 82, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Credentials: credentials}
+				body := []byte(`{"error":{"type":"` + errorType + `","plan_type":"pro","resets_at":4102444800}}`)
+
+				svc.reconcileOpenAI429State(context.Background(), account, http.Header{}, body)
+
+				require.Empty(t, repo.bulkUpdatedIDs)
+				require.Nil(t, repo.bulkUpdatedPayload.Credentials)
+				require.Equal(t, currentPlan, account.GetCredential("plan_type"))
+				if currentPlan == "" {
+					require.NotContains(t, account.Credentials, "plan_type")
+				}
+				require.Equal(t, AccountTypeAPIKey, account.Type)
+				require.Equal(t, "test-key", account.GetCredential("api_key"))
+				require.Zero(t, repo.rateLimitedID)
+				require.Nil(t, account.RateLimitedAt)
+				require.Nil(t, account.RateLimitResetAt)
+			})
+		}
+	}
+}
+
 func TestAccountTestService_OpenAI429SyncsObservedPlanType(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx, _ := newTestContext()
@@ -1503,6 +1534,29 @@ func TestPKAccountCandyHTTP200CompleteJSONIsNotReplayed(t *testing.T) {
 				require.Contains(t, probe.text, "21")
 			}
 			require.False(t, accountCandyCanChangeProxy(err), "complete answer or upstream error must never replay")
+		})
+	}
+}
+
+func TestAccountTestService_AstraSourceProbeDoesNotChangeSchedulingState(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusTooManyRequests} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			ctx, _ := newTestContext()
+			ctx.Request = ctx.Request.WithContext(WithAstraSourceAcquisition(ctx.Request.Context()))
+			resp := newJSONResponse(status, `{"error":{"type":"usage_limit_reached","resets_at":1999999999}}`)
+			resp.Header.Set("x-codex-primary-used-percent", "100")
+			resp.Header.Set("x-codex-primary-reset-after-seconds", "3600")
+			repo := &openAIAccountTestRepo{}
+			svc := &AccountTestService{accountRepo: repo, httpUpstream: &queuedHTTPUpstream{responses: []*http.Response{resp}}}
+			account := &Account{ID: 88, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Status: StatusActive, Schedulable: true, Concurrency: 1, Credentials: map[string]any{"access_token": "test-token"}}
+			require.Error(t, svc.testOpenAIAccountConnection(ctx, account, "gpt-6-astra", "Reply OK", ""))
+			require.Zero(t, repo.setErrorID)
+			require.Zero(t, repo.rateLimitedID)
+			require.Zero(t, repo.clearedErrorID)
+			require.Empty(t, repo.updatedExtra)
+			require.Equal(t, StatusActive, account.Status)
+			require.True(t, account.Schedulable)
+			require.Nil(t, account.RateLimitResetAt)
 		})
 	}
 }

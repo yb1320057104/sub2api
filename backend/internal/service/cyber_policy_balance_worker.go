@@ -39,7 +39,7 @@ func newCyberPolicyBalanceWorker(db *sql.DB, cache cyberBalanceInvalidator) *Cyb
 func ProvideCyberPolicyBalanceWorker(db *sql.DB, cache *BillingCacheService, accounts AccountRepository, upstream HTTPUpstream, cfg *config.Config) *CyberPolicyBalanceWorker {
 	w := newCyberPolicyBalanceWorker(db, cache)
 	w.imports = newAuditSettlementImportWorker(db, accounts, upstream, cfg)
-	startBackgroundAfterActivation("CyberPolicyBalanceWorker", w.Start)
+	startBackgroundService(cfg, w)
 	return w
 }
 

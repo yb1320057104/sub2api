@@ -1,5 +1,20 @@
 export default {
   intelligenceTest: {
+    quality: {
+      title: '降智检测',
+      scopeHint: '展示所选分组已经保存的糖果题检测。答案异常只代表本次题目结果，不代表全部业务请求或模型的永久能力；检测失败、无法判定和号池空不计为答错。',
+      cadence: '每 {minutes} 分钟检测',
+      disabled: '糖果题检测未开启，暂无开放的检测结果。',
+      waiting: '暂无检测记录，等待后台定时检测。',
+      historyCount: '最近 {count} 条真实记录，最多 {limit} 条；灰色空位表示未检测',
+      latestCheck: '最近检测：{time}',
+      notChecked: '未检测',
+      legend: '检测状态图例',
+      states: {
+        correct: '正常', incorrect: '答案异常', error: '检测失败', unknown: '无法判定',
+        empty_pool: '号池空', running: '检测中', stale: '结果已过期',
+      },
+    },
     title: '智商测试',
     description: '查看各分组最近的 SVG 作品与糖果题测试结果。',
     homeEyebrow: '模型实测',

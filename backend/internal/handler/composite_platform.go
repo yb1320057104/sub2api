@@ -8,6 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 func ensureCompositeTargetPlatform(c *gin.Context, apiKey *service.APIKey, model string) {
@@ -140,21 +141,35 @@ func stampForwardRequestedReasoningEffort(result *service.ForwardResult, request
 }
 
 func applyOpenAIReasoningEffortPolicyForRequest(c *gin.Context, apiKey *service.APIKey, body []byte) ([]byte, bool, error) {
-	bindRequestedReasoningEffort(c, body, strings.TrimSpace(gjson.GetBytes(body, "model").String()))
+	requestModel := clientRequestedModel(c, gjson.GetBytes(body, "model").String())
+	bindRequestedReasoningEffort(c, body, requestModel)
 	maxEffort, mappings, overLimit, ok := openAIReasoningEffortPolicyForRequest(c, apiKey)
 	if !ok {
 		return body, false, nil
 	}
+	forced := ""
+	if apiKey != nil && effectiveAPIKeyPlatform(c, apiKey) == service.PlatformOpenAI {
+		forced = apiKey.ReasoningEffort
+	}
+	if forced != "" {
+		updated, changed, err := service.ApplyAPIKeyOpenAIReasoningEffortPolicy(body, forced, maxEffort, mappings, overLimit, requestModel)
+		if err == nil && c != nil && c.Request != nil {
+			// Fixed key preferences replace group remaps; retain the one-pass
+			// marker for later account-specific wire adaptation.
+			ctx := service.WithOpenAIReasoningEffortPolicy(c.Request.Context(), maxEffort, nil, overLimit, requestModel)
+			ctx = service.WithAppliedOpenAIReasoningEffortPolicy(ctx, updated)
+			c.Request = c.Request.WithContext(ctx)
+		}
+		return updated, changed, err
+	}
 	if c != nil && c.Request != nil {
-		// Account selection happens later. Preserve the policy and its applied
-		// state so Kilo adaptation cannot chain a second mapping.
-		ctx := service.WithOpenAIReasoningEffortPolicy(c.Request.Context(), maxEffort, mappings, overLimit)
-		ctx = service.WithReasoningEffortRequestModel(ctx, gjson.GetBytes(body, "model").String())
+		ctx := service.WithOpenAIReasoningEffortPolicy(c.Request.Context(), maxEffort, mappings, overLimit, requestModel)
+		ctx = service.WithReasoningEffortRequestModel(ctx, requestModel)
 		ctx = service.WithAppliedOpenAIReasoningEffortPolicy(ctx, body)
 		c.Request = c.Request.WithContext(ctx)
 		return service.ApplyOpenAIReasoningEffortPolicyAtIngress(ctx, body)
 	}
-	return service.ApplyOpenAIReasoningEffortPolicy(body, maxEffort, mappings, overLimit)
+	return service.ApplyOpenAIReasoningEffortPolicy(body, maxEffort, mappings, overLimit, requestModel)
 }
 
 func respondOpenAIReasoningEffortPolicyError(c *gin.Context, err error, write func(*gin.Context, int, string, string)) {
@@ -173,23 +188,43 @@ func applyAnthropicReasoningEffortPolicyForRequest(c *gin.Context, apiKey *servi
 	return service.ApplyReasoningEffortPolicy(body, maxEffort, mappings, overLimit)
 }
 
-func bindOpenAIReasoningEffortPolicyForMessagesRequest(c *gin.Context, apiKey *service.APIKey, body []byte) {
+func prepareOpenAIReasoningEffortPolicyForMessagesRequest(c *gin.Context, apiKey *service.APIKey, body []byte) ([]byte, error) {
 	if c == nil || c.Request == nil {
-		return
+		return body, nil
 	}
-	bindRequestedReasoningEffort(c, body, strings.TrimSpace(gjson.GetBytes(body, "model").String()))
+	requestModel := clientRequestedModel(c, gjson.GetBytes(body, "model").String())
+	bindRequestedReasoningEffort(c, body, requestModel)
+	maxEffort, mappings, overLimit, ok := openAIReasoningEffortPolicyForRequest(c, apiKey)
+	if !ok {
+		return body, nil
+	}
+	if apiKey.ReasoningEffort != "" && effectiveAPIKeyPlatform(c, apiKey) == service.PlatformOpenAI {
+		c.Request = c.Request.WithContext(service.WithAPIKeyOpenAIReasoningEffortPolicy(c.Request.Context(), apiKey.ReasoningEffort, maxEffort, mappings, overLimit, requestModel))
+		return body, nil
+	}
 	// The Messages bridge synthesizes a default OpenAI effort when
 	// output_config.effort is omitted. Bind the group policy only for an
 	// explicit client value so the ceiling does not alter that default.
 	effort := gjson.GetBytes(body, "output_config.effort")
 	if !effort.Exists() || effort.Type != gjson.String || strings.TrimSpace(effort.String()) == "" {
-		return
+		// An explicit ultra model suffix is a client preference, not a bridge
+		// default. Enforce it before conversion or account/model normalization.
+		requested := service.CanonicalRequestedReasoningEffort(nil, requestModel)
+		if requested == nil || *requested != "ultra" {
+			return body, nil
+		}
+		payload, err := sjson.SetBytes(body, "output_config.effort", "ultra")
+		if err != nil {
+			return body, err
+		}
+		updated, changed, err := service.ApplyReasoningEffortPolicy(payload, maxEffort, mappings, overLimit, requestModel)
+		if err != nil || !changed {
+			return body, err
+		}
+		// Do not bind the policy again: a second mapping after conversion could
+		// turn ultra -> high -> low instead of applying one mapping.
+		return updated, nil
 	}
-	maxEffort, mappings, overLimit, ok := openAIReasoningEffortPolicyForRequest(c, apiKey)
-	if !ok {
-		return
-	}
-	ctx := service.WithOpenAIReasoningEffortPolicy(c.Request.Context(), maxEffort, mappings, overLimit)
-	ctx = service.WithReasoningEffortRequestModel(ctx, gjson.GetBytes(body, "model").String())
-	c.Request = c.Request.WithContext(ctx)
+	c.Request = c.Request.WithContext(service.WithOpenAIReasoningEffortPolicy(c.Request.Context(), maxEffort, mappings, overLimit, requestModel))
+	return body, nil
 }

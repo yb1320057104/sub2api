@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent } from 'vue'
+import { createRouter, createMemoryHistory, type Router } from 'vue-router'
 import { flushPromises, mount } from '@vue/test-utils'
 import type { PromptAuditConfig, PromptAuditDraft, PromptAuditRuntime, PromptAuditUpdateRequest } from '../types'
 import { SCANNER_CATALOG } from '../viewModel'
@@ -54,10 +55,10 @@ const FilterDeleteStub = defineComponent({
   template: '<div v-if="show" data-test="filter-delete-dialog"><button data-test="dialog-preview" @click="$emit(\'preview\', { ...initialFilters, start_at: \'2026-07-15T00:00\', end_at: \'2026-07-16T00:00\' })">run</button><button data-test="dialog-confirm" @click="$emit(\'confirm\', { ...initialFilters, start_at: \'2026-07-15T00:00\', end_at: \'2026-07-16T00:00\' })">confirm</button><span data-test="dialog-preview-state">{{ preview ? preview.matched_count : \'none\' }}</span></div>',
 })
 
-function mountView(props: { embedded?: boolean; eventsOnly?: boolean } = {}) {
+function mountView(props: { embedded?: boolean; eventsOnly?: boolean } = {}, router?: Router) {
   return mount(PromptAuditView, {
     props,
-    global: { stubs: { AppLayout: AppLayoutStub, RuntimeOverview: RuntimeStub, EndpointPool: EndpointStub, PolicyPanel: PolicyStub, EventWorkspace: EventsStub, EventDetailDialog: DetailStub, FilterDeleteDialog: FilterDeleteStub, ConfirmDialog: ConfirmStub } },
+    global: { plugins: router ? [router] : [], stubs: { SecurityAuditNav: true, IPAuditPanel: { template: '<div data-testid="ip-audit-panel" />' }, AppLayout: AppLayoutStub, RuntimeOverview: RuntimeStub, EndpointPool: EndpointStub, PolicyPanel: PolicyStub, PenaltyPolicyPanel: true, EventWorkspace: EventsStub, EventDetailDialog: DetailStub, FilterDeleteDialog: FilterDeleteStub, ConfirmDialog: ConfirmStub } },
   })
 }
 
@@ -275,6 +276,25 @@ describe('PromptAuditView', () => {
     expect(wrapper.getComponent(LocalRulePanel).props('draft').engine).toBe('remote')
     expect(wrapper.find('[data-test="endpoint"]').exists()).toBe(true)
     expect(mocks.probeEndpoint).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('keeps only prompt events/config in the page and delegates security navigation', async () => {
+    const wrapper = mountView(); await flushPromises()
+    expect(wrapper.find('[data-test="tab-ip"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="ip-audit-panel"]').exists()).toBe(false)
+    expect(wrapper.getComponent({ name: 'SecurityAuditNav' }).attributes('active')).toBe('/admin/prompt-audit/operations')
+    expect(wrapper.findAll('[role="tab"]')).toHaveLength(2)
+    wrapper.unmount()
+  })
+
+  it('keeps configuration deep links on the prompt page without loading IP audit', async () => {
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/admin/prompt-audit', component: PromptAuditView }] })
+    await router.push('/admin/prompt-audit?tab=config'); await router.isReady()
+    const wrapper = mountView({}, router); await flushPromises()
+    expect(wrapper.get('[data-test="tab-config"]').attributes('aria-selected')).toBe('true')
+    expect(wrapper.find('[data-testid="ip-audit-panel"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="save-config"]').exists()).toBe(true)
     wrapper.unmount()
   })
 

@@ -80,7 +80,7 @@ func TestUserFacingGroupDTOsAreLocalized(t *testing.T) {
 		source, err := os.ReadFile(file)
 		require.NoError(t, err)
 		for i, line := range strings.Split(string(source), "\n") {
-			if !mapperCall.MatchString(line) {
+			if !mapperCall.MatchString(line) || strings.Contains(line, "dto.UsageLogFromServiceAdmin(") {
 				continue
 			}
 			checked++
@@ -89,4 +89,13 @@ func TestUserFacingGroupDTOsAreLocalized(t *testing.T) {
 		}
 	}
 	require.NotZero(t, checked, "expected to find user-facing group DTO call sites")
+}
+
+func TestLocalizedPlazaPreservesDeniedModels(t *testing.T) {
+	visible := []service.PlazaGroup{{ID: 1, Name: "标准", I18n: service.GroupI18n{"en": {Name: "Standard"}}, Models: []service.PlazaModel{{Name: "allowed"}, {Name: "denied"}}}}
+	out := toLocalizedModelPlazaGroups(visible, nil, "en", map[int64][]string{1: {"denied"}})
+	require.Equal(t, "Standard", out[0].Name)
+	require.Len(t, out[0].Models, 1)
+	require.Equal(t, "allowed", out[0].Models[0].Name)
+	require.Len(t, visible[0].Models, 2)
 }

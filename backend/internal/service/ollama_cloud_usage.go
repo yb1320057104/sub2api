@@ -380,19 +380,20 @@ type OllamaCloudUsageService struct {
 	encryptor               SecretEncryptor
 	encryptionKeyConfigured bool
 
-	parentCtx    context.Context
-	parentCancel context.CancelFunc
-	wg           sync.WaitGroup
-	mu           sync.Mutex
-	started      bool
-	stopped      bool
-	cycleMu      sync.Mutex
-	refreshGroup singleflight.Group
-	refreshSlots chan struct{}
-	now          func() time.Time
-	lockCache    LeaderLockCache
-	db           *sql.DB
-	instanceID   string
+	parentCtx         context.Context
+	parentCancel      context.CancelFunc
+	wg                sync.WaitGroup
+	mu                sync.Mutex
+	started           bool
+	backgroundStarted bool
+	stopped           bool
+	cycleMu           sync.Mutex
+	refreshGroup      singleflight.Group
+	refreshSlots      chan struct{}
+	now               func() time.Time
+	lockCache         LeaderLockCache
+	db                *sql.DB
+	instanceID        string
 
 	// Event-triggered rate-limit probe coordination. A single background
 	// coordinator (started in Start, waited by Stop) fans out model-429 probe
@@ -442,24 +443,36 @@ func ProvideOllamaCloudUsageService(
 	svc := NewOllamaCloudUsageService(accountRepo, httpUpstream, settingService, encryptor, keyConfigured)
 	svc.lockCache = lockCache
 	svc.db = db
-	svc.Start()
+	svc.start(false)
+	StartBackgroundJob(cfg, "OllamaCloudUsageScan", func() { svc.start(true) })
 	return svc
 }
 
 func (s *OllamaCloudUsageService) Start() {
+	s.start(true)
+}
+
+// Per-request probe work stays local; periodic account scans belong to full nodes.
+func (s *OllamaCloudUsageService) start(background bool) {
 	if s == nil {
 		return
 	}
 	s.mu.Lock()
-	if s.started || s.stopped {
+	if s.stopped {
 		s.mu.Unlock()
 		return
 	}
-	s.started = true
-	s.wg.Add(2)
+	if !s.started {
+		s.started = true
+		s.wg.Add(1)
+		go s.probeLoop()
+	}
+	if background && !s.backgroundStarted {
+		s.backgroundStarted = true
+		s.wg.Add(1)
+		go s.runLoop()
+	}
 	s.mu.Unlock()
-	go s.runLoop()
-	go s.probeLoop()
 }
 
 func (s *OllamaCloudUsageService) Stop() {

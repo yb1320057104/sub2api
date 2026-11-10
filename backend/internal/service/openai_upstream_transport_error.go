@@ -119,14 +119,31 @@ func (s *OpenAIGatewayService) handleOpenAIUpstreamTransportError(ctx context.Co
 		MarkOpsClientBusinessLimited(c, "proxy_capacity_unavailable")
 		return failure
 	}
+	var phaseTimeout *openAIHTTPPhaseTimeout
+	if errors.As(err, &phaseTimeout) {
+		return handleOpenAIHTTPPhaseError(c, account, err)
+	}
+	if routeErr, ok := s.astraRouteFailover(ctx, account, err).(*UpstreamFailoverError); ok {
+		return routeErr
+	}
+	if IsOpenAITurnAdmissionError(err) || IsOpenAIRPMError(err) {
+		return err
+	}
+	if errors.Is(err, ErrCodexTicketResponseRejected) {
+		if c != nil && !c.Writer.Written() {
+			c.AbortWithStatusJSON(http.StatusBadGateway, gin.H{"error": gin.H{"type": "ticket_response_rejected", "message": err.Error()}})
+		}
+		return err // terminal: never convert an already-sent request into failover
+	}
 	if isClientCanceledTransportError(ctx, err) {
 		return err
 	}
 	safeErr := sanitizeUpstreamErrorMessage(err.Error())
 	setOpsUpstreamError(c, 0, safeErr, "")
+	proxyID, proxyName := runtimeProxyErrorAttribution(account, err)
 	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
-		ProxyID:            opsUpstreamProxyID(account),
-		ProxyName:          opsUpstreamProxyName(account),
+		ProxyID:            proxyID,
+		ProxyName:          proxyName,
 		Platform:           account.Platform,
 		AccountID:          account.ID,
 		AccountName:        account.Name,

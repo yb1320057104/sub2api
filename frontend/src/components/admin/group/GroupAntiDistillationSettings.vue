@@ -4,6 +4,7 @@
       <h4 class="text-sm font-medium text-gray-900 dark:text-gray-100">
         {{ t('admin.groups.antiDistillation.title') }}
       </h4>
+      <NewFeatureBadge v-if="userId != null" :notice-id="NEW_FEATURE_NOTICES.groupAntiDistillation" :user-id="userId" />
     </div>
     <p class="text-xs text-gray-500 dark:text-gray-400">{{ t('admin.groups.antiDistillation.rule') }}</p>
     <p class="mt-2 text-xs text-amber-700 dark:text-amber-300">{{ t('admin.groups.antiDistillation.signalHint') }}</p>
@@ -88,14 +89,17 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { adminAPI } from '@/api/admin'
 import Toggle from '@/components/common/Toggle.vue'
+import NewFeatureBadge from '@/components/common/NewFeatureBadge.vue'
+import { NEW_FEATURE_NOTICES } from '@/constants/newFeatureNotices'
 import UserAllowlistSelector from '@/components/admin/user/UserAllowlistSelector.vue'
 import { useAppStore } from '@/stores/app'
 import { extractApiErrorMessage } from '@/utils/apiError'
 
 const props = withDefaults(defineProps<{
   groupId: number
+  userId?: number | null
   active?: boolean
-}>(), { active: true })
+}>(), { active: true, userId: null })
 
 const { t } = useI18n()
 const appStore = useAppStore()

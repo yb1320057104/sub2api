@@ -14,7 +14,12 @@ func requiresSystemChatRole(account *Account, targetURL, upstreamModel string) b
 		return false
 	}
 	switch account.Platform {
-	case PlatformDeepseek, PlatformKimi, PlatformZhipu:
+	case PlatformDeepseek, PlatformKimi, PlatformZhipu, PlatformMistral:
+		return true
+	}
+	// OpenCode multiplexes providers: only its DeepSeek models require system.
+	// Use the mapped outbound model and selected destination, not the client alias.
+	if (account.IsOpenCodeGo() || isOfficialOpenCodeHost(targetURL)) && isDeepSeekCatalogModel(upstreamModel) {
 		return true
 	}
 	// OpenCode multiplexes providers: only its DeepSeek models require system.

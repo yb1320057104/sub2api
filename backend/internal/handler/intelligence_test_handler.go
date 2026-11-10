@@ -104,6 +104,40 @@ func (h *IntelligenceTestHandler) Results(c *gin.Context) {
 	response.Success(c, results)
 }
 
+// QualityGroups and QualityResults are authenticated, read-only projections.
+// Unlike administrator history, both respect the current public display scope.
+func (h *IntelligenceTestHandler) QualityGroups(c *gin.Context) {
+	if _, ok := intelligenceTestSubject(c, false); !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	defer cancel()
+	groups, err := h.service.ListQualityGroups(ctx)
+	if err != nil {
+		response.InternalError(c, "读取降智检测分组失败")
+		return
+	}
+	response.Success(c, groups)
+}
+
+func (h *IntelligenceTestHandler) QualityResults(c *gin.Context) {
+	if _, ok := intelligenceTestSubject(c, false); !ok {
+		return
+	}
+	groupID, err := strconv.ParseInt(c.Query("group_id"), 10, 64)
+	if err != nil || groupID <= 0 {
+		response.BadRequest(c, "请选择有效测试分组")
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	defer cancel()
+	history, err := h.service.QualityHistory(ctx, groupID)
+	if response.ErrorFrom(c, err) {
+		return
+	}
+	response.Success(c, history)
+}
+
 func (h *IntelligenceTestHandler) GetConfig(c *gin.Context) {
 	if _, ok := intelligenceTestSubject(c, true); !ok {
 		return

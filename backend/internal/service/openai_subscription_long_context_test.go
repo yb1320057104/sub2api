@@ -176,6 +176,10 @@ func TestCalculateCostUnified_ModelLongContextExemptionPreservesCustomIntervals(
 			cost, err = service.CalculateCostUnified(input)
 			require.NoError(t, err)
 			require.InDelta(t, 3.6, cost.TotalCost, 1e-12, "管理员显式区间价格应保留")
+			input.DisableModelLongContextPricing = false
+			cost, err = service.CalculateCostUnified(input)
+			require.NoError(t, err)
+			require.InDelta(t, 3.6, cost.TotalCost, 1e-12, "显式区间优先于默认长上下文价卡")
 		}
 	}
 }
@@ -252,5 +256,135 @@ func TestOpenAIGatewayServiceRecordUsage_GPT61SolExemptionSurvivesRepricing(t *t
 				require.InDelta(t, standardCost*2, *usageRepo.lastLog.AccountStatsCost, 1e-12)
 			})
 		}
+	}
+}
+
+func TestOpenAIGPT61SolLongContextExempt(t *testing.T) {
+	oauth := &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+	apiKey := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+	for _, tt := range []struct {
+		name    string
+		account *Account
+		result  *OpenAIForwardResult
+		tokens  UsageTokens
+		want    bool
+	}{
+		{name: "空账号", result: &OpenAIForwardResult{Model: "gpt-6.1-sol"}},
+		{name: "空结果", account: oauth},
+		{name: "订阅", account: oauth, result: &OpenAIForwardResult{Model: "gpt-6.1-sol"}, want: true},
+		{name: "别名", account: oauth, result: &OpenAIForwardResult{Model: "openai/GPT_6.1_SOL-max"}, want: true},
+		{name: "压缩", account: oauth, result: &OpenAIForwardResult{Model: "gpt-6.1-sol-openai-compact"}, want: true},
+		{name: "映射到目标", account: oauth, result: &OpenAIForwardResult{Model: "custom", UpstreamModel: "gpt-6.1-sol"}, want: true},
+		{name: "映射离开目标", account: oauth, result: &OpenAIForwardResult{Model: "gpt-6.1-sol", UpstreamModel: "gpt-6-sol"}},
+		{name: "仅计费标签相同", account: oauth, result: &OpenAIForwardResult{Model: "gpt-6-sol", BillingModel: "gpt-6.1-sol"}},
+		{name: "仅响应标签相同", account: oauth, result: &OpenAIForwardResult{Model: "gpt-6-sol", UpstreamResponseModel: "gpt-6.1-sol"}},
+		{name: "其他模型", account: oauth, result: &OpenAIForwardResult{Model: "gpt-6-astra"}},
+		{name: "相似名称", account: oauth, result: &OpenAIForwardResult{Model: "gpt-6.1-sol-preview"}},
+		{name: "订阅刚好 500k", account: oauth, result: &OpenAIForwardResult{Model: "gpt-6.1-sol"}, tokens: UsageTokens{InputTokens: 500_000}, want: true},
+		{name: "订阅超过 500k", account: oauth, result: &OpenAIForwardResult{Model: "gpt-6.1-sol"}, tokens: UsageTokens{InputTokens: 500_001}, want: true},
+		{name: "订阅缓存越过 500k", account: oauth, result: &OpenAIForwardResult{Model: "gpt-6.1-sol"}, tokens: UsageTokens{InputTokens: 400_000, CacheReadTokens: 100_000, CacheCreationTokens: 1}, want: true},
+		{name: "订阅访问令牌刚好 500k", account: &Account{Platform: PlatformOpenAI, Type: AccountTypeSetupToken}, result: &OpenAIForwardResult{Model: "gpt-6.1-sol"}, tokens: UsageTokens{InputTokens: 500_000}, want: true},
+		{name: "订阅访问令牌超过 500k", account: &Account{Platform: PlatformOpenAI, Type: AccountTypeSetupToken}, result: &OpenAIForwardResult{Model: "gpt-6.1-sol"}, tokens: UsageTokens{InputTokens: 500_001}, want: true},
+		{name: "API Key", account: apiKey, result: &OpenAIForwardResult{Model: "gpt-6.1-sol"}},
+		{name: "API Key 别名", account: apiKey, result: &OpenAIForwardResult{Model: "openai/GPT_6.1_SOL-max"}},
+		{name: "API Key 压缩", account: apiKey, result: &OpenAIForwardResult{Model: "gpt-6.1-sol-openai-compact"}},
+		{name: "API Key 映射到目标", account: apiKey, result: &OpenAIForwardResult{Model: "custom", UpstreamModel: "gpt-6.1-sol"}},
+		{name: "API Key 超过 500k 仍不豁免", account: apiKey, result: &OpenAIForwardResult{Model: "gpt-6.1-sol"}, tokens: UsageTokens{InputTokens: 500_001}},
+		{name: "API Key 映射离开目标", account: apiKey, result: &OpenAIForwardResult{Model: "gpt-6.1-sol", UpstreamModel: "gpt-6-sol"}},
+		{name: "API Key 仅计费标签", account: apiKey, result: &OpenAIForwardResult{Model: "gpt-6-sol", BillingModel: "gpt-6.1-sol"}},
+		{name: "API Key 仅响应标签", account: apiKey, result: &OpenAIForwardResult{Model: "gpt-6-sol", UpstreamResponseModel: "gpt-6.1-sol"}},
+		{name: "API Key 其他模型", account: apiKey, result: &OpenAIForwardResult{Model: "gpt-6-sol"}},
+		{name: "API Key Astra", account: apiKey, result: &OpenAIForwardResult{Model: "gpt-6-astra"}},
+		{name: "API Key 相似名称", account: apiKey, result: &OpenAIForwardResult{Model: "gpt-6.1-sol-preview"}},
+		{name: "其他平台", account: &Account{Platform: PlatformGrok, Type: AccountTypeOAuth}, result: &OpenAIForwardResult{Model: "gpt-6.1-sol"}},
+		{name: "其他平台 API Key", account: &Account{Platform: PlatformGrok, Type: AccountTypeAPIKey}, result: &OpenAIForwardResult{Model: "gpt-6.1-sol"}},
+		{name: "订阅访问令牌", account: &Account{Platform: PlatformOpenAI, Type: AccountTypeSetupToken}, result: &OpenAIForwardResult{Model: "gpt-6.1-sol"}, want: true},
+		{name: "上游透传不豁免", account: &Account{Platform: PlatformOpenAI, Type: AccountTypeUpstream}, result: &OpenAIForwardResult{Model: "gpt-6.1-sol"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, openAIGPT61SolLongContextExempt(tt.account, tt.result, tt.tokens))
+		})
+	}
+}
+
+// 同时覆盖远程目录更新、静态兜底、旧计费入口和分组入口，校验真实扣款与账号成本。
+
+func TestOpenAIGatewayServiceRecordUsage_GPT61SolSubscriptionCacheKeepsExemption(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		usage    OpenAIUsage
+		wantLong bool
+	}{
+		{name: "缓存使总输入刚好 500k", usage: OpenAIUsage{InputTokens: 500000, CacheReadInputTokens: 200000, OutputTokens: 1000}},
+		{name: "缓存使总输入超过 500k", usage: OpenAIUsage{InputTokens: 500001, CacheReadInputTokens: 100000, CacheCreationInputTokens: 1, OutputTokens: 1000}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+			svc := newOpenAIRecordUsageServiceForTest(usageRepo, &openAIRecordUsageUserRepoStub{}, &openAIRecordUsageSubRepoStub{}, nil)
+			err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
+				Result: &OpenAIForwardResult{RequestID: tt.name, Model: "gpt-6.1-sol", Duration: time.Second, Usage: tt.usage},
+				APIKey: openAIRecordUsageAPIKeyWithGroup(svc, 1, true), User: &User{ID: 2},
+				Account: &Account{ID: 3, Platform: PlatformOpenAI, Type: AccountTypeOAuth,
+					Extra: map[string]any{openAILongContextBillingEnabledKey: true}},
+			})
+			require.NoError(t, err)
+			require.Equal(t, tt.wantLong, usageRepo.lastLog.LongContextBillingApplied)
+		})
+	}
+}
+
+func TestOpenAIGatewayServiceRecordUsage_GPT61SolSubscriptionAbove500kMatchesAccountStats(t *testing.T) {
+	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+	userRepo := &openAIRecordUsageUserRepoStub{}
+	svc := newOpenAIRecordUsageServiceForTest(usageRepo, userRepo, &openAIRecordUsageSubRepoStub{}, nil)
+	apiKey := openAIRecordUsageAPIKeyWithGroup(svc, 1, true)
+	apiKey.GroupID = i64p(1)
+	apiKey.Group.RateMultiplier = 1.1
+	svc.channelService = newTestChannelServiceForStats(t, &Channel{ID: 1, Status: StatusActive}, 1, PlatformOpenAI)
+	err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
+		Result: &OpenAIForwardResult{RequestID: "sub-500k", Model: "gpt-6.1-sol", Duration: time.Second,
+			Usage: OpenAIUsage{InputTokens: 500001, OutputTokens: 2000}},
+		APIKey: apiKey, User: &User{ID: 2},
+		Account: &Account{ID: 3, Platform: PlatformOpenAI, Type: AccountTypeSetupToken,
+			Extra: map[string]any{openAILongContextBillingEnabledKey: true}},
+	})
+	require.NoError(t, err)
+	const base = 500001*2e-6 + 2000*10e-6
+	require.False(t, usageRepo.lastLog.LongContextBillingApplied)
+	require.InDelta(t, base, usageRepo.lastLog.TotalCost, 1e-9)
+	require.InDelta(t, base*1.1, usageRepo.lastLog.ActualCost, 1e-9)
+	require.InDelta(t, base*1.1, userRepo.lastAmount, 1e-9)
+	require.NotNil(t, usageRepo.lastLog.AccountStatsCost)
+	require.InDelta(t, base, *usageRepo.lastLog.AccountStatsCost, 1e-9)
+}
+
+func TestOpenAIGatewayServiceRecordUsage_APIKeyGPT61SolUsesPKLongContextThreshold(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		model     string
+		upstream  string
+		wantLong  bool
+		wantTotal float64
+	}{
+		{name: "API Key Sol", model: "gpt-6.1-sol", wantLong: false, wantTotal: 0.62},
+		{name: "API Key 别名映射到 Sol", model: "custom", upstream: "gpt-6.1-sol", wantLong: false, wantTotal: 0.62},
+		{name: "API Key Sol 售价仍未超过自身门槛", model: "gpt-6.1-sol", upstream: "gpt-6-sol", wantLong: false, wantTotal: 0.62},
+		{name: "API Key 非 Sol", model: "gpt-6-sol", wantLong: true, wantTotal: 1.23},
+		{name: "API Key Astra", model: "gpt-6-astra", wantLong: true, wantTotal: 6.15},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+			svc := newOpenAIRecordUsageServiceForTest(usageRepo, &openAIRecordUsageUserRepoStub{}, &openAIRecordUsageSubRepoStub{}, nil)
+			err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
+				Result: &OpenAIForwardResult{RequestID: tt.name, Model: tt.model, UpstreamModel: tt.upstream,
+					Usage: OpenAIUsage{InputTokens: 300000, OutputTokens: 2000}, Duration: time.Second},
+				APIKey: openAIRecordUsageAPIKeyWithGroup(svc, 1, true), User: &User{ID: 2},
+				Account: &Account{ID: 3, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+					Extra: map[string]any{openAILongContextBillingEnabledKey: true}},
+			})
+			require.NoError(t, err)
+			require.Equal(t, tt.wantLong, usageRepo.lastLog.LongContextBillingApplied)
+			require.InDelta(t, tt.wantTotal, usageRepo.lastLog.TotalCost, 1e-12)
+		})
 	}
 }

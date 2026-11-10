@@ -52,6 +52,8 @@ func scopedAdminUsageLogResponse(record *service.UsageLog) gin.H {
 		"duration_ms":                  usage.DurationMs,
 		"first_token_ms":               usage.FirstTokenMs,
 		"first_response_ms":            usage.FirstResponseMs,
+		"queue_wait_ms":                usage.QueueWaitMs,
+		"queue_timing":                 usage.QueueTiming,
 		"image_count":                  usage.ImageCount,
 		"image_size":                   usage.ImageSize,
 		"image_input_size":             usage.ImageInputSize,

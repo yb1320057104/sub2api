@@ -5,10 +5,13 @@ import (
 	"errors"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
+	"github.com/Wei-Shaw/sub2api/internal/requestcapture"
 	coderws "github.com/coder/websocket"
 )
 
 type openAIWSClientReadResult struct {
+	receivedAt  time.Time
 	messageType coderws.MessageType
 	payload     []byte
 	err         error
@@ -34,6 +37,19 @@ func ReadOpenAIWSClientMessage(
 	)
 }
 
+type openAIWSFrameArrivalKey struct{}
+
+// ReadOpenAIWSClientMessageWithArrival samples receipt before capture/preflight
+// work. Existing callers keep the original read API and legacy timer baseline.
+func ReadOpenAIWSClientMessageWithArrival(controlCtx context.Context, conn *coderws.Conn, timeout time.Duration, status coderws.StatusCode, reason string) (coderws.MessageType, []byte, time.Time, error) {
+	if controlCtx == nil {
+		controlCtx = context.Background()
+	}
+	var arrival time.Time
+	kind, payload, err := ReadOpenAIWSClientMessage(context.WithValue(controlCtx, openAIWSFrameArrivalKey{}, &arrival), conn, timeout, status, reason)
+	return kind, payload, arrival, err
+}
+
 // readOpenAIWSClientMessageWithTimeoutStart supports readers whose timeout
 // starts after a state transition, such as a completed passthrough turn. When
 // timeoutActive is nil, a positive timeout starts immediately.
@@ -56,7 +72,7 @@ func readOpenAIWSClientMessageWithTimeoutStart(
 	readDone := make(chan openAIWSClientReadResult, 1)
 	go func() {
 		messageType, payload, err := conn.Read(context.Background())
-		readDone <- openAIWSClientReadResult{messageType: messageType, payload: payload, err: err}
+		readDone <- openAIWSClientReadResult{messageType: messageType, payload: payload, err: err, receivedAt: requesttiming.Now(controlCtx)}
 	}()
 
 	var timer *time.Timer
@@ -97,6 +113,14 @@ func readOpenAIWSClientMessageWithTimeoutStart(
 	for {
 		select {
 		case result := <-readDone:
+			if result.err == nil {
+				if arrival, ok := controlCtx.Value(openAIWSFrameArrivalKey{}).(*time.Time); ok {
+					*arrival = result.receivedAt
+				}
+				capture := requestcapture.FromContext(controlCtx)
+				capture.SetProtocol("websocket")
+				capture.ClientFrame(result.payload)
+			}
 			return result.messageType, result.payload, result.err
 		case <-timeoutStart:
 			startTimeout()
@@ -104,7 +128,7 @@ func readOpenAIWSClientMessageWithTimeoutStart(
 			return closeAndJoin(timeoutStatus, timeoutReason, context.DeadlineExceeded)
 		case <-controlCtx.Done():
 			cause := context.Cause(controlCtx)
-			if errors.Is(cause, ErrOpenAIWSIngressLeaseLost) {
+			if errors.Is(cause, ErrOpenAIWSIngressLeaseLost) || errors.Is(cause, ErrAPIKeySlotLeaseLost) {
 				return closeAndJoin(
 					coderws.StatusTryAgainLater,
 					"websocket ingress capacity lease lost; please reconnect",

@@ -144,10 +144,22 @@
               <button class="text-xs text-primary-600 hover:underline dark:text-primary-400" :disabled="proxyPoliciesLoading || !proxyPoliciesLoaded || proxyPolicyBusy.has(row.id)" @click="openGroupProxyPolicy([row.id])">{{ t('admin.proxyGroups.configure') }}</button>
             </div>
           </template>
-          <template #cell-name="{ value }">
+          <template #cell-name="{ value, row }">
             <span class="font-medium text-gray-900 dark:text-white">{{
               value
             }}</span>
+            <span
+              v-if="row.codex_cli_only"
+              class="badge badge-warning ml-2"
+              data-testid="group-codex-cli-only-badge"
+              >{{ t("admin.groups.form.codexCLIOnly") }}</span
+            >
+            <span
+              v-if="row.stream_only"
+              class="badge badge-warning ml-2"
+              data-testid="group-stream-only-badge"
+              >{{ t("admin.groups.form.streamOnlyBadge") }}</span
+            >
           </template>
 
           <template #cell-id="{ value }">
@@ -463,6 +475,17 @@
                 }}</span>
               </button>
               <button
+                v-if="!authStore.isSimpleMode"
+                data-testid="group-user-denied-models"
+                @click="handleUserDeniedModels(row)"
+                class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-red-600 dark:hover:bg-dark-700 dark:hover:text-red-400"
+              >
+                <Icon name="ban" size="sm" />
+                <span class="text-xs">{{
+                  t("admin.groups.userDeniedModels")
+                }}</span>
+              </button>
+              <button
                 @click="handleDelete(row)"
                 class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-900/20 dark:hover:text-red-400"
               >
@@ -659,8 +682,48 @@
           <p class="input-hint">{{ t("admin.groups.form.rpmLimitHint") }}</p>
         </div>
         <div v-if="createForm.platform === 'openai'" class="rounded-lg border border-gray-200 p-4 dark:border-dark-600">
-          <h4 class="text-sm font-medium text-gray-900 dark:text-gray-100">{{ t("admin.groups.antiDistillation.title") }}</h4>
+          <div class="flex flex-wrap items-center gap-2">
+            <h4 class="text-sm font-medium text-gray-900 dark:text-gray-100">{{ t("admin.groups.antiDistillation.title") }}</h4>
+            <NewFeatureBadge
+              v-if="authStore.user?.id != null"
+              :notice-id="NEW_FEATURE_NOTICES.groupAntiDistillation"
+              :user-id="authStore.user?.id"
+            />
+          </div>
           <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">{{ t("admin.groups.antiDistillation.createHint") }}</p>
+        </div>
+        <div class="flex items-start justify-between gap-4">
+          <div>
+            <label class="input-label">{{ t("admin.groups.form.codexCLIOnly") }}</label>
+            <p class="input-hint">{{ t("admin.groups.form.codexCLIOnlyHint") }}</p>
+          </div>
+          <Toggle
+            data-testid="create-codex-cli-only"
+            :aria-label="t('admin.groups.form.codexCLIOnly')"
+            v-model="createForm.codex_cli_only"
+          />
+        </div>
+        <div class="flex items-start justify-between gap-4">
+          <div>
+            <label class="input-label">{{ t("admin.groups.form.blockSubagents") }}</label>
+            <p class="input-hint">{{ t("admin.groups.form.blockSubagentsHint") }}</p>
+          </div>
+          <Toggle
+            data-testid="create-block-subagents"
+            :aria-label="t('admin.groups.form.blockSubagents')"
+            v-model="createForm.block_subagents"
+          />
+        </div>
+        <div class="flex items-start justify-between gap-4">
+          <div>
+            <label class="input-label">{{ t("admin.groups.form.streamOnly") }}</label>
+            <p class="input-hint">{{ t("admin.groups.form.streamOnlyHint") }}</p>
+          </div>
+          <Toggle
+            data-testid="create-stream-only"
+            :aria-label="t('admin.groups.form.streamOnly')"
+            v-model="createForm.stream_only"
+          />
         </div>
         <ReasoningEffortPolicyFields
           v-if="supportsReasoningEffortPolicyPlatform(createForm.platform)"
@@ -1079,6 +1142,11 @@
           </p>
         </div>
 
+        <MiniMaxH3VideoPricing
+          v-if="createForm.platform === 'minimax'"
+          v-model="createForm.video_model_prices"
+          :multiplier="createForm.rate_multiplier"
+        />
         <!-- 视频生成计费配置（仅 Grok 平台） -->
         <div
           v-if="supportsVideoPricingPlatform(createForm.platform)"
@@ -2317,8 +2385,42 @@
         <GroupAntiDistillationSettings
           v-if="editForm.platform === 'openai'"
           :group-id="editingGroup.id"
+          :user-id="authStore.user?.id"
           :active="showEditModal"
         />
+        <div class="flex items-start justify-between gap-4">
+          <div>
+            <label class="input-label">{{ t("admin.groups.form.codexCLIOnly") }}</label>
+            <p class="input-hint">{{ t("admin.groups.form.codexCLIOnlyHint") }}</p>
+          </div>
+          <Toggle
+            data-testid="edit-codex-cli-only"
+            :aria-label="t('admin.groups.form.codexCLIOnly')"
+            v-model="editForm.codex_cli_only"
+          />
+        </div>
+        <div class="flex items-start justify-between gap-4">
+          <div>
+            <label class="input-label">{{ t("admin.groups.form.blockSubagents") }}</label>
+            <p class="input-hint">{{ t("admin.groups.form.blockSubagentsHint") }}</p>
+          </div>
+          <Toggle
+            data-testid="edit-block-subagents"
+            :aria-label="t('admin.groups.form.blockSubagents')"
+            v-model="editForm.block_subagents"
+          />
+        </div>
+        <div class="flex items-start justify-between gap-4">
+          <div>
+            <label class="input-label">{{ t("admin.groups.form.streamOnly") }}</label>
+            <p class="input-hint">{{ t("admin.groups.form.streamOnlyHint") }}</p>
+          </div>
+          <Toggle
+            data-testid="edit-stream-only"
+            :aria-label="t('admin.groups.form.streamOnly')"
+            v-model="editForm.stream_only"
+          />
+        </div>
         <ReasoningEffortPolicyFields
           v-if="supportsReasoningEffortPolicyPlatform(editForm.platform)"
           ref="editReasoningEffortPolicyRef"
@@ -2738,6 +2840,11 @@
           </p>
         </div>
 
+        <MiniMaxH3VideoPricing
+          v-if="editForm.platform === 'minimax'"
+          v-model="editForm.video_model_prices"
+          :multiplier="editForm.rate_multiplier"
+        />
         <!-- 视频生成计费配置（仅 Grok 平台） -->
         <div
           v-if="supportsVideoPricingPlatform(editForm.platform)"
@@ -4319,6 +4426,14 @@
       @success="loadGroups"
     />
     <GroupProxyPolicyDialog :show="showGroupProxyPolicy" :group-ids="proxyPolicyGroupIDs" :initial-policy="initialProxyPolicy" @close="showGroupProxyPolicy = false" @saved="handleGroupProxyPolicySaved" />
+
+    <!-- Group User Denied Models Modal -->
+    <GroupUserDeniedModelsModal
+      :show="showUserDeniedModelsModal"
+      :group="userDeniedModelsGroup"
+      @close="showUserDeniedModelsModal = false"
+      @success="loadGroups"
+    />
   </AppLayout>
 </template>
 
@@ -4347,6 +4462,7 @@ import {
 } from "@/constants/platforms";
 import type { Column } from "@/components/common/types";
 import AppLayout from "@/components/layout/AppLayout.vue";
+import MiniMaxH3VideoPricing from "./MiniMaxH3VideoPricing.vue";
 import TablePageLayout from "@/components/layout/TablePageLayout.vue";
 import DataTable from "@/components/common/DataTable.vue";
 import Pagination from "@/components/common/Pagination.vue";
@@ -4365,6 +4481,9 @@ import GroupAntiDistillationSettings from "@/components/admin/group/GroupAntiDis
 import GroupProxyPolicyDialog from "@/components/admin/group/GroupProxyPolicyDialog.vue";
 import { listGroupProxyPolicies, updateGroupProxyPolicy, type GroupProxyPolicy } from "@/api/admin/proxyGroups";
 import { useTableSelection } from "@/composables/useTableSelection";
+import NewFeatureBadge from "@/components/common/NewFeatureBadge.vue";
+import { NEW_FEATURE_NOTICES } from "@/constants/newFeatureNotices";
+import GroupUserDeniedModelsModal from "@/components/admin/group/GroupUserDeniedModelsModal.vue";
 import GroupCapacityBadge from "@/components/common/GroupCapacityBadge.vue";
 import ReasoningEffortPolicyFields from "@/components/admin/group/ReasoningEffortPolicyFields.vue";
 import CodexManifestAccountsField from "@/components/admin/group/CodexManifestAccountsField.vue";
@@ -4948,6 +5067,8 @@ const showRateMultipliersModal = ref(false);
 const rateMultipliersGroup = ref<AdminGroup | null>(null);
 const showRPMOverridesModal = ref(false);
 const rpmOverridesGroup = ref<AdminGroup | null>(null);
+const showUserDeniedModelsModal = ref(false);
+const userDeniedModelsGroup = ref<AdminGroup | null>(null);
 const sortableGroups = ref<AdminGroup[]>([]);
 type ConcreteGroupPlatform = Exclude<GroupPlatform, "composite">;
 type CompositeRouteFormState = {
@@ -5105,6 +5226,10 @@ const createForm = reactive({
   // 账号过滤控制（OpenAI/Antigravity 平台）
   require_oauth_only: false,
   require_privacy_set: false,
+  // 仅允许流式请求
+  stream_only: false,
+  codex_cli_only: false,
+  block_subagents: false,
   // 模型路由开关
   model_routing_enabled: false,
   // 支持的模型系列（仅 antigravity 平台）
@@ -5473,6 +5598,10 @@ const editForm = reactive({
   // 账号过滤控制（OpenAI/Antigravity 平台）
   require_oauth_only: false,
   require_privacy_set: false,
+  // 仅允许流式请求
+  stream_only: false,
+  codex_cli_only: false,
+  block_subagents: false,
   // 模型路由开关
   model_routing_enabled: false,
   // 支持的模型系列（仅 antigravity 平台）
@@ -5937,6 +6066,9 @@ const closeCreateModal = () => {
   createForm.allow_live = false;
   createForm.require_oauth_only = false;
   createForm.require_privacy_set = false;
+  createForm.stream_only = false;
+  createForm.codex_cli_only = false;
+  createForm.block_subagents = false;
   createForm.supported_model_scopes = ["claude", "gemini_text", "gemini_image"];
   createForm.mcp_xml_inject = true;
   createForm.copy_accounts_from_group_ids = [];
@@ -6247,6 +6379,9 @@ const handleEdit = async (group: AdminGroup) => {
     messagesDispatchFormState.exact_model_mappings;
   editForm.require_oauth_only = group.require_oauth_only ?? false;
   editForm.require_privacy_set = group.require_privacy_set ?? false;
+  editForm.stream_only = group.stream_only ?? false;
+  editForm.codex_cli_only = group.codex_cli_only ?? false;
+  editForm.block_subagents = group.block_subagents ?? false;
   editForm.model_routing_enabled = group.model_routing_enabled || false;
   editForm.supported_model_scopes = group.supported_model_scopes || [
     "claude",
@@ -6555,6 +6690,11 @@ const handleRateMultipliers = (group: AdminGroup) => {
 const handleRPMOverrides = (group: AdminGroup) => {
   rpmOverridesGroup.value = group;
   showRPMOverridesModal.value = true;
+};
+
+const handleUserDeniedModels = (group: AdminGroup) => {
+  userDeniedModelsGroup.value = group;
+  showUserDeniedModelsModal.value = true;
 };
 
 const handleDuplicate = async (group: AdminGroup) => {

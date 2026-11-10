@@ -283,8 +283,9 @@ func TestPKCacheConversionInflightBillingPreservesOriginalContext(t *testing.T) 
 		outputMultiplier float64
 		longContext      bool
 	}{
-		{name: "at threshold", inputTokens: 272000, inputMultiplier: 1, outputMultiplier: 1},
-		{name: "above threshold", inputTokens: 272001, inputMultiplier: 2, outputMultiplier: 1.5, longContext: true},
+		{name: "old upstream threshold", inputTokens: 272001, inputMultiplier: 1, outputMultiplier: 1},
+		{name: "at threshold", inputTokens: 500000, inputMultiplier: 1, outputMultiplier: 1},
+		{name: "above threshold", inputTokens: 500001, inputMultiplier: 2, outputMultiplier: 1.5, longContext: true},
 	} {
 		t.Run(tier.name, func(t *testing.T) {
 			for _, conversion := range []struct {
@@ -381,7 +382,7 @@ func TestPKCacheConversionInflightBillingPreservesOriginalContext(t *testing.T) 
 					require.InDelta(t, wantOutputCost, log.OutputCost, 1e-12)
 					require.InDelta(t, wantTotalCost, log.TotalCost, 1e-12)
 					require.InDelta(t, wantActualCost, log.ActualCost, 1e-12)
-					require.Equal(t, tier.longContext, log.LongContextBillingApplied, "tier must use the original 272000/272001 context even when conversion crosses the threshold")
+					require.Equal(t, tier.longContext, log.LongContextBillingApplied, "tier must use the original context and the PK 500000 boundary even when conversion crosses the threshold")
 					require.Equal(t, 1, billingRepo.calls)
 					require.NotNil(t, billingRepo.lastCmd)
 					require.InDelta(t, wantActualCost, billingRepo.lastCmd.BalanceCost, 1e-12)
@@ -559,6 +560,7 @@ func TestPKEarlyHeartbeat_WireUsageAndBillingParity(t *testing.T) {
 							}
 							upstreamTTFT := 21920
 							result := &OpenAIForwardResult{RequestID: "pk-early-billing", Model: model, UpstreamModel: model, Usage: *observed, Stream: true, FirstTokenMs: &upstreamTTFT}
+							beforeBilling := time.Now().UTC()
 							require.NoError(t, svc.RecordUsage(timingCtx, &OpenAIRecordUsageInput{
 								Result: result, APIKey: key, User: user, Account: account, Subscription: subscription,
 								APIKeyService: &openAIRecordUsageAPIKeyQuotaStub{}, PricingAt: pricingAt,
@@ -606,13 +608,19 @@ func TestPKEarlyHeartbeat_WireUsageAndBillingParity(t *testing.T) {
 								require.Len(t, cache.subscriptionCosts, 1)
 								snapshot.subscriptionBits = math.Float64bits(<-cache.subscriptionCosts)
 								require.Equal(t, math.Float64bits(log.ActualCost), snapshot.subscriptionBits)
+								require.True(t, command.PlatformUsageAt.IsZero(), "subscription billing must not consume platform balance quota")
 							} else {
 								require.Zero(t, command.SubscriptionCost)
 								require.Equal(t, command.APIKeyQuotaCost, command.BalanceCost)
 								require.Equal(t, int32(1), cache.deducts.Load())
 								require.Equal(t, startingBalance-log.ActualCost, balance)
 								require.Empty(t, cache.subscriptionCosts)
+								require.False(t, command.PlatformUsageAt.Before(beforeBilling))
+								require.False(t, command.PlatformUsageAt.After(time.Now().UTC()))
 							}
+							// Each independent observation has its own wall-clock timestamp;
+							// validate its range above, then compare the financial command.
+							snapshot.command.PlatformUsageAt = time.Time{}
 							require.Equal(t, math.Float64bits(log.ActualCost), snapshot.rateLimitBits)
 							if baseline == nil {
 								baseline = &snapshot
@@ -846,7 +854,9 @@ func TestOpenAIUsageProtectionExcludesPartialAndNonTextRequests(t *testing.T) {
 	}{
 		{"unknown cache", func(r *OpenAIForwardResult) { r.Usage.CacheReadKnown = false }},
 		{"missing usage", func(r *OpenAIForwardResult) { r.Usage = OpenAIUsage{} }},
+		{"unavailable usage", func(r *OpenAIForwardResult) { r.UsageUnavailable = true }},
 		{"disconnect", func(r *OpenAIForwardResult) { r.ClientDisconnect = true }},
+		{"read interrupted", func(r *OpenAIForwardResult) { r.streamReadIncomplete = true }},
 		{"failed websocket", func(r *OpenAIForwardResult) { r.OpenAIWSMode = true; r.UpstreamTerminalEvent = "response.failed" }},
 		{"image", func(r *OpenAIForwardResult) { r.ImageCount = 1 }},
 		{"image input", func(r *OpenAIForwardResult) { r.Usage.ImageInputTokens = 1 }},
@@ -904,9 +914,9 @@ func TestOpenAIUsageProtectionCCFallbackRequiresCompletedGeneration(t *testing.T
 				var result *OpenAIForwardResult
 				var err error
 				if protocol == "responses" {
-					result, err = svc.streamChatCompletionsAsResponses(c, resp, "gpt-5.4", nil, nil, false, nil, "gpt-5.4", "gpt-5.4", nil, nil, time.Now(), forceChatResponsesFallbackAccount())
+					result, err = svc.streamChatCompletionsAsResponses(c, resp, forceChatResponsesFallbackAccount(), "gpt-5.4", nil, nil, false, nil, "gpt-5.4", "gpt-5.4", nil, nil, false, time.Now(), nil)
 				} else {
-					result, err = svc.streamChatCompletionsAsAnthropic(c, resp, "gpt-5.4", "gpt-5.4", "gpt-5.4", nil, nil, time.Now(), forceChatResponsesFallbackAccount())
+					result, err = svc.streamChatCompletionsAsAnthropic(c, resp, forceChatResponsesFallbackAccount(), "gpt-5.4", "gpt-5.4", "gpt-5.4", nil, nil, time.Now())
 				}
 				require.NoError(t, err)
 				require.NotNil(t, result)

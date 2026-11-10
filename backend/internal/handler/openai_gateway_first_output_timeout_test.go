@@ -153,7 +153,7 @@ func startEarlySpaceFailoverTestWriter(t *testing.T, protocol, mode string, dela
 		StreamEarlyHeartbeatMaxDelayMS: delay,
 	}))
 	gateway := service.NewOpenAIGatewayService(
-		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 		nil, nil, nil, nil, nil, nil, nil, nil, nil, settings, nil,
 	)
 	// Initialize SSE headers before starting the timer so its header snapshot
@@ -294,6 +294,7 @@ func TestPKEarlyHeartbeatHandlerBillingAndFailover(t *testing.T) {
 						ID: int64(9501 + i), Name: fmt.Sprintf("pk-early-handler-%d", i),
 						Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey,
 						Status: service.StatusActive, Schedulable: true, Priority: i + 1, Concurrency: 1,
+						GroupIDs:    []int64{groupID},
 						Credentials: map[string]any{"api_key": "sk-test", "base_url": "https://api.example.test"},
 						Extra: map[string]any{
 							openai_compat.ExtraKeyResponsesMode:        string(openai_compat.ResponsesSupportModeForceResponses),
@@ -356,7 +357,7 @@ func TestPKEarlyHeartbeatHandlerBillingAndFailover(t *testing.T) {
 				}
 				concurrency := service.NewConcurrencyService(concurrencyCache)
 				gateway := service.NewOpenAIGatewayService(
-					&openAIWSFailoverHandlerAccountRepoStub{accounts: accounts}, capture, capture,
+					&openAIWSFailoverHandlerAccountRepoStub{accounts: accounts}, nil, capture, capture,
 					nil, nil, nil, nil, cfg, nil, concurrency, billing, nil, nil, upstream,
 					&service.DeferredService{}, nil, nil, nil, nil, nil, settings, nil,
 				)
@@ -379,7 +380,7 @@ func TestPKEarlyHeartbeatHandlerBillingAndFailover(t *testing.T) {
 				if scenario == "retry_then_complete" && !blockedAfterSpace {
 					wantAccountIDs = append(wantAccountIDs, 9502)
 				}
-				require.Equal(t, wantAccountIDs, upstream.accountIDs, "only safe attempts may switch accounts")
+				require.Equal(t, wantAccountIDs, upstream.accountIDs, "only safe attempts may switch accounts: status=%d body=%s", rec.Code, rec.Body.String())
 				require.Equal(t, int32(1), atomic.LoadInt32(&concurrencyCache.releaseUserCalled))
 				require.Equal(t, int32(len(wantAccountIDs)), atomic.LoadInt32(&concurrencyCache.releaseAccountCalled))
 				for _, path := range upstream.paths {

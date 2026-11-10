@@ -6,10 +6,13 @@ import (
 	"compress/flate"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
+	"github.com/Wei-Shaw/sub2api/internal/requestcapture"
 	"io"
 	"log/slog"
 	"net"
@@ -32,8 +35,10 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/proxyutil"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/servertiming"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/upstreamroute"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/xai"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/util/transportdiag"
 	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
 )
 
@@ -101,9 +106,12 @@ const (
 const (
 	upstreamProtocolModeDefault          = "default"
 	upstreamProtocolModeLongStreamH2     = "long_stream_h2"
+	upstreamProtocolModeBPSH2            = "bps_h2"
+	upstreamProtocolModeBPSH1            = "bps_h1"
 	upstreamProtocolModeOpenAIH1         = "openai_h1"
 	upstreamProtocolModeOpenAIH2         = "openai_h2"
 	upstreamProtocolModeOpenAIH1Fallback = "openai_h1_fallback"
+	upstreamProtocolModeOpenAIH1NoReuse  = "openai_h1_noreuse"
 	upstreamProtocolModeGrok             = "grok"
 )
 
@@ -161,14 +169,25 @@ type openAIHTTP2FallbackState struct {
 // 5. 仅回收空闲客户端，避免中断活跃请求
 // 6. HTTP/2 多路复用，连接上限不等于并发请求上限
 // 7. 代理变更时清空旧连接池，避免复用错误代理
+// OpenAIResponseHeaderTimeoutProvider supplies the admin-configurable
+// response-header timeout for OpenAI/Codex HTTP upstream clients.
+type OpenAIResponseHeaderTimeoutProvider interface {
+	GetOpenAIResponseHeaderTimeoutCached(ctx context.Context) (int, bool)
+}
+
 // 8. 账号并发数与连接池上限对应（账号隔离策略下）
 type httpUpstreamService struct {
-	proxyRouter *service.AccountProxyRouter
-	cfg         *config.Config                  // 全局配置
-	mu          sync.RWMutex                    // 保护 clients map 的读写锁
-	clients     map[string]*upstreamClientEntry // 客户端缓存池，key 由隔离策略决定
+	proxyRouter                         *service.AccountProxyRouter
+	upstreamRoutes                      *upstreamroute.Router
+	upstreamRoutesErr                   error
+	cfg                                 *config.Config                      // 全局配置
+	openAIResponseHeaderTimeoutProvider OpenAIResponseHeaderTimeoutProvider // 可选：DB 设置覆盖
+	mu                                  sync.RWMutex                        // 保护 clients map 的读写锁
+	clients                             map[string]*upstreamClientEntry     // 客户端缓存池，key 由隔离策略决定
 	// OpenAI 走 HTTP/HTTPS 代理时的 H2->H1 回退状态（key=标准化 proxyKey）
 	openAIHTTP2Fallbacks sync.Map
+	// BPS fallback state is isolated from Codex and contains only hashed proxy keys.
+	bpsHTTP2Fallbacks map[[32]byte]bpsHTTP2Fallback
 }
 
 // NewHTTPUpstream 创建通用 HTTP 上游服务
@@ -180,10 +199,38 @@ type httpUpstreamService struct {
 // 返回:
 //   - service.HTTPUpstream 接口实现
 func NewHTTPUpstream(cfg *config.Config) service.HTTPUpstream {
-	return &httpUpstreamService{
-		cfg:     cfg,
-		clients: make(map[string]*upstreamClientEntry),
+	return newHTTPUpstream(cfg, nil)
+}
+
+// ProvideHTTPUpstream wires the admin-configurable OpenAI response-header
+// timeout provider. Tests and lightweight callers can keep using
+// NewHTTPUpstream, which falls back to the static config.
+func ProvideHTTPUpstream(cfg *config.Config, settings *service.SettingService, router *service.AccountProxyRouter) service.HTTPUpstream {
+	// Warm the cache before the first OpenAI request; the transport reads it
+	// synchronously when it builds a client pool.
+	if settings != nil {
+		go settings.GetOpenAIResponseHeaderTimeoutCached(context.Background())
+		return newHTTPUpstream(cfg, settings, router)
 	}
+	return newHTTPUpstream(cfg, nil, router)
+}
+
+func newHTTPUpstream(cfg *config.Config, provider OpenAIResponseHeaderTimeoutProvider, routers ...*service.AccountProxyRouter) service.HTTPUpstream {
+	s := &httpUpstreamService{
+		cfg:                                 cfg,
+		openAIResponseHeaderTimeoutProvider: provider,
+		clients:                             make(map[string]*upstreamClientEntry),
+	}
+	if len(routers) > 0 {
+		s.proxyRouter = routers[0]
+	}
+	if cfg != nil {
+		s.upstreamRoutes, s.upstreamRoutesErr = upstreamroute.New(cfg.Gateway.UpstreamRouting)
+	}
+	if cfg != nil && (cfg.HasAstraRoutingLoader() || cfg.Gateway.CodexGatewayPin.Enabled) {
+		return &astraRoutingUpstream{delegate: s, cfg: cfg}
+	}
+	return s
 }
 
 func (s *httpUpstreamService) AccountProxyRouter() *service.AccountProxyRouter { return s.proxyRouter }
@@ -238,8 +285,15 @@ func (s *httpUpstreamService) routeRequest(req *http.Request, proxyURL string, a
 //   - 调用方必须关闭 resp.Body，否则会导致 inFlight 计数泄漏
 //   - inFlight > 0 的客户端不会被淘汰，确保活跃请求不被中断
 func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (*http.Response, error) {
+	if req != nil {
+		requestcapture.FromContext(req.Context()).BindAccount(accountID)
+		req = req.WithContext(requestcapture.WithAccount(req.Context(), accountID))
+	}
 	applyGrokCLIProxyHeaders(req)
 	if err := s.validateRequestHost(req); err != nil {
+		if req != nil {
+			requestcapture.FromContext(req.Context()).SelectionFailed(accountID, 0, nil, nil, err)
+		}
 		return nil, err
 	}
 	var route *service.AccountProxyRoute
@@ -261,23 +315,50 @@ func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID i
 	}
 
 	// 获取或创建对应的客户端，并标记请求占用
-	entry, err := s.acquireClientWithProfile(proxyURL, accountID, accountConcurrency, profile)
+	if s.useRegionalEgress(proxyURL, accountID, profile) {
+		resp, err := s.doRegionalEgress(req, accountID, accountConcurrency, profile, nil)
+		if resp != nil && resp.Body != nil {
+			resp.Body = wrapTrackedBody(resp.Body, route.Close)
+			transferred = true
+		}
+		return resp, err
+	}
+	req, bindErr := service.BindOpenAIRequestTimezone(req, proxyURL)
+	if bindErr != nil {
+		return nil, bindErr
+	}
+	entry, err := s.acquireRequestClient(req, proxyURL, accountID, accountConcurrency, profile)
 	if err != nil {
+		requestcapture.FromContext(req.Context()).SelectionFailed(accountID, 0, nil, nil, err)
 		return nil, err
 	}
 
 	// 执行请求
 	client := s.httpClientForUpstreamRequest(entry.client, req)
 	client = httpClientWithGrokAccessDeniedFallback(client)
-	resp, err := doUpstreamRequest(client, req)
+	var bpsTrace *transportdiag.Trace
+	if profile == service.HTTPUpstreamProfileExcelBPS {
+		bpsTrace = transportdiag.FromContext(req.Context())
+		if bpsTrace == nil {
+			bpsTrace = &transportdiag.Trace{}
+			req = bpsTrace.Request(req)
+		}
+	}
+	resp, err := doWithOpenAIPreRequestRetry(client, req, proxyURL, profile)
 	if err != nil {
 		s.recordOpenAIHTTP2Failure(profile, entry.protocolMode, entry.proxyKey, err)
+		s.recordBPSHTTP2Failure(req.Context(), entry.proxyKey, bpsTrace, err)
 		// 请求失败，立即减少计数
 		atomic.AddInt64(&entry.inFlight, -1)
 		atomic.StoreInt64(&entry.lastUsed, time.Now().UnixNano())
 		return nil, err
 	}
 	s.recordOpenAIHTTP2Success(profile, entry.protocolMode, entry.proxyKey)
+	if bpsTrace != nil && bpsTrace.NegotiatedHTTP2() {
+		resp.Body = &bpsFeedbackBody{ReadCloser: resp.Body, trace: bpsTrace, failed: func(err error) {
+			s.recordBPSHTTP2Failure(req.Context(), entry.proxyKey, bpsTrace, err)
+		}}
+	}
 
 	// 包装响应体，在关闭时自动减少计数并更新时间戳
 	// 这确保了流式响应（如 SSE）在完全读取前不会被淘汰
@@ -304,6 +385,10 @@ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, acco
 	if req != nil && req.URL != nil && strings.EqualFold(req.URL.Scheme, "http") {
 		return s.Do(req, proxyURL, accountID, accountConcurrency)
 	}
+	if req != nil {
+		requestcapture.FromContext(req.Context()).BindAccount(accountID)
+		req = req.WithContext(requestcapture.WithAccount(req.Context(), accountID))
+	}
 	applyGrokCLIProxyHeaders(req)
 	upstreamProfile := service.HTTPUpstreamProfileDefault
 	if req != nil {
@@ -316,11 +401,14 @@ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, acco
 	}
 	proxyInfo := "direct"
 	if proxyURL != "" {
-		proxyInfo = proxyURL
+		proxyInfo = safeUpstreamPoolID(proxyURL)
 	}
 	slog.Debug("tls_fingerprint_enabled", "account_id", accountID, "target", targetHost, "proxy", proxyInfo, "profile", profile.Name)
 
 	if err := s.validateRequestHost(req); err != nil {
+		if req != nil {
+			requestcapture.FromContext(req.Context()).SelectionFailed(accountID, 0, nil, nil, err)
+		}
 		return nil, err
 	}
 	var route *service.AccountProxyRoute
@@ -337,15 +425,28 @@ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, acco
 		}
 	}()
 
-	entry, err := s.acquireClientWithTLS(proxyURL, accountID, accountConcurrency, profile, upstreamProfile)
+	if s.useRegionalEgress(proxyURL, accountID, upstreamProfile) {
+		resp, err := s.doRegionalEgress(req, accountID, accountConcurrency, upstreamProfile, profile)
+		if resp != nil && resp.Body != nil {
+			resp.Body = wrapTrackedBody(resp.Body, route.Close)
+			transferred = true
+		}
+		return resp, err
+	}
+	req, bindErr := service.BindOpenAIRequestTimezone(req, proxyURL)
+	if bindErr != nil {
+		return nil, bindErr
+	}
+	entry, err := s.acquireRequestClientWithTLS(req, proxyURL, accountID, accountConcurrency, profile, upstreamProfile)
 	if err != nil {
+		requestcapture.FromContext(req.Context()).SelectionFailed(accountID, 0, nil, nil, err)
 		slog.Debug("tls_fingerprint_acquire_client_failed", "account_id", accountID, "error", err)
 		return nil, err
 	}
 
 	client := s.httpClientForUpstreamRequest(entry.client, req)
 	client = httpClientWithGrokAccessDeniedFallback(client)
-	resp, err := doUpstreamRequest(client, req)
+	resp, err := doWithOpenAIPreRequestRetry(client, req, proxyURL, upstreamProfile)
 	if err != nil {
 		atomic.AddInt64(&entry.inFlight, -1)
 		atomic.StoreInt64(&entry.lastUsed, time.Now().UnixNano())
@@ -365,14 +466,28 @@ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, acco
 
 // doUpstreamRequest owns cancellation for one attempt, without cancelling the
 // caller's context (which may be detached for billing or reused for retries).
-func doUpstreamRequest(client *http.Client, req *http.Request) (*http.Response, error) {
+func doUpstreamRequest(client *http.Client, req *http.Request) (result *http.Response, resultErr error) {
+	req, timingTrace := requesttiming.StartTransport(req)
+	defer func() { timingTrace.Response(result, resultErr) }()
+	_, observeCapture := requestcapture.FromContext(req.Context()).ObserveHTTPRequest(req, requestcapture.AccountFromContext(req.Context()))
+	defer func() { observeCapture(result, resultErr) }()
+
 	ctx, cancel := context.WithCancel(req.Context())
 	resp, err := servertiming.Do(client, req.WithContext(ctx))
 	if err != nil {
 		cancel()
 		return resp, err
 	}
+	timingTrace.Headers(resp)
+	requesttiming.Encoding(req.Context(), resp)
+	if !resp.Uncompressed {
+		resp.Body = requesttiming.WrapStage(req.Context(), resp.Body, "raw_body_first")
+	}
 	decompressResponseBody(resp)
+	// A retained encoding means decompression was unsupported or failed.
+	if encoding := strings.TrimSpace(resp.Header.Get("Content-Encoding")); encoding == "" || strings.EqualFold(encoding, "identity") {
+		resp.Body = requesttiming.WrapStage(req.Context(), resp.Body, "decoded_body_first")
+	}
 	resp.Body = &cancelOnCloseBody{ReadCloser: resp.Body, cancel: cancel}
 	return resp, nil
 }
@@ -455,7 +570,9 @@ func httpClientWithGrokAccessDeniedFallback(client *http.Client) *http.Client {
 	if base == nil {
 		base = http.DefaultTransport
 	}
-	clone.Transport = &grokAccessDeniedFallbackTransport{base: base}
+	// Observe each physical RoundTrip before the compatibility fallback so
+	// a rejected send followed by a successful retry remains two samples.
+	clone.Transport = &grokAccessDeniedFallbackTransport{base: &accountResponseTransport{base: base}}
 	return &clone
 }
 
@@ -618,14 +735,13 @@ func isSupportedGrokCLIVersion(version string) bool {
 		semver.Compare(canonical, minimum) >= 0
 }
 
-// acquireClientWithTLS 获取或创建带 TLS 指纹的客户端
-func (s *httpUpstreamService) acquireClientWithTLS(proxyURL string, accountID int64, accountConcurrency int, profile *tlsfingerprint.Profile, upstreamProfile service.HTTPUpstreamProfile) (*upstreamClientEntry, error) {
-	return s.getClientEntryWithTLS(proxyURL, accountID, accountConcurrency, profile, upstreamProfile, true, true)
-}
-
 // getClientEntryWithTLS 获取或创建带 TLS 指纹的客户端条目
 // TLS 指纹客户端使用独立的缓存键，与普通客户端隔离
 func (s *httpUpstreamService) getClientEntryWithTLS(proxyURL string, accountID int64, accountConcurrency int, profile *tlsfingerprint.Profile, upstreamProfile service.HTTPUpstreamProfile, markInFlight bool, enforceLimit bool) (*upstreamClientEntry, error) {
+	return s.getClientEntryWithTLSHeaderTimeout(proxyURL, accountID, accountConcurrency, profile, upstreamProfile, markInFlight, enforceLimit, 0)
+}
+
+func (s *httpUpstreamService) getClientEntryWithTLSHeaderTimeout(proxyURL string, accountID int64, accountConcurrency int, profile *tlsfingerprint.Profile, upstreamProfile service.HTTPUpstreamProfile, markInFlight bool, enforceLimit bool, headerTimeout time.Duration) (*upstreamClientEntry, error) {
 	isolation := s.getIsolationMode()
 	proxyKey, parsedProxy, err := normalizeProxyURL(proxyURL)
 	if err != nil {
@@ -633,8 +749,9 @@ func (s *httpUpstreamService) getClientEntryWithTLS(proxyURL string, accountID i
 	}
 	settings := s.resolvePoolSettings(isolation, accountConcurrency)
 	settings = s.applyProfilePoolSettings(settings, upstreamProfile)
+	settings, headerTimeoutKey := applyResponseHeaderTimeoutOverride(settings, headerTimeout)
 	// TLS 指纹客户端使用独立的缓存键，加 "tls:" 前缀
-	cacheKey := "tls:" + buildCacheKey(isolation, proxyKey, accountID, upstreamProtocolModeDefault)
+	cacheKey := "tls:" + buildCacheKey(isolation, proxyKey, accountID, upstreamProtocolModeDefault) + headerTimeoutKey
 	poolKey := buildPoolKey(settings, upstreamProtocolModeDefault) + ":tls"
 
 	now := time.Now()
@@ -648,7 +765,7 @@ func (s *httpUpstreamService) getClientEntryWithTLS(proxyURL string, accountID i
 			atomic.AddInt64(&entry.inFlight, 1)
 		}
 		s.mu.RUnlock()
-		slog.Debug("tls_fingerprint_reusing_client", "account_id", accountID, "cache_key", cacheKey)
+		slog.Debug("tls_fingerprint_reusing_client", "account_id", accountID, "cache_key", safeUpstreamPoolID(cacheKey))
 		return entry, nil
 	}
 	s.mu.RUnlock()
@@ -662,12 +779,12 @@ func (s *httpUpstreamService) getClientEntryWithTLS(proxyURL string, accountID i
 				atomic.AddInt64(&entry.inFlight, 1)
 			}
 			s.mu.Unlock()
-			slog.Debug("tls_fingerprint_reusing_client", "account_id", accountID, "cache_key", cacheKey)
+			slog.Debug("tls_fingerprint_reusing_client", "account_id", accountID, "cache_key", safeUpstreamPoolID(cacheKey))
 			return entry, nil
 		}
 		slog.Debug("tls_fingerprint_evicting_stale_client",
 			"account_id", accountID,
-			"cache_key", cacheKey,
+			"cache_key", safeUpstreamPoolID(cacheKey),
 			"proxy_changed", entry.proxyKey != proxyKey,
 			"pool_changed", entry.poolKey != poolKey)
 		s.removeClientLocked(cacheKey, entry)
@@ -685,7 +802,7 @@ func (s *httpUpstreamService) getClientEntryWithTLS(proxyURL string, accountID i
 	}
 
 	// 创建带 TLS 指纹的 Transport
-	slog.Debug("tls_fingerprint_creating_new_client", "account_id", accountID, "cache_key", cacheKey, "proxy", proxyKey)
+	slog.Debug("tls_fingerprint_creating_new_client", "account_id", accountID, "cache_key", safeUpstreamPoolID(cacheKey), "proxy", safeUpstreamPoolID(proxyKey))
 	transport, err := buildUpstreamTransportWithTLSFingerprint(settings, parsedProxy, profile)
 	if err != nil {
 		s.mu.Unlock()
@@ -762,6 +879,33 @@ func (s *httpUpstreamService) acquireClientWithProfile(proxyURL string, accountI
 	return s.getClientEntry(proxyURL, accountID, accountConcurrency, profile, true, true)
 }
 
+// acquireRequestClient 按请求 context 里的响应头等待时间获取客户端。
+func (s *httpUpstreamService) acquireRequestClient(req *http.Request, proxyURL string, accountID int64, accountConcurrency int, profile service.HTTPUpstreamProfile) (*upstreamClientEntry, error) {
+	return s.getClientEntryWithHeaderTimeout(proxyURL, accountID, accountConcurrency, profile, true, true, requestResponseHeaderTimeout(req))
+}
+
+// acquireRequestClientWithTLS 是 acquireRequestClient 的 TLS 指纹版本。
+func (s *httpUpstreamService) acquireRequestClientWithTLS(req *http.Request, proxyURL string, accountID int64, accountConcurrency int, profile *tlsfingerprint.Profile, upstreamProfile service.HTTPUpstreamProfile) (*upstreamClientEntry, error) {
+	return s.getClientEntryWithTLSHeaderTimeout(proxyURL, accountID, accountConcurrency, profile, upstreamProfile, true, true, requestResponseHeaderTimeout(req))
+}
+
+func requestResponseHeaderTimeout(req *http.Request) time.Duration {
+	if req == nil {
+		return 0
+	}
+	return service.HTTPUpstreamResponseHeaderTimeoutFromContext(req.Context())
+}
+
+// applyResponseHeaderTimeoutOverride 只放宽已有的超时。超时不同的连接池使用独立
+// 缓存键，否则放宽的请求和普通请求会互相淘汰同一个客户端。
+func applyResponseHeaderTimeoutOverride(settings poolSettings, timeout time.Duration) (poolSettings, string) {
+	if settings.responseHeaderTimeout <= 0 || timeout <= settings.responseHeaderTimeout {
+		return settings, ""
+	}
+	settings.responseHeaderTimeout = timeout
+	return settings, "|header_timeout:" + timeout.String()
+}
+
 // getOrCreateClient 获取或创建客户端
 // 根据隔离策略和参数决定缓存键，处理代理变更和配置变更
 //
@@ -785,6 +929,10 @@ func (s *httpUpstreamService) getOrCreateClient(proxyURL string, accountID int64
 // markInFlight=true 时会标记进行中请求，用于请求路径防止被淘汰
 // enforceLimit=true 时会限制客户端数量，超限且无法淘汰时返回错误
 func (s *httpUpstreamService) getClientEntry(proxyURL string, accountID int64, accountConcurrency int, profile service.HTTPUpstreamProfile, markInFlight bool, enforceLimit bool) (*upstreamClientEntry, error) {
+	return s.getClientEntryWithHeaderTimeout(proxyURL, accountID, accountConcurrency, profile, markInFlight, enforceLimit, 0)
+}
+
+func (s *httpUpstreamService) getClientEntryWithHeaderTimeout(proxyURL string, accountID int64, accountConcurrency int, profile service.HTTPUpstreamProfile, markInFlight bool, enforceLimit bool, headerTimeout time.Duration) (*upstreamClientEntry, error) {
 	// 获取隔离模式
 	isolation := s.getIsolationMode()
 	// 标准化代理 URL 并解析
@@ -796,8 +944,9 @@ func (s *httpUpstreamService) getClientEntry(proxyURL string, accountID int64, a
 	protocolMode := s.resolveProtocolMode(profile, proxyKey, parsedProxy)
 	settings := s.resolvePoolSettings(isolation, accountConcurrency)
 	settings = s.applyProfilePoolSettings(settings, profile)
+	settings, headerTimeoutKey := applyResponseHeaderTimeoutOverride(settings, headerTimeout)
 	// 构建缓存键（根据隔离策略不同）
-	cacheKey := buildCacheKey(isolation, proxyKey, accountID, protocolMode)
+	cacheKey := buildCacheKey(isolation, proxyKey, accountID, protocolMode) + headerTimeoutKey
 	// 构建连接池配置键（用于检测配置变更）
 	poolKey := buildPoolKey(settings, protocolMode)
 
@@ -1043,7 +1192,11 @@ func (s *httpUpstreamService) applyProfilePoolSettings(settings poolSettings, pr
 	switch profile {
 	case service.HTTPUpstreamProfileOpenAI:
 		settings.responseHeaderTimeout = 0
-		if s != nil && s.cfg != nil && s.cfg.Gateway.OpenAIResponseHeaderTimeout > 0 {
+		if s != nil && s.openAIResponseHeaderTimeoutProvider != nil {
+			if seconds, enabled := s.openAIResponseHeaderTimeoutProvider.GetOpenAIResponseHeaderTimeoutCached(context.Background()); enabled && seconds > 0 {
+				settings.responseHeaderTimeout = time.Duration(seconds) * time.Second
+			}
+		} else if s != nil && s.cfg != nil && s.cfg.Gateway.OpenAIResponseHeaderTimeout > 0 {
 			settings.responseHeaderTimeout = time.Duration(s.cfg.Gateway.OpenAIResponseHeaderTimeout) * time.Second
 		}
 	case service.HTTPUpstreamProfileGrok:
@@ -1132,11 +1285,21 @@ func (s *httpUpstreamService) resolveOpenAIHTTP2Settings() openAIHTTP2Settings {
 }
 
 func (s *httpUpstreamService) resolveProtocolMode(profile service.HTTPUpstreamProfile, proxyKey string, parsedProxy *url.URL) string {
+	if profile == service.HTTPUpstreamProfileExcelBPS {
+		if s.bpsHTTP1Active(proxyKey, time.Now()) {
+			return upstreamProtocolModeBPSH1
+		}
+		return upstreamProtocolModeBPSH2
+	}
+
 	if profile == service.HTTPUpstreamProfileLongStream {
 		return upstreamProtocolModeLongStreamH2
 	}
 	if profile == service.HTTPUpstreamProfileGrok {
 		return upstreamProtocolModeGrok
+	}
+	if profile == service.HTTPUpstreamProfileOpenAIHarvest {
+		return upstreamProtocolModeOpenAIH1NoReuse
 	}
 	if profile != service.HTTPUpstreamProfileOpenAI {
 		return upstreamProtocolModeDefault
@@ -1257,7 +1420,7 @@ func (s *httpUpstreamService) recordOpenAIHTTP2Failure(profile service.HTTPUpstr
 	activated, until := state.recordFailure(time.Now(), settings.fallbackErrorThreshold, settings.fallbackWindow, settings.fallbackTTL)
 	if activated {
 		slog.Warn("openai_http2_proxy_fallback_activated",
-			"proxy", proxyKey,
+			"proxy", safeUpstreamPoolID(proxyKey),
 			"fallback_until", until.Format(time.RFC3339))
 	}
 }
@@ -1460,15 +1623,22 @@ func buildUpstreamTransport(settings poolSettings, proxyURL *url.URL, protocolMo
 		ResponseHeaderTimeout: settings.responseHeaderTimeout,
 	}
 	switch protocolMode {
-	case upstreamProtocolModeLongStreamH2, upstreamProtocolModeOpenAIH2:
+	case upstreamProtocolModeLongStreamH2, upstreamProtocolModeOpenAIH2, upstreamProtocolModeBPSH2:
 		transport.ForceAttemptHTTP2 = true
 		// 显式配置 http2 并启用 PING 健康探测，剔除代理/NAT 静默掐断的死连接，
 		// 避免请求挂在死连接上直到 TCP 重传超时（分钟级）。
 		if _, err := enableHTTP2KeepAlive(transport, protocolMode); err != nil {
 			return nil, err
 		}
-	case upstreamProtocolModeOpenAIH1:
+	case upstreamProtocolModeOpenAIH1, upstreamProtocolModeBPSH1:
 		transport.ForceAttemptHTTP2 = false
+		transport.TLSNextProto = make(map[string]func(string, *tls.Conn) http.RoundTripper)
+	case upstreamProtocolModeOpenAIH1NoReuse:
+		// Harvest must open a fresh CONNECT each attempt so the harvest proxy can rotate egress IPs.
+		transport.ForceAttemptHTTP2 = false
+		transport.DisableKeepAlives = true
+		transport.MaxIdleConns = 0
+		transport.MaxIdleConnsPerHost = 0
 		transport.TLSNextProto = make(map[string]func(string, *tls.Conn) http.RoundTripper)
 	case upstreamProtocolModeOpenAIH1Fallback:
 		// 显式禁用 HTTP/2，确保代理不兼容场景回退到 HTTP/1.1。
@@ -1681,3 +1851,6 @@ func (d *decompressedBody) Close() error {
 	}
 	return d.closer.Close()
 }
+
+// Pool keys can contain proxy credentials; log only an irreversible identifier.
+func safeUpstreamPoolID(key string) string { return fmt.Sprintf("%x", sha256.Sum256([]byte(key)))[:16] }

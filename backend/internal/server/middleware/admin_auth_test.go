@@ -123,6 +123,44 @@ func TestAdminAuthJWTValidatesTokenVersion(t *testing.T) {
 	})
 }
 
+func TestUserQuickEnableRequiresAdministrator(t *testing.T) {
+	for _, tc := range []struct {
+		name, role, status string
+		code               int
+	}{
+		{"anonymous", "", service.StatusActive, http.StatusUnauthorized},
+		{"user", service.RoleUser, service.StatusActive, http.StatusForbidden},
+		{"observer", service.RoleObserver, service.StatusActive, http.StatusForbidden},
+		{"inactive admin", service.RoleAdmin, service.StatusDisabled, http.StatusUnauthorized},
+		{"admin", service.RoleAdmin, service.StatusActive, http.StatusNoContent},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &config.Config{JWT: config.JWTConfig{Secret: "quick-enable-test-secret", ExpireHour: 1}}
+			auth := service.NewAuthService(nil, nil, nil, nil, cfg, nil, nil, nil, nil, nil, nil, nil, nil)
+			actor := &service.User{ID: 17, Role: tc.role, Status: tc.status}
+			repo := &stubUserRepo{getByID: func(context.Context, int64) (*service.User, error) { return actor, nil }}
+			router := gin.New()
+			router.Use(gin.HandlerFunc(NewAdminAuthMiddleware(auth, service.NewUserService(repo, nil, nil, nil), nil, nil)))
+			writes := 0
+			router.PUT("/api/v1/admin/users/:id", func(c *gin.Context) { writes++; c.Status(http.StatusNoContent) })
+			req := httptest.NewRequest(http.MethodPut, "/api/v1/admin/users/306", nil)
+			if tc.role != "" {
+				token, err := auth.GenerateToken(context.Background(), actor)
+				require.NoError(t, err)
+				req.Header.Set("Authorization", "Bearer "+token)
+			}
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+			require.Equal(t, tc.code, w.Code, w.Body.String())
+			if tc.code == http.StatusNoContent {
+				require.Equal(t, 1, writes)
+			} else {
+				require.Zero(t, writes)
+			}
+		})
+	}
+}
+
 type stubUserRepo struct {
 	getByID func(ctx context.Context, id int64) (*service.User, error)
 }
@@ -258,4 +296,31 @@ func (s *stubUserRepo) DisableTotp(ctx context.Context, userID int64) error {
 
 func (s *stubUserRepo) GetByIDIncludeDeleted(ctx context.Context, id int64) (*service.User, error) {
 	panic("unexpected GetByIDIncludeDeleted call")
+}
+
+func TestAdminAuthRejectsObserverUsageAndCleanup(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := &config.Config{JWT: config.JWTConfig{Secret: "observer-usage-test", ExpireHour: 1}}
+	auth := service.NewAuthService(nil, nil, nil, nil, cfg, nil, nil, nil, nil, nil, nil, nil, nil)
+	observer := &service.User{ID: 42, Email: "observer@test.com", Role: service.RoleObserver, Status: service.StatusActive}
+	repo := &stubUserRepo{getByID: func(context.Context, int64) (*service.User, error) { return observer, nil }}
+	token, err := auth.GenerateToken(context.Background(), observer)
+	require.NoError(t, err)
+	for _, route := range []struct{ method, path string }{
+		{http.MethodGet, "/api/v1/admin/usage"},
+		{http.MethodGet, "/api/v1/admin/dashboard/models"},
+		{http.MethodGet, "/api/v1/admin/ops/errors"},
+		{http.MethodPost, "/api/v1/admin/usage/cleanup-tasks"},
+	} {
+		router := gin.New()
+		router.Use(gin.HandlerFunc(NewAdminAuthMiddleware(auth, service.NewUserService(repo, nil, nil, nil), nil, nil)))
+		called := false
+		router.Handle(route.method, route.path, func(c *gin.Context) { called = true; c.Status(200) })
+		req := httptest.NewRequest(route.method, route.path, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		require.Equal(t, http.StatusForbidden, w.Code, route.path)
+		require.False(t, called)
+	}
 }

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
 	"math"
 	"strconv"
 	"sync"
@@ -105,15 +106,18 @@ type subscriptionCacheInvalidationPubSub interface {
 // BillingCacheService 计费缓存服务
 // 负责余额和订阅数据的缓存管理，提供高性能的计费资格检查
 type BillingCacheService struct {
-	cache                 BillingCache
-	userRepo              UserRepository
-	subRepo               UserSubscriptionRepository
-	apiKeyRateLimitLoader apiKeyRateLimitLoader
-	userRPMCache          UserRPMCache
-	userGroupRateRepo     UserGroupRateRepository
-	cfg                   *config.Config
-	circuitBreaker        *billingCircuitBreaker
-	userPlatformQuotaRepo UserPlatformQuotaRepository
+	autoCredit               AutoCreditRepository
+	autoCreditStop           chan struct{}
+	balanceRejectionNotifier BalanceRejectionNotifier
+	cache                    BillingCache
+	userRepo                 UserRepository
+	subRepo                  UserSubscriptionRepository
+	apiKeyRateLimitLoader    apiKeyRateLimitLoader
+	userRPMCache             UserRPMCache
+	userGroupRateRepo        UserGroupRateRepository
+	cfg                      *config.Config
+	circuitBreaker           *billingCircuitBreaker
+	userPlatformQuotaRepo    UserPlatformQuotaRepository
 
 	cacheWriteChan     chan cacheWriteTask
 	cacheWriteWg       sync.WaitGroup
@@ -159,6 +163,9 @@ func NewBillingCacheService(
 func (s *BillingCacheService) Stop() {
 	s.cacheWriteStopOnce.Do(func() {
 		s.stopped.Store(true)
+		if s.autoCreditStop != nil {
+			close(s.autoCreditStop)
+		}
 
 		s.cacheWriteMu.Lock()
 		ch := s.cacheWriteChan
@@ -310,6 +317,15 @@ func (s *BillingCacheService) logCacheWriteDrop(task cacheWriteTask, reason stri
 
 // GetUserBalance 获取用户余额（优先从缓存读取）
 func (s *BillingCacheService) GetUserBalance(ctx context.Context, userID int64) (float64, error) {
+	if s.autoCredit != nil {
+		balance, err := s.autoCredit.CreditUserBalance(ctx, userID)
+		if err != nil {
+			return 0, err
+		}
+		if balance != nil {
+			return strconv.ParseFloat(*balance, 64)
+		}
+	}
 	if s.cache == nil {
 		// Redis不可用，直接查询数据库
 		return s.getUserBalanceFromDB(ctx, userID)
@@ -742,6 +758,7 @@ func (s *BillingCacheService) IncrementUserPlatformQuotaUsage(userID int64, plat
 // 订阅模式：检查缓存用量未超过限额（Group限额从参数传入）
 // platform 为请求的目标平台（如 "anthropic"），传空串 "" 时跳过 user × platform quota 检查。
 func (s *BillingCacheService) CheckBillingEligibility(ctx context.Context, user *User, apiKey *APIKey, group *Group, subscription *UserSubscription, platform string) error {
+	defer requesttiming.Observe(ctx, "billing_check")()
 	// 简易模式默认跳过所有计费检查. An explicit key-window opt-in keeps
 	// balance/subscription/platform checks bypassed while enforcing the three
 	// API-key monetary windows from the database source of truth.
@@ -763,7 +780,7 @@ func (s *BillingCacheService) CheckBillingEligibility(ctx context.Context, user 
 			return err
 		}
 	} else {
-		if err := s.checkBalanceEligibility(ctx, user.ID); err != nil {
+		if err := s.checkBalanceEligibility(ctx, user, apiKey); err != nil {
 			return err
 		}
 	}
@@ -1022,7 +1039,8 @@ func (s *BillingCacheService) balanceBelowEligibilityThreshold(balance float64) 
 }
 
 // checkBalanceEligibility 检查余额模式资格
-func (s *BillingCacheService) checkBalanceEligibility(ctx context.Context, userID int64) error {
+func (s *BillingCacheService) checkBalanceEligibility(ctx context.Context, user *User, keys ...*APIKey) error {
+	userID := user.ID
 	balance, err := s.GetUserBalance(ctx, userID)
 	if err != nil {
 		if s.circuitBreaker != nil {
@@ -1036,6 +1054,35 @@ func (s *BillingCacheService) checkBalanceEligibility(ctx context.Context, userI
 	}
 
 	if s.balanceBelowEligibilityThreshold(balance) {
+		if s.autoCredit != nil && user.IsActive() {
+			var result *AutoCreditResult
+			var recoveryErr error
+			if len(keys) > 0 && keys[0] != nil {
+				result, recoveryErr = s.autoCredit.EvaluateAdmission(ctx, userID, keys[0].ID)
+			} else {
+				result, recoveryErr = s.autoCredit.Evaluate(ctx, userID)
+			}
+			if recoveryErr != nil {
+				return ErrBillingServiceUnavailable.WithCause(recoveryErr)
+			}
+			if result.Issued {
+				if recoveryErr = s.InvalidateUserBalance(ctx, userID); recoveryErr != nil {
+					return ErrBillingServiceUnavailable.WithCause(recoveryErr)
+				}
+			}
+			// Re-read the authoritative balance once. Existing in-flight reserve
+			// checks still run after eligibility and cannot be bypassed by credit.
+			fresh, recoveryErr := s.userRepo.GetByID(ctx, userID)
+			if recoveryErr != nil {
+				return ErrBillingServiceUnavailable.WithCause(recoveryErr)
+			}
+			if fresh.IsActive() && !s.balanceBelowEligibilityThreshold(fresh.Balance) {
+				return nil
+			}
+		}
+		if s.balanceRejectionNotifier != nil {
+			s.balanceRejectionNotifier.CheckBalanceOnRejection(user, balance)
+		}
 		return ErrInsufficientBalance
 	}
 
@@ -1240,7 +1287,7 @@ func (s *BillingCacheService) checkUserPlatformQuotaEligibility(
 		cacheErr error
 	)
 	if s.cache != nil {
-		entry, ok, cacheErr = s.cache.GetUserPlatformQuotaCache(ctx, userID, platform)
+		entry, ok, cacheErr = s.getPlatformQuotaCache(ctx, userID, platform)
 	} else {
 		// 标记为"cache 故障"分支：跳过 HIT 路径、不回填、走 DB 一次性检查
 		cacheErr = errBillingCacheUnavailable
@@ -1304,7 +1351,7 @@ func (s *BillingCacheService) checkUserPlatformQuotaEligibility(
 			}
 			ttl := time.Duration(s.cfg.Billing.UserPlatformQuotaCacheTTLSeconds) * time.Second
 			setCtx, setCancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-			if setErr := s.cache.SetUserPlatformQuotaCache(setCtx, userID, platform, refreshed, ttl); setErr != nil {
+			if setErr := s.setPlatformQuotaCache(setCtx, userID, platform, refreshed, ttl); setErr != nil {
 				logger.LegacyPrintf("service.billing_cache",
 					"Warning: refresh expired user platform quota cache failed user=%d platform=%s: %v",
 					userID, platform, setErr)
@@ -1373,7 +1420,7 @@ func (s *BillingCacheService) checkUserPlatformQuotaEligibility(
 				sentinelTTL = time.Hour
 			}
 			setCtx, setCancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-			if setErr := s.cache.SetUserPlatformQuotaCache(setCtx, userID, platform, sentinel, sentinelTTL); setErr != nil {
+			if setErr := s.setPlatformQuotaCache(setCtx, userID, platform, sentinel, sentinelTTL); setErr != nil {
 				userPlatformQuotaSentinelSetCacheErrorTotal.Add(1)
 				logger.LegacyPrintf("service.billing_cache", "Warning: set sentinel quota cache failed user=%d platform=%s: %v", userID, platform, setErr)
 			}
@@ -1429,7 +1476,7 @@ func (s *BillingCacheService) checkUserPlatformQuotaEligibility(
 		// 避免请求 ctx 提前取消（客户端断连/上游超时）导致 cache 回填失败,
 		// 让下一次 preflight 仍然 MISS 并击穿到 DB（高并发下增大 DB 压力）。
 		setCtx, setCancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-		if setErr := s.cache.SetUserPlatformQuotaCache(setCtx, userID, platform, newEntry, ttl); setErr != nil {
+		if setErr := s.setPlatformQuotaCache(setCtx, userID, platform, newEntry, ttl); setErr != nil {
 			logger.LegacyPrintf("service.billing_cache", "Warning: set user platform quota cache failed user=%d platform=%s: %v", userID, platform, setErr)
 		}
 		setCancel()
@@ -1509,7 +1556,7 @@ func (s *BillingCacheService) HasUserPlatformQuotaLimit(ctx context.Context, use
 	if s.cache == nil {
 		return true
 	}
-	entry, ok, err := s.cache.GetUserPlatformQuotaCache(ctx, userID, platform)
+	entry, ok, err := s.getPlatformQuotaCache(ctx, userID, platform)
 	if err != nil || !ok || entry == nil {
 		return true
 	}

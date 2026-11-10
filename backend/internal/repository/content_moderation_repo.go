@@ -70,19 +70,20 @@ INSERT INTO content_moderation_logs (
     endpoint, provider, model, mode, action, flagged, highest_category, highest_score,
     category_scores, threshold_snapshot, input_excerpt, upstream_latency_ms, error,
     violation_count, auto_banned, email_sent, queue_delay_ms, matched_keyword, engine_meta,
-    risk_score, risk_level, policy_action
+    risk_score, risk_level, policy_action, evidence_status
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7,
     $8, $9, $10, $11, $12, $13, $14, $15,
     $16::jsonb, $17::jsonb, $18, $19, $20,
     $21, $22, $23, $24, $25, $26::jsonb,
-    $27, NULLIF($28, ''), NULLIF($29, '')
+    $27, NULLIF($28, ''), NULLIF($29, ''), $30
 ) RETURNING id, created_at`,
 		log.RequestID, userID, log.UserEmail, apiKeyID, log.APIKeyName, groupID, log.GroupName,
 		log.Endpoint, log.Provider, log.Model, log.Mode, log.Action, legacyFlagged, log.HighestCategory, log.HighestScore,
 		string(categoryScores), string(thresholdSnapshot), log.InputExcerpt, latency, log.Error,
 		log.ViolationCount, log.AutoBanned, log.EmailSent, nullableIntPtr(log.QueueDelayMS), log.MatchedKeyword, engineMeta,
 		log.RiskScore, log.RiskLevel, log.PolicyAction,
+		log.EvidenceStatus,
 	).Scan(&log.ID, &log.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("insert content moderation log: %w", err)
@@ -117,7 +118,7 @@ SELECT
     l.endpoint, l.provider, l.model, l.mode, l.action, l.flagged, l.highest_category, l.highest_score,
     l.category_scores, l.threshold_snapshot, l.input_excerpt, l.upstream_latency_ms, l.error,
     l.violation_count, l.auto_banned, l.email_sent, COALESCE(u.status, ''), l.queue_delay_ms, l.matched_keyword, l.created_at, l.engine_meta,
-    l.risk_score, COALESCE(l.risk_level, ''), COALESCE(l.policy_action, '')
+    l.risk_score, COALESCE(l.risk_level, ''), COALESCE(l.policy_action, ''), l.evidence_status
 FROM content_moderation_logs l
 LEFT JOIN users u ON u.id = l.user_id `+whereSQL+`
 ORDER BY l.created_at DESC, l.id DESC
@@ -168,6 +169,7 @@ LIMIT $`+fmt.Sprint(len(queryArgs)-1)+` OFFSET $`+fmt.Sprint(len(queryArgs)),
 			&riskScore,
 			&item.RiskLevel,
 			&item.PolicyAction,
+			&item.EvidenceStatus,
 		); err != nil {
 			return nil, nil, fmt.Errorf("scan content moderation log: %w", err)
 		}

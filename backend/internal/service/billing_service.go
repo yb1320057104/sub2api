@@ -84,7 +84,8 @@ type BillingCache interface {
 	GetUserPlatformQuotaCache(ctx context.Context, userID int64, platform string) (*UserPlatformQuotaCacheEntry, bool, error)
 	SetUserPlatformQuotaCache(ctx context.Context, userID int64, platform string, entry *UserPlatformQuotaCacheEntry, ttl time.Duration) error
 	DeleteUserPlatformQuotaCache(ctx context.Context, userID int64, platform string) error
-	// IncrUserPlatformQuotaUsageCache 在缓存命中时累加用量；缓存未命中（key 不存在）静默返回 nil。
+	// IncrUserPlatformQuotaUsageCache returns ErrUserPlatformQuotaCacheNotUpdated
+	// when the key/schema is missing; only a real increment returns nil.
 	// markDirty=true 时将该 key 的 member 写入 Redis 脏集，供 flusher 批量回写 DB。
 	IncrUserPlatformQuotaUsageCache(ctx context.Context, userID int64, platform string, cost float64, ttl time.Duration, markDirty bool) error
 
@@ -144,8 +145,10 @@ func usePriorityServiceTierPricing(serviceTier string, pricing *ModelPricing) bo
 
 func serviceTierCostMultiplier(serviceTier string) float64 {
 	switch normalizeBillingServiceTier(serviceTier) {
-	case "priority", "fast", OpenAIFastTierUltrafast:
+	case "priority", "fast":
 		return 2.0
+	case OpenAIFastTierUltrafast:
+		return 6.0
 	case "flex":
 		return 0.5
 	default:
@@ -209,6 +212,7 @@ func (tokens UsageTokens) InputContextTokens() int {
 
 // CostBreakdown 费用明细
 type CostBreakdown struct {
+	modelBillingMultiplier    float64 // Customer-only model surcharge; zero means 1x.
 	InputCost                 float64 // 文本输入费用（不含图片输入，图片输入单独记入 ImageInputCost）
 	ImageInputCost            float64 // 图片输入 token 费用（如 gpt-image-2 图片编辑）
 	OutputCost                float64
@@ -2051,6 +2055,12 @@ func longContextMultiplierOrOne(m float64) float64 {
 	return m
 }
 
+// longContextBillableInputTokens 是长上下文阶梯比较的输入侧 token。
+// 普通输入、缓存创建和缓存读取都计入；缓存转换后仍使用上游原始上下文。
+func longContextBillableInputTokens(tokens UsageTokens) int {
+	return tokens.InputContextTokens()
+}
+
 func (s *BillingService) shouldApplySessionLongContextPricing(tokens UsageTokens, pricing *ModelPricing) bool {
 	if pricing == nil || pricing.LongContextInputThreshold <= 0 {
 		return false
@@ -2058,7 +2068,7 @@ func (s *BillingService) shouldApplySessionLongContextPricing(tokens UsageTokens
 	if pricing.LongContextInputMultiplier <= 1 && pricing.LongContextOutputMultiplier <= 1 {
 		return false
 	}
-	totalInputTokens := tokens.InputContextTokens()
+	totalInputTokens := longContextBillableInputTokens(tokens)
 	if pricing.LongContextThresholdInclusive {
 		return totalInputTokens >= pricing.LongContextInputThreshold
 	}

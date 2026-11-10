@@ -167,20 +167,20 @@ func TestGatewayCompositeRouteModelsAppearInBothCatalogs(t *testing.T) {
 }
 
 func TestDefaultModelIDsForCompositeIncludesAntigravityDefaults(t *testing.T) {
-	antigravityIDs := defaultModelIDsForPlatform(service.PlatformAntigravity)
+	antigravityIDs := service.DefaultModelIDsForPlatform(service.PlatformAntigravity)
 	require.NotEmpty(t, antigravityIDs)
 
-	compositeIDs := defaultModelIDsForPlatform(service.PlatformComposite)
+	compositeIDs := service.DefaultModelIDsForPlatform(service.PlatformComposite)
 	require.Contains(t, compositeIDs, antigravityIDs[0])
 }
 
 // Scenario: Anthropic defaults contain only Claude while Antigravity keeps its own Gemini models.
 func TestDefaultModelIDsForAnthropicExcludeAntigravityGemini(t *testing.T) {
-	anthropicIDs := defaultModelIDsForPlatform(service.PlatformAnthropic)
+	anthropicIDs := service.DefaultModelIDsForPlatform(service.PlatformAnthropic)
 	require.Contains(t, anthropicIDs, "claude-opus-4-6")
 	require.NotContains(t, anthropicIDs, "gemini-2.5-flash")
 
-	antigravityIDs := defaultModelIDsForPlatform(service.PlatformAntigravity)
+	antigravityIDs := service.DefaultModelIDsForPlatform(service.PlatformAntigravity)
 	require.Contains(t, antigravityIDs, "gemini-2.5-flash")
 }
 
@@ -276,7 +276,7 @@ func TestGatewayCodexModels_CompositeUsesCompleteEffectiveModelList(t *testing.T
 					ID:       1,
 					Platform: service.PlatformOpenAI,
 					Credentials: map[string]any{
-						"model_mapping": map[string]any{"gpt-5.5": "gpt-5.5"},
+						"model_mapping": map[string]any{"gpt-6.1-sol": "gpt-6.1-sol"},
 					},
 				},
 				{
@@ -339,12 +339,12 @@ func TestGatewayModels_UnmappedOpenAIAccountsSupplementMappedModels(t *testing.T
 		{
 			name:     "unmapped parent and Spark shadow retain defaults and aliases",
 			accounts: accounts,
-			want:     append(append([]string{}, subscriptionDefaults...), alias),
+			want:     append(append([]string{}, subscriptionDefaults...), sparkModel, alias),
 		},
 		{
 			name:     "unmapped API key account also contributes defaults",
 			accounts: append([]service.Account{{ID: 4, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey}}, accounts[1:]...),
-			want:     append(openai.DefaultModelIDs(), alias),
+			want:     append(openai.DefaultModelIDs(), sparkModel, alias),
 		},
 		{
 			name:     "unmapped accounts alone retain default response shape",
@@ -378,7 +378,7 @@ func TestGatewayModels_UnmappedOpenAIAccountsSupplementMappedModels(t *testing.T
 				Credentials: map[string]any{"model_mapping": map[string]any{"stale-model": "stale-model"}},
 				Extra:       map[string]any{"openai_passthrough": true},
 			}}, accounts[1:]...),
-			want: append(append([]string{}, subscriptionDefaults...), alias),
+			want: append(append([]string{}, subscriptionDefaults...), sparkModel, alias),
 		},
 		{
 			name:     "unmapped accounts from another platform do not add defaults",
@@ -950,14 +950,14 @@ func TestGatewayModels_CompositeUnmappedAccountsFallbackToLinkedPlatformsOnly(t 
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
 
 	ids := modelIDsForTest(got.Data)
-	require.Contains(t, ids, "gpt-5.5")
+	require.Contains(t, ids, "gpt-6.1-sol")
 	require.Contains(t, ids, "grok-4.3")
 	require.NotContains(t, ids, "claude-sonnet-4-6")
 	require.NotContains(t, ids, "gemini-2.5-flash")
 }
 
 // CN 供应商没有静态默认模型列表：composite 下无映射的可调度 CN 账号不得把
-// defaultModelIDsForPlatform default 分支的 Claude 列表挂到 CN 平台名下。
+// service.DefaultModelIDsForPlatform default 分支的 Claude 列表挂到 CN 平台名下。
 func TestGatewayModels_CompositeUnmappedCNAccountsContributeNoDefaults(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -991,7 +991,7 @@ func TestGatewayModels_CompositeUnmappedCNAccountsContributeNoDefaults(t *testin
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
 
 	ids := modelIDsForTest(got.Data)
-	require.Contains(t, ids, "gpt-5.5")
+	require.Contains(t, ids, "gpt-6.1-sol")
 	require.NotContains(t, ids, "claude-sonnet-4-6")
 }
 
@@ -1003,18 +1003,18 @@ func TestDefaultModelIDsForPlatform_CNProvidersKeepClaudeDefaults(t *testing.T) 
 		want = append(want, model.ID)
 	}
 	for _, platform := range []string{service.PlatformKimi, service.PlatformZhipu, service.PlatformDeepseek, service.PlatformMiniMax} {
-		require.Equal(t, want, defaultModelIDsForPlatform(platform), "platform=%s", platform)
+		require.Equal(t, want, service.DefaultModelIDsForPlatform(platform), "platform=%s", platform)
 	}
 }
 
 func TestDefaultCodexModelIDsForPlatform_DeepSeekUsesDeepSeekModels(t *testing.T) {
 	require.Equal(t, []string{"deepseek-v4-pro", "deepseek-v4-flash", "deepseek-flash"}, defaultCodexModelIDsForPlatform(service.PlatformDeepseek))
 	require.Equal(t, []string{"MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.5"}, defaultCodexModelIDsForPlatform(service.PlatformMiniMax))
-	require.Equal(t, defaultModelIDsForPlatform(service.PlatformAnthropic), defaultCodexModelIDsForPlatform(service.PlatformAnthropic))
+	require.Equal(t, service.DefaultModelIDsForPlatform(service.PlatformAnthropic), defaultCodexModelIDsForPlatform(service.PlatformAnthropic))
 }
 
 func TestDefaultModelIDsForPlatform_TypeSafeUsesJev(t *testing.T) {
-	require.Equal(t, []string{"jev-latest"}, defaultModelIDsForPlatform(service.PlatformTypeSafe))
+	require.Equal(t, []string{"jev-latest"}, service.DefaultModelIDsForPlatform(service.PlatformTypeSafe))
 }
 
 func TestGatewayCodexModels_DeepSeekWithoutMappingUsesDeepSeekDefaults(t *testing.T) {
@@ -1351,7 +1351,7 @@ func TestGatewayModels_CustomModelsListFiltersDefaultFallbackModels(t *testing.T
 			Platform: service.PlatformOpenAI,
 			ModelAllowlist: service.GroupModelAllowlist{
 				Enabled: true,
-				Models:  []string{"gpt-5.5", "legacy-gpt-2024", "gpt-5.4"},
+				Models:  []string{"gpt-6.1-sol", "legacy-gpt-2024", "gpt-5.6"},
 			},
 		},
 	})
@@ -1362,7 +1362,7 @@ func TestGatewayModels_CustomModelsListFiltersDefaultFallbackModels(t *testing.T
 
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-	require.Equal(t, []string{"gpt-5.5", "gpt-5.4"}, modelIDsForTest(got.Data))
+	require.Equal(t, []string{"gpt-6.1-sol", "gpt-5.6"}, modelIDsForTest(got.Data))
 }
 
 func TestGatewayModels_OpenAICustomModelsListKeepsOpenAIResponseShapeForDefaultFallback(t *testing.T) {
@@ -1388,7 +1388,7 @@ func TestGatewayModels_OpenAICustomModelsListKeepsOpenAIResponseShapeForDefaultF
 			Platform: service.PlatformOpenAI,
 			ModelAllowlist: service.GroupModelAllowlist{
 				Enabled: true,
-				Models:  []string{"gpt-5.5", "gpt-5.4"},
+				Models:  []string{"gpt-6.1-sol", "gpt-5.6"},
 			},
 		},
 	})
@@ -1399,7 +1399,7 @@ func TestGatewayModels_OpenAICustomModelsListKeepsOpenAIResponseShapeForDefaultF
 
 	var got gatewayModelsResponseForTest
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-	require.Equal(t, []string{"gpt-5.5", "gpt-5.4"}, modelIDsForTest(got.Data))
+	require.Equal(t, []string{"gpt-6.1-sol", "gpt-5.6"}, modelIDsForTest(got.Data))
 	require.Equal(t, "model", got.Data[0].Object)
 	require.NotZero(t, got.Data[0].Created)
 	require.Equal(t, "openai", got.Data[0].OwnedBy)
@@ -1702,7 +1702,7 @@ func TestGatewayModels_CompositeTypeSafeListingScope(t *testing.T) {
 }
 
 func TestDefaultModelIDsForPlatform_CompositeFallbackExcludesTypeSafe(t *testing.T) {
-	require.NotContains(t, defaultModelIDsForPlatform(service.PlatformComposite), "jev-latest")
+	require.NotContains(t, service.DefaultModelIDsForPlatform(service.PlatformComposite), "jev-latest")
 	require.NotContains(t, defaultCodexModelIDsForPlatform(service.PlatformComposite), "jev-latest")
 }
 
@@ -1759,7 +1759,7 @@ func TestGatewayModels_CompositeExactRoutesRespectTypeSafeIsolation(t *testing.T
 func TestGatewayModels_CompositeCodexFiltersEffectiveResponsesRoutes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	const groupID int64 = 7793
-	defaultModel := defaultModelIDsForPlatform(service.PlatformOpenAI)[0]
+	defaultModel := service.DefaultModelIDsForPlatform(service.PlatformOpenAI)[0]
 	for _, scenario := range []struct {
 		name     string
 		model    string
@@ -1889,4 +1889,43 @@ func TestGatewayModels_CompositeCodexRouteLookupErrorKeepsFallback(t *testing.T)
 			}
 		})
 	}
+}
+func TestOAuthInitialSelectionEmptyCompositeCatalog(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const groupID int64 = 7724
+	repo := &gatewayModelsAccountRepoStub{byGroup: map[int64][]service.Account{groupID: {{ID: 1, Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth, Credentials: map[string]any{service.OAuthInitialModelSelectionKey: []string{}, "model_mapping": map[string]any{}}}}}}
+	for _, allowlist := range []bool{false, true} {
+		h := newGatewayModelsHandlerForTest(repo)
+		group := &service.Group{ID: groupID, Platform: service.PlatformComposite}
+		if allowlist {
+			group.ModelAllowlist = service.GroupModelAllowlist{Enabled: true, Models: []string{"gpt-*"}}
+		}
+		response := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(response)
+		c.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+		c.Set(string(middleware2.ContextKeyAPIKey), &service.APIKey{Group: group})
+		h.Models(c)
+		require.Equal(t, http.StatusOK, response.Code)
+		var models gatewayModelsResponseForTest
+		require.NoError(t, json.Unmarshal(response.Body.Bytes(), &models))
+		require.Empty(t, models.Data)
+		require.Empty(t, h.codexModelIDsForGroup(t.Context(), group, ""))
+	}
+}
+
+func TestOAuthInitialSelectionMultiGroupCatalogUnion(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	restricted := service.Account{ID: 1, Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth, Credentials: map[string]any{service.OAuthInitialModelSelectionKey: []string{}, "model_mapping": map[string]any{}}}
+	existing := service.Account{ID: 2, Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth, Credentials: map[string]any{"model_mapping": map[string]any{"gpt-6.1-sol": "gpt-6.1-sol"}}}
+	repo := &gatewayModelsAccountRepoStub{byGroup: map[int64][]service.Account{1: {restricted}, 2: {existing}}}
+	h := newGatewayModelsHandlerForTest(repo)
+	response := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(response)
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	h.multiGroupModels(c, []*service.APIKey{{Group: &service.Group{ID: 1, Platform: service.PlatformOpenAI}}, {Group: &service.Group{ID: 2, Platform: service.PlatformOpenAI}}})
+	require.Equal(t, http.StatusOK, response.Code)
+	var models gatewayModelsResponseForTest
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &models))
+	require.Len(t, models.Data, 1)
+	require.Equal(t, "gpt-6.1-sol", models.Data[0].ID)
 }

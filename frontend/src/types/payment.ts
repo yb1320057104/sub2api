@@ -19,9 +19,15 @@ export type OrderStatus =
   | 'REFUNDED'
   | 'REFUND_FAILED'
 
-export type PaymentType = 'alipay' | 'wxpay' | 'alipay_direct' | 'wxpay_direct' | 'stripe' | 'easypay' | 'airwallex'
+export type BEpusdtPaymentType =
+  | `usdt.${'trc20' | 'erc20' | 'bep20' | 'polygon' | 'aptos' | 'solana' | 'xlayer' | 'arbitrum' | 'plasma' | 'ton'}`
+  | `usdc.${'trc20' | 'erc20' | 'bep20' | 'polygon' | 'aptos' | 'solana' | 'xlayer' | 'arbitrum' | 'base'}`
+  | 'tron.trx' | 'ethereum.eth' | 'bsc.bnb' | 'ton.gram'
+
+export type PaymentType = 'alipay' | 'wxpay' | 'alipay_direct' | 'wxpay_direct' | 'stripe' | 'easypay' | 'airwallex' | 'bepusdt' | BEpusdtPaymentType
 
 export type OrderType = 'balance' | 'subscription'
+export type SubscriptionRenewalMode = 'restart' | 'extend'
 
 // ==================== Configuration ====================
 
@@ -117,6 +123,7 @@ export interface PaymentOrder {
   refund_requested_by?: number
   refund_request_reason?: string
   plan_id?: number
+  renewal_mode?: SubscriptionRenewalMode
   provider_instance_id?: string
 }
 
@@ -185,6 +192,7 @@ export interface CreateOrderRequest {
   payment_type: string
   order_type: string
   plan_id?: number
+  renewal_mode?: SubscriptionRenewalMode
   return_url?: string
   payment_source?: string
   openid?: string

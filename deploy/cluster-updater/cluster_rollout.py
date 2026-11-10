@@ -169,7 +169,9 @@ def deploy(config, artifact, report):
         for node in ('secondary','primary'):
             progress('updating_worker_'+node,node)
             for peer in NODES:ready(config,peer,artifact['version'])
-            state['nodes'][node]['worker']=rpc(config,node,'update_worker',job_id,timeout=180)
+            # Forward shutdown and, if required, rollback each have a fifteen
+            # minute TERM/join budget. An RPC timeout never authorizes killing a worker.
+            state['nodes'][node]['worker']=rpc(config,node,'update_worker',job_id,timeout=2100)
             atomic(record,state)
         final=observe(config)
         need(all(r.get('ready') is True and r.get('version')==artifact['version'] and r.get('worker_version')==artifact['version'] for r in final.values()),'final_versions_not_consistent')

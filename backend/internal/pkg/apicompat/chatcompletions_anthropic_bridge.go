@@ -465,11 +465,7 @@ func chatMessageToAnthropicBlocks(message ChatMessage) []AnthropicContentBlock {
 	}
 
 	text := chatMessageContentText(message.Content)
-	// DeepSeek reasoning-only fallback: when there is no text and no tool calls,
-	// surface the reasoning content as visible text so the turn isn't empty.
-	if text == "" && strings.TrimSpace(reasoning) != "" && len(message.ToolCalls) == 0 {
-		text = reasoning
-	}
+	// Reasoning stays a thinking block; it is never a substitute for an answer.
 	if text != "" || len(message.ToolCalls) == 0 {
 		blocks = append(blocks, AnthropicContentBlock{Type: "text", Text: text})
 	}
@@ -488,6 +484,19 @@ func chatMessageToAnthropicBlocks(message ChatMessage) []AnthropicContentBlock {
 	}
 
 	return blocks
+}
+
+// ChatCompletionsReasoningOnlyError matches the Responses bridge's terminal
+// check without converting the entire response a second time.
+func ChatCompletionsReasoningOnlyError(resp *ChatCompletionsResponse) *ResponsesError {
+	if resp == nil || len(resp.Choices) == 0 {
+		return nil
+	}
+	message := resp.Choices[0].Message
+	if strings.TrimSpace(message.reasoningText()) != "" && strings.TrimSpace(chatMessageContentText(message.Content)) == "" && len(message.ToolCalls) == 0 {
+		return chatReasoningOnlyError()
+	}
+	return nil
 }
 
 // chatFinishReasonToAnthropicStopReason maps Chat Completions finish_reason to
@@ -566,6 +575,8 @@ type ChatCompletionsToAnthropicStreamState struct {
 	CurrentToolName     string
 	CurrentToolHadDelta bool
 	HasToolCall         bool
+	hasReasoning        bool
+	hasText             bool
 
 	// Tool calls keyed by the upstream tool_call index. The Anthropic block
 	// index is assigned when the tool block is announced (content_block_start),
@@ -643,6 +654,7 @@ func ChatCompletionsChunkToAnthropicEvents(
 		// Reasoning content → thinking block.
 		reasoning := choice.Delta.reasoningText()
 		if reasoning != nil && *reasoning != "" {
+			state.hasReasoning = state.hasReasoning || strings.TrimSpace(*reasoning) != ""
 			events = append(events, ensureCCAnthropicThinkingBlock(state)...)
 			events = append(events, ccAnthropicDelta(state, &AnthropicDelta{
 				Type:     "thinking_delta",
@@ -652,6 +664,7 @@ func ChatCompletionsChunkToAnthropicEvents(
 
 		// Text content → text block (closes any open thinking block first).
 		if choice.Delta.Content != nil && *choice.Delta.Content != "" {
+			state.hasText = state.hasText || strings.TrimSpace(*choice.Delta.Content) != ""
 			events = append(events, closeCCAnthropicBlockIfOpen(state, "thinking")...)
 			events = append(events, ensureCCAnthropicTextBlock(state)...)
 			events = append(events, ccAnthropicDelta(state, &AnthropicDelta{
@@ -704,6 +717,13 @@ func FinalizeChatCompletionsAnthropicStream(state *ChatCompletionsToAnthropicStr
 	}
 
 	events = append(events, closeCCAnthropicBlock(state)...)
+	if failure := state.ReasoningOnlyError(); failure != nil {
+		state.MessageStopSent = true
+		return append(events, AnthropicStreamEvent{
+			Type:  "error",
+			Error: &AnthropicStreamError{Type: "api_error", Code: failure.Code, Message: failure.Message},
+		})
+	}
 
 	stopReason := ccFinishReasonToAnthropicStopReason(state.FinishReason, state.HasToolCall)
 
@@ -724,6 +744,15 @@ func FinalizeChatCompletionsAnthropicStream(state *ChatCompletionsToAnthropicStr
 	)
 	state.MessageStopSent = true
 	return events
+}
+
+// ReasoningOnlyError reports a completed upstream turn with no answer or tool.
+// Usage continues to accumulate independently, including after client disconnect.
+func (state *ChatCompletionsToAnthropicStreamState) ReasoningOnlyError() *ResponsesError {
+	if state != nil && state.hasReasoning && !state.hasText && !state.HasToolCall {
+		return chatReasoningOnlyError()
+	}
+	return nil
 }
 
 // ensureCCAnthropicMessageStart emits message_start on the first event.

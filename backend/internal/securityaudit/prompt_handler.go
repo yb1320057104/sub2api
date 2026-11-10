@@ -10,6 +10,7 @@ import (
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
+	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 )
 
@@ -29,6 +30,7 @@ type PromptAdminService interface {
 type PromptAdminHandler struct {
 	service     PromptAdminService
 	auditCenter *AuditCenterService
+	penalties   *service.SecurityPenaltyService
 }
 
 func NewPromptAdminHandler(service PromptAdminService) *PromptAdminHandler {

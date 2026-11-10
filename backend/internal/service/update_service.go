@@ -28,6 +28,7 @@ var (
 	ErrNoUpdateAvailable         = infraerrors.Conflict("ALREADY_UP_TO_DATE", "no update available; current version is latest")
 	ErrRollbackVersionNotAllowed = infraerrors.BadRequest("ROLLBACK_VERSION_NOT_ALLOWED", "version is not in the allowed rollback list")
 	ErrUpdateNotAllowed          = infraerrors.Forbidden("UPDATE_NOT_ALLOWED", "online update and rollback require a release build")
+	ErrSystemRestartRequired     = infraerrors.Conflict("SYSTEM_RESTART_REQUIRED", "an update or rollback is already installed; restart the service before another update or rollback")
 )
 
 const (
@@ -82,6 +83,8 @@ type UpdateService struct {
 	startupGuardRequired bool
 	startupGuardObserved bool
 	startupGuardTrust    func(string, os.FileInfo) error
+	installMu            sync.Mutex
+	restartRequired      bool
 }
 
 // NewUpdateService creates a new UpdateService
@@ -234,6 +237,9 @@ func (s *UpdateService) PerformUpdate(ctx context.Context) error {
 		return err
 	}
 	defer s.operationMu.Unlock()
+	if err := s.checkRestartRequired(); err != nil {
+		return err
+	}
 	info, err := s.CheckUpdate(ctx, true)
 	if err != nil {
 		return err
@@ -246,10 +252,27 @@ func (s *UpdateService) PerformUpdate(ctx context.Context) error {
 	return s.applyReleaseAssets(ctx, info.ReleaseInfo.Assets)
 }
 
+// Check before release lookups so pending restarts take precedence over network
+// failures and version checks. Mutations must also recheck under installMu.
+func (s *UpdateService) checkRestartRequired() error {
+	s.installMu.Lock()
+	defer s.installMu.Unlock()
+	if s.restartRequired {
+		return ErrSystemRestartRequired
+	}
+	return nil
+}
+
 // applyReleaseAssets downloads the platform archive from the given release assets,
 // verifies its checksum, and atomically swaps the running binary.
 // Shared by PerformUpdate (latest) and RollbackToVersion (specific older version).
 func (s *UpdateService) applyReleaseAssets(ctx context.Context, releaseAssets []Asset) error {
+	s.installMu.Lock()
+	defer s.installMu.Unlock()
+	if s.restartRequired {
+		return ErrSystemRestartRequired
+	}
+
 	// Find matching archive and checksum for current platform
 	archiveName := s.getArchiveName()
 	var assetName string
@@ -369,6 +392,8 @@ func (s *UpdateService) applyReleaseAssets(ctx context.Context, releaseAssets []
 
 	// Success - backup file is kept for rollback capability
 	// It will be cleaned up on next successful update
+	// On Linux, os.Executable now points at the renamed backup until restart.
+	s.restartRequired = true
 	return nil
 }
 
@@ -381,6 +406,11 @@ func (s *UpdateService) Rollback() error {
 		return err
 	}
 	defer s.operationMu.Unlock()
+	s.installMu.Lock()
+	defer s.installMu.Unlock()
+	if s.restartRequired {
+		return ErrSystemRestartRequired
+	}
 	exePath, err := s.executablePath()
 	if err != nil {
 		return err
@@ -417,6 +447,7 @@ func (s *UpdateService) Rollback() error {
 		return fmt.Errorf("rollback failed: %w", err)
 	}
 
+	s.restartRequired = true
 	return nil
 }
 
@@ -454,6 +485,9 @@ func (s *UpdateService) RollbackToVersion(ctx context.Context, version string) e
 		return err
 	}
 	defer s.operationMu.Unlock()
+	if err := s.checkRestartRequired(); err != nil {
+		return err
+	}
 	target := version
 	if strings.HasPrefix(target, "v") {
 		target = strings.TrimPrefix(target, "v")

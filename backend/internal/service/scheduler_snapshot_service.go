@@ -120,11 +120,14 @@ type schedulerActiveGroupIDLister interface {
 }
 
 type SchedulerSnapshotService struct {
+	regionalRuntime              *regionalSchedulerRuntime
+	regionalExportMu             sync.Mutex
 	cache                        SchedulerCache
 	outboxRepo                   SchedulerOutboxRepository
 	accountRepo                  AccountRepository
 	groupRepo                    GroupRepository
 	cfg                          *config.Config
+	localSnapshotReader          LocalSchedulerSnapshotReader
 	stopCh                       chan struct{}
 	stopOnce                     sync.Once
 	wg                           sync.WaitGroup
@@ -138,6 +141,8 @@ type SchedulerSnapshotService struct {
 	outboxRebuildRetryReason     string
 	outboxLagWarningActive       bool
 	outboxMaxIDErrorLastLoggedAt time.Time
+	outboxEventRetryMu           sync.Mutex
+	outboxEventRetry             schedulerOutboxEventRetry
 
 	fullRebuildRunMu     sync.Mutex
 	fullRebuildStateMu   sync.Mutex
@@ -153,6 +158,9 @@ func NewSchedulerSnapshotService(
 	groupRepo GroupRepository,
 	cfg *config.Config,
 ) *SchedulerSnapshotService {
+	if source, ok := accountRepo.(LatestSchedulerAccountsRepository); ok && cache != nil {
+		cache = &codexOrderedSchedulerCache{SchedulerCache: cache, source: source}
+	}
 	maxQPS := 0
 	if cfg != nil {
 		maxQPS = cfg.Gateway.Scheduling.DbFallbackMaxQPS
@@ -168,8 +176,19 @@ func NewSchedulerSnapshotService(
 	}
 }
 
+// SetLocalSnapshotReader must be called before starting workers or serving requests.
+// SetLocalSnapshotReader enables the regional request path. Once configured,
+// ListSchedulableAccounts treats the local view as authoritative and does not
+// fall back to the primary database on miss or expiry.
+func (s *SchedulerSnapshotService) SetLocalSnapshotReader(reader LocalSchedulerSnapshotReader) {
+	if s == nil {
+		return
+	}
+	s.localSnapshotReader = reader
+}
+
 func (s *SchedulerSnapshotService) Start() {
-	if s == nil || s.cache == nil {
+	if s == nil || s.cache == nil || !s.writesSnapshots() {
 		return
 	}
 
@@ -186,6 +205,13 @@ func (s *SchedulerSnapshotService) Start() {
 			defer s.wg.Done()
 			s.runOutboxWorker(interval)
 		}()
+		if retries, ok := s.outboxRepo.(SchedulerOutboxRetryRepository); ok {
+			s.wg.Add(1)
+			go func() {
+				defer s.wg.Done()
+				s.runOutboxRetryWorker(retries, interval)
+			}()
+		}
 	}
 
 	fullInterval := s.fullRebuildInterval()
@@ -203,12 +229,18 @@ func (s *SchedulerSnapshotService) Stop() {
 		return
 	}
 	s.stopOnce.Do(func() {
+		s.regionalRuntime.stop()
 		close(s.stopCh)
 	})
 	s.wg.Wait()
 }
 
-func (s *SchedulerSnapshotService) ListSchedulableAccounts(ctx context.Context, groupID *int64, platform string, hasForcePlatform bool) ([]Account, bool, error) {
+func (s *SchedulerSnapshotService) ListSchedulableAccounts(ctx context.Context, groupID *int64, platform string, hasForcePlatform bool) (accountsResult []Account, mixedResult bool, resultErr error) {
+	defer func() {
+		if resultErr == nil {
+			accountsResult, resultErr = s.filterPerformanceAccounts(ctx, accountsResult)
+		}
+	}()
 	useMixed := (platform == PlatformAnthropic || platform == PlatformGemini) && !hasForcePlatform
 	mode := s.resolveMode(platform, hasForcePlatform)
 	bucket := s.bucketFor(groupID, platform, mode)
@@ -216,6 +248,20 @@ func (s *SchedulerSnapshotService) ListSchedulableAccounts(ctx context.Context, 
 	canPublish := false
 	if err := ctx.Err(); err != nil {
 		return nil, useMixed, err
+	}
+
+	if s.localSnapshotReader != nil {
+		cached, hit, err := s.localSnapshotReader.GetLocalSnapshot(ctx, bucket)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, useMixed, ctxErr
+		}
+		if err != nil {
+			return nil, useMixed, err
+		}
+		if !hit {
+			return nil, useMixed, ErrLocalSchedulerSnapshotUnavailable
+		}
+		return derefAccounts(cached), useMixed, nil
 	}
 
 	if s.cache != nil {
@@ -227,6 +273,9 @@ func (s *SchedulerSnapshotService) ListSchedulableAccounts(ctx context.Context, 
 			logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] cache read failed: bucket=%s err=%v", bucket.String(), err)
 		} else if hit {
 			return derefAccounts(cached), useMixed, nil
+		}
+		if !s.writesSnapshots() {
+			return nil, useMixed, ErrSchedulerCacheNotReady
 		}
 		token, err := s.cache.CaptureBucketWriteToken(ctx, bucket)
 		if ctxErr := ctx.Err(); ctxErr != nil {
@@ -272,7 +321,26 @@ func (s *SchedulerSnapshotService) ListSchedulableAccounts(ctx context.Context, 
 	return accounts, useMixed, nil
 }
 
-func (s *SchedulerSnapshotService) GetAccount(ctx context.Context, accountID int64) (*Account, error) {
+func (s *SchedulerSnapshotService) GetAccount(ctx context.Context, accountID int64) (result *Account, resultErr error) {
+	defer func() {
+		// Regional GetAccounts already applied the live pause check once.
+		if s.localSnapshotReader == nil && resultErr == nil && result != nil {
+			var values map[int64]*Account
+			values, resultErr = s.markPerformanceAccounts(ctx, map[int64]*Account{accountID: result})
+			if resultErr == nil {
+				result = values[accountID]
+			} else {
+				result = nil
+			}
+		}
+	}()
+	if s.localSnapshotReader != nil {
+		accounts, err := s.GetAccounts(ctx, []int64{accountID})
+		if err != nil {
+			return nil, err
+		}
+		return accounts[accountID], nil
+	}
 	if accountID <= 0 {
 		return nil, nil
 	}
@@ -301,6 +369,13 @@ func (s *SchedulerSnapshotService) GetAccount(ctx context.Context, accountID int
 
 // GetGroupByID 获取分组信息（供调度器使用）
 func (s *SchedulerSnapshotService) GetGroupByID(ctx context.Context, groupID int64) (*Group, error) {
+	if s.localSnapshotReader != nil {
+		reader, ok := s.localSnapshotReader.(LocalSchedulerDetailReader)
+		if !ok {
+			return nil, ErrLocalSchedulerSnapshotUnavailable
+		}
+		return reader.GetLocalGroup(ctx, groupID)
+	}
 	if s.groupRepo == nil {
 		return nil, nil
 	}
@@ -312,13 +387,22 @@ func (s *SchedulerSnapshotService) GetGroupByID(ctx context.Context, groupID int
 // 查询纯属浪费——composite / 模型路由 / fallback 每次装门都要付一次，WS 更是
 // 每个 turn 一次，且发生在「是否启用利润控制」判定之前。
 func (s *SchedulerSnapshotService) GetGroupByIDLite(ctx context.Context, groupID int64) (*Group, error) {
+	if s.localSnapshotReader != nil {
+		reader, ok := s.localSnapshotReader.(LocalSchedulerDetailReader)
+		if !ok {
+			return nil, ErrLocalSchedulerSnapshotUnavailable
+		}
+		return reader.GetLocalGroup(ctx, groupID)
+	}
 	if s.groupRepo == nil {
 		return nil, nil
 	}
 	return s.groupRepo.GetByIDLite(ctx, groupID)
 }
 
-// UpdateAccountInCache 立即更新 Redis 中单个账号的数据（用于模型限流后立即生效）
+// UpdateAccountInCache 立即更新 Redis 中单个账号的数据（用于模型限流后立即生效）。
+// Reader mode retains request-triggered cooldown/status feedback; this does not
+// grant authority to rebuild candidate snapshots or consume the outbox.
 func (s *SchedulerSnapshotService) UpdateAccountInCache(ctx context.Context, account *Account) error {
 	if s.cache == nil || account == nil {
 		return nil
@@ -373,7 +457,7 @@ func (s *SchedulerSnapshotService) runFullRebuildWorker(interval time.Duration) 
 }
 
 func (s *SchedulerSnapshotService) pollOutbox() {
-	if s.outboxRepo == nil || s.cache == nil {
+	if !s.writesSnapshots() || s.outboxRepo == nil || s.cache == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -382,6 +466,10 @@ func (s *SchedulerSnapshotService) pollOutbox() {
 	watermark, err := s.cache.GetOutboxWatermark(ctx)
 	if err != nil {
 		logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] outbox watermark read failed: %v", err)
+		return
+	}
+	if !s.outboxEventRetryReady(watermark) {
+		s.checkPendingOutboxLag(watermark)
 		return
 	}
 
@@ -399,17 +487,50 @@ func (s *SchedulerSnapshotService) pollOutbox() {
 	}
 
 	seen := make(map[batchSeenKey]struct{})
+	lastHandledID := watermark
 	for _, event := range events {
 		eventCtx, cancel := context.WithTimeout(context.Background(), outboxEventTimeout)
+		if _, ok := s.outboxRepo.(SchedulerOutboxRetryRepository); ok {
+			// A retry may own the bucket while a newer event arrives. Do not
+			// acknowledge that newer change merely because the bucket is busy.
+			eventCtx = context.WithValue(eventCtx, schedulerOutboxStrictKey{}, true)
+		}
 		err := s.handleOutboxEvent(eventCtx, event, seen)
 		cancel()
 		if err != nil {
-			logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] outbox handle failed: id=%d type=%s err=%v", event.ID, event.EventType, err)
+			if s.deferOutboxEventDurably(event, err) {
+				lastHandledID = event.ID
+				s.clearOutboxEventRetryThrough(event.ID)
+				// A partial handler may already have marked buckets in this batch.
+				// Later events must not inherit those incomplete rebuild markers.
+				seen = make(map[batchSeenKey]struct{})
+				continue
+			}
+			failures, delay := s.deferOutboxEvent(event.ID)
+			logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] outbox handle failed: id=%d type=%s failures=%d retry_in=%s err=%v", event.ID, event.EventType, failures, delay, err)
+			// The failed event stays durable and ordered. Commit only the completed
+			// prefix so a poison event does not replay all earlier successes. A lag
+			// rebuild is only reconciliation assistance: it may skip busy buckets,
+			// so its success must never acknowledge this failed event.
+			if lastHandledID > watermark && s.advanceOutboxWatermark(lastHandledID) {
+				watermark = lastHandledID
+			}
+			s.checkPendingOutboxLag(watermark)
 			return
 		}
+		lastHandledID = event.ID
+		s.clearOutboxEventRetryThrough(event.ID)
 	}
 
-	lastID := events[len(events)-1].ID
+	if !s.advanceOutboxWatermark(lastHandledID) {
+		return
+	}
+	// 只有 watermark 成功推进后，当前批次才算已消费。延迟必须按下一条待消费事件计算，
+	// 否则本批次处理越慢，越容易误触发一次更慢的全量重建，形成正反馈。
+	s.checkPendingOutboxLag(lastHandledID)
+}
+
+func (s *SchedulerSnapshotService) advanceOutboxWatermark(lastID int64) bool {
 	var wmErr error
 	for i := range 3 {
 		wmCtx, wmCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -424,14 +545,16 @@ func (s *SchedulerSnapshotService) pollOutbox() {
 	}
 	if wmErr != nil {
 		logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] outbox watermark write failed: %v", wmErr)
-		return
+		return false
 	}
 	s.cleanupConsumedOutbox(lastID)
+	return true
+}
 
-	// 只有 watermark 成功推进后，当前批次才算已消费。延迟必须按下一条待消费事件计算，
-	// 否则本批次处理越慢，越容易误触发一次更慢的全量重建，形成正反馈。
+func (s *SchedulerSnapshotService) checkPendingOutboxLag(watermark int64) {
+	// Event processing may have exhausted the poll's original read context.
 	lagCtx, lagCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	s.checkOutboxLag(lagCtx, lastID)
+	s.checkOutboxLag(lagCtx, watermark)
 	lagCancel()
 }
 
@@ -478,6 +601,13 @@ func (s *SchedulerSnapshotService) handleOutboxEvent(ctx context.Context, event 
 	case SchedulerOutboxEventGroupChanged:
 		return s.handleGroupEvent(ctx, event.GroupID, seen)
 	case SchedulerOutboxEventFullRebuild:
+		if isStrictOutboxPublication(ctx) {
+			// A coalesced ordinary rebuild can skip busy/fenced buckets. An outbox
+			// event needs its own strict run before it can be acknowledged.
+			s.fullRebuildRunMu.Lock()
+			defer s.fullRebuildRunMu.Unlock()
+			return s.rebuildFullSnapshot(ctx, "outbox")
+		}
 		return s.triggerFullRebuild("outbox")
 	default:
 		return nil
@@ -577,7 +707,7 @@ func (s *SchedulerSnapshotService) handleBulkAccountEvent(ctx context.Context, p
 		}
 		allAccountsFound = false
 		if s.cache != nil {
-			if err := s.cache.DeleteAccount(ctx, id); err != nil {
+			if err := s.deleteOutboxAccount(ctx, id); err != nil {
 				return err
 			}
 		}
@@ -667,7 +797,7 @@ func (s *SchedulerSnapshotService) handleAccountEvent(ctx context.Context, accou
 	if err != nil {
 		if errors.Is(err, ErrAccountNotFound) {
 			if s.cache != nil {
-				if err := s.cache.DeleteAccount(ctx, *accountID); err != nil {
+				if err := s.deleteOutboxAccount(ctx, *accountID); err != nil {
 					return err
 				}
 			}
@@ -905,7 +1035,7 @@ func (s *SchedulerSnapshotService) bucketsForPlatform(platform string, groupIDs 
 func (s *SchedulerSnapshotService) rebuildBuckets(ctx context.Context, buckets []SchedulerBucket, reason string) error {
 	tasks, firstErr := s.prepareBucketWriteTasks(ctx, buckets)
 	queries := newSchedulerAccountQueryCache(tasks)
-	if err := s.rebuildPreparedBucketTasks(ctx, tasks, reason, false, queries); err != nil && firstErr == nil {
+	if err := s.rebuildPreparedBucketTasks(ctx, tasks, reason, isStrictOutboxPublication(ctx), queries); err != nil && firstErr == nil {
 		firstErr = err
 	}
 	return firstErr
@@ -916,11 +1046,49 @@ func (s *SchedulerSnapshotService) prepareBucketWriteTasks(ctx context.Context, 
 		return nil, ErrSchedulerCacheNotReady
 	}
 	tasks := make([]schedulerBucketWriteTask, 0, len(buckets))
+	// A successful inactive reconciliation already retires the entire group,
+	// including historical buckets. Reuse only that completed decision within
+	// this preparation; failures and active plans still follow the fresh path.
+	var retiredGroups map[int64]struct{}
 	var firstErr error
 	for _, bucket := range buckets {
 		token, err := s.cache.CaptureBucketWriteToken(ctx, bucket)
 		if err != nil {
+			if isStrictOutboxPublication(ctx) && errors.Is(err, ErrSchedulerBucketRetired) && bucket.GroupID > 0 && !s.isRunModeSimple() {
+				// A delayed account event can refer to a now-deleted group. Recheck
+				// authority under the existing lifecycle lease; do not reopen it
+				// from the event payload or retain an already-retired group forever.
+				// Capture above always takes precedence: a concurrent reopen can
+				// supply a current token even after this group's inactive decision.
+				if _, completed := retiredGroups[bucket.GroupID]; completed {
+					continue
+				}
+				plan, lifecycleErr := s.prepareGroupLifecycle(ctx, bucket.GroupID, nil)
+				if lifecycleErr != nil {
+					if firstErr == nil {
+						firstErr = lifecycleErr
+					}
+					continue
+				}
+				if !plan.active {
+					if retiredGroups == nil {
+						retiredGroups = make(map[int64]struct{})
+					}
+					retiredGroups[bucket.GroupID] = struct{}{}
+					continue
+				}
+				for _, task := range plan.tasks {
+					if task.bucket == bucket {
+						tasks = append(tasks, task)
+						break
+					}
+				}
+				continue
+			}
 			if errors.Is(err, ErrSchedulerBucketRetired) || errors.Is(err, ErrSchedulerBucketWriteFenced) {
+				if isStrictOutboxPublication(ctx) && firstErr == nil {
+					firstErr = err
+				}
 				continue
 			}
 			if firstErr == nil {
@@ -980,11 +1148,14 @@ func (s *SchedulerSnapshotService) rebuildBucketWithTokenPolicyAndQueryCache(
 	rebuildCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
+	rebuildStarted := time.Now()
 	accounts, err := s.loadAccountsForRebuild(rebuildCtx, bucket, queries)
+	loadDuration := time.Since(rebuildStarted)
 	if err != nil {
-		logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] rebuild failed: bucket=%s reason=%s err=%v", bucket.String(), reason, err)
+		logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] rebuild failed: bucket=%s reason=%s load_ms=%d err=%v", bucket.String(), reason, loadDuration.Milliseconds(), err)
 		return err
 	}
+	publicationStarted := time.Now()
 	if err := s.setRebuildSnapshot(rebuildCtx, task, accounts, queries); err != nil {
 		if errors.Is(err, ErrSchedulerBucketRetired) || errors.Is(err, ErrSchedulerBucketWriteFenced) {
 			slog.Debug("[Scheduler] rebuild fenced", "bucket", bucket.String(), "reason", reason)
@@ -993,10 +1164,10 @@ func (s *SchedulerSnapshotService) rebuildBucketWithTokenPolicyAndQueryCache(
 			}
 			return nil
 		}
-		logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] rebuild cache failed: bucket=%s reason=%s err=%v", bucket.String(), reason, err)
+		logger.LegacyPrintf("service.scheduler_snapshot", "[Scheduler] rebuild cache failed: bucket=%s reason=%s size=%d load_ms=%d publish_ms=%d elapsed_ms=%d err=%v", bucket.String(), reason, len(accounts), loadDuration.Milliseconds(), time.Since(publicationStarted).Milliseconds(), time.Since(rebuildStarted).Milliseconds(), err)
 		return err
 	}
-	slog.Debug("[Scheduler] rebuild ok", "bucket", bucket.String(), "reason", reason, "size", len(accounts))
+	slog.Debug("[Scheduler] rebuild ok", "bucket", bucket.String(), "reason", reason, "size", len(accounts), "load_ms", loadDuration.Milliseconds(), "publish_ms", time.Since(publicationStarted).Milliseconds(), "elapsed_ms", time.Since(rebuildStarted).Milliseconds())
 	return nil
 }
 
@@ -1006,6 +1177,11 @@ func (s *SchedulerSnapshotService) setRebuildSnapshot(
 	accounts []Account,
 	queries *schedulerAccountQueryCache,
 ) error {
+	if isOutboxRetryPublication(ctx) {
+		// Retry completion requires a real publication of fresh membership; do
+		// not reuse a previous query's account IDs or skip metadata validation.
+		return s.cache.SetSnapshot(ctx, task.bucket, task.token, accounts)
+	}
 	writer, ok := s.cache.(schedulerSnapshotAccountIDWriter)
 	key, reusable := schedulerAccountQueryKeyForBucket(task.bucket)
 	if !ok || queries == nil || !reusable {
@@ -1033,7 +1209,7 @@ func (s *SchedulerSnapshotService) setRebuildSnapshot(
 }
 
 func (s *SchedulerSnapshotService) triggerFullRebuild(reason string) error {
-	if s.cache == nil {
+	if !s.writesSnapshots() || s.cache == nil {
 		return ErrSchedulerCacheNotReady
 	}
 	return s.coalesceFullRebuild(func() error {
@@ -1044,7 +1220,7 @@ func (s *SchedulerSnapshotService) triggerFullRebuild(reason string) error {
 }
 
 func (s *SchedulerSnapshotService) rebuildFullSnapshot(ctx context.Context, reason string) error {
-	if s.cache == nil {
+	if !s.writesSnapshots() || s.cache == nil {
 		return ErrSchedulerCacheNotReady
 	}
 
@@ -1221,7 +1397,7 @@ func (s *SchedulerSnapshotService) prepareAndRebuildFullSnapshot(
 	if err := s.rebuildPreparedBucketTasks(ctx, reopened, reason, true, queries); err != nil {
 		firstErr = err
 	}
-	if err := s.rebuildPreparedBucketTasks(ctx, captured, reason, false, queries); err != nil && firstErr == nil {
+	if err := s.rebuildPreparedBucketTasks(ctx, captured, reason, isStrictOutboxPublication(ctx), queries); err != nil && firstErr == nil {
 		firstErr = err
 	}
 	return firstErr
@@ -1515,6 +1691,9 @@ func (s *SchedulerSnapshotService) loadAccountsForRebuild(
 	bucket SchedulerBucket,
 	queries *schedulerAccountQueryCache,
 ) ([]Account, error) {
+	if isOutboxRetryPublication(ctx) {
+		return s.loadAccountsFromDB(ctx, bucket, bucket.Mode == SchedulerModeMixed)
+	}
 	key, cacheable := schedulerAccountQueryKeyForBucket(bucket)
 	if queries == nil || !cacheable {
 		return s.loadAccountsFromDB(ctx, bucket, bucket.Mode == SchedulerModeMixed)
@@ -1587,7 +1766,14 @@ func (s *SchedulerSnapshotService) resolveMode(platform string, hasForcePlatform
 	return SchedulerModeSingle
 }
 
+func (s *SchedulerSnapshotService) writesSnapshots() bool {
+	return s != nil && s.localSnapshotReader == nil && s.cfg.WritesSchedulerSnapshots()
+}
+
 func (s *SchedulerSnapshotService) guardFallback(ctx context.Context) error {
+	if !s.writesSnapshots() {
+		return ErrSchedulerCacheNotReady
+	}
 	if s.cfg == nil || s.cfg.Gateway.Scheduling.DbFallbackEnabled {
 		if s.fallbackLimit == nil || s.fallbackLimit.Allow() {
 			return nil

@@ -519,6 +519,11 @@ func (s *OpenAIQuotaAutoResetService) assessExtra(account *Account, config OpenA
 }
 
 func (s *OpenAIQuotaAutoResetService) assessUsage(usage *OpenAIQuotaUsage, account *Account, config OpenAIAutoResetCreditConfig, now time.Time) openAIAutoResetAssessment {
+	if usage != nil && usage.schedulingObserved {
+		// The account was reloaded after the query. It may contain a later
+		// header/query observation than the returned DTO; assess committed usage.
+		return s.assessExtra(account, config, now)
+	}
 	updates := buildOpenAIAutoResetUsageUpdates(usage, now)
 	utilization5h := readOpenAIQuotaUsedPercent(updates, "5h") / 100
 	utilization7d := readOpenAIQuotaUsedPercent(updates, "7d") / 100
@@ -532,8 +537,8 @@ func (s *OpenAIQuotaAutoResetService) buildAssessment(account *Account, config O
 		threshold5h:   config.Threshold5h,
 		threshold7d:   config.Threshold7d,
 	}
-	reset5h := utilization5h >= config.Threshold5h
-	reset7d := utilization7d >= config.Threshold7d
+	reset5h := config.Threshold5h > 0 && utilization5h >= config.Threshold5h
+	reset7d := config.Threshold7d > 0 && utilization7d >= config.Threshold7d
 	assessment.resetReached = reset5h || reset7d
 	assessment.triggerWindow = joinOpenAIAutoResetWindows(reset5h, reset7d)
 
@@ -567,13 +572,31 @@ func joinOpenAIAutoResetWindows(fiveHour, sevenDay bool) string {
 }
 
 func buildOpenAIAutoResetUsageUpdates(usage *OpenAIQuotaUsage, now time.Time) map[string]any {
+	if usage != nil && usage.schedulingObserved {
+		updates := make(map[string]any, len(usage.schedulingUpdates))
+		for key, value := range usage.schedulingUpdates {
+			updates[key] = value
+		}
+		return updates
+	}
 	if usage == nil || usage.RateLimit == nil {
 		return nil
 	}
 	rateLimit := usage.RateLimit
-	snapshot := &OpenAICodexUsageSnapshot{UpdatedAt: now.UTC().Format(time.RFC3339)}
+	// Programmatic callers explicitly construct their windows; decoded DTOs
+	// retain presence and their original receipt time, never a post-reset time.
+	if usage.FetchedAt > 0 {
+		now = time.Unix(usage.FetchedAt, 0)
+	} else {
+		for _, window := range []*OpenAIRateLimitWindow{rateLimit.PrimaryWindow, rateLimit.SecondaryWindow} {
+			if window != nil && !window.observedAt.IsZero() && window.observedAt.Before(now) {
+				now = window.observedAt
+			}
+		}
+	}
+	snapshot := &OpenAICodexUsageSnapshot{UpdatedAt: now.UTC().Format(time.RFC3339Nano)}
 	applyWindow := func(window *OpenAIRateLimitWindow, primary bool) {
-		if window == nil {
+		if window == nil || (window.decoded && !window.usedPresent) {
 			return
 		}
 		used := window.UsedPercent
@@ -581,11 +604,15 @@ func buildOpenAIAutoResetUsageUpdates(usage *OpenAIQuotaUsage, now time.Time) ma
 		windowMinutes := int(window.LimitWindowSeconds / 60)
 		if primary {
 			snapshot.PrimaryUsedPercent = &used
-			snapshot.PrimaryResetAfterSeconds = &resetAfter
+			if !window.decoded || window.resetAfterPresent {
+				snapshot.PrimaryResetAfterSeconds = &resetAfter
+			}
 			snapshot.PrimaryWindowMinutes = &windowMinutes
 		} else {
 			snapshot.SecondaryUsedPercent = &used
-			snapshot.SecondaryResetAfterSeconds = &resetAfter
+			if !window.decoded || window.resetAfterPresent {
+				snapshot.SecondaryResetAfterSeconds = &resetAfter
+			}
 			snapshot.SecondaryWindowMinutes = &windowMinutes
 		}
 	}
@@ -597,7 +624,7 @@ func buildOpenAIAutoResetUsageUpdates(usage *OpenAIQuotaUsage, now time.Time) ma
 func (s *OpenAIQuotaAutoResetService) persistFreshUsage(ctx context.Context, accountID int64, usage *OpenAIQuotaUsage, now time.Time) error {
 	updates := buildOpenAIAutoResetUsageUpdates(usage, now)
 	if len(updates) > 0 {
-		if err := s.accountRepo.UpdateExtra(ctx, accountID, updates); err != nil {
+		if _, err := persistCodexUsageUpdates(ctx, s.accountRepo, accountID, updates); err != nil {
 			return err
 		}
 	}

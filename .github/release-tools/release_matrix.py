@@ -46,8 +46,11 @@ def archive_name(version, target):
 
 
 def sha256(path):
+    digest = hashlib.sha256()
     with path.open('rb') as stream:
-        return hashlib.file_digest(stream, 'sha256').hexdigest()
+        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def plan(args):
@@ -67,6 +70,7 @@ def plan(args):
         raise ValueError('invalid VERSION')
     VERSION_FILE.write_text(version + '\n')
     result = {'sha': sha, 'tag': tag, 'version': version,
+              'prerelease': str('-' in version).lower(),
               'owner_lower': os.environ.get('GITHUB_REPOSITORY_OWNER', '').lower(),
               'simple': str(args.simple).lower(), 'dry_run': str(args.dry_run).lower(),
               'date': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
@@ -152,6 +156,9 @@ def contexts(args):
         (dest / 'deploy').mkdir(exist_ok=True)
         shutil.copy2('deploy/docker-entrypoint.sh', dest / 'deploy/docker-entrypoint.sh')
         shutil.copytree('backend/resources', dest / 'backend/resources', dirs_exist_ok=True)
+        shutil.copy2('THIRD_PARTY_NOTICES.md', dest / 'THIRD_PARTY_NOTICES.md')
+        (dest / 'LICENSES').mkdir(exist_ok=True)
+        shutil.copy2('LICENSES/BEpusdt-GPL-3.0.txt', dest / 'LICENSES/BEpusdt-GPL-3.0.txt')
 
 
 def main():

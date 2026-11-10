@@ -1,8 +1,9 @@
 <template>
   <AppLayout>
-    <TablePageLayout>
+    <TablePageLayout class="keys-page-layout">
       <template #filters>
         <div class="flex flex-col gap-3">
+          <UserKeyRiskNotices />
           <div class="flex flex-wrap items-center gap-3">
             <SearchInput
               v-model="filterSearch"
@@ -22,6 +23,21 @@
               :options="statusFilterOptions"
               @update:model-value="onStatusFilterChange"
             />
+            <div class="relative flex flex-wrap items-center gap-2" data-test="key-usage-date-range">
+              <span class="text-sm text-gray-600 dark:text-gray-300">{{ t('keys.usageDateRange') }}</span>
+              <DateRangePicker
+                class="key-usage-range-picker"
+                :start-date="usageStartDate"
+                :end-date="usageEndDate"
+                :show-last24-hours="false"
+                @change="onUsageDateRangeChange"
+              />
+              <NewFeatureBadge
+                v-if="authStore.isAdmin"
+                :notice-id="NEW_FEATURE_NOTICES.apiKeyUsageDateRange"
+                :user-id="authStore.user?.id"
+              />
+            </div>
           </div>
           <EndpointPopover
             v-if="publicSettings?.api_base_url || (publicSettings?.custom_endpoints?.length ?? 0) > 0"
@@ -50,12 +66,12 @@
       <template #actions>
         <div class="flex justify-end gap-3">
           <button
-            @click="loadApiKeys"
-            :disabled="loading"
+            @click="refreshPage"
+            :disabled="loading || groupPricingLoading"
             class="btn btn-secondary"
             :title="t('common.refresh')"
           >
-            <Icon name="refresh" size="md" :class="loading ? 'animate-spin' : ''" />
+            <Icon name="refresh" size="md" :class="loading || groupPricingLoading ? 'animate-spin' : ''" />
           </button>
           <div class="relative" ref="columnDropdownRef">
             <button
@@ -155,11 +171,11 @@
           </template>
 
           <template #cell-group="{ row }">
-            <div class="group/dropdown relative">
+            <div class="key-group-cell group/dropdown relative">
               <button
                 :ref="(el) => setGroupButtonRef(row.id, el)"
                 @click="openGroupSelector(row)"
-                class="-mx-2 -my-1 flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1 transition-all duration-200 hover:bg-gray-100 dark:hover:bg-dark-700"
+                class="key-group-control -mx-2 -my-1 flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1 transition-all duration-200 hover:bg-gray-100 dark:hover:bg-dark-700"
                 :title="t('keys.clickToChangeGroup')"
               >
                 <span v-if="apiKeyGroupIds(row).length" class="flex flex-col items-start gap-2" :data-test="`key-groups-${row.id}`">
@@ -172,7 +188,8 @@
                 <span v-else class="text-sm text-gray-400 dark:text-dark-500">{{
                   t('keys.noGroup')
                 }}</span>
-                <span class="text-xs text-gray-500 dark:text-gray-400">{{ t('keys.selectGroup') }}</span>
+                <span v-if="(row.group_ids?.length ?? 0) > 1" class="key-group-hint text-xs text-primary-600">{{ t('keys.multiGroupCount', { count: row.group_ids.length }) }}</span>
+                <span v-else class="key-group-hint text-xs text-gray-500 dark:text-gray-400">{{ t('keys.selectGroup') }}</span>
                 <svg
                   class="h-3.5 w-3.5 text-gray-400 opacity-60 transition-opacity group-hover/dropdown:opacity-100"
                   fill="none"
@@ -190,45 +207,92 @@
             </div>
           </template>
 
-          <template #cell-current_concurrency="{ value }">
+          <template #cell-current_concurrency="{ row }">
             <span
+              :title="t('keys.concurrencyCount')"
               :class="[
-                'inline-flex min-w-8 items-center justify-center rounded px-2 py-1 text-sm font-semibold tabular-nums',
-                (value ?? 0) > 0
+                'inline-flex items-center gap-1 rounded-md px-1.5 py-px text-xs font-normal leading-tight tabular-nums',
+                concurrencyRows[row.id]?.concurrencyFull
+                  ? 'bg-amber-50 text-amber-700 ring-1 ring-amber-200 dark:bg-amber-900/25 dark:text-amber-300 dark:ring-amber-800'
+                  : (concurrencyRows[row.id]?.current ?? 0) > 0
                   ? 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200 dark:bg-emerald-900/25 dark:text-emerald-300 dark:ring-emerald-800'
                   : 'bg-gray-100 text-gray-500 dark:bg-dark-700 dark:text-dark-400'
               ]"
             >
-              {{ value ?? 0 }}
+              <svg
+                class="h-2.5 w-2.5"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                stroke-width="2"
+                aria-hidden="true"
+              >
+                <path stroke-linecap="round" stroke-linejoin="round" d="M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2m8-8a4 4 0 100-8 4 4 0 000 8" />
+              </svg>
+              <span class="sr-only">{{ t('keys.concurrencyCount') }}{{ ' ' }}</span>
+              <span class="whitespace-nowrap font-mono">
+                {{ concurrencyRows[row.id]?.current ?? '—' }}
+                <span v-if="concurrencyRows[row.id]?.limit > 0" class="ml-1">/ {{ concurrencyRows[row.id]?.limit }}</span>
+              </span>
+            </span>
+            <div v-if="concurrencyRows[row.id]?.limit > 0" class="mt-1 text-xs tabular-nums text-gray-500 dark:text-dark-400">
+              <template v-if="queuePolicy && concurrencyRows[row.id]?.limit > 0">
+                <span v-if="queuePolicy.max_waiting === 0" class="block">{{ t('keys.queueOff') }}</span>
+                <span v-if="queuePolicy.max_waiting > 0 || (concurrencyRows[row.id]?.waiting ?? 0) > 0"
+                  :class="{ 'text-amber-600 dark:text-amber-400': concurrencyRows[row.id]?.full }">
+                  <span :class="[
+                    'inline-flex items-center gap-1 rounded-md px-1.5 py-px font-normal leading-tight tabular-nums',
+                    concurrencyRows[row.id]?.full
+                      ? 'bg-amber-50 text-amber-700 ring-1 ring-amber-200 dark:bg-amber-900/25 dark:text-amber-300 dark:ring-amber-800'
+                      : concurrencyRows[row.id]?.waiting === 0
+                        ? 'bg-gray-100 text-gray-500 dark:bg-dark-700 dark:text-dark-400'
+                        : 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200 dark:bg-emerald-900/25 dark:text-emerald-300 dark:ring-emerald-800'
+                  ]" :title="t('keys.waitingCount')">
+                    <svg class="h-2.5 w-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                      <circle cx="12" cy="12" r="9" />
+                      <path stroke-linecap="round" d="M12 7v5l3 2" />
+                    </svg>
+                    <span class="sr-only">{{ t('keys.waitingCount') }}{{ ' ' }}</span>
+                    <span class="whitespace-nowrap font-mono">{{ concurrencyRows[row.id]?.waiting ?? '—' }}<template v-if="queuePolicy.max_waiting > 0"> / {{ queuePolicy.max_waiting }}</template></span>
+                  </span>
+                  <span v-if="concurrencyRows[row.id]?.full"> · {{ t('keys.queueFull') }}</span>
+                </span>
+              </template>
+              <span v-else>{{ t(concurrencyState.status === 'loading' ? 'keys.queuePolicyLoading' : 'keys.queuePolicyUnavailable') }}</span>
+            </div>
+            <span v-if="concurrencyRows[row.id]?.notice" class="mt-1 block text-xs text-gray-500 dark:text-dark-400">
+              {{ concurrencyRows[row.id].notice }}
             </span>
           </template>
 
           <template #cell-usage="{ row }">
-            <div class="text-sm">
+            <div class="key-usage-cell text-sm">
               <div class="flex items-center gap-1.5">
-                <span class="text-gray-500 dark:text-gray-400">{{ t('keys.today') }}:</span>
-                <span class="font-medium text-gray-900 dark:text-white">
-                  ${{ (usageStats[row.id]?.today_actual_cost ?? 0).toFixed(4) }}
+                <span class="key-usage-label text-gray-500 dark:text-gray-400">{{ t('keys.today') }}:</span>
+                <span class="key-usage-amount font-medium text-gray-900 dark:text-white">
+                  {{ formatUsageCost(row.id, 'today_actual_cost') }}
                 </span>
               </div>
               <div class="mt-0.5 flex items-center gap-1.5">
-                <span class="text-gray-500 dark:text-gray-400">{{ t('keys.total') }}:</span>
-                <span class="font-medium text-gray-900 dark:text-white">
-                  ${{ (usageStats[row.id]?.total_actual_cost ?? 0).toFixed(4) }}
+                <span class="key-usage-label text-gray-500 dark:text-gray-400">{{ t(usagePreset === '30days' ? 'keys.total' : 'keys.selectedPeriod') }}:</span>
+                <span class="key-usage-amount font-medium text-gray-900 dark:text-white" :title="`${usageStartDate} ~ ${usageEndDate}`">
+                  {{ formatUsageCost(row.id, 'total_actual_cost') }}
                 </span>
               </div>
               <!-- Quota progress (if quota is set) -->
               <div v-if="row.quota > 0" class="mt-1.5">
                 <div class="flex items-center gap-1.5">
-                  <span class="text-gray-500 dark:text-gray-400">{{ t('keys.quota') }}:</span>
-                  <span :class="[
-                    'font-medium',
+                  <span class="key-usage-label text-gray-500 dark:text-gray-400">{{ t('keys.quota') }}:</span>
+                  <div :class="[
+                    'key-quota-values flex min-w-0 max-w-full flex-wrap items-baseline gap-x-1 font-medium',
                     row.quota_used >= row.quota ? 'text-red-500' :
                     row.quota_used >= row.quota * 0.8 ? 'text-yellow-500' :
                     'text-gray-900 dark:text-white'
                   ]">
-                    ${{ row.quota_used?.toFixed(2) || '0.00' }} / ${{ row.quota?.toFixed(2) }}
-                  </span>
+                    <span class="key-usage-amount">${{ row.quota_used?.toFixed(2) || '0.00' }}</span>
+                    <span>/</span>
+                    <span class="key-usage-amount">${{ row.quota?.toFixed(2) }}</span>
+                  </div>
                 </div>
                 <div class="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-dark-600">
                   <div
@@ -386,7 +450,17 @@
           </template>
 
           <template #cell-actions="{ row }">
-            <div class="flex items-center gap-1">
+            <div class="flex items-center gap-1 max-lg:flex-wrap">
+              <button
+                v-if="isCodexQuickConfigPlatform(row.group?.platform)"
+                @click="openCodexQuickConfigModal(row)"
+                data-testid="quick-config-button"
+                class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-primary-50 hover:text-primary-600 dark:hover:bg-primary-900/20 dark:hover:text-primary-400"
+                :title="t('keys.quickConfigure')"
+              >
+                <Icon name="download" size="sm" />
+                <span class="text-xs">{{ t('keys.quickConfigure') }}</span>
+              </button>
               <!-- Use Key Button -->
               <button
                 @click="openUseKeyModal(row)"
@@ -584,6 +658,17 @@
           />
         </div>
 
+        <div v-if="showEditModal && authStore.isAdmin" class="rounded-xl border border-gray-200 p-4 dark:border-dark-600">
+          <div class="flex items-center gap-2">
+            <button type="button" class="btn btn-secondary" data-test="edit-key-model-policy" @click="showModelPolicy = true">
+              {{ t('apiKeyModelPolicy.title') }}
+            </button>
+            <NewFeatureBadge :notice-id="NEW_FEATURE_NOTICES.apiKeyModelPolicy" :user-id="authStore.user?.id" />
+            <NewFeatureBadge :notice-id="NEW_FEATURE_NOTICES.apiKeyLongContext" :user-id="authStore.user?.id" compact />
+          </div>
+          <p class="mt-2 text-sm text-gray-500 dark:text-dark-300">{{ t('apiKeyModelPolicy.scopeHint') }}</p>
+        </div>
+
         <!-- IP Restriction Section -->
         <div class="space-y-3">
           <div class="flex items-center justify-between">
@@ -628,6 +713,31 @@
               <p class="input-hint">{{ t('keys.ipBlacklistHint') }}</p>
             </div>
           </div>
+        </div>
+
+        <div>
+          <label for="key-concurrency-limit" class="input-label">{{ t('keys.concurrencyLimit') }}</label>
+          <input
+            id="key-concurrency-limit"
+            v-model.number="formData.concurrency_limit"
+            type="number"
+            min="0"
+            step="1"
+            placeholder="0"
+            class="input"
+            :class="{ 'border-red-500 dark:border-red-500': concurrencyLimitError }"
+            :aria-invalid="!!concurrencyLimitError"
+            :aria-describedby="concurrencyLimitError ? 'key-concurrency-hint key-queue-policy key-concurrency-error' : 'key-concurrency-hint key-queue-policy'"
+          />
+          <p id="key-concurrency-hint" class="input-hint">{{ t('keys.concurrencyLimitHint') }}</p>
+          <p id="key-queue-policy" class="input-hint">
+            {{ queuePolicyDescription }}
+            <span v-if="queuePolicy && concurrencyState.status === 'stale' && Number(formData.concurrency_limit) > 0"> {{ t('keys.concurrencyStale') }}</span>
+          </p>
+          <p v-if="queuePolicy && queuePolicy.max_waiting > 0 && Number(formData.concurrency_limit) > 0" class="input-hint">{{ t('keys.queueHint') }}</p>
+          <p v-if="concurrencyLimitError" id="key-concurrency-error" class="mt-1 text-sm text-red-500" role="alert">
+            {{ concurrencyLimitError }}
+          </p>
         </div>
 
         <!-- Quota Limit Section -->
@@ -995,6 +1105,14 @@
       @updated="handleBulkUpdated"
     />
 
+    <ApiKeyModelPolicyDialog
+      v-if="authStore.isAdmin"
+      :show="showModelPolicy && showEditModal"
+      :api-key="selectedKey"
+      @close="showModelPolicy = false"
+      @updated="handleModelPolicyUpdated"
+    />
+
     <!-- Delete Confirmation Dialog -->
     <ConfirmDialog
       :show="showDeleteDialog"
@@ -1040,6 +1158,14 @@
       :claude-code-only="selectedKey?.group?.claude_code_only || false"
       :allow-messages-dispatch="selectedKey?.group?.allow_messages_dispatch || false"
       @close="closeUseKeyModal"
+    />
+
+    <CodexQuickConfigModal
+      :show="showCodexQuickConfigModal"
+      :api-key="selectedKey?.key || ''"
+      :base-url="publicSettings?.api_base_url || ''"
+      :platform="selectedCodexQuickConfigPlatform"
+      @close="closeCodexQuickConfigModal"
     />
 
     <!-- CCS Client Selection Dialog for Antigravity -->
@@ -1116,6 +1242,7 @@
 </template>
 
 <script setup lang="ts">
+import UserKeyRiskNotices from '@/features/ip-audit/UserKeyRiskNotices.vue'
 	import { ref, reactive, computed, watch, onMounted, onUnmounted, type ComponentPublicInstance } from 'vue'
 	import { useI18n } from 'vue-i18n'
 	import { useAppStore } from '@/stores/app'
@@ -1128,6 +1255,11 @@ import { keysAPI, authAPI, usageAPI, userGroupsAPI } from '@/api'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import TablePageLayout from '@/components/layout/TablePageLayout.vue'
 import BulkEditKeysModal from '@/components/keys/BulkEditKeysModal.vue'
+import ApiKeyModelPolicyDialog from '@/components/admin/user/ApiKeyModelPolicyDialog.vue'
+import { useAuthStore } from '@/stores/auth'
+import NewFeatureBadge from '@/components/common/NewFeatureBadge.vue'
+import DateRangePicker from '@/components/common/DateRangePicker.vue'
+import { NEW_FEATURE_NOTICES } from '@/constants/newFeatureNotices'
 	import DataTable from '@/components/common/DataTable.vue'
 	import Pagination from '@/components/common/Pagination.vue'
 	import BaseDialog from '@/components/common/BaseDialog.vue'
@@ -1137,13 +1269,14 @@ import BulkEditKeysModal from '@/components/keys/BulkEditKeysModal.vue'
 	import SearchInput from '@/components/common/SearchInput.vue'
 	import Icon from '@/components/icons/Icon.vue'
 	import UseKeyModal from '@/components/keys/UseKeyModal.vue'
+	import CodexQuickConfigModal from '@/components/keys/CodexQuickConfigModal.vue'
 	import EndpointPopover from '@/components/keys/EndpointPopover.vue'
 	import KeyGroupBadge from '@/components/keys/KeyGroupBadge.vue'
 	import OrderedKeyGroupSelector from '@/components/keys/OrderedKeyGroupSelector.vue'
-	import type { ApiKey, Group, PublicSettings, UpdateApiKeyRequest } from '@/types'
+	import type { ApiKey, ApiKeyConcurrencySnapshot, Group, PublicSettings, UpdateApiKeyRequest } from '@/types'
 import type { Column } from '@/components/common/types'
 import type { BatchApiKeyUsageStats } from '@/api/usage'
-import { formatDateTime } from '@/utils/format'
+import { formatDateTime, formatDateLocalInput, getBrowserTimeZone } from '@/utils/format'
 import { maskApiKey } from '@/utils/maskApiKey'
 import { apiKeyGroupIds } from '@/utils/apiKeyGroups'
 import { resolveSiteName } from '@/utils/branding'
@@ -1155,6 +1288,7 @@ import {
   buildCcSwitchImportDeeplink,
   type CcSwitchClientType
 } from '@/utils/ccswitchImport'
+import { isCodexQuickConfigPlatform } from '@/utils/codexQuickConfig'
 
 // Helper to format date for datetime-local input
 const formatDateTimeLocal = (isoDate: string): string => {
@@ -1164,6 +1298,7 @@ const formatDateTimeLocal = (isoDate: string): string => {
 }
 
 const appStore = useAppStore()
+const authStore = useAuthStore()
 const onboardingStore = useOnboardingStore()
 const { copyToClipboard: clipboardCopy } = useClipboard()
 
@@ -1172,7 +1307,7 @@ const allColumns = computed<Column[]>(() => [
   { key: 'id', label: t('keys.id'), sortable: true },
   { key: 'key', label: t('keys.apiKey'), sortable: false },
   { key: 'group', label: t('keys.group'), sortable: true },
-  { key: 'current_concurrency', label: t('keys.currentConcurrency'), sortable: true },
+  { key: 'current_concurrency', label: t('keys.concurrencyAndWaiting'), sortable: true },
   { key: 'usage', label: t('keys.usage'), sortable: false },
   { key: 'rate_limit', label: t('keys.rateLimitColumn'), sortable: false },
   { key: 'expires_at', label: t('keys.expiresAt'), sortable: true },
@@ -1283,7 +1418,117 @@ const submitting = ref(false)
 const now = ref(new Date())
 let resetTimer: ReturnType<typeof setInterval> | null = null
 const usageStats = ref<Record<string, BatchApiKeyUsageStats>>({})
+const defaultUsageEnd = new Date()
+const defaultUsageStart = new Date(defaultUsageEnd)
+defaultUsageStart.setDate(defaultUsageStart.getDate() - 29)
+const usageEndDate = ref(formatDateLocalInput(defaultUsageEnd))
+const usageStartDate = ref(formatDateLocalInput(defaultUsageStart))
+const usagePreset = ref<string | null>('30days')
+const usageLoading = ref(false)
+const usageFailed = ref(false)
+const formatUsageCost = (keyID: number, field: 'today_actual_cost' | 'total_actual_cost') => {
+  if (usageLoading.value || usageFailed.value) return '—'
+  return `$${(usageStats.value[keyID]?.[field] ?? 0).toFixed(4)}`
+}
+const onUsageDateRangeChange = (range: { startDate: string; endDate: string; preset: string | null }) => {
+  if (!range.startDate || !range.endDate || range.startDate > range.endDate) {
+    appStore.showError(t('keys.invalidUsageDateRange'))
+    return
+  }
+  usageStartDate.value = range.startDate
+  usageEndDate.value = range.endDate
+  usagePreset.value = range.preset
+  void loadApiKeys()
+}
 const userGroupRates = ref<Record<number, number>>({})
+
+// Policy and counts always belong to one completed refresh, never to editable key data.
+const concurrencyState = ref<{
+  snapshot: ApiKeyConcurrencySnapshot | null
+  status: 'loading' | 'ready' | 'stale' | 'error'
+}>({ snapshot: null, status: 'loading' })
+const queuePolicy = computed(() => concurrencyState.value.snapshot?.queue_policy)
+const concurrencyRows = computed(() => {
+  const counts = new Map(concurrencyState.value.snapshot?.items.map(item => [item.id, item]))
+  return Object.fromEntries(apiKeys.value.map(key => {
+    const count = counts.get(key.id)
+    const current = count?.current_concurrency
+    const waiting = count?.current_waiting
+    const known = typeof current === 'number' && typeof waiting === 'number'
+    const status = concurrencyState.value.status
+    const limit = key.concurrency_limit
+    return [key.id, {
+      limit,
+      current,
+      waiting,
+      concurrencyFull: status === 'ready' && typeof current === 'number' && limit > 0 && current >= limit,
+      full: status === 'ready' && known && limit > 0 &&
+        (queuePolicy.value?.max_waiting ?? 0) > 0 && waiting >= queuePolicy.value!.max_waiting,
+      notice: status === 'stale' && count ? t('keys.concurrencyStale') :
+        !known ? t(status === 'loading' ? 'keys.concurrencyLoading' : 'keys.concurrencyUnavailable') : '',
+    }]
+  }))
+})
+let concurrencyTimer: ReturnType<typeof setTimeout> | null = null
+let concurrencyController: AbortController | null = null
+let concurrencyGeneration = 0
+let concurrencyPageReady = false
+let disposed = false
+
+const stopConcurrencyRefresh = () => {
+  concurrencyGeneration++
+  if (concurrencyTimer) clearTimeout(concurrencyTimer)
+  concurrencyTimer = null
+  concurrencyController?.abort()
+  concurrencyState.value = {
+    ...concurrencyState.value,
+    status: concurrencyState.value.snapshot ? 'stale' : 'loading',
+  }
+}
+
+const refreshConcurrency = async () => {
+  if (disposed || document.hidden || !concurrencyPageReady || concurrencyController) return
+  const controller = new AbortController()
+  concurrencyController = controller
+  const generation = concurrencyGeneration
+  const ids = apiKeys.value.map(key => key.id)
+  try {
+    let snapshot: ApiKeyConcurrencySnapshot | null = null
+    // Configured page sizes can exceed the endpoint's 100-ID limit; read serially.
+    for (let offset = 0; offset < Math.max(ids.length, 1); offset += 100) {
+      const result = await keysAPI.getConcurrency(ids.slice(offset, offset + 100), { signal: controller.signal })
+      if (disposed || controller.signal.aborted || generation !== concurrencyGeneration) return
+      if (snapshot) {
+        if (snapshot.queue_policy.max_waiting !== result.queue_policy.max_waiting ||
+          snapshot.queue_policy.timeout_seconds !== result.queue_policy.timeout_seconds) {
+          throw new Error('API key queue policy changed during the statistics refresh')
+        }
+        snapshot.items.push(...result.items)
+      } else {
+        snapshot = { queue_policy: result.queue_policy, items: [...result.items] }
+      }
+    }
+    concurrencyState.value = { snapshot, status: 'ready' }
+  } catch {
+    if (!controller.signal.aborted && generation === concurrencyGeneration && !disposed) {
+      concurrencyState.value = {
+        ...concurrencyState.value,
+        status: concurrencyState.value.snapshot ? 'stale' : 'error',
+      }
+    }
+  } finally {
+    concurrencyController = null
+    if (!disposed && !document.hidden && concurrencyPageReady) {
+      if (generation !== concurrencyGeneration) void refreshConcurrency()
+      else concurrencyTimer = setTimeout(refreshConcurrency, 5000)
+    }
+  }
+}
+
+const handleConcurrencyVisibility = () => {
+  stopConcurrencyRefresh()
+  if (!document.hidden) void refreshConcurrency()
+}
 
 const pagination = ref({
   page: 1,
@@ -1303,14 +1548,20 @@ const filterGroupId = ref<string | number>('')
 
 const showCreateModal = ref(false)
 const showEditModal = ref(false)
+const showModelPolicy = ref(false)
 const showDeleteDialog = ref(false)
 const showResetQuotaDialog = ref(false)
 const showResetRateLimitDialog = ref(false)
 const showUseKeyModal = ref(false)
+const showCodexQuickConfigModal = ref(false)
 const showCcsClientSelect = ref(false)
 const showColumnDropdown = ref(false)
 const pendingCcsRow = ref<ApiKey | null>(null)
 const selectedKey = ref<ApiKey | null>(null)
+const selectedCodexQuickConfigPlatform = computed(() => {
+  const platform = selectedKey.value?.group?.platform
+  return isCodexQuickConfigPlatform(platform) ? platform : null
+})
 const copiedKeyId = ref<number | null>(null)
 const groupSelectorKeyId = ref<number | null>(null)
 const inlineGroupIds = ref<number[]>([])
@@ -1338,6 +1589,7 @@ const setGroupButtonRef = (keyId: number, el: Element | ComponentPublicInstance 
 
 const formData = ref({
   name: '',
+  concurrency_limit: 0 as number | string,
   group_ids: [] as number[],
   status: 'active' as 'active' | 'inactive',
   use_custom_key: false,
@@ -1356,6 +1608,18 @@ const formData = ref({
   enable_expiration: false,
   expiration_preset: '30' as '7' | '30' | '90' | 'custom',
   expiration_date: ''
+})
+
+const concurrencyLimitError = computed(() => {
+  const limit = Number(formData.value.concurrency_limit)
+  return Number.isSafeInteger(limit) && limit >= 0 ? '' : t('keys.concurrencyLimitInvalid')
+})
+
+const queuePolicyDescription = computed(() => {
+  if (Number(formData.value.concurrency_limit) === 0) return t('keys.queueNotApplicable')
+  if (!queuePolicy.value) return t(concurrencyState.value.status === 'loading' ? 'keys.queuePolicyLoading' : 'keys.queuePolicyUnavailable')
+  if (queuePolicy.value.max_waiting === 0) return t('keys.queuePolicyOff')
+  return t('keys.queuePolicy', { max: queuePolicy.value.max_waiting, seconds: queuePolicy.value.timeout_seconds })
 })
 
 // 自定义Key验证
@@ -1466,11 +1730,16 @@ const isAbortError = (error: unknown) => {
 }
 
 const loadApiKeys = async () => {
+  concurrencyPageReady = false
+  stopConcurrencyRefresh()
   abortController?.abort()
   const controller = new AbortController()
   abortController = controller
   const { signal } = controller
   loading.value = true
+  usageLoading.value = true
+  usageFailed.value = false
+  usageStats.value = {}
   try {
     // Build filters
     const filters: {
@@ -1499,42 +1768,70 @@ const loadApiKeys = async () => {
     if (response.items.length > 0) {
       const keyIds = response.items.map((k) => k.id)
       try {
-        const usageResponse = await usageAPI.getDashboardApiKeysUsage(keyIds, { signal })
+        const usageResponse = await usageAPI.getDashboardApiKeysUsage(keyIds, {
+          signal,
+          start_date: usageStartDate.value,
+          end_date: usageEndDate.value,
+          timezone: getBrowserTimeZone()
+        })
         if (signal.aborted) return
         usageStats.value = usageResponse.stats
       } catch (e) {
+        if (signal.aborted) return
         if (!isAbortError(e)) {
+          usageFailed.value = true
+          appStore.showError(t('keys.failedToLoadUsage'))
           console.error('Failed to load usage stats:', e)
         }
       }
     }
   } catch (error) {
-    if (isAbortError(error)) {
+    if (signal.aborted || isAbortError(error)) {
       return
     }
+    usageFailed.value = true
     appStore.showError(t('keys.failedToLoad'))
   } finally {
     if (abortController === controller) {
       loading.value = false
+      usageLoading.value = false
+      concurrencyPageReady = true
+      void refreshConcurrency()
     }
   }
 }
 
-const loadGroups = async () => {
+const groupPricingLoading = ref(false)
+let groupPricingGeneration = 0
+
+const loadGroupPricing = async () => {
+  const generation = ++groupPricingGeneration
+  groupPricingLoading.value = true
   try {
-    groups.value = await userGroupsAPI.getAvailable()
+    const [availableGroups, rates] = await Promise.all([
+      userGroupsAPI.getAvailable(),
+      userGroupsAPI.getUserGroupRates()
+    ])
+    if (disposed || generation !== groupPricingGeneration) return
+    // Apply both together so a failed refresh cannot mix new defaults with old overrides.
+    groups.value = availableGroups
+    userGroupRates.value = rates
   } catch (error) {
-    console.error('Failed to load groups:', error)
+    if (disposed || generation !== groupPricingGeneration) return
+    console.error('Failed to load group pricing:', error)
+    appStore.showError(t('keys.failedToLoad'))
+  } finally {
+    if (generation === groupPricingGeneration) groupPricingLoading.value = false
   }
 }
 
-const loadUserGroupRates = async () => {
-  try {
-    userGroupRates.value = await userGroupsAPI.getUserGroupRates()
-  } catch (error) {
-    console.error('Failed to load user group rates:', error)
-  }
+const refreshPage = async () => {
+  await Promise.all([loadApiKeys(), loadGroupPricing()])
 }
+
+watch([showCreateModal, showEditModal], ([creating, editing]) => {
+  if (creating || editing) void loadGroupPricing()
+})
 
 const loadPublicSettings = async () => {
   try {
@@ -1549,8 +1846,18 @@ const openUseKeyModal = (key: ApiKey) => {
   showUseKeyModal.value = true
 }
 
+const openCodexQuickConfigModal = (key: ApiKey) => {
+  selectedKey.value = key
+  showCodexQuickConfigModal.value = true
+}
+
 const closeUseKeyModal = () => {
   showUseKeyModal.value = false
+  selectedKey.value = null
+}
+
+const closeCodexQuickConfigModal = () => {
+  showCodexQuickConfigModal.value = false
   selectedKey.value = null
 }
 
@@ -1581,6 +1888,7 @@ const editKey = (key: ApiKey) => {
   const hasExpiration = !!key.expires_at
   formData.value = {
     name: key.name,
+    concurrency_limit: key.concurrency_limit ?? 0,
     group_ids: apiKeyGroupIds(key),
     status: key.status === 'quota_exhausted' || key.status === 'expired' ? 'inactive' : key.status,
     use_custom_key: false,
@@ -1599,6 +1907,13 @@ const editKey = (key: ApiKey) => {
     expiration_date: key.expires_at ? formatDateTimeLocal(key.expires_at) : ''
   }
   showEditModal.value = true
+}
+
+const handleModelPolicyUpdated = (key: ApiKey) => {
+  // Preserve unsaved name/group edits in the main key form.
+  if (selectedKey.value?.id === key.id) selectedKey.value = key
+  const index = apiKeys.value.findIndex(item => item.id === key.id)
+  if (index !== -1) apiKeys.value[index] = key
 }
 
 const toggleKeyStatus = async (key: ApiKey) => {
@@ -1620,6 +1935,7 @@ const openGroupSelector = (key: ApiKey) => {
     groupSelectorKeyId.value = null
     dropdownPosition.value = null
   } else {
+    void loadGroupPricing()
     const buttonEl = groupButtonRefs.value.get(key.id)
     if (buttonEl) {
       const rect = buttonEl.getBoundingClientRect()
@@ -1690,6 +2006,13 @@ const confirmDelete = (key: ApiKey) => {
 }
 
 const handleSubmit = async () => {
+  if (concurrencyLimitError.value) {
+    appStore.showError(concurrencyLimitError.value)
+    return
+  }
+  // An empty input explicitly clears the saved key limit.
+  const concurrencyLimit = Number(formData.value.concurrency_limit)
+
   const selectedGroupIds = [...new Set(formData.value.group_ids)]
   if (!selectedGroupIds.length) {
     appStore.showError(t('keys.groupRequired'))
@@ -1752,6 +2075,7 @@ const handleSubmit = async () => {
     if (showEditModal.value && selectedKey.value) {
       const updates: UpdateApiKeyRequest = {
         name: formData.value.name,
+        concurrency_limit: concurrencyLimit,
         group_id: selectedGroupIds[0],
         group_ids: selectedGroupIds,
         ip_whitelist: ipWhitelist,
@@ -1778,6 +2102,7 @@ const handleSubmit = async () => {
         quota,
         expiresInDays,
         rateLimitData,
+        concurrencyLimit,
         selectedGroupIds
       )
       appStore.showSuccess(t('keys.keyCreatedSuccess'))
@@ -1818,11 +2143,13 @@ const handleDelete = async () => {
 }
 
 const closeModals = () => {
+  showModelPolicy.value = false
   showCreateModal.value = false
   showEditModal.value = false
   selectedKey.value = null
   formData.value = {
     name: '',
+    concurrency_limit: 0,
     group_ids: [],
     status: 'active',
     use_custom_key: false,
@@ -1979,15 +2306,105 @@ function formatResetTime(resetAt: string | null): string {
 onMounted(() => {
   loadSavedColumns()
   loadApiKeys()
-  loadGroups()
-  loadUserGroupRates()
+  loadGroupPricing()
   loadPublicSettings()
   document.addEventListener('click', closeGroupSelector)
+  document.addEventListener('visibilitychange', handleConcurrencyVisibility)
   resetTimer = setInterval(() => { now.value = new Date() }, 60000)
 })
 
 onUnmounted(() => {
+  disposed = true
+  stopConcurrencyRefresh()
+  abortController?.abort()
+  document.removeEventListener('visibilitychange', handleConcurrencyVisibility)
   document.removeEventListener('click', closeGroupSelector)
   if (resetTimer) clearInterval(resetTimer)
 })
 </script>
+
+<style scoped>
+@media (max-width: 639px) {
+  .key-usage-range-picker {
+    position: static;
+  }
+
+  .key-usage-range-picker :deep(.date-picker-dropdown) {
+    left: 0;
+    min-width: 0;
+    width: min(320px, calc(100vw - 2rem));
+  }
+
+  .key-usage-range-picker :deep(.date-picker-field),
+  .key-usage-range-picker :deep(.date-picker-input) {
+    min-width: 0;
+  }
+}
+
+@media (min-width: 1024px) {
+  .keys-page-layout :deep(.layout-section-scrollable) {
+    min-height: 14rem;
+  }
+}
+
+@media (max-width: 1023px) {
+  :deep([data-field='group']),
+  :deep([data-field='usage']) {
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  :deep([data-field='group'] > span),
+  :deep([data-field='usage'] > span) {
+    white-space: nowrap;
+  }
+
+  :deep([data-field='group'] > div),
+  :deep([data-field='usage'] > div) {
+    width: 100%;
+    text-align: left;
+  }
+
+  .key-group-control {
+    width: 100%;
+    max-width: 100%;
+    margin: 0;
+    flex-wrap: wrap;
+    text-align: left;
+  }
+
+  .key-group-badge {
+    max-width: 100%;
+  }
+
+  .key-group-hint,
+  .key-group-control > svg {
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+
+  .key-usage-cell > .flex,
+  .key-usage-cell > div > .flex {
+    flex-wrap: wrap;
+  }
+
+  .key-usage-label {
+    white-space: nowrap;
+  }
+
+  .key-usage-amount {
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+  }
+}
+
+:deep([data-field='current_concurrency']) {
+  flex-wrap: wrap;
+}
+
+:deep([data-field='current_concurrency'] > div) {
+  flex-shrink: 0;
+  margin-left: auto;
+}
+</style>

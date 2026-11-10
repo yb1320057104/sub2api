@@ -2,6 +2,8 @@ package handler
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -812,7 +814,7 @@ func TestNormalizeOpsErrorType(t *testing.T) {
 	}
 }
 
-func TestClassifyOpsNoAvailableAccountsExcludedFromSLA(t *testing.T) {
+func TestClassifyOpsNoAvailableAccountsCountForSLA(t *testing.T) {
 	const message = "No available accounts"
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
@@ -825,12 +827,12 @@ func TestClassifyOpsNoAvailableAccountsExcludedFromSLA(t *testing.T) {
 
 	require.Equal(t, "api_error", errType)
 	require.Equal(t, "routing", phase)
-	require.True(t, isBusinessLimited)
+	require.False(t, isBusinessLimited)
 	require.Equal(t, "platform", errorOwner)
 	require.Equal(t, "gateway", errorSource)
 }
 
-func TestClassifyOpsRoutingCapacityMarkerExcludesMaskedSelectionFailureFromSLA(t *testing.T) {
+func TestClassifyOpsRoutingCapacityMarkerCountsMaskedSelectionFailureForSLA(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
@@ -846,7 +848,7 @@ func TestClassifyOpsRoutingCapacityMarkerExcludesMaskedSelectionFailureFromSLA(t
 	)
 
 	require.Equal(t, "routing", phase)
-	require.True(t, isBusinessLimited)
+	require.False(t, isBusinessLimited)
 	require.Equal(t, "platform", errorOwner)
 	require.Equal(t, "gateway", errorSource)
 }
@@ -856,6 +858,7 @@ func TestClassifyOpsLocalModelConfigurationRejection(t *testing.T) {
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
 	service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalModelConfiguration)
+	markOpsRoutingCapacityLimited(c)
 
 	phase, isBusinessLimited, errorOwner, errorSource := classifyOpsErrorLog(
 		c,
@@ -865,10 +868,10 @@ func TestClassifyOpsLocalModelConfigurationRejection(t *testing.T) {
 		http.StatusNotFound,
 	)
 
-	require.Equal(t, "routing", phase)
+	require.Equal(t, "request", phase)
 	require.True(t, isBusinessLimited)
-	require.Equal(t, "platform", errorOwner)
-	require.Equal(t, "gateway", errorSource)
+	require.Equal(t, "client", errorOwner)
+	require.Equal(t, "client_request", errorSource)
 }
 
 func TestClassifyOpsLocalModelConfigurationOverridesStaleUpstreamMarkers(t *testing.T) {
@@ -883,10 +886,10 @@ func TestClassifyOpsLocalModelConfigurationOverridesStaleUpstreamMarkers(t *test
 
 	phase, limited, owner, source := classifyOpsErrorLog(c, "model_not_found", "unsupported configured model", "", http.StatusNotFound)
 
-	require.Equal(t, "routing", phase)
+	require.Equal(t, "request", phase)
 	require.True(t, limited)
-	require.Equal(t, "platform", owner)
-	require.Equal(t, "gateway", source)
+	require.Equal(t, "client", owner)
+	require.Equal(t, "client_request", source)
 }
 
 func TestClassifyOpsLocalModelConfigurationRequiresMarkerAndReason(t *testing.T) {
@@ -939,10 +942,10 @@ func TestOpsErrorLoggerMiddleware_LocalModelConfigurationFields(t *testing.T) {
 	require.JSONEq(t, `{"error":{"type":"model_not_found","message":"Model \"gpt-missing\" is not supported by any configured account in this group"}}`, w.Body.String())
 	job := <-opsErrorLogQueue
 	require.Equal(t, http.StatusNotFound, job.entry.StatusCode)
-	require.Equal(t, "routing", job.entry.ErrorPhase)
+	require.Equal(t, "request", job.entry.ErrorPhase)
 	require.True(t, job.entry.IsBusinessLimited)
-	require.Equal(t, "platform", job.entry.ErrorOwner)
-	require.Equal(t, "gateway", job.entry.ErrorSource)
+	require.Equal(t, "client", job.entry.ErrorOwner)
+	require.Equal(t, "client_request", job.entry.ErrorSource)
 	require.Nil(t, job.entry.AccountID)
 	require.Nil(t, job.entry.UpstreamStatusCode)
 	require.Nil(t, job.entry.UpstreamErrors)
@@ -1157,6 +1160,15 @@ func TestClassifyOpsLocalBusinessLimitErrorsExcludedFromSLA(t *testing.T) {
 			name:        "gateway billing cache insufficient balance",
 			errType:     "billing_error",
 			message:     "insufficient balance",
+			code:        "",
+			status:      http.StatusForbidden,
+			wantErrType: "billing_error",
+			wantPhase:   "request",
+		},
+		{
+			name:        "explicit local user balance",
+			errType:     "billing_error",
+			message:     service.InsufficientUserBalanceMessage,
 			code:        "",
 			status:      http.StatusForbidden,
 			wantErrType: "billing_error",
@@ -1400,8 +1412,10 @@ func TestClassifyOpsOtherErrorsStillCountForSLA(t *testing.T) {
 	require.Equal(t, "gateway", errorSource)
 }
 
-func TestClassifyOpsUnsupportedModelExcludedFromSLA(t *testing.T) {
+func TestClassifyOpsUndiagnosedModelAvailabilityCountsForSLA(t *testing.T) {
 	tests := []string{
+		"No available accounts",
+		"Service temporarily unavailable",
 		"No available accounts: no available accounts supporting model: made-up-model",
 		"No available accounts: no available OpenAI accounts supporting model: made-up-model",
 		"No available Gemini accounts: no available Gemini accounts supporting model: made-up-model",
@@ -1420,7 +1434,7 @@ func TestClassifyOpsUnsupportedModelExcludedFromSLA(t *testing.T) {
 
 			require.Equal(t, "api_error", errType)
 			require.Equal(t, "routing", phase)
-			require.True(t, isBusinessLimited)
+			require.False(t, isBusinessLimited)
 			require.Equal(t, "platform", errorOwner)
 			require.Equal(t, "gateway", errorSource)
 		})
@@ -1444,6 +1458,21 @@ func TestClassifyOpsUnmarkedNoAvailableTextStillCountsForSLA(t *testing.T) {
 	require.False(t, isBusinessLimited)
 	require.Equal(t, "platform", errorOwner)
 	require.Equal(t, "gateway", errorSource)
+}
+
+func TestClassifyOpsModelCapacityExhaustedOverridesStaleUserLimit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	markOpsRoutingCapacityLimited(c)
+	service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalPolicyDenied)
+
+	phase, limited, owner, source := classifyOpsErrorLog(c, "api_error",
+		`Accounts supporting model "example" are currently rate-limited`, "model_capacity_exhausted", http.StatusServiceUnavailable)
+
+	require.Equal(t, "routing", phase)
+	require.False(t, limited)
+	require.Equal(t, "platform", owner)
+	require.Equal(t, "gateway", source)
 }
 
 func TestClassifyOpsUpstreamAuthTextStillCountsForSLA(t *testing.T) {
@@ -1978,8 +2007,8 @@ func TestClassifyOpsIngressModelNotAllowedKeepsRequestPhase(t *testing.T) {
 	require.Equal(t, "client_request", errorSource)
 }
 
-// 调度阶段的账号模型映射拒绝（无 ingress 标记）仍归类为 routing。
-func TestClassifyOpsLocalModelConfigurationWithoutIngressMarkStaysRouting(t *testing.T) {
+// 调度诊断发现模型不在分组能力内时，也归为客户端请求拒绝。
+func TestClassifyOpsLocalModelConfigurationWithoutIngressMarkIsClientRejection(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	service.MarkOpsClientBusinessLimited(c, service.OpsClientBusinessLimitedReasonLocalModelConfiguration)
@@ -1992,9 +2021,9 @@ func TestClassifyOpsLocalModelConfigurationWithoutIngressMarkStaysRouting(t *tes
 		http.StatusNotFound,
 	)
 
-	require.Equal(t, "routing", phase)
+	require.Equal(t, "request", phase)
 	require.True(t, isBusinessLimited)
-	require.Equal(t, "platform", errorOwner)
+	require.Equal(t, "client", errorOwner)
 }
 
 // 带内错误也可能出现在非流式 2xx 响应体里（如 Gemini generateContent 的 finishReason）：
@@ -2247,4 +2276,101 @@ func TestOpsErrorLoggerMiddleware_RecordsClientClosedWhenIgnoreContextCanceledDi
 	require.Equal(t, int64(1), OpsErrorLogQueueLength())
 	job := <-opsErrorLogQueue
 	require.Equal(t, statusClientClosedRequest, job.entry.StatusCode)
+}
+
+func TestOpsBalanceFilterRecognizesExplicitUserMessage(t *testing.T) {
+	settings := &opsAdvancedSettingsRepoStub{advanced: `{"ignore_insufficient_balance_errors":true}`}
+	ops := service.NewOpsService(nil, settings, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	require.True(t, ops.OpsAdvancedSettingsSnapshot().IgnoreInsufficientBalanceErrors)
+	for _, message := range []string{"insufficient balance", "Insufficient account balance", service.InsufficientUserBalanceMessage} {
+		require.True(t, shouldSkipOpsErrorLog(context.Background(), ops, message, "", "/v1/responses"))
+		require.True(t, shouldSkipOpsErrorLog(context.Background(), ops, "", message, "/v1/responses"))
+	}
+}
+
+type opsFlushFailureRecorder struct {
+	*httptest.ResponseRecorder
+	calls int
+}
+
+func (w *opsFlushFailureRecorder) FlushError() error {
+	w.calls++
+	return io.ErrClosedPipe
+}
+
+func TestOpsCaptureWriterFlushErrorPropagatesAndHonorsLease(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := &opsFlushFailureRecorder{ResponseRecorder: httptest.NewRecorder()}
+	c, _ := gin.CreateTestContext(rec)
+	writer := acquireOpsCaptureWriter(c.Writer)
+	defer releaseOpsCaptureWriter(writer)
+	writer.WriteHeader(http.StatusAccepted)
+	require.ErrorIs(t, service.FlushGatewayResponse(writer), io.ErrClosedPipe)
+	require.True(t, writer.Written(), "flush must preserve Gin header bookkeeping")
+	require.Equal(t, http.StatusAccepted, rec.Code)
+	require.Equal(t, 1, rec.calls)
+	releaseOpsCaptureWriter(writer)
+	require.ErrorContains(t, writer.FlushError(), "released")
+	require.Equal(t, 1, rec.calls, "released handles must not reach the old transport")
+}
+
+func TestOpsErrorLoggerMiddleware_UserBalanceIsolation(t *testing.T) {
+	for _, upstream := range []bool{false, true} {
+		t.Run(fmt.Sprint("upstream=", upstream), func(t *testing.T) {
+			setupOpsErrorLogTestQueue(t, 1)
+			gin.SetMode(gin.TestMode)
+			ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+			router := gin.New()
+			router.Use(OpsErrorLoggerMiddleware(ops))
+			router.POST("/v1/responses", func(c *gin.Context) {
+				c.Set(opsAccountIDKey, int64(99)) // selected before a local billing recheck
+				if upstream {
+					c.Set(service.OpsUpstreamStatusCodeKey, http.StatusForbidden)
+				}
+				c.JSON(http.StatusForbidden, gin.H{"error": gin.H{"type": "api_error", "message": service.InsufficientUserBalanceMessage}})
+			})
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/v1/responses", nil))
+			require.Equal(t, http.StatusForbidden, w.Code)
+			job := <-opsErrorLogQueue
+			if upstream {
+				require.Equal(t, "provider", job.entry.ErrorOwner)
+				require.Equal(t, "upstream", job.entry.ErrorPhase)
+				require.False(t, job.entry.IsBusinessLimited)
+				require.Equal(t, "api_error", job.entry.ErrorType)
+				require.NotNil(t, job.entry.AccountID)
+			} else {
+				require.Equal(t, "client", job.entry.ErrorOwner)
+				require.Equal(t, "client_request", job.entry.ErrorSource)
+				require.Equal(t, "request", job.entry.ErrorPhase)
+				require.True(t, job.entry.IsBusinessLimited)
+				require.Equal(t, "billing_error", job.entry.ErrorType)
+				require.Nil(t, job.entry.AccountID)
+			}
+		})
+	}
+}
+
+func TestLogOpsStreamError_UserBalanceClearsAccountAttribution(t *testing.T) {
+	setupOpsErrorLogTestQueue(t, 1)
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	c.Set(opsAccountIDKey, int64(99))
+	c.Set(opsUpstreamModelKey, "previous-attempt-model")
+	c.Set(service.OpsUpstreamStatusCodeKey, http.StatusBadGateway)
+	ops := service.NewOpsService(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	logOpsStreamErrorValue(c, ops, http.StatusOK, service.OpsStreamError{
+		ErrType: "api_error", Message: service.InsufficientUserBalanceMessage,
+		IntendedStatus: http.StatusForbidden, RequestScoped: true,
+	})
+	entry := (<-opsErrorLogQueue).entry
+	require.Equal(t, "client", entry.ErrorOwner)
+	require.Equal(t, "billing_error", entry.ErrorType)
+	require.True(t, entry.IsBusinessLimited)
+	require.Equal(t, http.StatusForbidden, entry.StatusCode)
+	require.Nil(t, entry.AccountID)
+	require.Nil(t, entry.UpstreamStatusCode)
+	require.Empty(t, entry.UpstreamModel)
+	require.Empty(t, entry.UpstreamEndpoint)
 }

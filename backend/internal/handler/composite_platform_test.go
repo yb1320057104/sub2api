@@ -145,7 +145,8 @@ func TestOpenAIReasoningEffortPolicyForCompositeTarget(t *testing.T) {
 		require.Equal(t, effort, *original)
 	}
 
-	bindOpenAIReasoningEffortPolicyForMessagesRequest(openAICtx, apiKey, []byte(`{"output_config":{"effort":"max"}}`))
+	_, err = prepareOpenAIReasoningEffortPolicyForMessagesRequest(openAICtx, apiKey, []byte(`{"output_config":{"effort":"max"}}`))
+	require.NoError(t, err)
 	bound, changed, err := service.ApplyOpenAIReasoningEffortPolicyFromContext(openAICtx.Request.Context(), body)
 	require.NoError(t, err)
 	require.True(t, changed)
@@ -154,7 +155,8 @@ func TestOpenAIReasoningEffortPolicyForCompositeTarget(t *testing.T) {
 	omittedCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
 	omittedCtx.Request = httptest.NewRequest("POST", "/v1/messages", nil)
 	omittedCtx.Request = omittedCtx.Request.WithContext(service.WithResolvedTargetPlatform(omittedCtx.Request.Context(), service.PlatformOpenAI))
-	bindOpenAIReasoningEffortPolicyForMessagesRequest(omittedCtx, apiKey, []byte(`{"model":"gpt-5"}`))
+	_, err = prepareOpenAIReasoningEffortPolicyForMessagesRequest(omittedCtx, apiKey, []byte(`{"model":"gpt-5"}`))
+	require.NoError(t, err)
 	omitted, changed, err := service.ApplyOpenAIReasoningEffortPolicyFromContext(omittedCtx.Request.Context(), body)
 	require.NoError(t, err)
 	require.False(t, changed)
@@ -279,6 +281,15 @@ func TestAnthropicCompositePolicyKeepsAdvancedTargetsWithinAnthropicScale(t *tes
 		require.True(t, changed)
 		require.Equal(t, "max", gjson.GetBytes(body, "output_config.effort").String())
 	}
+}
+
+func TestAnthropicCompositePolicyDoesNotEmitUltra(t *testing.T) {
+	input := []service.ReasoningEffortMapping{{From: "high", To: "ultra"}, {From: "ultra", To: "deny"}}
+	maxEffort, mappings := anthropicCompatibleReasoningEffortPolicy("ultra", input)
+	require.Equal(t, "max", maxEffort)
+	require.Equal(t, "max", mappings[0].To)
+	require.Equal(t, "deny", mappings[1].To)
+	require.Equal(t, "ultra", input[0].To, "platform adaptation must not mutate the group policy")
 }
 
 func TestClientRequestedModelUsesCompositePublicModel(t *testing.T) {

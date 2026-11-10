@@ -200,7 +200,7 @@ func TestProvideConcurrencyService_StartupCleanupDefault(t *testing.T) {
 			t.Setenv("SUB2API_SKIP_STARTUP_SLOT_CLEANUP", value)
 			cache := &trackingConcurrencyCache{}
 
-			svc := ProvideConcurrencyService(cache, nil, nil)
+			svc := ProvideConcurrencyService(cache, nil, nil, nil)
 
 			require.NotNil(t, svc)
 			require.NotEmpty(t, RequestIDPrefix())
@@ -213,7 +213,7 @@ func TestProvideConcurrencyService_StartupCleanupExplicitSkip(t *testing.T) {
 	t.Setenv("SUB2API_SKIP_STARTUP_SLOT_CLEANUP", "true")
 	cache := &trackingConcurrencyCache{}
 
-	svc := ProvideConcurrencyService(cache, nil, nil)
+	svc := ProvideConcurrencyService(cache, nil, nil, nil)
 
 	require.NotNil(t, svc)
 	require.Empty(t, cache.cleanupPrefix)
@@ -225,7 +225,7 @@ func TestProvideConcurrencyService_StartupCleanupSkipKeepsExpiredSlotCleanup(t *
 	cfg := &config.Config{}
 	cfg.Gateway.Scheduling.SlotCleanupInterval = time.Hour
 
-	svc := ProvideConcurrencyService(cache, nil, cfg)
+	svc := ProvideConcurrencyService(cache, nil, cfg, nil)
 
 	require.NotNil(t, svc)
 	require.Eventually(t, func() bool { return cache.calls.Load() > 0 }, time.Second, 10*time.Millisecond)
@@ -332,7 +332,7 @@ func TestTrackAPIKeySlot_FailOpen(t *testing.T) {
 	require.Equal(t, []int64{88}, cache.trackedAPIKeyIDs)
 
 	require.NotPanics(t, release)
-	require.Empty(t, cache.releasedAPIKeyIDs)
+	require.Equal(t, cache.trackedAPIKeyRequestIDs, cache.releasedAPIKeyRequestIDs)
 }
 
 func TestGetAPIKeyConcurrencyBatch_Fallbacks(t *testing.T) {

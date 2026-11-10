@@ -20,6 +20,9 @@ import (
 
 // RateLimitService 处理限流和过载状态管理
 type RateLimitService struct {
+	accountOps            *AccountOpsService
+	openAITOTP429Rotator  openAITOTP429Rotator
+	qualityTrigger        *quality5xxTrigger
 	accountRepo           AccountRepository
 	usageRepo             UsageLogRepository
 	cfg                   *config.Config
@@ -31,6 +34,7 @@ type RateLimitService struct {
 	settingService        *SettingService
 	tokenCacheInvalidator TokenCacheInvalidator
 	runtimeBlocker        AccountRuntimeBlocker
+	openAIIPUnauthorized  openAIIPUnauthorizedStreak
 	// ollamaCloudUsageProbe is the optional Ollama Cloud usage probe scheduler
 	// injected via SetOllamaCloudUsageProbeScheduler. See
 	// ratelimit_service_ollama_429.go for how real-Ollama 429s schedule an async
@@ -57,7 +61,8 @@ type SuccessfulTestRecoveryResult struct {
 
 // AccountRecoveryOptions 控制账号恢复时的附加行为。
 type AccountRecoveryOptions struct {
-	InvalidateToken bool
+	InvalidateToken          bool
+	preserveGrokScopedBlocks bool
 }
 
 type geminiUsageCacheEntry struct {
@@ -300,6 +305,18 @@ const (
 // CheckErrorPolicy 检查自定义错误码和临时不可调度规则。
 // 自定义错误码开启时覆盖后续所有逻辑（包括临时不可调度）。
 func (s *RateLimitService) CheckErrorPolicy(ctx context.Context, account *Account, statusCode int, responseBody []byte, requestedModel ...string) ErrorPolicyResult {
+	// An edge refusal must not reach account-specific rules, linked-account
+	// mutation or quota handlers, even when administrators configured a broad 403.
+	if statusCode == http.StatusForbidden && isCloudflareBotBlockResponse(responseBody) {
+		return ErrorPolicySkipped
+	}
+
+	if account.IsOpenAICompatible() && isOpenAIUpstreamSessionBlocked(responseBody) {
+		return ErrorPolicySkipped
+	}
+	if isOpenAIRequestScoped403(account, statusCode, responseBody) {
+		return ErrorPolicySkipped
+	}
 	ctx = withTempUnschedulableModel(ctx, requestedModel)
 	if account.IsCustomErrorCodesEnabled() {
 		if account.ShouldHandleErrorCode(statusCode) {
@@ -331,7 +348,51 @@ func (s *RateLimitService) CheckErrorPolicy(ctx context.Context, account *Accoun
 // HandleUpstreamError 处理上游错误响应，标记账号状态
 // 返回是否应该停止该账号的调度
 func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Account, statusCode int, headers http.Header, responseBody []byte, requestedModel ...string) (shouldDisable bool) {
+	if !isOpenAIIPUnauthorizedResponse(statusCode, responseBody) {
+		s.resetOpenAIIPUnauthorizedStreak(account)
+	}
+	return s.handleUpstreamErrorAfterStreakReset(ctx, account, statusCode, headers, responseBody, requestedModel...)
+}
+
+// handleUpstreamErrorAfterStreakReset keeps account policy handling shared with
+// the OpenAI gateway, which resets the streak before its early-return policies.
+func (s *RateLimitService) handleUpstreamErrorAfterStreakReset(ctx context.Context, account *Account, statusCode int, headers http.Header, responseBody []byte, requestedModel ...string) (shouldDisable bool) {
+	ctx, disabledOn429 := s.maybeDisableOpenAISchedulingOn429(ctx, account, statusCode)
+	if disabledOn429 {
+		defer func() { shouldDisable = true }()
+	}
+	ctx = s.maybeRotateOpenAITOTPOn429(ctx, account, statusCode)
+	// An edge refusal must not reach account-specific rules, linked-account
+	// mutation or quota handlers, even when administrators configured a broad 403.
+	if statusCode == http.StatusForbidden && isCloudflareBotBlockResponse(responseBody) {
+		return false
+	}
+
+	ctx = s.observeAccountOps(ctx, account, statusCode, headers, responseBody)
 	ctx = withTempUnschedulableModel(ctx, requestedModel)
+	// A frozen upstream conversation must not reach custom cooldown rules,
+	// linked-account handling, or the escalating account-wide 403 counter.
+	if account.IsOpenAICompatible() && isOpenAIUpstreamSessionBlocked(responseBody) {
+		return false
+	}
+	// Relay content refusals and upstream WebSocket handshake failures must not
+	// reach custom account policies or the escalating account-wide 403 counter.
+	if isOpenAIRequestScoped403(account, statusCode, responseBody) {
+		return false
+	}
+	// An upstream group's image permission says nothing about text credentials.
+	// Keep it out of the generic 403 streak and whole-account policies.
+	if account != nil && account.Platform == PlatformOpenAI && isOpenAIImagePermissionError(statusCode, responseBody) {
+		_ = s.HandleOpenAIImageCapabilityLoss(ctx, account, statusCode, responseBody)
+		return false
+	}
+	// Anthropic's safeguard block is scoped to this conversation. It is not
+	// evidence that the account credentials or entitlement are invalid, so it
+	// must not reach custom error policies or account scheduling side effects.
+	if isAnthropicSafeguardPolicy403(account, statusCode, responseBody) {
+		slog.Info("anthropic_safeguard_policy_403_skips_account_penalty", "account_id", account.ID)
+		return false
+	}
 	// Team 联动熔断必须先于池模式/自定义错误码/临时不可调度的各类早退；
 	// 同请求内与 fastpath 调用点的重复触发由方法内去重吸收。
 	s.maybeHandleOpenAITeamLinkedError(ctx, account, statusCode, responseBody)
@@ -373,6 +434,8 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 	// otherwise a broad "rate limit" keyword rule can shorten a multi-hour
 	// cooldown to a local temporary pause.
 	if statusCode == http.StatusTooManyRequests && account.Platform == PlatformAnthropic {
+		// 429 也携带最新用量；在窗口限流分支提前返回前保留耗尽时的周额度。
+		s.samplePassiveUsageFromHeaders(ctx, account, headers)
 		// Fable may be rejected because the organization has no usage credits for
 		// this model. Anthropic reports that as 429, but it is a model entitlement
 		// failure rather than a shared account window exhaustion.
@@ -492,6 +555,15 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 				shouldDisable = true
 				break
 			}
+			// An isolated IP-policy rejection is not evidence that this OAuth
+			// account should be parked. Require two consecutive responses within
+			// five seconds; credential revocation/missing refresh tokens above
+			// retain their existing handling.
+			if authAccount.Platform == PlatformOpenAI && isOpenAIIPUnauthorizedResponse(statusCode, responseBody) &&
+				!s.openAIIPUnauthorized.observe(authAccount.ID, headers.Get("x-request-id"), time.Now()) {
+				slog.Info("openai_ip_unauthorized_below_threshold", "account_id", authAccount.ID, "window_seconds", 5, "threshold", 2)
+				return false
+			}
 			// 2. 临时不可调度，替代 SetError（保持 status=active 让刷新服务能拾取）
 			// 注意：此处不再写回 account.Credentials/expires_at。
 			// 原实现使用请求开始时的 account 快照整列覆盖 credentials JSONB（见
@@ -539,10 +611,10 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 			shouldDisable = true
 		}
 	case 402:
-		// 国产供应商 / OpenCode Zen / Command Code：余额（积分）不足是可恢复状态
-		// （充值/检测恢复后由周期任务自动解除），不能走 handleAuthError 永久置
+		// 国产供应商 / OpenCode Zen / Command Code / Mistral：余额（积分/预算）不足是可恢复状态
+		// （充值/月度重置/检测恢复后由周期任务自动解除），不能走 handleAuthError 永久置
 		// status=error。改为可恢复的临时停调。
-		if account.IsCNProvider() || account.IsOpenCodeZen() || account.IsCommandCode() {
+		if account.IsCNProvider() || account.IsOpenCodeZen() || account.IsCommandCode() || account.IsMistral() {
 			s.handleCNProviderInsufficientBalance(ctx, account, upstreamMsg)
 			shouldDisable = true
 			break
@@ -1129,6 +1201,18 @@ func isCloudflareBotBlockResponse(body []byte) bool {
 	return strings.Contains(normalized, "error code: 1010")
 }
 
+// isAnthropicSafeguardPolicy403 identifies a request-level safety rejection.
+// Keep this deliberately narrow: other Anthropic 403 responses can still
+// indicate an account access or entitlement problem.
+func isAnthropicSafeguardPolicy403(account *Account, statusCode int, body []byte) bool {
+	if account == nil || account.Platform != PlatformAnthropic || statusCode != http.StatusForbidden {
+		return false
+	}
+	normalized := strings.ToLower(string(body))
+	return strings.Contains(normalized, "this request was blocked by safe guard policy") ||
+		strings.Contains(normalized, "this request was blocked by safeguard policy")
+}
+
 func containsCloudflareBotBlockCode(value any) bool {
 	switch node := value.(type) {
 	case map[string]any:
@@ -1248,6 +1332,13 @@ func (s *RateLimitService) handle429(ctx context.Context, account *Account, head
 			return
 		}
 	}
+	s.handle429Cooldown(ctx, account, headers, responseBody)
+}
+
+// handle429Cooldown persists the shared quota snapshot and blocks scheduling.
+// Callers that do not retry the rejected request (Excel BPS) enter here directly
+// instead of deferring the cooldown for the Codex same-account retry window.
+func (s *RateLimitService) handle429Cooldown(ctx context.Context, account *Account, headers http.Header, responseBody []byte) {
 	// Spark 影子：限流/熔断状态 100% 由 QueryUsage(/wham/usage body 的 codex_bengalfox)驱动。
 	// /responses 的 429 携带的 x-codex-*/usage_limit_reached 是 global codex 道(plan/spec §8),
 	// 套到影子会把 spark 误耦合到 global 窗口——即便 spark 仍有配额也会被冷却到 global reset,
@@ -1276,6 +1367,15 @@ func (s *RateLimitService) handle429(ctx context.Context, account *Account, head
 	}
 	// 1. OpenAI 平台：优先尝试解析 x-codex-* 响应头（用于 rate_limit_exceeded）
 	if account.Platform == PlatformOpenAI {
+		// An API key may relay a different ChatGPT account's quota error. Its
+		// reset time and Codex snapshot do not describe this key's capacity.
+		// Keep real 429 backoff without blocking the entire key for that window.
+		// Provider-specific quota handling above and explicit account policies
+		// remain authoritative.
+		if account.Type == AccountTypeAPIKey {
+			s.apply429FallbackRateLimit(ctx, account, "openai_apikey_upstream_429")
+			return
+		}
 		persistOpenAI429PlanType(ctx, s.accountRepo, account, responseBody)
 		s.persistOpenAICodexSnapshot(ctx, account, headers)
 		notifyOpenAIAutoReset(account.ID)
@@ -1695,10 +1795,6 @@ func (s *RateLimitService) persistAnthropicFableWindowLimit(ctx context.Context,
 	if limit == nil {
 		return false
 	}
-	// 429 响应头本身携带最新的窗口用量（7d_oi utilization=1.0）。限流期内
-	// Fable 请求不再调度到该账号，若不在此处采样，7d F 进度条会冻结在
-	// 限流前的旧值直到窗口重置。
-	s.samplePassiveUsageFromHeaders(ctx, account, headers)
 	if err := s.accountRepo.SetModelRateLimit(ctx, account.ID, anthropicFableRateLimitKey, limit.resetAt, limit.reason); err != nil {
 		slog.Warn("anthropic_fable_window_rate_limit_set_failed",
 			"account_id", account.ID,
@@ -1832,7 +1928,7 @@ func (s *RateLimitService) persistOpenAICodexSnapshot(ctx context.Context, accou
 	if len(updates) == 0 {
 		return
 	}
-	if err := s.accountRepo.UpdateExtra(ctx, account.ID, updates); err != nil {
+	if _, err := persistCodexUsageUpdates(ctx, s.accountRepo, account.ID, updates); err != nil {
 		slog.Warn("openai_codex_snapshot_persist_failed", "account_id", account.ID, "error", err)
 		return
 	}
@@ -1981,7 +2077,9 @@ func parseOpenAIRateLimitPlanType(body []byte) string {
 }
 
 func persistOpenAI429PlanType(ctx context.Context, repo AccountRepository, account *Account, body []byte) {
-	if repo == nil || account == nil || account.Platform != PlatformOpenAI {
+	// API keys may proxy a different account's quota errors. Its plan_type must
+	// never classify our API key; only ChatGPT credentials have a local plan.
+	if repo == nil || account == nil || !account.IsOpenAIOAuthLike() {
 		return
 	}
 	// spark 影子账号恒不持凭据:即便收到带 plan_type 的 429,也不能把 plan_type 写进影子 credentials
@@ -2056,10 +2154,12 @@ func (s *RateLimitService) handle529(ctx context.Context, account *Account) {
 	slog.Info("account_overloaded", "account_id", account.ID, "until", until)
 }
 
-// UpdateSessionWindow 从成功响应更新5h窗口状态
+// UpdateSessionWindow 从成功响应更新5h窗口状态并采样可用的额度窗口。
 func (s *RateLimitService) UpdateSessionWindow(ctx context.Context, account *Account, headers http.Header) {
 	status := headers.Get("anthropic-ratelimit-unified-5h-status")
 	if status == "" {
+		// Ultra 等账号可能仅返回周窗口；不能因缺少 5h 状态而丢弃真实的 7d 用量。
+		s.samplePassiveUsageFromHeaders(ctx, account, headers)
 		return
 	}
 
@@ -2181,14 +2281,20 @@ func (s *RateLimitService) samplePassiveUsageFromHeaders(ctx context.Context, ac
 
 // ClearRateLimit 清除账号的限流状态
 func (s *RateLimitService) ClearRateLimit(ctx context.Context, accountID int64) error {
+	return s.clearRateLimit(ctx, accountID, false)
+}
+
+func (s *RateLimitService) clearRateLimit(ctx context.Context, accountID int64, preserveGrokScopedBlocks bool) error {
 	if err := s.accountRepo.ClearRateLimit(ctx, accountID); err != nil {
 		return err
 	}
 	if err := s.accountRepo.ClearAntigravityQuotaScopes(ctx, accountID); err != nil {
 		return err
 	}
-	if err := s.accountRepo.ClearModelRateLimits(ctx, accountID); err != nil {
-		return err
+	if !preserveGrokScopedBlocks {
+		if err := s.accountRepo.ClearModelRateLimits(ctx, accountID); err != nil {
+			return err
+		}
 	}
 	// 清除限流时一并清理临时不可调度状态，避免周限/窗口重置后仍被本地临时状态阻断。
 	if err := s.accountRepo.ClearTempUnschedulable(ctx, accountID); err != nil {
@@ -2200,6 +2306,9 @@ func (s *RateLimitService) ClearRateLimit(ctx context.Context, accountID int64) 
 		}
 	}
 	s.ResetOpenAI403Counter(ctx, accountID)
+	if !preserveGrokScopedBlocks {
+		s.clearGrokProcessLocalBlocks(ctx, accountID)
+	}
 	s.notifyAccountSchedulingBlockCleared(accountID)
 	return nil
 }
@@ -2233,8 +2342,10 @@ func (s *RateLimitService) RecoverAccountState(ctx context.Context, accountID in
 		}
 	}
 
-	if hasRecoverableRuntimeState(account) {
-		if err := s.ClearRateLimit(ctx, accountID); err != nil {
+	hasScopedGrokState := account.IsGrok() && !options.preserveGrokScopedBlocks &&
+		(hasGrokModelQuotaBlockForAccount(account.ID) || hasGrokTeamModelRateLimitForAccount(account))
+	if hasRecoverableRuntimeState(account) || hasScopedGrokState {
+		if err := s.clearRateLimit(ctx, accountID, options.preserveGrokScopedBlocks && account.IsGrok()); err != nil {
 			return nil, err
 		}
 		result.ClearedRateLimit = true
@@ -2252,7 +2363,9 @@ func (s *RateLimitService) RecoverAccountState(ctx context.Context, accountID in
 // RecoverAccountAfterSuccessfulTest 将一次成功测试视为正常请求，
 // 按需恢复 error / rate-limit / overload / temp-unsched / model-rate-limit 等运行时状态。
 func (s *RateLimitService) RecoverAccountAfterSuccessfulTest(ctx context.Context, accountID int64) (*SuccessfulTestRecoveryResult, error) {
-	return s.RecoverAccountState(ctx, accountID, AccountRecoveryOptions{})
+	// This callback does not identify the tested model. A successful text probe
+	// cannot establish that another model or the shared team quota recovered.
+	return s.RecoverAccountState(ctx, accountID, AccountRecoveryOptions{preserveGrokScopedBlocks: true})
 }
 
 func (s *RateLimitService) ClearTempUnschedulable(ctx context.Context, accountID int64) error {
@@ -2268,8 +2381,27 @@ func (s *RateLimitService) ClearTempUnschedulable(ctx context.Context, accountID
 	if err := s.accountRepo.ClearModelRateLimits(ctx, accountID); err != nil {
 		slog.Warn("clear_model_rate_limits_on_temp_unsched_reset_failed", "account_id", accountID, "error", err)
 	}
+	s.clearGrokProcessLocalBlocks(ctx, accountID)
 	s.notifyAccountSchedulingBlockCleared(accountID)
 	return nil
+}
+
+func (s *RateLimitService) clearGrokProcessLocalBlocks(ctx context.Context, accountID int64) {
+	if s == nil || accountID <= 0 {
+		return
+	}
+	var account *Account
+	if s.accountRepo != nil {
+		loaded, err := s.accountRepo.GetByID(ctx, accountID)
+		if err == nil {
+			account = loaded
+		}
+	}
+	if account != nil && !account.IsGrok() {
+		return
+	}
+	clearGrokModelQuotaBlocksForAccount(accountID)
+	clearGrokTeamModelRateLimitsForAccount(account)
 }
 
 func hasRecoverableRuntimeState(account *Account) bool {
@@ -2362,7 +2494,11 @@ func (s *RateLimitService) HandleTempUnschedulable(ctx context.Context, account 
 		return false
 	}
 	ctx = withTempUnschedulableModel(ctx, requestedModel)
-	return s.tryTempUnschedulable(ctx, account, statusCode, responseBody, firstRequestedModel(requestedModel))
+	matched := s.tryTempUnschedulable(ctx, account, statusCode, responseBody, firstRequestedModel(requestedModel))
+	if matched {
+		s.observeAccountOps(ctx, account, statusCode, nil, responseBody)
+	}
+	return matched
 }
 
 func (s *RateLimitService) HandleOpenAIImageRateLimit(ctx context.Context, account *Account, statusCode int, headers http.Header, responseBody []byte) bool {
@@ -2450,12 +2586,23 @@ func (s *RateLimitService) HandleOpenAIImageCapabilityLoss(ctx context.Context, 
 	return true
 }
 
-// isOpenAIImageCapabilityLossError reports whether upstream rejected the
-// image_generation tool choice that sub2api itself put into the request body.
-// Only meaningful for self-built images requests, where tools always carries a
-// matching image_generation entry — upstream saying otherwise means the account
-// lost the capability.
+// isOpenAIImagePermissionError only trusts the structured, explicit denial.
+// Generic 403s, content-policy errors and echoed prompt text are not evidence
+// that this upstream group lacks image generation permission.
+func isOpenAIImagePermissionError(statusCode int, body []byte) bool {
+	if statusCode != http.StatusForbidden || !gjson.ValidBytes(body) {
+		return false
+	}
+	return gjson.GetBytes(body, "error.type").String() == "permission_error" &&
+		strings.TrimSpace(gjson.GetBytes(body, "error.message").String()) == ImageGenerationPermissionMessage()
+}
+
+// The 400 tool-choice variant is meaningful only for self-built images
+// requests; the explicit 403 group permission denial also covers passthrough.
 func isOpenAIImageCapabilityLossError(statusCode int, body []byte) bool {
+	if isOpenAIImagePermissionError(statusCode, body) {
+		return true
+	}
 	if statusCode != http.StatusBadRequest || len(body) == 0 {
 		return false
 	}
@@ -2561,6 +2708,13 @@ const tempUnschedMessageMaxBytes = 2048
 // the model.
 func (s *RateLimitService) HandleUpstreamModelNotFound(ctx context.Context, account *Account, requestedModel string, statusCode int, responseBody []byte) bool {
 	if s == nil || account == nil || s.accountRepo == nil {
+		return false
+	}
+	// A pool relay owns its member/model availability. Its observation must not
+	// become a local 30-minute negative cache by bypassing the generic pool
+	// policy through the OpenAI fastpath. Explicit error-code policy remains
+	// authoritative; administrator temporary rules run at the caller below.
+	if account.IsPoolMode() && !account.IsCustomErrorCodesEnabled() {
 		return false
 	}
 	if !account.ShouldHandleErrorCode(statusCode) {

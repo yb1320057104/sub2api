@@ -238,6 +238,11 @@ def overlay_manifest(config):
     value = json.loads((root / "manifest.json").read_text())
     need(value.get("schema") == 1 and value.get("base_commit") == BASE_COMMIT and value.get("build_type") == "cluster-ha"
          and isinstance(value.get("files"), list) and value["files"], "overlay_manifest_invalid")
+    if 'candidate_base_commit' in value:
+        need(COMMIT.fullmatch(str(value['candidate_base_commit']))
+             and DIGEST.fullmatch(str(value.get('adaptation_profile_sha256', '')))
+             and DIGEST.fullmatch(str(value.get('adaptation_patch_sha256', ''))),
+             'overlay_candidate_adaptation_invalid')
     migrations = value.get('base_migrations')
     need(isinstance(migrations, dict) and bool(migrations), 'overlay_migrations_missing')
     for name, expected in migrations.items():
@@ -599,7 +604,96 @@ def migration_snapshot(source):
     return result
 
 
-def build_tail(config, actual, job, logs, overlay_sha, migration_files, report):
+MIGRATION_EVIDENCE_CHECKS = {
+    "fresh": {"fresh_migrations", "current_application_ready"},
+    "upgrade": {"baseline_to_candidate_migrations", "old_application_compatibility",
+                "mixed_version_billing_invariants", "current_application_ready"},
+    "rollback": {"previous_application_after_new_schema", "billing_idempotency_preserved", "no_schema_rollback"},
+}
+
+
+def migration_manifest_digest(files):
+    return hashlib.sha256(json.dumps(files, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def trusted_migration_json(config, filename, expected):
+    """Read an administrator-pinned receipt outside release/build inputs.
+
+    The pin comes only from the controller's private configuration. A release
+    cannot opt itself into migration compatibility by shipping a JSON file.
+    """
+    need(os.name == "posix" and hasattr(os, "O_NOFOLLOW"), "migration_receipt_requires_posix")
+    need(isinstance(expected, str) and DIGEST.fullmatch(expected), "migration_receipt_pin_invalid")
+    need(re.fullmatch(r"[a-f0-9]{40}(?:\.(?:fresh|upgrade|rollback))?\.json", filename),
+         "migration_receipt_filename_invalid")
+    root = Path(config["root"])
+    need(root.is_absolute(), "migration_receipt_root_not_absolute")
+    path = root / "migration-receipts" / filename
+    # Check every parent: even a root-owned file can be replaced through an
+    # untrusted writable ancestor. Symlinks are never accepted as trust roots.
+    for parent in path.parents:
+        metadata = parent.lstat()
+        need(stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode)
+             and metadata.st_uid == 0 and metadata.st_mode & 0o022 == 0,
+             "migration_receipt_parent_untrusted")
+    fd = os.open(str(path), os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        metadata = os.fstat(fd)
+        need(stat.S_ISREG(metadata.st_mode) and metadata.st_uid == 0 and metadata.st_mode & 0o022 == 0
+             and metadata.st_nlink == 1 and 0 < metadata.st_size <= MAX_JSON,
+             "migration_receipt_file_untrusted")
+        with os.fdopen(fd, "rb", closefd=False) as stream:
+            raw = stream.read(MAX_JSON + 1)
+        need(len(raw) <= MAX_JSON and hashlib.sha256(raw).hexdigest() == expected,
+             "migration_receipt_digest_mismatch")
+        value = json.loads(raw)
+        need(isinstance(value, dict), "migration_receipt_shape_invalid")
+        return value
+    finally:
+        os.close(fd)
+
+
+def migration_compatibility(config, actual, overlay_sha, overlay, files):
+    """Retain the original strict pin unless an exact, trusted release receipt exists."""
+    base = overlay["base_migrations"]
+    if files == base:
+        return None
+    commit = actual["commit"]
+    pins = config.get("migration_compatibility_receipts", {})
+    need(isinstance(pins, dict) and COMMIT.fullmatch(commit) and commit in pins,
+         "cluster_migrations_require_compatibility_review")
+    pin = pins[commit]
+    receipt = trusted_migration_json(config, commit + ".json", pin)
+    need(receipt.get("schema") == 1 and receipt.get("source_commit") == commit
+         and receipt.get("overlay_manifest_sha256") == overlay_sha,
+         "migration_receipt_identity_mismatch")
+    need(receipt.get("candidate_migrations") == files, "migration_receipt_candidate_mismatch")
+    old_sql = {name: value for name, value in base.items() if name.endswith(".sql")}
+    need(old_sql and receipt.get("preserved_sql") == old_sql
+         and all(files.get(name) == value for name, value in old_sql.items()),
+         "migration_receipt_old_sql_changed")
+    evidence = receipt.get("evidence")
+    need(isinstance(evidence, dict) and set(evidence) == set(MIGRATION_EVIDENCE_CHECKS),
+         "migration_receipt_evidence_missing")
+    candidate_sha = migration_manifest_digest(files)
+    for scenario, required in MIGRATION_EVIDENCE_CHECKS.items():
+        proof = trusted_migration_json(config, commit + "." + scenario + ".json", evidence[scenario])
+        need(proof.get("schema") == 1 and proof.get("scenario") == scenario
+             and proof.get("source_commit") == commit and proof.get("baseline_commit") == BASE_RELEASE_COMMIT
+             and proof.get("overlay_manifest_sha256") == overlay_sha
+             and proof.get("candidate_migrations_sha256") == candidate_sha,
+             "migration_evidence_identity_mismatch")
+        need(proof.get("result") == "passed" and proof.get("isolated") is True
+             and proof.get("production_changed") is False,
+             "migration_evidence_not_passed")
+        checks = proof.get("checks")
+        need(isinstance(checks, dict) and required <= set(checks)
+             and all(value is True for value in checks.values()), "migration_evidence_checks_incomplete")
+    return {"sha256": pin, "source_commit": commit, "overlay_manifest_sha256": overlay_sha,
+            "candidate_migrations_sha256": candidate_sha, "evidence": dict(evidence)}
+
+
+def build_tail(config, actual, job, logs, overlay_sha, migration_files, report, migration_receipt=None):
     """Run the offline Go checks and binary build, including on validated resume."""
     source = job / "source"
     archive = job / "source.tar.gz"
@@ -637,13 +731,16 @@ def build_tail(config, actual, job, logs, overlay_sha, migration_files, report):
     run_logged(docker_command(go_image, source, [], ["/src/sub2api", "--version"]), logs / "binary-version.log", timeout=60)
     need(version in (logs / "binary-version.log").read_text(), "built_version_mismatch")
     need(resolve_target(config, actual["baseline"]) == actual, "release_changed_during_build")
-    need(migration_snapshot(source) == overlay['base_migrations'], 'cluster_migrations_changed_during_build')
+    need(migration_compatibility(config, actual, overlay_sha, overlay, migration_snapshot(source)) == migration_receipt,
+         'cluster_migrations_changed_during_build')
     need(digest(overlay_root / 'manifest.json') == overlay_sha, 'overlay_changed_during_build')
     binary.chmod(0o755)
     artifact = {"binary": str(binary), "sha256": digest(binary), "bytes": binary.stat().st_size,
                 "version": version, "baseline": actual["baseline"], "commit": actual["commit"],
                 "role": "cluster", "build_type": "cluster-ha", "capabilities": ["ha-r4"], "overlay_sha256": overlay_sha,
                 "source_sha256": digest(archive), "tests": tests, "migration_files": migration_files}
+    if migration_receipt is not None:
+        artifact["migration_compatibility_receipt"] = migration_receipt
     json_write(logs / "manifest.json", artifact)
     artifact["manifest"] = str(logs / "manifest.json")
     report("artifact_ready")
@@ -686,11 +783,15 @@ def build(config, target, report):
         need((source / "backend/cmd/server/VERSION").read_text().strip() in
              (actual["baseline"], actual["baseline"].split("-pk.", 1)[0]),
              "source_version_mismatch")
-        _, overlay = overlay_manifest(config)
+        overlay_root, overlay = overlay_manifest(config)
+        need(overlay.get('candidate_base_commit', actual['commit']) == actual['commit'],
+             'overlay_candidate_requires_new_review')
+        reviewed_overlay_sha = digest(overlay_root / "manifest.json")
         before_migrations = migration_snapshot(source)
-        need(before_migrations == overlay['base_migrations'], 'cluster_migrations_require_compatibility_review')
+        migration_receipt = migration_compatibility(config, actual, reviewed_overlay_sha, overlay, before_migrations)
         report('merging_cluster')
         overlay_sha = apply_overlay(config, source, job / 'merge')
+        need(overlay_sha == reviewed_overlay_sha, 'overlay_changed_during_build')
         need(before_migrations == migration_snapshot(source), 'cluster_overlay_changed_migrations')
         node_image = config.get("node_image", "node:24-bookworm-slim")
         go_image = config.get("go_image", "golang:1.27.3-bookworm")
@@ -723,7 +824,7 @@ def build(config, target, report):
                                       env=dict(go_env, **proxy_env, GOPROXY="https://proxy.golang.org",
                                                GOSUMDB="sum.golang.org")), job / "go-download.log")
         need(go_inputs == {name: digest(source / "backend" / name) for name in go_inputs}, "go_dependency_inputs_changed")
-        return build_tail(config, actual, job, job, overlay_sha, len(before_migrations), report)
+        return build_tail(config, actual, job, job, overlay_sha, len(before_migrations), report, migration_receipt)
     except BuildError as error:
         json_write(job / "failed.json", {"code": str(error), "production_changed": False})
         raise

@@ -2,6 +2,7 @@
 package dto
 
 import (
+	"context"
 	"strconv"
 	"strings"
 	"time"
@@ -23,6 +24,7 @@ func UserFromServiceShallow(u *service.User) *User {
 		Concurrency:                u.Concurrency,
 		Status:                     u.Status,
 		AllowedGroups:              u.AllowedGroups,
+		ObserverGroupIDs:           u.ObserverGroupIDs,
 		LastActiveAt:               u.LastActiveAt,
 		CreatedAt:                  u.CreatedAt,
 		UpdatedAt:                  u.UpdatedAt,
@@ -86,10 +88,13 @@ func APIKeyFromService(k *service.APIKey) *APIKey {
 		UserID:             k.UserID,
 		Key:                k.Key,
 		Name:               k.Name,
+		GroupIDs:           k.ConfiguredGroupIDs(),
 		GroupID:            k.GroupID,
-		GroupIDs:           k.SelectedGroupIDs(),
 		Groups:             make([]*Group, 0, len(k.Groups)),
 		Status:             k.Status,
+		ModelMapping:       k.ModelMapping,
+		ReasoningEffort:    k.ReasoningEffort,
+		AllowLongContext:   k.AllowLongContext,
 		IPWhitelist:        k.IPWhitelist,
 		IPBlacklist:        k.IPBlacklist,
 		LastUsedAt:         k.LastUsedAt,
@@ -101,6 +106,7 @@ func APIKeyFromService(k *service.APIKey) *APIKey {
 		UpdatedAt:          k.UpdatedAt,
 		CurrentConcurrency: k.CurrentConcurrency,
 		RateLimit5h:        k.RateLimit5h,
+		ConcurrencyLimit:   k.ConcurrencyLimit,
 		RateLimit1d:        k.RateLimit1d,
 		RateLimit7d:        k.RateLimit7d,
 		Usage5h:            k.EffectiveUsage5h(),
@@ -165,6 +171,9 @@ func GroupFromServiceAdmin(g *service.Group) *AdminGroup {
 		Group:                       groupFromServiceBase(g),
 		ForceOpenAIFast:             g.ForceOpenAIFast,
 		FreeOpenAIFast:              g.FreeOpenAIFast,
+		StreamOnly:                  g.StreamOnly,
+		CodexCLIOnly:                g.CodexCLIOnly,
+		BlockSubagents:              g.BlockSubagents,
 		ProfitControlEnabled:        g.ProfitControlEnabled,
 		ProfitMinMargin:             g.ProfitMinMargin,
 		ProfitSafetyBuffer:          g.ProfitSafetyBuffer,
@@ -271,6 +280,7 @@ func AccountFromServiceShallow(a *service.Account) *Account {
 		Type:                    a.Type,
 		Credentials:             redactedCreds,
 		CredentialsStatus:       credsStatus,
+		ExcelBPSCredentialState: service.ExcelBPSCredentialStateFromAccount(a, time.Now()),
 		Extra:                   extra,
 		OllamaCloudUsage:        ollamaCloudUsage,
 		OpenCodeGoUsage:         openCodeGoUsage,
@@ -282,6 +292,7 @@ func AccountFromServiceShallow(a *service.Account) *Account {
 		LoadFactor:              a.LoadFactor,
 		Priority:                a.Priority,
 		RateMultiplier:          a.BillingRateMultiplier(),
+		GroupRateMultiplier:     a.UserGroupRateMultiplier(),
 		Status:                  a.Status,
 		ErrorMessage:            a.ErrorMessage,
 		LastUsedAt:              a.LastUsedAt,
@@ -303,7 +314,7 @@ func AccountFromServiceShallow(a *service.Account) *Account {
 		QuotaDimension:          a.QuotaDimension,
 	}
 
-	// 提取 5h 窗口费用控制和会话数量控制配置（仅 Anthropic OAuth/SetupToken 账号有效）
+	// 提取 Anthropic OAuth/SetupToken 的配额控制配置。
 	if a.IsAnthropicOAuthOrSetupToken() {
 		if limit := a.GetWindowCostLimit(); limit > 0 {
 			out.WindowCostLimit = &limit
@@ -356,6 +367,12 @@ func AccountFromServiceShallow(a *service.Account) *Account {
 			if customURL := a.GetCustomBaseURL(); customURL != "" {
 				out.CustomBaseURL = &customURL
 			}
+		}
+	}
+	// OpenAI OAuth uses only a strict per-minute request ceiling.
+	if a.IsOpenAIOAuth() {
+		if rpm := a.GetBaseRPM(); rpm > 0 {
+			out.BaseRPM = &rpm
 		}
 	}
 
@@ -438,12 +455,14 @@ func redactAccountManagedExtra(extra map[string]any) map[string]any {
 	}
 	redacted := make(map[string]any, len(extra))
 	for key, value := range extra {
-		switch key {
-		case service.OllamaCloudUsageSessionExtraKey,
-			service.OllamaCloudUsageAutoRefreshExtraKey,
-			service.OllamaCloudUsageSnapshotExtraKey,
-			service.OpenCodeGoUsageAutoRefreshExtraKey,
-			service.OpenCodeGoUsageSnapshotExtraKey:
+		switch {
+		case key == service.ExcelBPSCredentialStateExtraKey, key == service.OllamaCloudUsageSessionExtraKey,
+			key == service.OllamaCloudUsageAutoRefreshExtraKey,
+			key == service.OllamaCloudUsageSnapshotExtraKey,
+			key == service.OpenCodeGoUsageAutoRefreshExtraKey,
+			key == service.OpenCodeGoUsageSnapshotExtraKey:
+			continue
+		case service.IsOpenAICodexTicketPrivateExtraKey(key):
 			continue
 		default:
 			redacted[key] = value
@@ -482,13 +501,16 @@ func AccountListItemFromAccount(a *Account) *AccountListItem {
 		return nil
 	}
 	return &AccountListItem{
-		ID: a.ID, Name: a.Name, Notes: a.Notes, Platform: a.Platform, Type: a.Type,
+		UpstreamChannelBinding: a.UpstreamChannelBinding,
+		ID:                     a.ID, Name: a.Name, Notes: a.Notes, Platform: a.Platform, Type: a.Type,
 		Credentials: a.Credentials, CredentialsStatus: a.CredentialsStatus, Extra: a.Extra,
-		OllamaCloudUsage: a.OllamaCloudUsage, OpenCodeGoUsage: a.OpenCodeGoUsage,
-		ProxyBindings: a.ProxyBindings,
-		ProxyID:       a.ProxyID, ProxyFallbackOriginID: a.ProxyFallbackOriginID, ProxyFallbackOriginName: a.ProxyFallbackOriginName,
-		Concurrency: a.Concurrency, LoadFactor: a.LoadFactor, Priority: a.Priority, RateMultiplier: a.RateMultiplier,
-		Status: a.Status, ErrorMessage: a.ErrorMessage, LastUsedAt: a.LastUsedAt, ExpiresAt: a.ExpiresAt,
+		ExcelBPSCredentialState: a.ExcelBPSCredentialState,
+		OllamaCloudUsage:        a.OllamaCloudUsage, CodexTurnTickets: a.CodexTurnTickets,
+		ProxyID: a.ProxyID, ProxyFallbackOriginID: a.ProxyFallbackOriginID, ProxyFallbackOriginName: a.ProxyFallbackOriginName,
+		Concurrency: a.Concurrency, LoadFactor: a.LoadFactor, Priority: a.Priority, RateMultiplier: a.RateMultiplier, GroupRateMultiplier: a.GroupRateMultiplier,
+		OpenCodeGoUsage: a.OpenCodeGoUsage,
+		Status:          a.Status, ErrorMessage: a.ErrorMessage, LastUsedAt: a.LastUsedAt, ExpiresAt: a.ExpiresAt,
+		ProxyBindings:      a.ProxyBindings,
 		AutoPauseOnExpired: a.AutoPauseOnExpired, CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt,
 		Schedulable: a.Schedulable, RateLimitedAt: a.RateLimitedAt, RateLimitResetAt: a.RateLimitResetAt,
 		OverloadUntil: a.OverloadUntil, TempUnschedulableUntil: a.TempUnschedulableUntil,
@@ -529,12 +551,13 @@ func AccountGroupFromService(ag *service.AccountGroup) *AccountGroup {
 		return nil
 	}
 	return &AccountGroup{
-		AccountID: ag.AccountID,
-		GroupID:   ag.GroupID,
-		Priority:  ag.Priority,
-		CreatedAt: ag.CreatedAt,
-		Account:   AccountFromServiceShallow(ag.Account),
-		Group:     GroupFromServiceShallow(ag.Group),
+		AccountID:     ag.AccountID,
+		GroupID:       ag.GroupID,
+		Priority:      ag.Priority,
+		AllowedModels: ag.AllowedModels,
+		CreatedAt:     ag.CreatedAt,
+		Account:       AccountFromServiceShallow(ag.Account),
+		Group:         GroupFromServiceShallow(ag.Group),
 	}
 }
 
@@ -550,6 +573,7 @@ func ProxyFromService(p *service.Proxy) *Proxy {
 		Protocol:       p.Protocol,
 		Host:           p.Host,
 		Port:           p.Port,
+		MihomoNodeID:   p.MihomoNodeID,
 		Username:       p.Username,
 		Status:         p.Status,
 		CreatedAt:      p.CreatedAt,
@@ -746,6 +770,7 @@ func usageLogFromServiceUser(l *service.UsageLog) UsageLog {
 		NativeCompactionV2:        l.NativeCompactionV2,
 		DurationMs:                l.DurationMs,
 		FirstTokenMs:              l.FirstResponseMs,
+		QueueWaitMs:               l.QueueWaitMs,
 		ImageCount:                l.ImageCount,
 		ImageSize:                 l.ImageSize,
 		ImageInputSize:            l.ImageInputSize,
@@ -773,11 +798,29 @@ func usageLogFromServiceUser(l *service.UsageLog) UsageLog {
 // UsageLogFromService converts a service UsageLog to DTO for regular users.
 // It excludes admin-only account/upstream internals while keeping user billing and request metadata.
 func UsageLogFromService(l *service.UsageLog) *UsageLog {
+	return UsageLogFromServiceForUser(l, false)
+}
+
+// UsageLogFromServiceForUser converts a usage log for an end user.
+// showUpstreamResponseModel reveals only the model declared by the upstream
+// response. Mapped request models, mismatch flags, and account internals stay hidden.
+func UsageLogFromServiceForUser(l *service.UsageLog, showUpstreamResponseModel bool) *UsageLog {
 	if l == nil {
 		return nil
 	}
 	u := usageLogFromServiceUser(l)
+	if showUpstreamResponseModel {
+		u.UpstreamResponseModel = visibleUpstreamResponseModel(l.UpstreamResponseModel)
+	}
 	return &u
+}
+
+func visibleUpstreamResponseModel(value *string) *string {
+	trimmed := strings.TrimSpace(derefString(value))
+	if trimmed == "" {
+		return nil
+	}
+	return &trimmed
 }
 
 // UsageLogFromServiceAdmin converts a service UsageLog to DTO for admin users.
@@ -789,6 +832,8 @@ func UsageLogFromServiceAdmin(l *service.UsageLog) *AdminUsageLog {
 	usageLog := usageLogFromServiceUser(l)
 	usageLog.UpstreamEndpoint = l.UpstreamEndpoint
 	usageLog.FirstTokenMs = l.FirstTokenMs
+	usageLog.QueueTiming = l.QueueTiming
+	usageLog.ContentTiming = l.ContentTiming
 	return &AdminUsageLog{
 		UsageLog:                usageLog,
 		FirstResponseMs:         l.FirstResponseMs,
@@ -1000,4 +1045,28 @@ func AccountProxyBindingsFromService(items []service.AccountProxyBinding) []Acco
 		out = append(out, AccountProxyBinding{ProxyID: b.ProxyID, Proxy: proxy, MaxConcurrency: b.MaxConcurrency, MaxAccounts: b.MaxAccounts})
 	}
 	return out
+}
+
+// AccountForObserver filters only the freshly allocated response DTO. Never
+// mutate service accounts: they also feed credential refresh and scheduler caches.
+func AccountForObserver(ctx context.Context, account *Account) *Account {
+	if _, scoped := service.ObserverGroupIDs(ctx); !scoped || account == nil {
+		return account
+	}
+	account.GroupIDs = service.ObserverVisibleGroups(ctx, account.GroupIDs)
+	groups := account.Groups[:0]
+	for _, group := range account.Groups {
+		if group != nil && service.ObserverCanManageGroup(ctx, group.ID) {
+			groups = append(groups, group)
+		}
+	}
+	account.Groups = groups
+	links := account.AccountGroups[:0]
+	for _, link := range account.AccountGroups {
+		if service.ObserverCanManageGroup(ctx, link.GroupID) {
+			links = append(links, link)
+		}
+	}
+	account.AccountGroups = links
+	return account
 }

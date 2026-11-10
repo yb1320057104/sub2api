@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -57,6 +58,7 @@ type openAIReasoningEffortPolicy struct {
 	ingressApplied bool
 	ingressEfforts map[string]string
 	accountPending map[string]bool
+	requestModel   string
 }
 
 // ReasoningEffortOverLimitError is returned when a group policy is set to deny
@@ -136,6 +138,8 @@ func NormalizeMaxReasoningEffort(raw string) string {
 		return "xhigh"
 	case "max":
 		return "max"
+	case "ultra":
+		return "ultra"
 	default:
 		return ""
 	}
@@ -454,14 +458,16 @@ func RequestedReasoningEffortFromContext(ctx context.Context) *string {
 // WithOpenAIReasoningEffortPolicy binds a group policy to a request after its
 // concrete target platform has been resolved to OpenAI. The policy is copied so
 // retries and asynchronous forwarding cannot observe later slice mutations.
-func WithOpenAIReasoningEffortPolicy(ctx context.Context, maxEffort string, mappings []ReasoningEffortMapping, overLimit string) context.Context {
+// An optional client model preserves suffix and mapping scopes across conversion.
+func WithOpenAIReasoningEffortPolicy(ctx context.Context, maxEffort string, mappings []ReasoningEffortMapping, overLimit string, requestModels ...string) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	policy := openAIReasoningEffortPolicy{
-		maxEffort: maxEffort,
-		overLimit: overLimit,
-		mappings:  append([]ReasoningEffortMapping(nil), mappings...),
+		maxEffort:    maxEffort,
+		overLimit:    overLimit,
+		mappings:     append([]ReasoningEffortMapping(nil), mappings...),
+		requestModel: strings.TrimSpace(firstNonEmpty(requestModels...)),
 	}
 	return context.WithValue(ctx, openAIReasoningEffortPolicyContextKey{}, policy)
 }
@@ -479,7 +485,7 @@ func WithAppliedOpenAIReasoningEffortPolicy(ctx context.Context, originalBody []
 	policy.ingressApplied = true
 	policy.ingressEfforts = make(map[string]string, 3)
 	policy.accountPending = make(map[string]bool, 3)
-	requestModel := gjson.GetBytes(originalBody, "model").String()
+	requestModel := firstNonEmpty(policy.requestModel, gjson.GetBytes(originalBody, "model").String())
 	_, hasLegacyMapping := selectReasoningEffortMapping(policy.mappings, "max", requestModel)
 	for _, path := range []string{"reasoning.effort", "reasoning_effort", "output_config.effort"} {
 		if field := gjson.GetBytes(originalBody, path); field.Type == gjson.String {
@@ -503,7 +509,7 @@ func ApplyOpenAIReasoningEffortPolicyAtIngress(ctx context.Context, body []byte)
 	if !ok {
 		return body, false, nil
 	}
-	return applyReasoningEffortPolicy(body, policy.maxEffort, policy.mappings, policy.overLimit, policy.accountPending)
+	return applyOpenAIReasoningEffortPolicy(body, policy.maxEffort, policy.mappings, policy.overLimit, policy.accountPending, policy.requestModel)
 }
 
 // WithReasoningEffortRequestModel preserves the client model for account-time
@@ -525,7 +531,17 @@ func ApplyOpenAIReasoningEffortPolicyFromContext(ctx context.Context, body []byt
 	if !ok {
 		return body, false, nil
 	}
-	return ApplyOpenAIReasoningEffortPolicy(body, policy.maxEffort, policy.mappings, policy.overLimit)
+	forced, _ := ctx.Value(apiKeyForcedReasoningEffortContextKey{}).(string)
+	return ApplyAPIKeyOpenAIReasoningEffortPolicy(body, forced, policy.maxEffort, policy.mappings, policy.overLimit, policy.requestModel)
+}
+
+type apiKeyForcedReasoningEffortContextKey struct{}
+
+// WithAPIKeyOpenAIReasoningEffortPolicy keeps a fixed key effort through the
+// Messages-to-OpenAI conversion, including requests that omit an effort.
+func WithAPIKeyOpenAIReasoningEffortPolicy(ctx context.Context, forced, maxEffort string, mappings []ReasoningEffortMapping, overLimit string, requestModels ...string) context.Context {
+	ctx = WithOpenAIReasoningEffortPolicy(ctx, maxEffort, mappings, overLimit, requestModels...)
+	return context.WithValue(ctx, apiKeyForcedReasoningEffortContextKey{}, forced)
 }
 
 // applyKiloReasoningEffortPolicyFromContext adapts Kilo's client orchestration
@@ -536,13 +552,19 @@ func applyKiloReasoningEffortPolicyFromContext(ctx context.Context, account *Acc
 	if ctx == nil {
 		return body, false, nil
 	}
+	// A key's fixed effort replaces client aliases and group remaps. Messages
+	// applies that fixed value and the group ceiling after protocol conversion;
+	// evaluating the original alias here could deny an effort we will not send.
+	if forced, _ := ctx.Value(apiKeyForcedReasoningEffortContextKey{}).(string); forced != "" {
+		return body, false, nil
+	}
 	policy, ok := ctx.Value(openAIReasoningEffortPolicyContextKey{}).(openAIReasoningEffortPolicy)
 	if !ok {
 		return body, false, nil
 	}
 	result := body
 	changed := false
-	requestModel := gjson.GetBytes(body, "model").String()
+	requestModel := firstNonEmpty(policy.requestModel, gjson.GetBytes(body, "model").String())
 	if originalModel, ok := ctx.Value(reasoningEffortRequestModelContextKey{}).(string); ok {
 		requestModel = originalModel
 	}
@@ -698,12 +720,12 @@ func sanitizeGroupReasoningEffortPolicy(group *Group) {
 // deny values above the ceiling. A mapping whose target is deny rejects the
 // request when that source value is present. Omitted values remain untouched
 // so upstream defaults stay in control. It understands both OpenAI and
-// Anthropic request field shapes.
-func ApplyReasoningEffortPolicy(body []byte, maxEffort string, mappings []ReasoningEffortMapping, overLimit string) ([]byte, bool, error) {
-	return applyReasoningEffortPolicy(body, maxEffort, mappings, overLimit, nil)
+// Anthropic request field shapes. The optional client model preserves mapping scope.
+func ApplyReasoningEffortPolicy(body []byte, maxEffort string, mappings []ReasoningEffortMapping, overLimit string, requestModels ...string) ([]byte, bool, error) {
+	return applyReasoningEffortPolicy(body, maxEffort, mappings, overLimit, nil, requestModels...)
 }
 
-func applyReasoningEffortPolicy(body []byte, maxEffort string, mappings []ReasoningEffortMapping, overLimit string, skipPaths map[string]bool) ([]byte, bool, error) {
+func applyReasoningEffortPolicy(body []byte, maxEffort string, mappings []ReasoningEffortMapping, overLimit string, skipPaths map[string]bool, requestModels ...string) ([]byte, bool, error) {
 	maxRank, hasMax := reasoningEffortRank(maxEffort)
 	if len(body) == 0 || (!hasMax && len(mappings) == 0) {
 		return body, false, nil
@@ -711,7 +733,10 @@ func applyReasoningEffortPolicy(body []byte, maxEffort string, mappings []Reason
 	deny := hasMax && NormalizeMaxReasoningEffortOverLimit(overLimit) == ReasoningEffortOverLimitDeny
 	canonicalMax := normalizeGroupReasoningEffort(maxEffort)
 
-	requestModel := strings.TrimSpace(gjson.GetBytes(body, "model").String())
+	requestModel := strings.TrimSpace(firstNonEmpty(requestModels...))
+	if requestModel == "" {
+		requestModel = strings.TrimSpace(gjson.GetBytes(body, "model").String())
+	}
 	result := body
 	changed := false
 	for _, path := range []string{"reasoning.effort", "reasoning_effort", "output_config.effort"} {
@@ -758,11 +783,13 @@ func applyReasoningEffortPolicy(body []byte, maxEffort string, mappings []Reason
 	return result, changed, nil
 }
 
-func applyOpenAIWSReasoningEffortPolicy(payload []byte, hooks *OpenAIWSIngressHooks) ([]byte, error) {
-	if hooks == nil || (hooks.MaxReasoningEffort == "" && len(hooks.ReasoningEffortMappings) == 0) {
+// The optional key preference extends the original group-only policy call.
+func applyOpenAIWSReasoningEffortPolicy(payload []byte, hooks *OpenAIWSIngressHooks, forcedEfforts ...string) ([]byte, error) {
+	forced := firstNonEmpty(forcedEfforts...)
+	if hooks == nil || (forced == "" && hooks.MaxReasoningEffort == "" && len(hooks.ReasoningEffortMappings) == 0) {
 		return payload, nil
 	}
-	capped, changed, err := ApplyOpenAIReasoningEffortPolicy(payload, hooks.MaxReasoningEffort, hooks.ReasoningEffortMappings, hooks.MaxReasoningEffortOverLimit)
+	capped, changed, err := ApplyAPIKeyOpenAIReasoningEffortPolicy(payload, forced, hooks.MaxReasoningEffort, hooks.ReasoningEffortMappings, hooks.MaxReasoningEffortOverLimit)
 	if err != nil {
 		return payload, err
 	}
@@ -772,7 +799,44 @@ func applyOpenAIWSReasoningEffortPolicy(payload []byte, hooks *OpenAIWSIngressHo
 	return payload, nil
 }
 
-// ApplyOpenAIReasoningEffortPolicy is retained for OpenAI forwarding callers.
-func ApplyOpenAIReasoningEffortPolicy(body []byte, maxEffort string, mappings []ReasoningEffortMapping, overLimit string) ([]byte, bool, error) {
-	return ApplyReasoningEffortPolicy(body, maxEffort, mappings, overLimit)
+// ApplyOpenAIReasoningEffortPolicy also recognizes explicit ultra model suffixes.
+// The optional client model takes precedence over an already rewritten model.
+func ApplyOpenAIReasoningEffortPolicy(body []byte, maxEffort string, mappings []ReasoningEffortMapping, overLimit string, requestModels ...string) ([]byte, bool, error) {
+	return applyOpenAIReasoningEffortPolicy(body, maxEffort, mappings, overLimit, nil, requestModels...)
+}
+
+func applyOpenAIReasoningEffortPolicy(body []byte, maxEffort string, mappings []ReasoningEffortMapping, overLimit string, skipPaths map[string]bool, requestModels ...string) ([]byte, bool, error) {
+	if maxEffort == "" && len(mappings) == 0 {
+		return body, false, nil
+	}
+	view := openAIRequestPayloadView(body)
+	payload := []byte(view.Raw)
+	// Composite routing may already have replaced body.model. Policy scopes and
+	// suffixes must use the client-written model without changing the route.
+	requestModel := strings.TrimSpace(firstNonEmpty(requestModels...))
+	if requestModel == "" {
+		requestModel = strings.TrimSpace(view.Get("model").String())
+	}
+	// A model's explicit ultra suffix must not escape a ceiling simply because
+	// the client omitted the separate effort field. Ordinary omitted defaults
+	// remain untouched.
+	if explicitRequestedReasoningEffortFromBody(payload) == "" && canonicalReasoningEffortFromModelSuffix(requestModel) == "ultra" {
+		var err error
+		payload, err = sjson.SetBytes(payload, "reasoning.effort", "ultra")
+		if err != nil {
+			return body, false, err
+		}
+	}
+	updated, changed, err := applyReasoningEffortPolicy(payload, maxEffort, mappings, overLimit, skipPaths, requestModel)
+	if err != nil || !changed {
+		return body, false, err
+	}
+	root := gjson.ParseBytes(body)
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(root.Get("type").String())), "response.") && root.Get("response").IsObject() {
+		updated, err = sjson.SetBytes(body, "response", json.RawMessage(updated))
+		if err != nil {
+			return body, false, err
+		}
+	}
+	return updated, true, nil
 }

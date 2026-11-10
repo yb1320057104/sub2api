@@ -908,6 +908,48 @@ func (_u *GroupUpdate) ClearFallbackGroupIDOnInvalidRequest() *GroupUpdate {
 	return _u
 }
 
+// SetBlockSubagents sets the "block_subagents" field.
+func (_u *GroupUpdate) SetBlockSubagents(v bool) *GroupUpdate {
+	_u.mutation.SetBlockSubagents(v)
+	return _u
+}
+
+// SetNillableBlockSubagents sets the "block_subagents" field if the given value is not nil.
+func (_u *GroupUpdate) SetNillableBlockSubagents(v *bool) *GroupUpdate {
+	if v != nil {
+		_u.SetBlockSubagents(*v)
+	}
+	return _u
+}
+
+// SetCodexCliOnly sets the "codex_cli_only" field.
+func (_u *GroupUpdate) SetCodexCliOnly(v bool) *GroupUpdate {
+	_u.mutation.SetCodexCliOnly(v)
+	return _u
+}
+
+// SetNillableCodexCliOnly sets the "codex_cli_only" field if the given value is not nil.
+func (_u *GroupUpdate) SetNillableCodexCliOnly(v *bool) *GroupUpdate {
+	if v != nil {
+		_u.SetCodexCliOnly(*v)
+	}
+	return _u
+}
+
+// SetStreamOnly sets the "stream_only" field.
+func (_u *GroupUpdate) SetStreamOnly(v bool) *GroupUpdate {
+	_u.mutation.SetStreamOnly(v)
+	return _u
+}
+
+// SetNillableStreamOnly sets the "stream_only" field if the given value is not nil.
+func (_u *GroupUpdate) SetNillableStreamOnly(v *bool) *GroupUpdate {
+	if v != nil {
+		_u.SetStreamOnly(*v)
+	}
+	return _u
+}
+
 // SetModelRouting sets the "model_routing" field.
 func (_u *GroupUpdate) SetModelRouting(v map[string][]int64) *GroupUpdate {
 	_u.mutation.SetModelRouting(v)
@@ -1851,6 +1893,15 @@ func (_u *GroupUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	}
 	if _u.mutation.FallbackGroupIDOnInvalidRequestCleared() {
 		_spec.ClearField(group.FieldFallbackGroupIDOnInvalidRequest, field.TypeInt64)
+	}
+	if value, ok := _u.mutation.BlockSubagents(); ok {
+		_spec.SetField(group.FieldBlockSubagents, field.TypeBool, value)
+	}
+	if value, ok := _u.mutation.CodexCliOnly(); ok {
+		_spec.SetField(group.FieldCodexCliOnly, field.TypeBool, value)
+	}
+	if value, ok := _u.mutation.StreamOnly(); ok {
+		_spec.SetField(group.FieldStreamOnly, field.TypeBool, value)
 	}
 	if value, ok := _u.mutation.ModelRouting(); ok {
 		_spec.SetField(group.FieldModelRouting, field.TypeJSON, value)
@@ -3128,6 +3179,48 @@ func (_u *GroupUpdateOne) ClearFallbackGroupIDOnInvalidRequest() *GroupUpdateOne
 	return _u
 }
 
+// SetBlockSubagents sets the "block_subagents" field.
+func (_u *GroupUpdateOne) SetBlockSubagents(v bool) *GroupUpdateOne {
+	_u.mutation.SetBlockSubagents(v)
+	return _u
+}
+
+// SetNillableBlockSubagents sets the "block_subagents" field if the given value is not nil.
+func (_u *GroupUpdateOne) SetNillableBlockSubagents(v *bool) *GroupUpdateOne {
+	if v != nil {
+		_u.SetBlockSubagents(*v)
+	}
+	return _u
+}
+
+// SetCodexCliOnly sets the "codex_cli_only" field.
+func (_u *GroupUpdateOne) SetCodexCliOnly(v bool) *GroupUpdateOne {
+	_u.mutation.SetCodexCliOnly(v)
+	return _u
+}
+
+// SetNillableCodexCliOnly sets the "codex_cli_only" field if the given value is not nil.
+func (_u *GroupUpdateOne) SetNillableCodexCliOnly(v *bool) *GroupUpdateOne {
+	if v != nil {
+		_u.SetCodexCliOnly(*v)
+	}
+	return _u
+}
+
+// SetStreamOnly sets the "stream_only" field.
+func (_u *GroupUpdateOne) SetStreamOnly(v bool) *GroupUpdateOne {
+	_u.mutation.SetStreamOnly(v)
+	return _u
+}
+
+// SetNillableStreamOnly sets the "stream_only" field if the given value is not nil.
+func (_u *GroupUpdateOne) SetNillableStreamOnly(v *bool) *GroupUpdateOne {
+	if v != nil {
+		_u.SetStreamOnly(*v)
+	}
+	return _u
+}
+
 // SetModelRouting sets the "model_routing" field.
 func (_u *GroupUpdateOne) SetModelRouting(v map[string][]int64) *GroupUpdateOne {
 	_u.mutation.SetModelRouting(v)
@@ -4101,6 +4194,15 @@ func (_u *GroupUpdateOne) sqlSave(ctx context.Context) (_node *Group, err error)
 	}
 	if _u.mutation.FallbackGroupIDOnInvalidRequestCleared() {
 		_spec.ClearField(group.FieldFallbackGroupIDOnInvalidRequest, field.TypeInt64)
+	}
+	if value, ok := _u.mutation.BlockSubagents(); ok {
+		_spec.SetField(group.FieldBlockSubagents, field.TypeBool, value)
+	}
+	if value, ok := _u.mutation.CodexCliOnly(); ok {
+		_spec.SetField(group.FieldCodexCliOnly, field.TypeBool, value)
+	}
+	if value, ok := _u.mutation.StreamOnly(); ok {
+		_spec.SetField(group.FieldStreamOnly, field.TypeBool, value)
 	}
 	if value, ok := _u.mutation.ModelRouting(); ok {
 		_spec.SetField(group.FieldModelRouting, field.TypeJSON, value)

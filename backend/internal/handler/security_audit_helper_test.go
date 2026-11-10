@@ -217,3 +217,19 @@ func (e *turnCountingEngine) Evaluate(context.Context, securityaudit.Request) (*
 	}
 	return &securityaudit.PromptDecision{Kind: securityaudit.DecisionAllow, AllowNextStage: true}, nil
 }
+
+func TestPenaltyContextKeepsWebSocketConversationWithoutUsingHTTPFallback(t *testing.T) {
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+	c.Set(securityAuditWSTurnContextKey, 1)
+	key := &service.APIKey{ID: 8, UserID: 7}
+	subject := middleware2.AuthSubject{UserID: 7}
+	first := buildSecurityAuditRequest(c, key, subject, "openai_responses", "model", []byte(`{"client_metadata":{"session_id":"session-a"},"input":"hello"}`), "first_turn")
+	require.NotEmpty(t, first.PenaltyContext.SessionKey)
+	c.Set(securityAuditWSTurnContextKey, 2)
+	second := buildSecurityAuditRequest(c, key, subject, "openai_responses", "model", []byte(`{"input":"later"}`), "subsequent_turn")
+	require.Equal(t, first.PenaltyContext.SessionKey, second.PenaltyContext.SessionKey)
+	require.NotEqual(t, first.PenaltyContext.RequestID, second.PenaltyContext.RequestID)
+	httpRequest := buildSecurityAuditRequest(c, key, subject, "openai_responses", "model", []byte(`{"input":"separate request"}`), "http")
+	require.Empty(t, httpRequest.PenaltyContext.SessionKey)
+}

@@ -21,6 +21,12 @@ const (
 
 // isRateLimitActiveForKey 检查指定 key 的限流是否生效
 func (a *Account) isRateLimitActiveForKey(key string) bool {
+	if a != nil {
+		limits, _ := a.Extra[modelRateLimitsKey].(map[string]any)
+		if IsQualityModelCooldown(limits[key]) {
+			return true
+		}
+	}
 	resetAt := a.modelRateLimitResetAt(key)
 	return resetAt != nil && time.Now().Before(*resetAt)
 }
@@ -40,6 +46,12 @@ func (a *Account) getRateLimitRemainingForKey(key string) time.Duration {
 
 func (a *Account) isModelRateLimitedWithContext(ctx context.Context, requestedModel string) bool {
 	for _, key := range a.modelRateLimitKeysForRequest(ctx, requestedModel) {
+		if ctx.Value(qualityProbeContextKey{}) == true {
+			limits, _ := a.Extra[modelRateLimitsKey].(map[string]any)
+			if IsQualityModelCooldown(limits[key]) {
+				continue
+			}
+		}
 		if a.isRateLimitActiveForKey(key) {
 			return true
 		}
@@ -208,6 +220,33 @@ func (a *Account) modelRateLimitReason(scope string) string {
 	rawLimit, _ := rawLimits[scope].(map[string]any)
 	reason, _ := rawLimit["reason"].(string)
 	return reason
+}
+
+// modelCapabilityRejected identifies an unexpired upstream observation for
+// scheduling/admission. It is not authoritative configured support: availability
+// diagnostics must not use it to manufacture a new downstream model_not_found.
+func (a *Account) modelCapabilityRejected(scope string) bool {
+	if !a.isRateLimitActiveForKey(scope) {
+		return false
+	}
+	switch a.modelRateLimitReason(scope) {
+	case upstreamModelNotFoundReason, upstreamModelNotFound401Reason, upstreamCodexPlanGatedModelReason:
+		return true
+	default:
+		return false
+	}
+}
+
+// Use the actual outbound model, including Codex alias normalization, so a
+// public alias cannot hide a previously observed model capability rejection.
+func (a *Account) modelCapabilityRejectedForRequest(ctx context.Context, model string) bool {
+	scope := a.GetMappedModel(model)
+	if a.IsOpenAICompatible() {
+		scope = resolveOpenAIAccountUpstreamModelForRequest(a, model, false)
+	} else if a.Platform == PlatformAntigravity {
+		scope = resolveFinalAntigravityModelKey(ctx, a, model)
+	}
+	return a.modelCapabilityRejected(scope)
 }
 
 // setAccountModelRateLimitSnapshot 把模型级限流写进本账号对象的 Extra 快照。

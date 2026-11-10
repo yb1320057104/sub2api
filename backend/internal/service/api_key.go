@@ -33,10 +33,17 @@ type APIKey struct {
 	Key         string
 	Name        string
 	GroupID     *int64
-	GroupIDs    []int64 // nil inherits GroupID; an explicit empty list is ungrouped.
+	GroupIDs    []int64 // Ordered configured groups; nil inherits GroupID, explicit empty is ungrouped.
 	Status      string
 	IPWhitelist []string
 	IPBlacklist []string
+
+	// Model, reasoning effort and long context policies are managed only by administrators.
+	// Mapping is an exact, single-step rewrite; empty policy preserves the request.
+	ModelMapping     map[string]string
+	ReasoningEffort  string
+	AllowLongContext bool // Administrator-managed; new and migrated keys default to true.
+
 	// 预编译的 IP 规则，用于认证热路径避免重复 ParseIP/ParseCIDR。
 	CompiledIPWhitelist *ip.CompiledIPRules `json:"-"`
 	CompiledIPBlacklist *ip.CompiledIPRules `json:"-"`
@@ -48,6 +55,7 @@ type APIKey struct {
 	Group               *Group
 	Groups              []*Group // Available hydrated candidates in configured order.
 	CurrentConcurrency  int
+	ConcurrencyLimit    int // 0 = no additional limit
 
 	// Quota fields
 	Quota     float64    // Quota limit in USD (0 = unlimited)

@@ -34,6 +34,7 @@ func GroupAntiDistillation(check groupAntiDistillationChecker) gin.HandlerFunc {
 		}
 		ctx := service.WithGroupAntiDistillationRequestStart(c.Request.Context(), time.Now())
 		ctx = context.WithValue(ctx, groupAntiDistillationAdmissionKey{}, groupAntiDistillationAdmission{check: check, key: key})
+		ctx = service.WithGroupAntiDistillationAdmission(ctx, RecheckGroupAntiDistillation)
 		c.Request = c.Request.WithContext(ctx)
 		// A multi-group WebSocket selects its effective group from the first
 		// frame. Do not reject based on the provisional handshake group.

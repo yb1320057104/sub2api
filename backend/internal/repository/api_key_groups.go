@@ -2,6 +2,8 @@ package repository
 
 import (
 	"context"
+	"errors"
+	"fmt"
 
 	entsql "entgo.io/ent/dialect/sql"
 	"entgo.io/ent/dialect/sql/sqljson"
@@ -26,6 +28,13 @@ func apiKeyHasGroup(groupID int64) predicate.APIKey {
 			sqljson.ValueContains(s.C(apikey.FieldGroupIds), groupID),
 		))
 	}
+}
+
+// Keep upstream callers on the same JSON-authoritative membership predicate.
+func apiKeyInGroup(groupID int64) predicate.APIKey { return apiKeyHasGroup(groupID) }
+
+func (r *apiKeyRepository) attachGroupIDs(ctx context.Context, keys []service.APIKey) error {
+	return r.attachCandidateGroups(ctx, keys)
 }
 
 func apiKeyHasNoGroup() predicate.APIKey {
@@ -82,6 +91,53 @@ func (r *apiKeyRepository) attachCandidateGroups(ctx context.Context, keys []ser
 			if value := known[id]; value != nil {
 				keys[i].Groups = append(keys[i].Groups, value)
 			}
+		}
+	}
+	return nil
+}
+
+func (r *apiKeyRepository) mutateWithGroups(ctx context.Context, key *service.APIKey, mutate func(context.Context) error) error {
+	if dbent.TxFromContext(ctx) != nil {
+		if err := mutate(ctx); err != nil {
+			return err
+		}
+		return r.replaceExtraGroups(ctx, key)
+	}
+	tx, err := r.client.Tx(ctx)
+	if errors.Is(err, dbent.ErrTxStarted) {
+		if err := mutate(ctx); err != nil {
+			return err
+		}
+		return r.replaceExtraGroups(ctx, key)
+	}
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	txCtx := dbent.NewTxContext(ctx, tx)
+	if err := mutate(txCtx); err != nil {
+		return err
+	}
+	if err := r.replaceExtraGroups(txCtx, key); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (r *apiKeyRepository) replaceExtraGroups(ctx context.Context, key *service.APIKey) error {
+	client := clientFromContext(ctx, r.client)
+	if _, err := client.ExecContext(ctx, `DELETE FROM api_key_groups WHERE api_key_id = $1`, key.ID); err != nil {
+		return err
+	}
+	if key.GroupID == nil {
+		return nil
+	}
+	for _, id := range key.GroupIDs {
+		if key.GroupID != nil && *key.GroupID == id {
+			continue
+		}
+		if _, err := client.ExecContext(ctx, `INSERT INTO api_key_groups (api_key_id, group_id) VALUES ($1, $2)`, key.ID, id); err != nil {
+			return fmt.Errorf("save API key groups: %w", err)
 		}
 	}
 	return nil

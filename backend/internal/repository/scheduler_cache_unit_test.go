@@ -220,9 +220,48 @@ func TestSchedulerCacheSnapshotAccountIDReuseKeepsEmptySnapshotSemantics(t *test
 		require.Equal(t, "1", ready)
 		snapshot, hit, err := cache.GetSnapshot(ctx, bucket)
 		require.NoError(t, err)
-		require.False(t, hit, bucket.String())
-		require.Nil(t, snapshot)
+		require.True(t, hit, bucket.String())
+		require.Empty(t, snapshot)
 	}
+}
+
+func TestOAuthDegradationNativeEmptySchedulerSnapshotIsReady(t *testing.T) {
+	ctx := context.Background()
+	cache := newSchedulerCacheUnit(t)
+	bucket := service.SchedulerBucket{GroupID: 325, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeForced}
+	token, err := cache.CaptureBucketWriteToken(ctx, bucket)
+	require.NoError(t, err)
+	require.NoError(t, cache.SetSnapshot(ctx, bucket, token, []service.Account{{ID: 325, Platform: service.PlatformOpenAI}}))
+	require.NoError(t, cache.SetSnapshot(ctx, bucket, token, nil))
+	fresh := NewSchedulerCache(cache.rdb)
+	snapshot, hit, err := fresh.GetSnapshot(ctx, bucket)
+	require.NoError(t, err)
+	require.True(t, hit, "pausing the last native account must publish a ready empty pool")
+	require.Empty(t, snapshot)
+	reader := service.NewSchedulerSnapshotService(fresh, nil, nil, nil, nil)
+	accounts, _, err := reader.ListSchedulableAccounts(ctx, &bucket.GroupID, bucket.Platform, true)
+	require.NoError(t, err, "a reader with no database fallback must accept the empty publication")
+	require.Empty(t, accounts)
+
+	require.NoError(t, cache.SetSnapshotByAccountIDs(ctx, bucket, token, nil))
+	snapshot, hit, err = NewSchedulerCache(cache.rdb).GetSnapshot(ctx, bucket)
+	require.NoError(t, err)
+	require.True(t, hit, "account-ID reuse must retain the empty publication marker")
+	require.Empty(t, snapshot)
+
+	require.NoError(t, cache.SetSnapshot(ctx, bucket, token, []service.Account{{ID: 325, Platform: service.PlatformOpenAI}}))
+	active, err := cache.rdb.Get(ctx, schedulerBucketKey(schedulerActivePrefix, bucket)).Result()
+	require.NoError(t, err)
+	require.NoError(t, cache.rdb.Del(ctx, schedulerSnapshotKey(bucket, active)).Err())
+	_, hit, err = NewSchedulerCache(cache.rdb).GetSnapshot(ctx, bucket)
+	require.NoError(t, err)
+	require.False(t, hit, "a lost nonempty snapshot must not be mistaken for a published empty pool")
+
+	require.NoError(t, cache.SetSnapshot(ctx, bucket, token, nil))
+	require.NoError(t, cache.RetireBucket(ctx, bucket))
+	_, hit, err = NewSchedulerCache(cache.rdb).GetSnapshot(ctx, bucket)
+	require.NoError(t, err)
+	require.False(t, hit, "retirement still removes readiness for an empty snapshot")
 }
 
 func TestSchedulerCacheSetSnapshotByAccountIDsKeepsFencing(t *testing.T) {
@@ -1305,4 +1344,45 @@ func TestBuildSchedulerMetadataAccount_KeepsRPMFieldsForRPMGate(t *testing.T) {
 		require.Equal(t, service.WindowCostStickyOnly, restored.CheckRPMSchedulability(100),
 			"投影裁掉 rpm_strategy 会让粘性豁免账号退回三区判定")
 	})
+}
+
+func TestBuildSchedulerMetadataAccount_KeepsExcelBPSAutoDisable(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		account := service.Account{Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth, Extra: map[string]any{
+			"openai_excel_bps": true, "openai_excel_bps_auto_disable_on_403": enabled, "openai_excel_bps_mihomo": enabled,
+		}}
+		payload, err := json.Marshal(buildSchedulerMetadataAccount(account))
+		require.NoError(t, err)
+		var restored service.Account
+		require.NoError(t, json.Unmarshal(payload, &restored))
+		require.Equal(t, enabled, restored.IsExcelBPSAutoDisableOn403Enabled())
+		require.Equal(t, enabled, restored.IsExcelBPSMihomoEnabled())
+	}
+}
+
+func TestBuildSchedulerMetadataAccount_KeepsExcelBPSModelSelection(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		scoped     bool
+		models     any
+		astra, sol bool
+	}{
+		{"legacy", false, nil, true, true},
+		{"astra only", true, []string{"gpt-6-astra"}, true, false},
+		{"empty", true, []string{}, false, false},
+		{"null stays scoped", true, nil, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			account := service.Account{Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth, Extra: map[string]any{"openai_excel_bps": true}}
+			if tc.scoped {
+				account.Extra["openai_excel_bps_models"] = tc.models
+			}
+			payload, err := json.Marshal(buildSchedulerMetadataAccount(account))
+			require.NoError(t, err)
+			var restored service.Account
+			require.NoError(t, json.Unmarshal(payload, &restored))
+			require.Equal(t, tc.astra, restored.IsExcelBPSEnabledForModel("gpt-6-astra"))
+			require.Equal(t, tc.sol, restored.IsExcelBPSEnabledForModel("gpt-6-sol"))
+		})
+	}
 }

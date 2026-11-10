@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
 )
@@ -153,6 +154,14 @@ func TestUsageLogFromService_UsesRequestedModelAndKeepsUpstreamAdminOnly(t *test
 	require.NotContains(t, string(userJSON), "upstream_model")
 	require.NotContains(t, string(userJSON), "upstream_response_model")
 	require.NotContains(t, string(userJSON), "upstream_model_mismatch")
+
+	visible := UsageLogFromServiceForUser(log, true)
+	visibleJSON, err := json.Marshal(visible)
+	require.NoError(t, err)
+	require.Contains(t, string(visibleJSON), `"upstream_response_model":"claude-sonnet-4-20250513"`)
+	require.NotContains(t, string(visibleJSON), `"upstream_model"`)
+	require.NotContains(t, string(visibleJSON), "upstream_model_mismatch")
+	require.NotContains(t, string(visibleJSON), "model_mapping_chain")
 
 	adminJSON, err := json.Marshal(adminDTO)
 	require.NoError(t, err)
@@ -358,16 +367,29 @@ func TestPKUsageFirstResponsePrivacy(t *testing.T) {
 		{name: "historical_has_no_fallback"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			log := &service.UsageLog{FirstTokenMs: &upstream, FirstResponseMs: tc.response}
+			queueFirst := int64(54321)
+			log := &service.UsageLog{
+				FirstTokenMs: &upstream, FirstResponseMs: tc.response,
+				QueueTiming:   &service.QueueTiming{Status: "measured", ServerFirstTokenMs: &queueFirst, ForwardFirstTokenMs: &queueFirst},
+				ContentTiming: &requesttiming.ContentObservation{VisibleTextFirstMS: f64Ptr(65432), Status: "measured"},
+			}
 			user := UsageLogFromService(log)
 			admin := UsageLogFromServiceAdmin(log)
 			require.Equal(t, tc.response, user.FirstTokenMs)
 			require.Equal(t, &upstream, admin.FirstTokenMs)
 			require.Equal(t, tc.response, admin.FirstResponseMs)
+			require.Nil(t, user.QueueTiming)
+			require.Nil(t, user.ContentTiming)
+			require.Same(t, log.QueueTiming, admin.QueueTiming)
+			require.Same(t, log.ContentTiming, admin.ContentTiming)
 			require.Equal(t, &upstream, log.FirstTokenMs, "DTO mapping must not change scheduling/monitoring data")
 			userBody, err := json.Marshal(user)
 			require.NoError(t, err)
 			require.NotContains(t, string(userBody), "9876", "ordinary API must never expose upstream TTFT")
+			require.NotContains(t, string(userBody), "54321", "administrative queue observations must stay private")
+			require.NotContains(t, string(userBody), "65432", "typed upstream observations must stay private")
+			require.NotContains(t, string(userBody), "server_first_token_ms")
+			require.NotContains(t, string(userBody), "content_timing")
 			require.NotContains(t, string(userBody), "first_response_ms", "extra timing field is admin-only")
 			if tc.response == nil {
 				require.Contains(t, string(userBody), `"first_token_ms":null`)

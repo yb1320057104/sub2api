@@ -74,14 +74,15 @@ func chooseAPIKeyRequestGroup(ctx context.Context, key *service.APIKey, request 
 		copyKey := *key
 		copyKey.GroupID, copyKey.Group = &group.ID, group
 		copyUser := *key.User
-		copyUser.UserGroupRPMOverride = nil // Reload the selected group's override.
+		copyUser.UserGroupRPMOverride = nil  // Reload the selected group's override.
+		copyUser.UserGroupDeniedModels = nil // Never carry the primary group's model restrictions across groups.
 		copyKey.User = &copyUser
 		return &copyKey, nil
 	}
 	return nil, service.ErrNoAvailableAccounts
 }
 
-func routeAPIKeyRequestGroup(c *gin.Context, key *service.APIKey, subscriptions *service.SubscriptionService, cfg *config.Config) (*service.APIKey, bool) {
+func routeAPIKeyRequestGroup(c *gin.Context, key *service.APIKey, subscriptions *service.SubscriptionService, cfg *config.Config, keyServices ...*service.APIKeyService) (*service.APIKey, bool) {
 	if key == nil || len(key.SelectedGroupIDs()) <= 1 {
 		return key, true
 	}
@@ -126,6 +127,10 @@ func routeAPIKeyRequestGroup(c *gin.Context, key *service.APIKey, subscriptions 
 		}
 	}
 	cacheList := strings.HasSuffix(path, "/cachedContents") && c.Request.Method == http.MethodGet
+	if service.IsAPIKeyModelPolicyPath(path) {
+		request.Models = service.APIKeyModelCandidates(key, request.Models)
+		request.Model = service.MapAPIKeyModel(key, request.Model)
+	}
 	request.IdentityOnly = cacheList || strings.Contains(path, "/custom-voices")
 	switch {
 	case strings.Contains(path, "/cachedContents/") && c.Param("cacheID") != "":
@@ -145,8 +150,24 @@ func routeAPIKeyRequestGroup(c *gin.Context, key *service.APIKey, subscriptions 
 			request.ResourceKind, request.ResourceID = "gemini_cache", ref.Name
 		}
 	}
+	pinned := make(map[int64]*service.APIKey)
 	eligible := func(group *service.Group) (bool, error) {
-		return eligibleAPIKeyGroupSubscription(c.Request.Context(), key, group, subscriptions, cfg)
+		allowed, err := eligibleAPIKeyGroupSubscription(c.Request.Context(), key, group, subscriptions, cfg)
+		if err != nil || !allowed || len(keyServices) == 0 || keyServices[0] == nil {
+			return allowed, err
+		}
+		candidate, err := keyServices[0].PinAPIKeyGroup(c.Request.Context(), key, group.ID)
+		if errors.Is(err, service.ErrGroupNotAllowed) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if service.FirstUserGroupDeniedModel(candidate.DeniedModelsInGroup(), request.Models) != "" {
+			return false, nil
+		}
+		pinned[group.ID] = candidate
+		return true, nil
 	}
 	if cacheList {
 		ids, err := apiKeyResourceGroupIDs(c.Request.Context(), key, request, router, eligible)
@@ -167,6 +188,9 @@ func routeAPIKeyRequestGroup(c *gin.Context, key *service.APIKey, subscriptions 
 		c.Abort()
 		return nil, false
 	}
+	if current := pinned[selected.Group.ID]; current != nil {
+		selected = current
+	}
 	SetOpsFallbackAPIKey(c, selected)
 	if ws {
 		// A Responses model is first known after upgrade. Re-evaluate before its
@@ -174,12 +198,16 @@ func routeAPIKeyRequestGroup(c *gin.Context, key *service.APIKey, subscriptions 
 		c.Set(keyGroupWSResolverContextKey, func(body []byte) (*service.APIKey, error) {
 			request.Body = body
 			request.Models = requestmodel.FromBodyCandidates("", "application/json", body)
+			request.Models = service.APIKeyModelCandidates(key, request.Models)
 			if len(request.Models) > 0 {
 				request.Model = request.Models[0]
 			}
 			next, routeErr := chooseAPIKeyRequestGroup(c.Request.Context(), key, request, router, eligible)
 			if routeErr != nil {
 				return nil, routeErr
+			}
+			if current := pinned[next.Group.ID]; current != nil {
+				next = current
 			}
 			var subscription *service.UserSubscription
 			if cfg == nil || cfg.RunMode != config.RunModeSimple {

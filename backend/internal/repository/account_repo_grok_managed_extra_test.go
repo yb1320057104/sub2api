@@ -133,6 +133,15 @@ func TestLockAndMergeAccountProbeExtraKeepsLatestGrokManagedKeys(t *testing.T) {
 			client := dbent.NewClient(dbent.Driver(entsql.OpenDB(dialect.Postgres, db)))
 			t.Cleanup(func() { _ = client.Close() })
 
+			locked := map[string]json.RawMessage{}
+			if len(tt.databaseModels) > 0 {
+				locked["grok_observed_models"] = tt.databaseModels
+			}
+			if len(tt.databaseMetadata) > 0 {
+				locked[service.UpstreamModelMetadataExtraKey] = tt.databaseMetadata
+			}
+			lockedJSON, err := json.Marshal(locked)
+			require.NoError(t, err)
 			credentials, err := json.Marshal(normalizeJSONMap(tt.credentials))
 			require.NoError(t, err)
 			mock.ExpectQuery(`(?s)`+regexp.QuoteMeta("SELECT")+`.*`+regexp.QuoteMeta("FOR NO KEY UPDATE")).
@@ -142,8 +151,8 @@ func TestLockAndMergeAccountProbeExtraKeepsLatestGrokManagedKeys(t *testing.T) {
 					"enabled", "rate_sync_enabled", "snapshot",
 					"ollama_session", "ollama_auto", "ollama_snapshot",
 					"opencode_group_unchanged", "opencode_auto", "opencode_snapshot",
-					"grok_observed_models", "upstream_model_metadata",
-				}).AddRow(false, false, true, nil, nil, nil, nil, nil, nil, false, nil, nil, tt.databaseModels, tt.databaseMetadata))
+					"current_extra", "concurrency",
+				}).AddRow(false, false, true, nil, nil, nil, nil, nil, nil, false, nil, nil, lockedJSON, 3))
 
 			account := &service.Account{
 				ID:          41,

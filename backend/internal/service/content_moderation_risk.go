@@ -121,7 +121,13 @@ func (s *ContentModerationService) keywordRiskDecision(input ContentModerationCh
 
 func (s *ContentModerationService) apiRiskDecision(ctx context.Context, input ContentModerationCheckInput, cfg *ContentModerationConfig,
 	content ContentModerationInput, result *moderationAPIResult, latency int, queueDelay *int, allowBlock, trackPreBlock bool) *ContentModerationDecision {
-	category, score := contentModerationMaximumRisk(result.CategoryScores)
+	activeScores := make(map[string]float64, len(result.CategoryScores))
+	for category, value := range result.CategoryScores {
+		if moderationCategoryEnabled(cfg.Engine, cfg.CategorySettings, category) {
+			activeScores[category] = value
+		}
+	}
+	category, score := contentModerationMaximumRisk(activeScores)
 	level, policyAction := contentModerationRiskOutcome(input, cfg, score, allowBlock)
 	decision := contentModerationRiskDecision(cfg, score, level, policyAction, category, result.CategoryScores, ContentModerationActionBlock)
 	if trackPreBlock {

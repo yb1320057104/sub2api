@@ -53,9 +53,10 @@
         <button @click="$emit('toggle-schedulable', true)" class="btn btn-success btn-sm">{{ t('admin.accounts.bulkActions.enableScheduling') }}</button>
         <button @click="$emit('toggle-schedulable', false)" class="btn btn-warning btn-sm">{{ t('admin.accounts.bulkActions.disableScheduling') }}</button>
         <button @click="$emit('edit-selected')" class="btn btn-primary btn-sm">{{ t('admin.accounts.bulkActions.edit') }}</button>
+        <button v-if="canExport2fa" @click="$emit('export-2fa')" class="btn btn-secondary btn-sm">{{ t('admin.accounts.bulkExport2fa.title') }}</button>
       </template>
-      <button @click="$emit('edit-filtered')" class="btn btn-primary btn-sm">
-        {{ t('admin.accounts.bulkEdit.submit') }}
+      <button v-if="selectedIds.length === 0" @click="$emit('edit-filtered')" class="btn btn-primary btn-sm">
+        {{ t('admin.accounts.bulkActions.editFiltered', { count: totalResults }) }}
       </button>
     </div>
   </div>
@@ -69,6 +70,7 @@ defineProps<{
   totalResults: number
   selectingAll: boolean
   allResultsSelected: boolean
+  canExport2fa?: boolean
 }>()
 
 defineEmits([
@@ -83,7 +85,8 @@ defineEmits([
   'reset-status',
   'refresh-token',
   'query-reset-credits',
-  'probe-upstream-billing'
+  'probe-upstream-billing',
+  'export-2fa'
 ])
 
 const { t } = useI18n()

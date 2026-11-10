@@ -1,5 +1,6 @@
 <template>
   <div ref="rootRef" v-if="showUsageWindows">
+    <ExcelBPSCredentialStatus :state="account.excel_bps_credential_state" />
     <!-- Anthropic OAuth and Setup Token accounts: fetch real usage data -->
     <template
       v-if="
@@ -122,8 +123,21 @@
       </ClaudeResetCreditsCell>
     </template>
 
-    <!-- OpenAI OAuth accounts: single source from /usage API -->
-    <template v-else-if="account.platform === 'openai' && account.type === 'oauth'">
+    <!-- OpenAI Codex accounts: ticket status; usage querying remains OAuth-only. -->
+    <template v-else-if="account.platform === 'openai' && (account.type === 'oauth' || account.type === 'setup-token')">
+      <div v-if="codexTurnTickets.length" class="mb-1 space-y-0.5">
+        <div
+          v-for="ticket in codexTurnTickets"
+          :key="ticket.model"
+          class="flex items-center gap-1 text-[10px] leading-4"
+        >
+          <span class="truncate font-medium text-gray-500 dark:text-gray-400" :title="ticket.model">{{ shortCodexTicketModel(ticket.model) }}</span>
+          <span v-if="ticket.ready" class="text-emerald-600 dark:text-emerald-400">{{ formatCodexTicketRemaining(ticket.remaining_seconds) }}</span>
+          <span v-else-if="ticket.blocked" class="text-amber-600 dark:text-amber-400">{{ t('admin.accounts.openai.codexTurnTicketPaused') }}</span>
+          <span v-else class="text-gray-500">{{ t('admin.accounts.openai.codexTurnTicketMissing') }}</span>
+          <span v-if="ticket.probe" class="text-gray-400" :title="`${t('admin.accounts.openai.ticketProbe.' + ticket.probe.result)} · HTTP ${ticket.probe.http_status || '—'} · ${new Date(ticket.probe.checked_at).toLocaleString()}${ticket.probe.next_probe_at ? ' · ' + t('admin.accounts.openai.ticketProbeNext') + new Date(ticket.probe.next_probe_at).toLocaleString() : ''}${ticket.standby_expires_at ? ' · ' + t('admin.accounts.openai.ticketStandbyExpires') + new Date(ticket.standby_expires_at).toLocaleString() : ''}`">ⓘ</span>
+        </div>
+      </div>
       <div v-if="hasOpenAIUsageFallback" class="space-y-1">
         <UsageProgressBar
           v-if="usageInfo?.five_hour"
@@ -192,7 +206,7 @@
         <div class="text-xs text-gray-400">-</div>
         <!-- Always allow on-demand upstream quota query, even before local data exists. -->
         <OpenAIQuotaResetCell
-          v-if="showActions"
+          v-if="showActions && account.type === 'oauth'"
           :account="account"
           :queried-quota="resetCreditQuery?.openai_quota"
           class="mt-1"
@@ -215,27 +229,22 @@
           {{ antigravityTierLabel }}
         </span>
         <!-- 不合格账户警告图标 -->
-        <span
-          v-if="hasIneligibleTiers"
-          class="group relative cursor-help"
-        >
-          <svg
-            class="h-3.5 w-3.5 text-red-500"
-            fill="currentColor"
-            viewBox="0 0 20 20"
-          >
-            <path
-              fill-rule="evenodd"
-              d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z"
-              clip-rule="evenodd"
-            />
-          </svg>
-          <span
-            class="pointer-events-none absolute left-0 top-full z-50 mt-1 w-80 whitespace-normal break-words rounded bg-gray-900 px-3 py-2 text-xs leading-relaxed text-white opacity-0 shadow-lg transition-opacity group-hover:opacity-100 dark:bg-gray-700"
-          >
-            {{ t('admin.accounts.ineligibleWarning') }}
-          </span>
-        </span>
+        <HelpTooltip v-if="hasIneligibleTiers" class="!ml-0" width-class="w-80">
+          <template #trigger>
+            <svg
+              class="h-3.5 w-3.5 text-red-500"
+              fill="currentColor"
+              viewBox="0 0 20 20"
+            >
+              <path
+                fill-rule="evenodd"
+                d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z"
+                clip-rule="evenodd"
+              />
+            </svg>
+          </template>
+          {{ t('admin.accounts.ineligibleWarning') }}
+        </HelpTooltip>
       </div>
 
       <!-- Forbidden state (403) -->
@@ -466,6 +475,11 @@
         @updated="handleOpenCodeGoUsageUpdated"
       />
       <div v-else class="space-y-1">
+        <NewFeatureBadge
+          v-if="account.platform === 'mistral' && (cnQuotaCellVisible || cnBalanceCellVisible) && noticeUserId != null"
+          :notice-id="NEW_FEATURE_NOTICES.mistralBudgetUsage"
+          :user-id="noticeUserId"
+        />
         <!-- 子单元格各自按 模式×平台 判定可见；两者都不可见时（智谱 payg 无公开
              余额端点、coding 探测也不适用）才回落到占位符。 -->
         <div
@@ -473,8 +487,8 @@
           class="text-xs text-gray-400"
           :title="t('admin.accounts.cnProviders.noBalanceEndpoint')"
         >-</div>
-        <CNProviderQuotaCell :account="account" />
-        <CNProviderBalanceCell :account="account" />
+        <CNProviderQuotaCell :account="account" @probed="handleCNQuotaProbed" />
+        <CNProviderBalanceCell :account="account" :probed-balance="cnProbedBalance" />
       </div>
     </template>
 
@@ -491,37 +505,32 @@
           {{ geminiAuthTypeLabel }}
         </span>
         <!-- Help icon -->
-        <span
-          v-if="showGeminiQuotaPolicy"
-          class="group relative cursor-help"
-        >
-          <svg
-            class="h-3.5 w-3.5 text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300"
-            fill="currentColor"
-            viewBox="0 0 20 20"
-          >
-            <path
-              fill-rule="evenodd"
-              d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-8-3a1 1 0 00-.867.5 1 1 0 11-1.731-1A3 3 0 0113 8a3.001 3.001 0 01-2 2.83V11a1 1 0 11-2 0v-1a1 1 0 011-1 1 1 0 100-2zm0 8a1 1 0 100-2 1 1 0 000 2z"
-              clip-rule="evenodd"
-            />
-          </svg>
-          <span
-            class="pointer-events-none absolute left-0 top-full z-50 mt-1 w-80 whitespace-normal break-words rounded bg-gray-900 px-3 py-2 text-xs leading-relaxed text-white opacity-0 shadow-lg transition-opacity group-hover:opacity-100 dark:bg-gray-700"
-          >
-            <div class="font-semibold mb-1">{{ t('admin.accounts.gemini.quotaPolicy.title') }}</div>
-            <div class="mb-2 text-gray-300">{{ t('admin.accounts.gemini.quotaPolicy.note') }}</div>
-            <div class="space-y-1">
-              <div><strong>{{ geminiQuotaPolicyChannel }}:</strong></div>
-              <div class="pl-2">• {{ geminiQuotaPolicyLimits }}</div>
-              <div class="mt-2">
-                <a :href="geminiQuotaPolicyDocsUrl" target="_blank" rel="noopener noreferrer" class="text-blue-400 hover:text-blue-300 underline">
-                  {{ t('admin.accounts.gemini.quotaPolicy.columns.docs') }} →
-                </a>
-              </div>
+        <HelpTooltip v-if="showGeminiQuotaPolicy" class="!ml-0" width-class="w-80">
+          <template #trigger>
+            <svg
+              class="h-3.5 w-3.5 text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300"
+              fill="currentColor"
+              viewBox="0 0 20 20"
+            >
+              <path
+                fill-rule="evenodd"
+                d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-8-3a1 1 0 00-.867.5 1 1 0 11-1.731-1A3 3 0 0113 8a3.001 3.001 0 01-2 2.83V11a1 1 0 11-2 0v-1a1 1 0 011-1 1 1 0 100-2zm0 8a1 1 0 100-2 1 1 0 000 2z"
+                clip-rule="evenodd"
+              />
+            </svg>
+          </template>
+          <div class="font-semibold mb-1">{{ t('admin.accounts.gemini.quotaPolicy.title') }}</div>
+          <div class="mb-2 text-gray-300">{{ t('admin.accounts.gemini.quotaPolicy.note') }}</div>
+          <div class="space-y-1">
+            <div><strong>{{ geminiQuotaPolicyChannel }}:</strong></div>
+            <div class="pl-2">• {{ geminiQuotaPolicyLimits }}</div>
+            <div class="mt-2">
+              <a :href="geminiQuotaPolicyDocsUrl" target="_blank" rel="noopener noreferrer" class="text-blue-400 hover:text-blue-300 underline">
+                {{ t('admin.accounts.gemini.quotaPolicy.columns.docs') }} →
+              </a>
             </div>
-          </span>
-        </span>
+          </div>
+        </HelpTooltip>
       </div>
 
       <!-- Usage data or unlimited flow -->
@@ -702,7 +711,11 @@
 </template>
 
 <script setup lang="ts">
+import ExcelBPSCredentialStatus from './ExcelBPSCredentialStatus.vue'
 import { ref, computed, onMounted, onBeforeUnmount, onUnmounted, watch } from 'vue'
+import HelpTooltip from '@/components/common/HelpTooltip.vue'
+import NewFeatureBadge from '@/components/common/NewFeatureBadge.vue'
+import { NEW_FEATURE_NOTICES } from '@/constants/newFeatureNotices'
 import { useI18n } from 'vue-i18n'
 import { adminAPI } from '@/api/admin'
 import type { Account, AccountUsageInfo, GeminiCredentials, WindowStats } from '@/types'
@@ -734,6 +747,7 @@ const USAGE_CACHE_TTL = 5 * 60 * 1000 // 5 minutes
 const props = withDefaults(
   defineProps<{
     account: Account
+    noticeUserId?: number | null
     todayStats?: WindowStats | null
     todayStatsLoading?: boolean
     manualRefreshToken?: number
@@ -746,6 +760,7 @@ const props = withDefaults(
   }>(),
   {
     todayStats: null,
+    noticeUserId: null,
     todayStatsLoading: false,
     manualRefreshToken: 0,
     showActions: true,
@@ -834,6 +849,18 @@ const shouldFetchUsage = computed(() => {
 // credentialsBuilder 的单一实现）：都不可见时显示 `-` 占位符。
 const cnQuotaCellVisible = computed(() => cnQuotaCellVisibleFn(props.account))
 const cnBalanceCellVisible = computed(() => cnBalanceCellVisibleFn(props.account))
+const cnProbedBalance = ref<import('@/api/admin/cnProviders').CNProviderBalanceResult | null>(null)
+const handleCNQuotaProbed = (result: import('@/api/admin/cnProviders').CNProviderQuotaProbeResult) => {
+  if (result.balance?.success) {
+    cnProbedBalance.value = result.balance
+  }
+}
+watch(
+  () => props.account.id,
+  () => {
+    cnProbedBalance.value = null
+  }
+)
 
 const isBatchManaged = computed(() => typeof props.requestBatchedUsage === 'function')
 
@@ -857,6 +884,21 @@ const hasOpenAIUsageFallback = computed(() => {
   if (props.account.platform !== 'openai' || props.account.type !== 'oauth') return false
   return !!usageInfo.value?.five_hour || !!usageInfo.value?.seven_day
 })
+
+const codexTurnTickets = computed(() => props.account.codex_turn_tickets ?? [])
+
+function shortCodexTicketModel(model: string) {
+  if (model === 'gpt-6-astra') return 'astra'
+  if (model === 'gpt-5.6-sol') return 'sol'
+  return model
+}
+
+function formatCodexTicketRemaining(seconds: number) {
+  const total = Math.max(0, Math.floor(seconds || 0))
+  const m = Math.floor(total / 60)
+  const s = total % 60
+  return `${m}m${String(s).padStart(2, '0')}s`
+}
 
 const openAISevenDayEstimatedTotalCost = computed(() => {
   const sevenDay = usageInfo.value?.seven_day

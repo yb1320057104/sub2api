@@ -102,6 +102,10 @@ type OpenAIImagesRequest struct {
 	MaskUpload         *OpenAIImagesUpload
 	Body               []byte
 	bodyHash           string
+
+	clientModel           string
+	authorizationAccounts []Account
+	authorizationLoaded   bool
 }
 
 func (r *OpenAIImagesRequest) ModerationBody() []byte {
@@ -229,6 +233,10 @@ func (s *OpenAIGatewayService) ParseOpenAIImagesRequest(c *gin.Context, body []b
 	}
 
 	applyOpenAIImagesDefaults(req)
+	req.clientModel = req.Model
+	if publicModel, ok := RequestedPublicModelFromContext(c.Request.Context()); ok {
+		req.clientModel = publicModel
+	}
 	// Composite middleware preserves multipart bodies, including their public
 	// alias. Validate and forward the resolved model without altering uploads.
 	if platform, _ := ResolvedTargetPlatformFromContext(c.Request.Context()); platform == PlatformOpenAI {
@@ -236,7 +244,16 @@ func (s *OpenAIGatewayService) ParseOpenAIImagesRequest(c *gin.Context, body []b
 			req.Model = model
 		}
 	}
-	if err := validateCompatibleImagesModel(req.Model); err != nil {
+	// The parser is also used by asynchronous submission. Validate channel
+	// targets here so both entry points reject an unauthorized chain locally.
+	var groupID *int64
+	if value, ok := c.Get("api_key"); ok {
+		if key, ok := value.(*APIKey); ok && key != nil {
+			groupID = key.GroupID
+		}
+	}
+	mapping, _ := s.ResolveChannelMappingAndRestrict(c.Request.Context(), groupID, req.Model)
+	if err := s.ValidateImagesRouting(c, req, mapping.MappedModel); err != nil {
 		return nil, err
 	}
 	req.SizeTier = normalizeOpenAIImageSizeTier(req.Size)
@@ -481,7 +498,8 @@ func applyOpenAIImagesDefaults(req *OpenAIImagesRequest) {
 }
 
 func isOpenAIImageGenerationModel(model string) bool {
-	return IsGPTImageGenerationModel(model) || isGrokImageGenerationModel(model)
+	return IsGPTImageGenerationModel(model) ||
+		isGrokImageGenerationModel(model)
 }
 
 // IsGPTImageGenerationModel identifies the GPT native image-generation model family.
@@ -502,18 +520,15 @@ func validateOpenAIImagesModel(model string) error {
 	if isOpenAIImageGenerationModel(model) {
 		return nil
 	}
-	if model == "" {
-		return fmt.Errorf("images endpoint requires an image model")
-	}
-	return fmt.Errorf("images endpoint requires an image model, got %q", model)
+	return &OpenAIImagesModelError{Model: model}
 }
 
 // Keep this separate from isOpenAIImageGenerationModel: that predicate also
 // drives native Responses tool conversion, pricing and rate-limit policy.
 func isGeminiCompatibleImageModel(model string) bool {
 	model = strings.ToLower(strings.TrimSpace(model))
-	return strings.HasPrefix(model, "gemini-") &&
-		(strings.HasSuffix(model, "-image") || strings.Contains(model, "-image-"))
+	return strings.HasPrefix(model, "banana") || (strings.HasPrefix(model, "gemini-") &&
+		(strings.HasSuffix(model, "-image") || strings.Contains(model, "-image-")))
 }
 
 func validateCompatibleImagesModel(model string) error {
@@ -526,7 +541,7 @@ func validateCompatibleImagesModel(model string) error {
 // RequiredCapabilityForModel also applies the API-key-only fence when channel
 // mapping introduces a compatible provider model after request parsing.
 func (req *OpenAIImagesRequest) RequiredCapabilityForModel(model string) OpenAIImagesCapability {
-	if isGeminiCompatibleImageModel(model) {
+	if isGeminiCompatibleImageModel(model) || (strings.TrimSpace(model) != "" && validateCompatibleImagesModel(model) != nil) {
 		return OpenAIImagesCapabilityAPIKey
 	}
 	return req.RequiredCapability
@@ -548,7 +563,7 @@ func classifyOpenAIImagesCapability(req *OpenAIImagesRequest) OpenAIImagesCapabi
 	if req == nil {
 		return OpenAIImagesCapabilityNative
 	}
-	if isGeminiCompatibleImageModel(req.Model) {
+	if isGeminiCompatibleImageModel(req.Model) || validateCompatibleImagesModel(req.Model) != nil {
 		return OpenAIImagesCapabilityAPIKey
 	}
 	if req.ExplicitModel || req.ExplicitSize {
@@ -612,6 +627,22 @@ func (s *OpenAIGatewayService) ForwardImages(
 	if parsed == nil {
 		return nil, fmt.Errorf("parsed images request is required")
 	}
+	requestModel := strings.TrimSpace(parsed.Model)
+	if mapped := strings.TrimSpace(channelMappedModel); mapped != "" {
+		requestModel = mapped
+	}
+	latest, admissionErr := s.admitOpenAITurn(context.WithoutCancel(ctx), c, account, requestModel)
+	if admissionErr != nil {
+		return nil, admissionErr
+	}
+	account = latest
+	if err := parsed.ValidateAccountModels(account, channelMappedModel); err != nil {
+		return nil, err
+	}
+	if account.IsSIWCEnabled() {
+		return nil, fmt.Errorf("SIWC does not support image generation; select Codex for this account")
+	}
+	ctx = s.withOpenAIImageResponseHeaderTimeout(ctx, c)
 	switch account.Type {
 	case AccountTypeAPIKey:
 		return s.forwardOpenAIImagesAPIKey(ctx, c, account, body, parsed, channelMappedModel)
@@ -620,6 +651,23 @@ func (s *OpenAIGatewayService) ForwardImages(
 	default:
 		return nil, fmt.Errorf("unsupported account type: %s", account.Type)
 	}
+}
+
+// withOpenAIImageResponseHeaderTimeout applies the longer wait an admin chose
+// for this API key's group, keeping chat traffic on the global timeout.
+func (s *OpenAIGatewayService) withOpenAIImageResponseHeaderTimeout(ctx context.Context, c *gin.Context) context.Context {
+	if s == nil || s.settingService == nil || c == nil {
+		return ctx
+	}
+	value, ok := c.Get("api_key")
+	if !ok {
+		return ctx
+	}
+	apiKey, ok := value.(*APIKey)
+	if !ok || apiKey == nil {
+		return ctx
+	}
+	return WithHTTPUpstreamResponseHeaderTimeout(ctx, s.settingService.OpenAIImageResponseHeaderTimeout(ctx, apiKey.GroupID))
 }
 
 func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
@@ -635,13 +683,10 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 	if mapped := strings.TrimSpace(channelMappedModel); mapped != "" {
 		requestModel = mapped
 	}
-	if err := validateCompatibleImagesModel(requestModel); err != nil {
+	if err := parsed.ValidateAccountModels(account, channelMappedModel); err != nil {
 		return nil, err
 	}
 	upstreamModel := account.GetMappedModel(requestModel)
-	if err := validateCompatibleImagesModel(upstreamModel); err != nil {
-		return nil, err
-	}
 	SetOpsUpstreamModel(c, upstreamModel)
 	logger.LegacyPrintf(
 		"service.openai_gateway",
@@ -703,6 +748,9 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
 		if isOpenAIImagesInsufficientBalance(respBody) {
+			if s.rateLimitService != nil {
+				s.rateLimitService.accountOps.Observe(account, resp.StatusCode, resp.Header, respBody)
+			}
 			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
 				ProxyID:            opsUpstreamProxyID(account),
 				ProxyName:          opsUpstreamProxyName(account),
@@ -869,6 +917,7 @@ func (s *OpenAIGatewayService) buildOpenAIImagesRequest(
 		req.Header.Set("Content-Type", contentType)
 	}
 	// 账号级请求头覆写（仅 openai api_key 账号启用时生效；OAuth 路径 no-op）
+	applyOpenAIAPIKeyIdentityHeaders(req.Header, account, s.codexIdentityOverrideUA(account))
 	account.ApplyHeaderOverrides(req.Header)
 	return req, nil
 }
@@ -992,6 +1041,9 @@ func (s *OpenAIGatewayService) handleOpenAIImagesNonStreamingResponse(
 			contentType = upstreamType
 		}
 	}
+	// Gin's Data renderer only fills an absent Content-Type. Override the
+	// copied upstream value so the response-header policy above takes effect.
+	c.Header("Content-Type", contentType)
 	c.Data(resp.StatusCode, contentType, body)
 
 	return usage, extractOpenAIImageCountFromJSONBytes(body), collectOpenAIResponseImageOutputSizesFromJSONBytes(body), nil

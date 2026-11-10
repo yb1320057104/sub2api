@@ -93,7 +93,7 @@ func TestOpenAIGatewayService_Forward_WSv2_SuccessAndBindSticky(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
 	c.Request.Header.Set("User-Agent", "unit-test-agent/1.0")
 	groupID := int64(1001)
-	c.Set("api_key", &APIKey{GroupID: &groupID})
+	c.Set("api_key", &APIKey{GroupID: &groupID, AllowLongContext: true})
 
 	cfg := &config.Config{}
 	cfg.Security.URLAllowlist.Enabled = false
@@ -127,6 +127,8 @@ func TestOpenAIGatewayService_Forward_WSv2_SuccessAndBindSticky(t *testing.T) {
 	}
 
 	account := &Account{
+		GroupIDs: []int64{1001},
+
 		ID:          9,
 		Name:        "openai-ws",
 		Platform:    PlatformOpenAI,
@@ -350,6 +352,8 @@ func TestOpenAIGatewayService_Forward_WSv2_ImageGenerationCountsOutputs(t *testi
 	}
 
 	account := &Account{
+		GroupIDs: []int64{1010},
+
 		ID:          10,
 		Name:        "openai-ws-image",
 		Platform:    PlatformOpenAI,
@@ -524,6 +528,8 @@ func TestOpenAIGatewayService_Forward_WSv2_RewriteModelAndToolCallsOnCompletedEv
 	}
 
 	account := &Account{
+		GroupIDs: []int64{3001},
+
 		ID:          1301,
 		Name:        "openai-rewrite",
 		Platform:    PlatformOpenAI,
@@ -689,6 +695,8 @@ func TestOpenAIGatewayService_Forward_WSv2_PoolReuseNotOneToOne(t *testing.T) {
 		toolCorrector:    NewCodexToolCorrector(),
 	}
 	account := &Account{
+		GroupIDs: []int64{2001},
+
 		ID:          19,
 		Name:        "openai-ws",
 		Platform:    PlatformOpenAI,
@@ -711,7 +719,7 @@ func TestOpenAIGatewayService_Forward_WSv2_PoolReuseNotOneToOne(t *testing.T) {
 		c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
 		c.Request.Header.Set("User-Agent", "codex_cli_rs/0.98.0")
 		groupID := int64(2001)
-		c.Set("api_key", &APIKey{GroupID: &groupID})
+		c.Set("api_key", &APIKey{GroupID: &groupID, AllowLongContext: true})
 
 		body := []byte(`{"model":"gpt-5.1","stream":false,"previous_response_id":"resp_prev_reuse","input":[{"type":"input_text","text":"hello"}]}`)
 		result, err := svc.Forward(context.Background(), c, account, body)
@@ -842,6 +850,8 @@ func TestOpenAIGatewayService_Forward_WSv2_OAuthSanitizesInvalidNativeToolItemID
 	}
 
 	account := &Account{
+		GroupIDs: []int64{5662},
+
 		ID:          5662,
 		Name:        "openai-oauth-ws-tool-history",
 		Platform:    PlatformOpenAI,
@@ -1964,6 +1974,9 @@ func (c *openAIWSCaptureConn) WriteJSON(ctx context.Context, value any) error {
 	defer c.mu.Unlock()
 	if c.closed {
 		return errOpenAIWSConnClosed
+	}
+	if prepared, ok := value.(openAIWSPreparedJSON); ok {
+		value = json.RawMessage(prepared)
 	}
 	switch payload := value.(type) {
 	case map[string]any:

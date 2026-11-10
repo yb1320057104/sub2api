@@ -26,6 +26,52 @@ func forceChatMessagesFallbackAccount() *Account {
 	return account
 }
 
+func TestForwardAsAnthropic_ChatReasoningOnlyFailsAndPreservesUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, stream := range []bool{false, true} {
+		name, streamValue := "buffered", "false"
+		if stream {
+			name, streamValue = "stream", "true"
+		}
+		t.Run(name, func(t *testing.T) {
+			body := []byte(`{"model":"deepseek-reasoner","max_tokens":32,"messages":[{"role":"user","content":"hello"}],"stream":` + streamValue + `}`)
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+			upstreamBody := `{"id":"chatcmpl_reasoning","model":"deepseek-reasoner","choices":[{"message":{"role":"assistant","reasoning_content":"still thinking","content":" "},"finish_reason":"length"}],"usage":{"prompt_tokens":7,"completion_tokens":4,"total_tokens":11}}`
+			contentType := "application/json"
+			if stream {
+				contentType = "text/event-stream"
+				upstreamBody = "data: " + `{"id":"chatcmpl_reasoning","model":"deepseek-reasoner","choices":[{"delta":{"reasoning":"still thinking"},"finish_reason":null}]}` + "\n\n" +
+					"data: " + `{"choices":[{"delta":{},"finish_reason":"length"}],"usage":{"prompt_tokens":7,"completion_tokens":4,"total_tokens":11}}` + "\n\ndata: [DONE]\n\n"
+			}
+			upstream := &httpUpstreamRecorder{resp: &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{contentType}},
+				Body:       io.NopCloser(strings.NewReader(upstreamBody)),
+			}}
+			svc := &OpenAIGatewayService{cfg: rawChatCompletionsTestConfig(), httpUpstream: upstream}
+			result, err := svc.ForwardAsAnthropic(context.Background(), c, forceChatMessagesFallbackAccount(), body, "", "")
+			require.NoError(t, err, "semantic failure must return usage without retrying the upstream")
+			require.NotNil(t, result)
+			require.Equal(t, 7, result.Usage.InputTokens)
+			require.Equal(t, 4, result.Usage.OutputTokens)
+			require.Len(t, upstream.requests, 1)
+			require.Equal(t, "upstream_reasoning_only", c.GetString(OpsUpstreamErrorMessageKey))
+			if stream {
+				require.Contains(t, rec.Body.String(), "event: error")
+				require.Contains(t, rec.Body.String(), `"code":"upstream_reasoning_only"`)
+				require.NotContains(t, rec.Body.String(), "event: message_stop")
+				require.NotContains(t, rec.Body.String(), `"type":"text_delta"`)
+			} else {
+				require.Equal(t, http.StatusBadGateway, rec.Code)
+				require.Equal(t, "error", gjson.Get(rec.Body.String(), "type").String())
+				require.NotContains(t, rec.Body.String(), "still thinking")
+			}
+		})
+	}
+}
+
 // errTailReader yields the given data, then returns err instead of io.EOF,
 // simulating an upstream connection that breaks mid-stream.
 type errTailReader struct {
@@ -482,9 +528,11 @@ func TestForwardAsAnthropic_ResponsesSupportedAccountStillUsesResponsesEndpoint(
 	require.NotNil(t, result.ReasoningEffort)
 	require.Equal(t, "medium", *result.ReasoningEffort)
 	require.False(t, gjson.GetBytes(upstream.lastBody, "messages").Exists())
-	require.Equal(t, "third-party-client/1.0.0", upstream.lastReq.Header.Get("User-Agent"))
-	require.Equal(t, "opencode", upstream.lastReq.Header.Get("originator"))
-	require.Empty(t, upstream.lastReq.Header.Get("version"))
+	identity := resolveCodexOutboundIdentity("")
+	require.Equal(t, identity.userAgent, upstream.lastReq.Header.Get("User-Agent"))
+	require.Equal(t, identity.originator, upstream.lastReq.Header.Get("originator"))
+	require.Equal(t, identity.version, upstream.lastReq.Header.Get("version"))
+	require.Equal(t, "third-party-client/1.0.0", c.GetHeader("User-Agent"))
 	require.Empty(t, upstream.lastReq.Header.Get("OpenAI-Beta"))
 	require.Equal(t, "ok", gjson.Get(rec.Body.String(), "content.0.text").String())
 }

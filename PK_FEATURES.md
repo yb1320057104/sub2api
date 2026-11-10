@@ -1,5 +1,10 @@
 # PK出版二开功能清单
 
+2026-11-11 pk.61 全域集成登记：固定私库 `6ed612909fef4510f63d93a8f2ead58bae35a3c8` 与上游 `d42bb4fc4b3eef9821994b4ad170d4eb881eca95`，按三方差异保留 PK-001～048（029/030 继续已授权移除），新增独立能力 PK-049～075，扩展 PK-042/048。64 个功能域、原有 48 项逐项依据、二次入口复核和真实定向结果见 [pk.61 完整集成复核](docs/PK_UPSTREAM_INTEGRATION_PK61_REVIEW.md)。当前条目登记源码行为与保护合同；正式构建、正式制品迁移回退、同制品验收和 HA 上线结果分别补录，不把登记完成视为发行或 3000 并发验收。
+
+
+2026-11-10 pk.61 开发中：完整合并 ranxi2001/sub2api production `d42bb4fc4b3eef9821994b4ad170d4eb881eca95`，以私库 pk.60 源码为基线。全部有效 ID 均需核对；PK-029/030保持已移除。PK-032 扩展普通用户只读分组糖果状态时间线，失败、未知、号池空和明确答案异常分开，严格使用当前启用/选中分组，不开放管理员账号检测操作。新增能力的独立 ID、完整兼容矩阵及实际验证将在本版本提交前补齐；当前尚在冲突解决和行为适配，不能作为全量集成、正式发行或应用上线的完成记录。
+
 2026-11-08 pk.58 最终交付：正式提交 `00af06c1e9a610cb6a59a2fbfb633ce003c0468a` 已合入私库main并绑定唯一版本分支／标签 `v0.2.19-pk.58`。修复账号编辑框未识别已保存API Key状态，导致合法根地址或/v1无法开启接收上游审计追加费用的问题；优先使用credentials_status.has_api_key，缺失时兼容旧Key字段，明确false不被旧字段覆盖。仅两份前端业务／测试文件变更，沿用PK-046／021；后端、迁移、依赖、费用协议／金额／归属及首字计时保持。本轮组件1文件136项通过、无失败／跳过，类型检查及前后端正式构建通过；136项为现有与新增合计，组件API为模拟。前端i18n 3项、Vite 1219模块／198项产物核对通过。同一二进制11项制品／7项升级回退、多代理／IP分组／模型目录API各7项、审计SQL 6项及金融函数8项通过，324份迁移不变，隔离资源清理通过。私库Release已发布为latest，9项资产名称／长度／SHA256一致。生产依赖0 critical／2 high／12 moderate／2 low，审计退出1、既有例外门禁退出0。发布流程准备并核对生产启动许可及回执，未替换或重启应用、未授HA权、未发布GHCR；不将发布完成视为生产应用已升级或集群已恢复。用户后续授权发布替代下文仅源码交接的阶段范围；正式标签及制品保持，仅main补录，详见 `docs/PK_SETTLEMENT_CREDENTIAL_STATUS_PK58_REVIEW.md`。
 
 2026-11-08 pk.58源码交接完成：正式提交 `00af06c1e9a610cb6a59a2fbfb633ce003c0468a` 已原子推送私库main、唯一版本分支及标签 `v0.2.19-pk.58`，远端剥离附注标签后提交一致且属于main历史。已保存API Key的脱敏状态可正确通过费用接收开关校验，合法/v1地址无需修改；单文件136项组件回归与类型检查通过，交接后源码SHA256仍与测试证据一致。仅交源码，未发布pk.58安装包、未部署或重启生产；正式latest仍为pk.57。Packages只读查询返回404，未据此声称镜像版本验证通过，本轮未写入GHCR。此补录仅main更新，正式版本分支、标签与旧制品不动。详见 `docs/PK_SETTLEMENT_CREDENTIAL_STATUS_PK58_REVIEW.md`。
@@ -153,7 +158,7 @@
 - 2026-10-02 合并上游 `v0.2.12`（commit `5106065716e494204fc0e8db16f68f6e9d576be0`，tag 对象 `cbe9966432317e6757b47f598a103d2132ec27db`），合并前私库为 `162a58972bee08078a43eefa761da1b245f667fa`。逐项核对见 [0.2.12 合并记录](docs/PK_UPSTREAM_0.2.12_REVIEW.md)，正式发布目标为 `v0.2.12-pk.1`；发布与线上更新分别记录。
 - 2026-10-02 合并上游 `v0.2.11`（commit `96f4c115c9749078f90cbf210a01d39baf3f53b6`），合并前私库为 `32f068dcbdc75063ff7f6488aef6c85912d7bf3f`。逐项核对及本次验证见 [合并记录](docs/PK_UPSTREAM_0.2.11_REVIEW.md)；合并源码不代表已发布或更新线上。
 - 本次清点覆盖从该上游基线到私库 `23e5fe663338c86cd0cebbf2f688c8a75dd8c152` 的全部二开提交；应用发行参照 `v0.2.10-pk.7`，另登记本次新增的项目约束机制。此处是代码核对基线，不代表线上当前版本。
-- 以下 PK-001 至 PK-028 及 PK-031 至 PK-048 均为有效保护项；PK-029、PK-030 已按用户授权移除，保留原 ID 与回退记录，不得复用。文件路径用于定位，不是完整修改白名单；所有新调用入口、迁移和旁路都要检查。
+- 以下 PK-001 至 PK-028 及 PK-031 至 PK-075 均为有效保护项；PK-029、PK-030 已按用户授权移除，保留原 ID 与回退记录，不得复用。文件路径用于定位，不是完整修改白名单；所有新调用入口、迁移和旁路都要检查。
 - 每项说明“必须保持”的行为。文末另列验证入口与已知边界；测试存在、历史验证通过和本次候选通过是三件不同的事。
 - 2026-10-21 用户最新要求取代 2026-10-08/19 的源码测试及 notes 前置门禁：核对二开保护和变更后直接提交、合入私库 main 并推送不带 `origin/` 的正式版本标签，交给用户点击 Jenkins `ACTION=release`。不再默认运行完整源码测试，不要求源码验证 notes；Jenkins 继续执行构建、同制品运行时验收和私库发布，不使用 GitHub Actions。可选测试如实记录，未执行不能声称通过。下文历史门禁仅说明当时状态，现行规则以 PK-017 为准。
 
@@ -182,7 +187,7 @@
 | PK-014 | 私库更新与恢复来源 | 私库/私有镜像、只读凭据、无官方回退路径 |
 | PK-015 | 更新下载和文件替换 | 资产授权、跨域去凭据、SHA256、重复更新固定路径 |
 | PK-016 | Docker网页更新持久化 | 数据卷可执行文件、种子哈希、镜像回退边界 |
-| PK-017 | 私有发行与部署入口 | 正式标签、Jenkins 打包、同制品运行时验收、私库发布、amd64 |
+| PK-017 | 私有发行与部署入口 | 正式标签、授权本机构建或 Jenkins、同制品验收、私库发布、amd64 |
 | PK-018 | 新实例启动并发保护 | 可跳过全局启动清理，继续清理过期槽位 |
 | PK-019 | 后台启动与停止交接 | 受控后台、普通文件激活、只启动一次、停止安全，含账号授权 |
 | PK-020 | 切换与恢复运维流程 | 保护端口/数据/密钥、请求排空、后台单实例交接 |
@@ -207,13 +212,40 @@
 | PK-039 | 批量查询账号剩余重置次数 | 管理员勾选、OpenAI/Claude OAuth、3并发、逐项反馈、只查询不兑换 |
 | PK-040 | 原生代理批量切换 HTTP/HTTPS | 勾选确认、最多500项、协议原子更新、完整管理员、逐项反馈 |
 | PK-041 | 按组审计与无需节点的本地规则 | 明确选组、空范围跳过、关键词/RE2、七类模板、异步记录/同步拦截 |
-| PK-042 | API Key 有序多分组 | 最多20组、首组兼容、发送前顺序路由、普通倍率与审计倍率分列 |
+| PK-042 | API Key 有序多分组与请求策略 | 最多20组、首组兼容、有序路由、Key队列/模型/强度/长上下文、倍率分列 |
 | PK-043 | 审计风险分级与扣费放行 | 最高风险分、可调阈值/三动作、独立选组豁免、真实完成费用、双审计数去重 |
 | PK-044 | 账号多代理与全局容量 | 每请求随机且流内固定、全局代理并发、账号总并发、批量/一键原子分配、影子继承、旧主代理兼容 |
 | PK-045 | 静态 IP 分组与严格账号优先级 | 完整候选池共享、Priority/ID顺序、按并发分配IP子集、旧请求排空、跨组物理互斥 |
 | PK-046 | 同款下游审计追加费用结算 | 显式协商、真实扣款回执、双端幂等、多跳终态、余额流水、原生接口兼容 |
 | PK-047 | 独立站点与存储高可用部署 | 独立数据、三机仲裁、单后台职责、共享准入、有序退出、私库干净发布包 |
 | PK-048 | 分组防蒸馏保护 | 默认关闭、原始缓存证据、客户跨Key/组20条中18条零缓存、共享暂停、按组用户白名单、排队/WS复查、不改计费和账号健康 |
+| PK-049 | 普通用户只读降智检测结果 | 在现有测智页面展示允许公开的质量结果、模型和分组，复用服务端真实测试记录 |
+| PK-050 | OpenAI 多授权连接与安全重授权操作 | 保留多授权连接、刷新 fencing、排队重登、2FA 轮换、Session 导出、SIWC 与双 OAuth 入口 |
+| PK-051 | 账号凭证守护与持久重登预算 | 保留 Token Guard V1/V2、凭据加密状态、健康检查和重登预算 |
+| PK-052 | Codex 采票、探针和覆盖运营 | 保留采票流程、探针、并行任务、节点学习、覆盖视图和固定出口 |
+| PK-053 | Astra 自动配置、号池与实验调度 | 保留 Astra 自动设置、账号池、门票生命周期、运行历史与糖果实验入口 |
+| PK-054 | 账号质量规则、模板与归属运营 | 保留质量规则、模板、preset、多模型、归属修复、5xx 信号和 401 清理 |
+| PK-055 | 渠道监控 V2/V3 与持续统计追赶 | 保留多模型糖果时间线、排序、V3 组件/事件和空闲探测 |
+| PK-056 | Pelican 定时测试与作品展示 | 保留 Pelican 分组/账号测试、定时计划、结果作品与展示页 |
+| PK-057 | ModelTrace 指纹与受控实验 | 提供模型指纹、受控实验计划、执行和评分记录 |
+| PK-058 | 优先调度、账号运维与自动配置 | 保留延迟反馈、公平/粘性会话运营、账号阈值、通知、自动配置日志和定时调度窗口 |
+| PK-059 | 跨节点账号性能证据与独立暂停 | TPS、TTFT、质量轮次与 HTTP 错误率用于可配置性能判定 |
+| PK-060 | Mihomo 动态节点与区域代理出口 | 保留 Mihomo 内核管理、订阅、地区筛选、动态节点及静态导入，并支持按域名/账号选择区域出口 |
+| PK-061 | BPS OAuth、网关与工具任务 | 保留 BPS OAuth、核心转发、工具目录、图片及代理任务入口 |
+| PK-062 | Prism 浏览器桥与 Copilot SDK 通道 | 保留 Prism 浏览器桥与 Copilot SDK 通道，并与 PK-028 Kilo 独立 |
+| PK-063 | 连接诊断与 Observer 本人用量视图 | 保留网络、连接、流量诊断与 Observer 用量/筛选/分段计时 |
+| PK-064 | HTTP/WS 请求采集与受控导出 | 管理员可以建立有范围和时间限制的 HTTP/WS 请求采集任务、查看与导出诊断记录 |
+| PK-065 | AI Ops 诊断、提案与受控执行 | 提供 AI 运维诊断、报告、恢复探针和操作提案，执行路径服从工具权限与明确的变更边界。 |
+| PK-066 | IP 风控、注册防滥用与邮箱别名规则 | 保留 IP 风控、匿名无效鉴权限流、注册 IP 与邮箱别名规则 |
+| PK-067 | API Key 风险巡检与用户确认 | 提供 Key 风险巡检、管理处置、用户告知及本人确认 |
+| PK-068 | 请求处罚与个人安全记录 | 保留请求处罚与用户个人安全记录，记录范围绑定用户 |
+| PK-069 | BEpusdt 多网络支付与 HA 共享账本 | 新增内置 USDT/USDC 钱包、链上订单、扫码、补扫和充值/订阅付款，保留外接模式及 PK-022 币安账务 |
+| PK-070 | 充值抽奖与邀请奖励 | 保留抽奖、充值抽奖机会、邀请奖励和管理员奖池管理 |
+| PK-071 | VIP 自动授信与恢复 | 保留管理员授信配置、自动额度处理、恢复和 outbox |
+| PK-072 | 余额耗尽预测与提醒 | 依据真实消费记录估算余额可用时间并提供提醒 |
+| PK-073 | 独立上游渠道、利润与定价运营 | 保留上游渠道绑定、授权/成本探测、利润运营、渠道定价导入导出及账号模型同步 |
+| PK-074 | 用户与管理员支持工单 | 保留用户工单、回复、附件和管理员处理入口 |
+| PK-075 | Serverless 区域路由与分布式调度账本 | 保留区域到 gateway 路由，以及独立区域鉴权同步、并发槽位、计量、资金账本/outbox 与对账的实验入口。 |
 
 ## PK-001
 
@@ -480,6 +512,12 @@
 - 验证：本地 `artifact-runtime` 套件中容器启动、同种子保留、换种子恢复检查，以及隔离环境的重复更新/重启；必须确认运行程序版本，不能只看容器镜像标签。
 
 ## PK-017
+
+2026-11-11 pk.61 HA 发行准入：普通发布保持 `production-primary`/schema 1；可信 publisher 仅在显式 `PK_STARTUP_GUARD_TARGET=production-ha` 时走 schema 2，并用 `PK_HA_PUBLICATION_REVIEW_SHA256` 绑定已审阅的 HA 事实。要求两 API ready、唯一 worker 对应 PostgreSQL writer、epoch 稳定，且准备/校验不重启、不替换二进制、不改变运行授权；回执 purpose 为 `ha-source-release-admission`，不伪造普通守卫 hash。6 项新合同用例通过；当前实际私有 hook 仍准备中，未据此宣称已调用 prepare/check、发行或上线。沿用 PK-047，现网旧 ordinary 容器已退出，旧 hook 的 container_not_healthy 拒绝必须保留为事实。
+
+2026-11-11 pk.61 对应源码分发：合并 BEpusdt 后，正式包必须附 `sub2api_0.2.19-pk.61_source.tar.gz`，manifest 同时绑定 `source_archive`、`source_archive_sha256` 与 `source_archive_tar_sha256`。归档来自同一 commit 的完整 `git archive --format=tar --prefix=sub2api_0.2.19-pk.61/` 原始 tar，固定 `core.autocrlf=false`/`core.eol=lf`，gzip mtime=0；包含第三方完整维护源码、LICENSE/THIRD_PARTY_NOTICES 与构建说明，不夹带私有运行文件。`corresponding_source.py`/control 校验来源声明、双哈希，并从实际目录、blob 和执行位重建完整 Git tree，拒绝 `export-ignore`/`export-subst` 引起的遗漏或改写；local publisher 另与私库同 commit 实时 git archive 逐字节核对。原 publisher、源码门禁及 HA schema 2 合计 20 项定向通过（corresponding-source-independent-review-attempt3.log）；首次换行转换失败及第二轮错误文案断言失败日志保留。该结果不代表最终同制品验收、正式构建、Release 发布或生产更新已完成。
+
+2026-11-11 pk.61：当前授权继续沿用本机构建、远端隔离同制品验收、`deploy/local-release.py` 私库发布；该脚本只发布已验收包，不执行构建或部署，也不推送 GHCR。下方 Jenkins 专用历史要求不覆盖本轮已授权方式。正式 tag/main、十一项制品门禁、SHA256 与旧标签不可移动保持；支持 linux/amd64，镜像归档与 GHCR 实际发布分开核实。README 和 release-tools 文档已同步，当前发行/迁移/上线阶段见综合复核。
 
 2026-11-02 pk.42 非 Jenkins 发行：按用户当前无 Jenkins 的明确说明，新增 `deploy/local-release.py` 的 check/publish 入口，复用 manifest、SHA256、同制品十一项验收及私库正式 tag/main 校验；只接受标记真实本机构建和服务器隔离验收的产物，草稿上传程序与镜像归档后逐项核对大小和 GitHub SHA256，再复查来源并发布。凭据只从 `PK_GITHUB_TOKEN` 环境读取；失败保留草稿，重跑不覆盖或自动重发。不执行 GHCR push、Docker 或生产操作，既有 Jenkins 注册表门禁不变。必要构建的 follow-redirects 升至1.16.2，锁文件最小更新，保留既有审计例外边界。
 
@@ -1237,6 +1275,8 @@
 
 ## PK-042
 
+2026-11-11 pk.61 扩展：`group_ids` 有序 JSON 继续是路由事实，新增上游关系表仅事务镜像，不能取无序关联覆盖最多20组/首组兼容/NULL与显式空语义。鉴权快照版本随新字段更新；Key 自身并发队列、等待租约、模型映射、推理强度和长上下文策略统一进入 HTTP/WS 每轮准入；排队后复验实际 Key/用户/组与防蒸馏保护，取消/终态只释放一次。Key 长上下文默认允许，显式关闭按服务端上下文证据校验；原始上下文门槛及 OAuth 豁免保持 PK-004，不能用改写后的 token 误计费。请求模型与映射目标权限同时校验，强度只映射一次，Kilo 原始强度规则独立。入口为 `api_key_request_policy.go`、`api_key_long_context_policy.go`、`api_key_queue.go`、`api_key_group_router.go`（service）、`gateway_helper.go`（handler）及 KeysView/UserApiKeysModal；账号兼容与 handler/server 定向结果见综合报告。
+
 2026-11-03 pk.50：API Key分组徽标和排行榜审计明细在该组自动扣款未开启时隐藏破甲倍率，保留原字段与已保存值、普通倍率及有序多组路由。界面隐藏不改变收费公式、开关或历史证据。
 
 - pk.48：多组选项叉号明确执行移除并阻止冒泡，行内Teleport弹层内部点击不触发document外部关闭；保留所选顺序、最大20组、明确清空以及创建/编辑/行内保存和取消语义。分组徽章以红色显示“破甲倍率”，普通用量倍率与自动扣款状态仍分别展示；后端路由及绑定字段保持。
@@ -1286,7 +1326,7 @@
 
 ## 新增条目模板
 
-新增独立能力使用下一个未用 ID，当前下一个为 `PK-049`；多项变更并行新增时在合并前消除 ID 冲突，已有 ID 不重用。同步更新索引、有效条目范围和此处的下一个 ID。
+新增独立能力使用下一个未用 ID，当前下一个为 `PK-076`；多项变更并行新增时在合并前消除 ID 冲突，已有 ID 不重用。同步更新索引、有效条目范围和此处的下一个 ID。
 
 ```markdown
 ## PK-NNN
@@ -1366,6 +1406,8 @@ pk.50追加PK-036联动：账号授权“入库账号出口”可设置每账号
 
 ## PK-047 独立站点与存储高可用部署
 
+2026-11-11 pk.61：正式发行前的 HA source admission 使用 PK-017 所列独立 schema 2 合同，保持运行时 writer/worker 与现有授权；发行准入回执不等于 HA 更新完成，实际私有 hook 与逐节点更新各自留证。
+
 2026-11-10 全项目资源优化：节点代理扩展可选 `worker_resources`，与 `api_resources` 独立配置；两角色均支持可选严格整数 `cpu_shares`（2～262144）。资源仅写入下一候选及其spec/hash/receipt，未设置角色或权重继承原值，worker不继承API预算或补入发行令牌；swap额外额度、旧quota/reservation拒绝及单writer worker门控保持。10项Linux隔离夹具检查通过，同一pk.59 HA二进制已按原排空流程完成候选代次11；没有新Release或标签。两入口普通请求已偏好原副API、原主备用；存储切主准备中止，PG/Redis writer与唯一worker仍在原主，双gate已释放、更新器恢复。原主PG4CPU/3GiB、副PG4CPU/4GiB在线调整通过，冷目录迁盘与约85分钟维护停流的原因、恢复及实际结果见 `docs/PK_CLUSTER_FLEET_CAPACITY_REVIEW.md`。CPU权重是竞争时的相对优先级，内存上限不是预留，也不是3000真实并发容量证明。
 
 2026-11-10 运行恢复与资源调整：`deploy/cluster-updater/agent.py` 新增可选完整 `api_resources={cpus,memory_mib,go_memory_mib}`，仅在下一API候选同步Docker CPU/内存与Go并行度/软内存上限；未配置维持旧值，worker保持原规格。严格拒绝布尔/小数/越界和不完整对象；保留既有额外swap额度，冲突的旧CPU quota、memory/swap或reservation在创建前拒绝。资源写入正式候选spec及其hash/receipt，经原串行drain/replace流程切换，禁止只改运行容器形成漂移。现网同一pk.59 HA程序已完成候选代次10切换；没有创建新正式Release或移动旧标签。worker恢复策略继承PK-019，源码和运行结果见 `docs/PK_CLUSTER_RUNTIME_RECOVERY_REVIEW.md`。
@@ -1393,6 +1435,8 @@ pk.50追加PK-036联动：账号授权“入库账号出口”可设置每账号
 
 ## PK-048 分组防蒸馏保护
 
+2026-11-11 pk.61：上游增量合并后保留 pk.60 的可搜索多选用户豁免、settings CAS 保存及实际组 HTTP/WS 复查；共用选择器其他场景默认行为保持。完整管理员写接口保留一份注册，二次复核修复重复 GET/PUT 注册造成的 Gin 启动 panic。名单不是全局审计/计费豁免，不解除其他组暂停。新入口和用户边界已纳入本轮 handler/server、前端及服务合同定向检查；本条只补本轮证据，不将下方 pk.59 上线记录视为 pk.60/61 已部署。
+
 - pk.60并发补充：旧客户端省略名单时，settings按原始值比较交换；新建竞争或其他节点更新/清空后重新读取，最多3次仍竞争返回409，缺原子能力返回503，不降级整JSON覆盖。显式名单保存仍按管理员提交生效；已有暂停和窗口保持。各HA节点均升级新服务端后再配置名单，旧客户端兼容不等于旧服务端理解新字段。
 
 2026-11-10 `v0.2.19-pk.60` 扩展：用户明确要求在分组设置中按搜索选择用户豁免。每组保存 `user_allowlist_ids`，最多500项，正整数、去重排序、保存时验证未删除用户；旧配置缺字段为空，PUT省略保留持久名单、显式[]清空、null拒绝。完整管理员可按邮箱、用户名或ID搜索并添加/移除/清空，复用 `UserAllowlistSelector.vue`；本场景300毫秒防抖、有限用户详情补全，旧审计选择器默认值保持。`Check` 与 `Observe` 同时跳过该组白名单用户，包括已有共享暂停；不清窗口/暂停，不豁免其他组，也不豁免鉴权、账号禁用、计费或其他审计。移除后原未到期暂停仍有效。缓存数组深拷贝，保留512组/10秒短缓存、HTTP排队后与WS实际组复查；热路径不查询用户表。复用settings JSON，无迁移/依赖升级。沿用PK-021，交叉核对PK-041/043选择器及PK-042路由；实际定向验证和交付边界见 `docs/PK_GROUP_ANTI_DISTILLATION_ALLOWLIST_PK60_REVIEW.md`，不等于生产已上线。
@@ -1408,3 +1452,273 @@ pk.50追加PK-036联动：账号授权“入库账号出口”可设置每账号
 - 本轮验证：前端7文件29项定向测试及类型检查通过；后端Go1.27.3/Linux隔离9包定向检查退出0，72个顶层用例通过（含子项275个pass），1个既有PostgreSQL集成用例因未配置测试数据库跳过。首轮字段适配编译失败、第二轮不完整回答采样失败均如实记录并修正，最终源码快照与日志摘要见专项文档。未构建正式发行包或部署线上。
 
 - 2026-11-09 PK-048 后续交付：正式 `v0.2.19-pk.59` 已发布并核对 8 项附件；11 项隔离同制品验收通过。现有 HA 两节点完成正常逐台更新，API/worker 均为 `0.2.19-pk.59-ha.20261109.1794212730`、代次 9，两 API 就绪、gate 开放，单 worker 对应 writer。前后只读核对 9 个 OpenAI 分组均保持无配置、默认关闭；没有自动开启保护。最终 HA 合并源码补验 7 包、36 个顶层通过，含子项 125 个 pass，不与前述同场景源码检查累计；无真实模型/邮件或故障接管演练。前文“尚未发行/部署”仅描述早期阶段，完整证据与失败历史见 `docs/PK_GROUP_ANTI_DISTILLATION_PK59_REVIEW.md`、`docs/PK_CLUSTER_UPDATER_REVIEW.md`。
+
+## PK-049 普通用户只读降智检测结果
+
+**状态：有效保护项，pk.61 集成源码；发行与上线另行验收。** 引入：本轮固定上游全域集成及用户指定适配；对应 R19/R20/R63。
+
+- 用途与必须保持：在现有测智页面展示允许公开的质量结果、模型和分组，复用服务端真实测试记录；普通用户不能创建计划、修改阈值、执行测试或读取账号凭据。
+- 默认值、配置、存储和权限：沿用测智启用开关及公开展示范围；登录后 GET /api/v1/intelligence-test/quality/groups 与 /quality/results 受 JWT 和面板限流保护。旧糖果与分组测试展示保持，失败和历史缺失字段不伪装成功。
+- 代码/UI 入口：`backend/internal/service/intelligence_test_quality.go`、`backend/internal/server/routes/user.go`、`frontend/src/views/user/IntelligenceTestView.vue`；相关路由/DTO/仓储与迁移随入口一并核对。
+- 验证：用户只读、未授权、范围过滤及脱敏已纳入本轮 handler/server 和前端定向检查；来源与计数见综合复核报告。本轮未启用公开 Actions 作为验证入口。
+- 已知边界：页面展示不是模型能力认证；没有真实上游模型调用验收，也不借公开结果扩大管理员 API 权限。
+
+## PK-050 OpenAI 多授权连接与安全重授权操作
+
+**状态：有效保护项，pk.61 集成源码；发行与上线另行验收。** 引入：本轮固定上游全域集成及用户指定适配；对应 R12/R13/R14。
+
+- 用途与必须保持：保留多授权连接、刷新 fencing、排队重登、2FA 轮换、Session 导出、SIWC 与双 OAuth 入口；与 PK-036 原生授权历史、浏览器、工作台和重授权后糖果准入共存。
+- 默认值、配置、存储和权限：连接与凭据归属绑定账号；后台只由授权的活动 worker 执行，敏感导出/轮换维持管理员和 step-up 校验。迁移不主动重登、轮换或导出。浏览器仍是外置运行依赖，账号出口受 PK-044 约束。
+- 代码/UI 入口：`backend/internal/service/openai_auth_connection_oauth.go`、`backend/internal/service/openai_oauth_reauth.go`、`backend/internal/handler/admin/account_session_export.go`、`frontend/src/components/account/OpenAIAuthConnections.vue`；相关路由/DTO/仓储与迁移随入口一并核对。
+- 验证：账号兼容、生命周期与 handler 权限定向证据见 PK_ACCOUNT_COMPAT_PK61_REVIEW.md、PK_QUALITY_WORKER_PK61_REVIEW.md。本轮未启用公开 Actions 作为验证入口。
+- 已知边界：未执行真实账号登录、2FA 轮换或 Session 导出；浏览器依赖可用不等于账号授权完成。
+
+## PK-051 账号凭证守护与持久重登预算
+
+**状态：有效保护项，pk.61 集成源码；发行与上线另行验收。** 引入：本轮固定上游全域集成及用户指定适配；对应 R15。
+
+- 用途与必须保持：保留 Token Guard V1/V2、凭据加密状态、健康检查和重登预算；跨节点切换不能因进程重启重置预算或启动两个写账号的守护者。
+- 默认值、配置、存储和权限：管理员在凭证守护设置与运维页管理策略；预算和任务状态持久化，关闭策略不自动激活。凭据仅通过既有受控加密路径读取，API 角色不启动独立后台扫描。
+- 代码/UI 入口：`backend/internal/service/account_token_guard.go`、`backend/internal/service/account_token_guard_v2_budget.go`、`backend/internal/handler/admin/account_token_guard_v2_handler.go`、`frontend/src/views/admin/ops/TokenGuardV2View.vue`；相关路由/DTO/仓储与迁移随入口一并核对。
+- 验证：后台接线、停止顺序与账号兼容有本轮定向证据；各守护策略的真实账号恢复未做。本轮未启用公开 Actions 作为验证入口。
+- 已知边界：守护不能绕过人工停用、授权失败和 PK-036 准入，运行时仍需实际服务凭据及外置工具。
+
+## PK-052 Codex 采票、探针和覆盖运营
+
+**状态：有效保护项，pk.61 集成源码；发行与上线另行验收。** 引入：本轮固定上游全域集成及用户指定适配；对应 R16。
+
+- 用途与必须保持：保留采票流程、探针、并行任务、节点学习、覆盖视图和固定出口；采票任务与正常请求分别管理，不绕过账号和代理总并发。
+- 默认值、配置、存储和权限：新采票能力默认关闭；由管理员显式配置账号、任务和预算。一次会话固定出口，凭据/门票属于原账号；与 PK-044 全局代理租约、PK-045 调度及 PK-036 会话身份联动。
+- 代码/UI 入口：`backend/internal/service/codex_harvest_controls.go`、`backend/internal/service/codex_harvest_parallel.go`、`backend/internal/handler/admin/account_codex_harvest_flow.go`、`frontend/src/views/admin/HarvestFlowView.vue`；相关路由/DTO/仓储与迁移随入口一并核对。
+- 验证：全部对应入口纳入静态清点，相关 handler/前端选择用例已运行；没有执行真实采票或宣称票池容量。本轮未启用公开 Actions 作为验证入口。
+- 已知边界：外置 Codex/Node 工具和目标服务权限须由部署环境提供；合并不会自动开启对外采票。
+
+## PK-053 Astra 自动配置、号池与实验调度
+
+**状态：有效保护项，pk.61 集成源码；发行与上线另行验收。** 引入：本轮固定上游全域集成及用户指定适配；对应 R17。
+
+- 用途与必须保持：保留 Astra 自动设置、账号池、门票生命周期、运行历史与糖果实验入口；自动策略与既有严格优先级、组并发和账号健康共同生效。
+- 默认值、配置、存储和权限：Beta/实验策略保持显式启用，按管理员保存的组、账号、模型和预算执行；不自动改写用户手工配置，不恢复已禁用账号。后台运行归属单活 worker。
+- 代码/UI 入口：`backend/internal/service/astra_account_scheduling.go`、`backend/internal/service/astra_automatic_setup.go`、`backend/internal/handler/admin/account_astra_gateway.go`、`frontend/src/components/admin/AstraGatewayRuntime.vue`；相关路由/DTO/仓储与迁移随入口一并核对。
+- 验证：源码/路由/组件入口已复核，运行角色与账号兼容见专项报告；真实实验池未启动。本轮未启用公开 Actions 作为验证入口。
+- 已知边界：Beta 可用入口不是生产稳定性或模型能力保证，不能跳过 PK-045 物理 IP 互斥。
+
+## PK-054 账号质量规则、模板与归属运营
+
+**状态：有效保护项，pk.61 集成源码；发行与上线另行验收。** 引入：本轮固定上游全域集成及用户指定适配；对应 R19。
+
+- 用途与必须保持：保留质量规则、模板、preset、多模型、归属修复、5xx 信号和 401 清理；PK-032 分组测试、PK-034 答案 21 判定与 PK-036 授权准入不被新规则替换。
+- 默认值、配置、存储和权限：管理员维护计划和归属；API 产生的 5xx 待测信号继续进入共享 Redis，由唯一活动 worker 消费。停机停止接收新任务并等待已发测试保存，未发任务留给继任 worker；不为未完成回答转组。
+- 代码/UI 入口：`backend/internal/service/account_quality.go`、`backend/internal/service/scheduled_test_service.go`、`backend/internal/handler/admin/quality_ownership_handler.go`、`frontend/src/views/admin/AccountQualityView.vue`；相关路由/DTO/仓储与迁移随入口一并核对。
+- 验证：本轮服务恢复、类别/豁免、质量前端和 worker 排空定向检查见 PK_QUALITY_WORKER_PK61_REVIEW.md。本轮未启用公开 Actions 作为验证入口。
+- 已知边界：单次探针最长 10 分钟、批次 12 分钟、兼容保存 30 秒；生产 worker 停止预算须覆盖，不以强杀代替交接。
+
+## PK-055 渠道监控 V2/V3 与持续统计追赶
+
+**状态：有效保护项，pk.61 集成源码；发行与上线另行验收。** 引入：本轮固定上游全域集成及用户指定适配；对应 R20/R21。
+
+- 用途与必须保持：保留多模型糖果时间线、排序、V3 组件/事件和空闲探测；渠道统计读取真实原始用量及聚合结果，不能用无聚合数据推断业务无流量。
+- 默认值、配置、存储和权限：V2/V3 使用对应配置与监控表；API 展示和后台聚合职责分离，后台由单活 worker 执行。沿用持久水位追赶及保留期/粗桶重算修复，补派生统计不重放扣款。用户只读范围不含账号凭据。
+- 代码/UI 入口：`backend/internal/service/channel_monitor_v2_aggregator.go`、`backend/internal/service/channel_monitor_v2_candy.go`、`backend/internal/service/channel_monitor_v3_probe.go`、`frontend/src/views/user/ChannelStatusV3View.vue`；相关路由/DTO/仓储与迁移随入口一并核对。
+- 验证：先前生产缺口对账与恢复见 PK_CLUSTER_RUNTIME_RECOVERY_REVIEW.md；本轮监控/worker 定向证据见质量报告。本轮未启用公开 Actions 作为验证入口。
+- 已知边界：已恢复的旧版生产统计与尚未部署的本轮 Go 追赶补丁分开记录；不把静态入口当作所有 V3 探测完成。
+
+## PK-056 Pelican 定时测试与作品展示
+
+**状态：有效保护项，pk.61 集成源码；发行与上线另行验收。** 引入：本轮固定上游全域集成及用户指定适配；对应 R22。
+
+- 用途与必须保持：保留 Pelican 分组/账号测试、定时计划、结果作品与展示页；展示的内容必须来自允许公开的记录，管理测试与只读浏览分权。
+- 默认值、配置、存储和权限：展示开关、公开 API 范围和测试计划通过管理员设置保存；定时任务由 worker 统一运行。普通用户只读已开放结果，不获得测试配置、执行权限或私有账号内容。
+- 代码/UI 入口：`backend/internal/service/pelican_scheduled.go`、`backend/internal/service/setting_pelican_showcase.go`、`backend/internal/handler/pelican_showcase_public.go`、`frontend/src/views/user/PelicanShowcaseView.vue`；相关路由/DTO/仓储与迁移随入口一并核对。
+- 验证：入口、公开展示权限与前端类型接线已核对；综合复核列出本轮测试范围。本轮未启用公开 Actions 作为验证入口。
+- 已知边界：没有真实模型生成作品验收，管理员开启公开展示前需按现有配置选择记录范围。
+
+## PK-057 ModelTrace 指纹与受控实验
+
+**状态：有效保护项，pk.61 集成源码；发行与上线另行验收。** 引入：本轮固定上游全域集成及用户指定适配；对应 R23。
+
+- 用途与必须保持：提供模型指纹、受控实验计划、执行和评分记录；实验需要明确目标、成本/次数约束，不能凭实验判分直接修改真实用量。
+- 默认值、配置、存储和权限：管理员显式启动并限定账号/模型与预算，实验状态及结果由服务层保存；新实验不开启不产生请求。正常 PK 计费、限额和代理规则仍适用。
+- 代码/UI 入口：`backend/internal/service/controlled_experiment.go`、`backend/internal/service/controlled_experiment_grader.go`、`backend/internal/handler/admin/controlled_experiment_handler.go`、`frontend/src/views/admin/ControlledExperimentsView.vue`；相关路由/DTO/仓储与迁移随入口一并核对。
+- 验证：管理入口、源码和选定前端测试已核对；未执行真实受控实验或供应商模型鉴定。本轮未启用公开 Actions 作为验证入口。
+- 已知边界：指纹与分数是观测证据，不能证明供应商身份或替代正常账单；工具和预算权限不可旁路。
+
+## PK-058 优先调度、账号运维与自动配置
+
+**状态：有效保护项，pk.61 集成源码；发行与上线另行验收。** 引入：本轮固定上游全域集成及用户指定适配；对应 R24/R25/R26/R59。
+
+- 用途与必须保持：保留延迟反馈、公平/粘性会话运营、账号阈值、通知、自动配置日志和定时调度窗口；PK-045 严格 Priority/ID 顺序作为明确模式保留。
+- 默认值、配置、存储和权限：管理员保存调度与运维规则，通知/Webhook 仅按实际配置执行；持久计划统一 worker 归属。PK-038 邮件去重、PK-044 代理容量与手工停调保护保持，自动配置不覆盖期间人工变更。
+- 代码/UI 入口：`backend/internal/service/priority_analysis.go`、`backend/internal/service/account_ops.go`、`backend/internal/service/account_schedulable_timer.go`、`frontend/src/views/admin/PrioritySchedulingView.vue`、`frontend/src/views/admin/AutoConfigView.vue`；相关路由/DTO/仓储与迁移随入口一并核对。
+- 验证：账号兼容、EWMA、调度快照与 handler/前端有本轮定向证据，见账号兼容与综合复核。本轮未启用公开 Actions 作为验证入口。
+- 已知边界：没有触发真实通知/Webhook，未进行 3000 并发容量测试；延迟统计不取代严格模式。
+
+## PK-059 跨节点账号性能证据与独立暂停
+
+**状态：有效保护项，pk.61 集成源码；发行与上线另行验收。** 引入：本轮固定上游全域集成及用户指定适配；对应 R18。
+
+- 用途与必须保持：TPS、TTFT、质量轮次与 HTTP 错误率用于可配置性能判定；HTTP 尝试从各 API 汇入共享 Redis，独立 worker 可以看到其他节点流量。
+- 默认值、配置、存储和权限：后台性能 evaluator 仅单活 worker 启动。共享尝试队列 4096、每 256 条或 200ms 批量写入、全局上限 65536 条/24 小时；随机进程 ID+序号防重放，只存账号/状态/时间。窗口标为 partial，仍按已有样本评估；读取失败为 unavailable，不回落成本地假 0%。
+- 代码/UI 入口：`backend/internal/pkg/upstreamstats/`、`backend/internal/service/account_performance.go`、`backend/internal/service/setting_account_performance.go`、`frontend/src/components/account/AccountPerformanceCell.vue`、`frontend/src/components/account/AccountPerformanceDialog.vue`；相关路由/DTO/仓储与迁移随入口一并核对。
+- 验证：共享统计基础/故障测试、真实本地 HTTP 双 writer→第三 worker 链路和关闭 flush 失败场景通过；前端来源/partial/unknown 定向通过。详见 PK_ACCOUNT_COMPAT_PK61_REVIEW.md。本轮未启用公开 Actions 作为验证入口。
+- 已知边界：共享窗口不宣称完整流量覆盖；排空 HTTP/探针后先 CloseShared 再关闭 Redis，限时失败留证。隔离链路不等于生产压测。
+
+## PK-060 Mihomo 动态节点与区域代理出口
+
+**状态：有效保护项，pk.61 集成源码；发行与上线另行验收。** 引入：本轮固定上游全域集成及用户指定适配；对应 R27/R28。
+
+- 用途与必须保持：保留 Mihomo 内核管理、订阅、地区筛选、动态节点及静态导入，并支持按域名/账号选择区域出口；新出口不得静默绕过既有代理。
+- 默认值、配置、存储和权限：管理员显式配置内核、目录、订阅和路由，区域出口未启用时保持原路径。PK-044 已选代理租约与 PK-045 静态组身份须遵守既定优先级；运行目录/进程资源由部署配置提供，不放开只读根。
+- 代码/UI 入口：`backend/internal/service/admin_mihomo_node.go`、`backend/internal/service/admin_mihomo_static_proxy.go`、`backend/internal/handler/admin/system_mihomo.go`、`frontend/src/views/admin/settings/MihomoSettings.vue`；相关路由/DTO/仓储与迁移随入口一并核对。
+- 验证：代理/区域交叉定向通过，首轮缺缓存夹具失败及修正复验保留；无真实订阅更新或生产出口切换。本轮未启用公开 Actions 作为验证入口。
+- 已知边界：外置内核是否安装、订阅可达性和出口 IP 需部署验收；动态代理不能解除全局物理容量。
+
+## PK-061 BPS OAuth、网关与工具任务
+
+**状态：有效保护项，pk.61 集成源码；发行与上线另行验收。** 引入：本轮固定上游全域集成及用户指定适配；对应 R29。
+
+- 用途与必须保持：保留 BPS OAuth、核心转发、工具目录、图片及代理任务入口；这些新入口同样受缓存/计费/首字、Key 实际组和审计保护。
+- 默认值、配置、存储和权限：BPS 账号与功能按管理员显式配置启用，凭据独立于普通 OpenAI/Kilo。续接和工具任务保持账号身份与代理租约，使用真实返回用量和模型映射，不借新协议跳过配额。
+- 代码/UI 入口：`backend/internal/service/account_excel_bps_groups.go`、`backend/internal/service/account_excel_bps_recovery_settings.go`、`backend/internal/handler/openai_excel_bps_image.go`、`frontend/src/components/account/ExcelBPSModeSwitches.vue`；相关路由/DTO/仓储与迁移随入口一并核对。
+- 验证：对应源码/入口及选定服务、handler、前端兼容用例已核对；未执行真实 BPS 授权或工具任务。本轮未启用公开 Actions 作为验证入口。
+- 已知边界：外部协议能力、工具权限和真实媒体计费需环境验收；不自动将普通账号转换成 BPS。
+
+## PK-062 Prism 浏览器桥与 Copilot SDK 通道
+
+**状态：有效保护项，pk.61 集成源码；发行与上线另行验收。** 引入：本轮固定上游全域集成及用户指定适配；对应 R30。
+
+- 用途与必须保持：保留 Prism 浏览器桥与 Copilot SDK 通道，并与 PK-028 Kilo 独立；模型、凭据、出口和账务身份不能混用。
+- 默认值、配置、存储和权限：新通道按账号显式配置，未启用保持原生路径；账号代理和全局并发仍生效。浏览器/SDK 是部署依赖，敏感会话不向普通用户 DTO 暴露。
+- 代码/UI 入口：`backend/internal/service/account_prism.go`、`backend/internal/service/openai_prism_browser.go`、`backend/internal/service/openai_copilot_sdk.go`；相关路由/DTO/仓储与迁移随入口一并核对。
+- 验证：源码/构造器/转发接线和关联 handler 编译已复核，未发真实 Prism/Copilot 请求。本轮未启用公开 Actions 作为验证入口。
+- 已知边界：保留上游新通道不代表当前运行环境已安装或开通该服务；原生路径关闭开关时保持。
+
+## PK-063 连接诊断与 Observer 本人用量视图
+
+**状态：有效保护项，pk.61 集成源码；发行与上线另行验收。** 引入：本轮固定上游全域集成及用户指定适配；对应 R41。
+
+- 用途与必须保持：保留网络、连接、流量诊断与 Observer 用量/筛选/分段计时；本人权限和管理员权限明确分开。
+- 默认值、配置、存储和权限：Observer 查询强制认证主体 user ID，不能借参数读取他人记录；普通用户继续使用 PK-010 下游 first_token_ms，隐藏原始上游与排队细节。管理员诊断保留真实测量，未知不回填。
+- 代码/UI 入口：`backend/internal/service/observer_scope.go`、`backend/internal/service/latency_observability.go`、`backend/internal/handler/admin/observer_account_access.go`、`frontend/src/components/admin/usage/observerUsageContext.ts`；相关路由/DTO/仓储与迁移随入口一并核对。
+- 验证：本人/他人边界、普通用户脱敏与 timing 用例纳入本轮 handler/server 及前端定向通过。本轮未启用公开 Actions 作为验证入口。
+- 已知边界：Observer 按上游明确授予的本人诊断范围展示，不扩大为完整管理员；未执行生产网络压测。
+
+## PK-064 HTTP/WS 请求采集与受控导出
+
+**状态：有效保护项，pk.61 集成源码；发行与上线另行验收。** 引入：本轮固定上游全域集成及用户指定适配；对应 R42。
+
+- 用途与必须保持：管理员可以建立有范围和时间限制的 HTTP/WS 请求采集任务、查看与导出诊断记录；与普通用户账单页面隔离。
+- 默认值、配置、存储和权限：仅显式配置的采集任务执行，大小/保留期/脱敏由 request_capture 服务校验；不把原始凭据经普通用户 DTO 或公开展示接口返回。采集不改写真实 usage 或重复扣款。
+- 代码/UI 入口：`backend/internal/service/request_capture.go`、`backend/internal/service/openai_ws_request_capture.go`、`backend/internal/handler/admin/request_capture_handler.go`、`frontend/src/views/admin/RequestCaptureView.vue`；相关路由/DTO/仓储与迁移随入口一并核对。
+- 验证：管理路由权限、源码接线及相关前端选择用例已检查；没有在生产开启抓取或导出用户请求。本轮未启用公开 Actions 作为验证入口。
+- 已知边界：采集有存储和敏感数据成本，按现有显式任务范围执行；保留期不能因迁移自动放宽。
+
+## PK-065 AI Ops 诊断、提案与受控执行
+
+**状态：有效保护项，pk.61 集成源码；发行与上线另行验收。** 引入：本轮固定上游全域集成及用户指定适配；对应 R43。
+
+- 用途与必须保持：提供 AI 运维诊断、报告、恢复探针和操作提案，执行路径服从工具权限与明确的变更边界。
+- 默认值、配置、存储和权限：功能默认关闭；管理员配置后才使用外置工具和服务。诊断/提案不等于授权发布、切主或修改账务，不能绕过私库 tag/main、同制品验收、HA writer/worker 与排空守卫。
+- 代码/UI 入口：`backend/internal/service/ai_ops_service.go`、`backend/internal/service/ai_ops_types.go`、`frontend/src/views/admin/AIOpsView.vue`、`frontend/src/components/admin/operations/AIOpsRecoveryProbes.vue`；相关路由/DTO/仓储与迁移随入口一并核对。
+- 验证：入口、角色与构造器已核对，未运行真实 AI 运维或自动执行生产变更。本轮未启用公开 Actions 作为验证入口。
+- 已知边界：Node/Codex 等外置工具必须在对应角色环境可用；私有 SSH/令牌及生产身份不进入仓库。
+
+## PK-066 IP 风控、注册防滥用与邮箱别名规则
+
+**状态：有效保护项，pk.61 集成源码；发行与上线另行验收。** 引入：本轮固定上游全域集成及用户指定适配；对应 R45。
+
+- 用途与必须保持：保留 IP 风控、匿名无效鉴权限流、注册 IP 与邮箱别名规则；与既有可信代理识别、Turnstile 和管理员豁免衔接。
+- 默认值、配置、存储和权限：管理员保存新规则，迁移不主动扩大封禁范围；以可信解析的客户端 IP 执行限流。原有登录/注册校验和失败关闭规则保持，局部更新不覆盖无关设置。
+- 代码/UI 入口：`backend/internal/service/invalid_auth_abuse_limiter.go`、`backend/internal/service/registration_email_alias.go`、`backend/internal/service/setting_ip_risk.go`、`backend/internal/handler/admin/ip_risk_handler.go`；相关路由/DTO/仓储与迁移随入口一并核对。
+- 验证：设置/权限与认证边界定向证据见综合复核；新策略未在生产自动启用。本轮未启用公开 Actions 作为验证入口。
+- 已知边界：部署的反代信任范围仍需正确配置，不能将任意请求头当可信客户端地址。
+
+## PK-067 API Key 风险巡检与用户确认
+
+**状态：有效保护项，pk.61 集成源码；发行与上线另行验收。** 引入：本轮固定上游全域集成及用户指定适配；对应 R46。
+
+- 用途与必须保持：提供 Key 风险巡检、管理处置、用户告知及本人确认；用户只查看自身风险状态，管理接口独立鉴权。
+- 默认值、配置、存储和权限：巡检/通知按管理员已保存设置执行，跨节点共享状态并由单活 worker 发起后台任务；通知去重。用户确认不能自行修改风控策略或取得他人 Key 信息。
+- 代码/UI 入口：`backend/internal/handler/admin/key_risk_handler.go`、`backend/internal/handler/admin/key_risk_user_handler.go`、`backend/internal/handler/admin/ip_audit_handler.go`；相关路由/DTO/仓储与迁移随入口一并核对。
+- 验证：路由和权限接线纳入本轮 handler/server 静态与选择测试；没有发送真实通知或自动批改生产 Key。本轮未启用公开 Actions 作为验证入口。
+- 已知边界：风险判断不是凭据泄漏的确定证明；确认记录与管理员解除限制分开。
+
+## PK-068 请求处罚与个人安全记录
+
+**状态：有效保护项，pk.61 集成源码；发行与上线另行验收。** 引入：本轮固定上游全域集成及用户指定适配；对应 R47。
+
+- 用途与必须保持：保留请求处罚与用户个人安全记录，记录范围绑定用户；与 PK-027 自动禁用、PK-043 风险动作及 PK-046 实扣回执协同。
+- 默认值、配置、存储和权限：处罚按明确配置触发，不能因同一请求被多入口观测而重复处罚或扣费；普通用户只读自己的安全记录，不获得规则修改权限。历史记录不追溯重算。
+- 代码/UI 入口：`backend/internal/service/security_penalty.go`、`backend/internal/service/security_penalty_repository.go`；相关路由/DTO/仓储与迁移随入口一并核对。
+- 验证：安全服务合同与 handler 权限定向证据见综合复核；未对生产用户执行新处罚。本轮未启用公开 Actions 作为验证入口。
+- 已知边界：观察记录、风险分和实际扣款必须区分，零成本/豁免/未完成请求仍按原 PK 规则处理。
+
+## PK-069 BEpusdt 多网络支付与 HA 共享账本
+
+**状态：有效保护项，pk.61 集成源码；发行与上线另行验收。** 引入：本轮固定上游全域集成及用户指定适配；对应 R48。
+
+- 用途与必须保持：新增内置 USDT/USDC 钱包、链上订单、扫码、补扫和充值/订阅付款，保留外接模式及 PK-022 币安账务；HA API 共用 PostgreSQL 订单/配置，唯一活动 scanner 负责扫链。
+- 默认值、配置、存储和权限：显式 ConfigureSharedPostgres 与严格 HA 角色成对配置。API 不扫链；scanner 持有独立会话 advisory lock，失联禁止连接池透明重连，先 cancel/join 再重取锁。金额/钱包分配使用跨进程事务锁，签名 token 稳定，配置可跨节点刷新。
+- 代码/UI 入口：`backend/internal/bepusdt/README.md`、`backend/internal/service/payment_crypto_checkout.go`、`backend/internal/handler/admin/payment_bepusdt.go`、`frontend/src/components/payment/BEpusdtManager.vue`；相关路由/DTO/仓储与迁移随入口一并核对。
+- 验证：隔离真实 PostgreSQL 双 API 的 6 个唯一订单、钱包保护、配置刷新、断锁退出/重取、稳定 token 和 Stop 交接通过；详见 backend/internal/bepusdt/README.md。本轮未启用公开 Actions 作为验证入口。
+- 已知边界：现存 SQLite/WAL 不静默迁移或分叉；普通 SQLite/外接模式保留。未发真实链上请求、支付或生产写入；不能用本测试代替完整迁移/财务验收。
+
+## PK-070 充值抽奖与邀请奖励
+
+**状态：有效保护项，pk.61 集成源码；发行与上线另行验收。** 引入：本轮固定上游全域集成及用户指定适配；对应 R50。
+
+- 用途与必须保持：保留抽奖、充值抽奖机会、邀请奖励和管理员奖池管理；发奖与充值状态关联，余额账本防重复写入。
+- 默认值、配置、存储和权限：管理员显式配置活动、奖项和邀请规则，迁移不自动给用户发奖；用户只查看/操作本人机会与邀请记录。退款恢复等路径保留原幂等合同。
+- 代码/UI 入口：`backend/internal/service/lottery.go`、`backend/internal/service/lottery_invitation.go`、`backend/ent/schema/lottery.go`、`frontend/src/views/user/LotteryView.vue`；相关路由/DTO/仓储与迁移随入口一并核对。
+- 验证：入口/存储/权限源码已核对，金融运行时与完整迁移仍属待验收项；未自动启动生产活动。本轮未启用公开 Actions 作为验证入口。
+- 已知边界：机会、中奖展示和实际入账分别记录，不能把页面成功当作资金已到账。
+
+## PK-071 VIP 自动授信与恢复
+
+**状态：有效保护项，pk.61 集成源码；发行与上线另行验收。** 引入：本轮固定上游全域集成及用户指定适配；对应 R51。
+
+- 用途与必须保持：保留管理员授信配置、自动额度处理、恢复和 outbox；与真实余额、API Key 配额和既有扣款流水保持一致。
+- 默认值、配置、存储和权限：资金操作仅按管理员对目标用户明确保存的规则执行，不因导入功能自动授信；恢复路径遵守幂等与用户归属，不能绕过 PK-003/046 账务合同。
+- 代码/UI 入口：`backend/internal/service/auto_credit.go`、`backend/internal/service/auto_credit_recovery.go`、`backend/internal/handler/admin/auto_credit_handler.go`、`frontend/src/components/admin/user/UserAutoCreditModal.vue`；相关路由/DTO/仓储与迁移随入口一并核对。
+- 验证：代码/权限入口已复核，耐久结算交叉测试已执行；完整新资金迁移/同制品验收待完成。本轮未启用公开 Actions 作为验证入口。
+- 已知边界：未执行真实用户授信；功能接线和账务测试不是自动开通信用额度的授权。
+
+## PK-072 余额耗尽预测与提醒
+
+**状态：有效保护项，pk.61 集成源码；发行与上线另行验收。** 引入：本轮固定上游全域集成及用户指定适配；对应 R52。
+
+- 用途与必须保持：依据真实消费记录估算余额可用时间并提供提醒；预测数值不修改账单、余额或配额。
+- 默认值、配置、存储和权限：管理员保存预测/通知设置，沿用 SMTP、通知预算及跨节点去重；不足样本或无法估计应显示未知，不能回填为真实消费。后台由单活 worker 执行。
+- 代码/UI 入口：`backend/internal/service/balance_forecast_service.go`、`backend/internal/service/balance_rejection_notify.go`、`frontend/src/components/settings/BalanceForecastSettings.vue`；相关路由/DTO/仓储与迁移随入口一并核对。
+- 验证：设置/后台/前端入口已复核，相关定向证据见综合报告；未发送真实提醒。本轮未启用公开 Actions 作为验证入口。
+- 已知边界：预测不是支出保证或扣款依据，流量骤变时需要按新样本更新。
+
+## PK-073 独立上游渠道、利润与定价运营
+
+**状态：有效保护项，pk.61 集成源码；发行与上线另行验收。** 引入：本轮固定上游全域集成及用户指定适配；对应 R53/R54。
+
+- 用途与必须保持：保留上游渠道绑定、授权/成本探测、利润运营、渠道定价导入导出及账号模型同步；原始成本、客户费用和下游审计追加费用分列。
+- 默认值、配置、存储和权限：完整管理员维护渠道凭据、映射、成本和导入内容，严格校验后保存；PK-004 原始/客户统计、PK-042 实际组与 PK-046 回执不能混账。凭据不经列表/用户 DTO 明文暴露。
+- 代码/UI 入口：`backend/internal/service/account_cost.go`、`backend/internal/service/channel_operations.go`、`backend/internal/handler/admin/profit_operations.go`、`frontend/src/views/admin/UpstreamChannelsView.vue`、`frontend/src/views/admin/ChannelOperationsView.vue`；相关路由/DTO/仓储与迁移随入口一并核对。
+- 验证：源码/路由/页面保留及选定前端用例已核对；未对真实上游执行授权、成本探测或批量导入。本轮未启用公开 Actions 作为验证入口。
+- 已知边界：估算利润与实际结算记录不能互相替代，缺失成本明确未知，不回写历史账单。
+
+## PK-074 用户与管理员支持工单
+
+**状态：有效保护项，pk.61 集成源码；发行与上线另行验收。** 引入：本轮固定上游全域集成及用户指定适配；对应 R55。
+
+- 用途与必须保持：保留用户工单、回复、附件和管理员处理入口；用户只访问自己的工单，沿用私库品牌和菜单风格。
+- 默认值、配置、存储和权限：support_ticket_enabled 控制入口，设置与工单数据通过服务层持久化；管理会话权限、附件限制和用户归属各自验证。功能关闭不销毁历史工单。
+- 代码/UI 入口：`backend/internal/service/setting_support_ticket.go`、`backend/internal/service/support_ticket.go`、`backend/internal/handler/support_ticket_handler.go`、`frontend/src/views/user/SupportTicketDetailView.vue`、`frontend/src/views/admin/SupportTicketsView.vue`；相关路由/DTO/仓储与迁移随入口一并核对。
+- 验证：路由守卫、前端组件及 handler 接线已复核，未发送真实工单通知或上传生产附件。本轮未启用公开 Actions 作为验证入口。
+- 已知边界：应用内工单与外置 iframe 自定义菜单相互独立，不把外部页面可达性当作工单功能验收。
+
+## PK-075 Serverless 区域路由与分布式调度账本
+
+**状态：有效保护项，pk.61 集成源码；发行与上线另行验收。** 引入：本轮固定上游全域集成及用户指定适配；对应 R56/R57。
+
+- 用途与必须保持：保留区域到 gateway 路由，以及独立区域鉴权同步、并发槽位、计量、资金账本/outbox 与对账的实验入口。
+- 默认值、配置、存储和权限：默认不开放；显式配置区域/owner、共享 PostgreSQL/Redis、费用上限及 migration epoch。owner 失败按合同拒绝，不静默切成无约束本地路径；PK-047 单 writer/worker 与 PK-044 全局容量继续生效。
+- 代码/UI 入口：`backend/internal/service/serverless.go`、`backend/internal/service/regional_auth_sync.go`、`backend/internal/service/regional_metering.go`、`backend/internal/service/regional_scheduler_runtime.go`、`frontend/src/components/settings/ServerlessSettings.vue`；相关路由/DTO/仓储与迁移随入口一并核对。
+- 验证：区域/代理交叉定向测试通过，首轮夹具缓存缺失和单项复验保留；完整迁移与跨区域运行待单独验收。本轮未启用公开 Actions 作为验证入口。
+- 已知边界：本轮没有开启生产区域计费、切换存储 writer 或证明跨区域容量；预览功能不越过发行和运行门禁。

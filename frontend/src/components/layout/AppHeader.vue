@@ -15,14 +15,14 @@
           <h1 class="truncate text-lg font-semibold tracking-tight text-gray-900 dark:text-white">
             {{ pageTitle }}
           </h1>
-          <p v-if="pageDescription" class="mt-0.5 truncate text-xs text-gray-500 dark:text-dark-400" :class="{ 'hidden lg:block': showMobilePageTitle }">
+          <p v-if="pageDescription" :title="pageDescription" class="mt-0.5 truncate text-xs text-gray-500 dark:text-dark-400" :class="{ 'hidden lg:block': showMobilePageTitle }">
             {{ pageDescription }}
           </p>
         </div>
       </div>
 
       <!-- Right: Announcements + Docs + Language + Subscriptions + Balance + User Dropdown -->
-      <div class="flex min-w-0 items-center gap-1 sm:gap-3">
+      <div class="flex shrink-0 items-center gap-1 sm:gap-3">
         <!-- Announcement Bell -->
         <AnnouncementBell v-if="user" />
 
@@ -247,10 +247,11 @@ import { sanitizeUrl } from '@/utils/url'
 import { FeatureFlags, isFeatureFlagEnabled } from '@/utils/featureFlags'
 import { resolveRouteMetaKeys } from '@/router/title'
 import { resolveSiteBillingMode } from '@/utils/siteBillingMode'
+import { getCustomMenuLabel } from '@/utils/customMenu'
 
 const router = useRouter()
 const route = useRoute()
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const appStore = useAppStore()
 const authStore = useAuthStore()
 const adminSettingsStore = useAdminSettingsStore()
@@ -314,7 +315,7 @@ const pageTitle = computed(() => {
     const publicItems = appStore.cachedPublicSettings?.custom_menu_items ?? []
     const menuItem = publicItems.find((item) => item.id === id)
       ?? (authStore.isAdmin ? adminSettingsStore.customMenuItems.find((item) => item.id === id) : undefined)
-    if (menuItem?.label) return menuItem.label
+    if (menuItem) return getCustomMenuLabel(menuItem, locale.value)
   }
   const titleKey = routeMetaKeys.value.titleKey
   if (titleKey) {

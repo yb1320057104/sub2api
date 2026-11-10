@@ -156,6 +156,7 @@
                                class="mr-4 inline-flex items-center gap-2">
                       <input type="checkbox"
                              checked
+                             :data-test="`audit-missing-group-${id}`"
                              @change="toggleGroup(id)" />#{{ id }}
                     </label>
                   </div>
@@ -399,6 +400,7 @@
                           data-test="audit-auto-disable" />{{ t('securityPolicyRanking.autoDisable') }}
                 </label><label class="text-sm">
                   {{ t('securityPolicyRanking.threshold') }}<input v-model.number="ranking.auto_disable_threshold"
+                                                                   data-test="audit-disable-threshold"
                                                                    type="number"
                                                                    min="1"
                                                                    max="1000000000"
@@ -433,6 +435,7 @@
                   </label><label v-if="ruleFor(id).auto_deduct_enabled"
                                  class="block text-sm font-semibold text-red-700 dark:text-red-300">
                     {{ t('securityPolicyRanking.groupMultiplier') }}<input :value="ruleFor(id).multiplier"
+                                                                           :data-test="`audit-group-multiplier-${id}`"
                                                                            type="text"
                                                                            inputmode="decimal"
                                                                            maxlength="11"
@@ -445,6 +448,7 @@
                          class="text-xs text-amber-700 dark:text-amber-300">
                     {{ t('securityPolicyRanking.groupRuleInactive') }}
                   </p><button v-if="ranking.group_rules?.some(rule => rule.group_id === id)"
+                              :data-test="`audit-clear-rule-${id}`"
                               type="button"
                               class="text-xs text-primary-600 hover:underline dark:text-primary-400"
                               @click="removeRule(id)">
@@ -758,6 +762,12 @@ async function save() {
   if ((policyTouched.value && !validAuditRiskPolicy(sharedPolicy.value)) || !validAuditRiskPolicy(prompt.value.risk_policy) || prompt.value.local_rules.some(rule => rule.score !== undefined && !validAuditScore(rule.score))) { app.showError(t('admin.promptAudit.riskPolicy.invalid')); return }
   const minimum = ranking.value.multiplier.trim()
   if (rankingDirty.value && (!/^\d+(\.\d{1,6})?$/.test(minimum) || Number(minimum) < 0.000001 || Number(minimum) > 1000)) { app.showError(t('securityPolicyRanking.invalidMultiplier')); return }
+  if (rankingDirty.value) {
+    const threshold = ranking.value.auto_disable_threshold
+    if (!Number.isInteger(threshold) || threshold < 1 || threshold > 1000000000) { app.showError(t('securityPolicyRanking.invalidThreshold')); return }
+    const invalidRule = ranking.value.group_rules?.find(rule => !/^\d+(\.\d{1,6})?$/.test(rule.multiplier) || Number(rule.multiplier) < 0.000001 || Number(rule.multiplier) > 1000)
+    if (invalidRule) { app.showError(t('securityPolicyRanking.invalidGroupMultiplier', { id: invalidRule.group_id })); return }
+  }
   const shared: AuditCenterShared = {}
   if (groupsTouched.value) shared.group_ids = sorted(sharedGroups.value)
   if (allowlistTouched.value) shared.user_allowlist_ids = sorted(sharedAllowlist.value)

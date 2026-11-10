@@ -2,6 +2,7 @@ package service
 
 import (
 	"fmt"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
 	"strings"
 	"time"
 )
@@ -102,12 +103,13 @@ func ApplyLegacyRequestFields(requestType RequestType, fallbackStream bool, fall
 }
 
 type UsageLog struct {
-	ID        int64
-	UserID    int64
-	APIKeyID  int64
-	AccountID int64
-	RequestID string
-	Model     string
+	ContentTiming *requesttiming.ContentObservation
+	ID            int64
+	UserID        int64
+	APIKeyID      int64
+	AccountID     int64
+	RequestID     string
+	Model         string
 	// RequestedModel is the client-requested model name recorded for stable user/admin display.
 	// Empty should be treated as Model for backward compatibility with historical rows.
 	RequestedModel string
@@ -186,6 +188,11 @@ type UsageLog struct {
 	FirstResponseMs              *int // User-visible TTFT: downstream first write when early response is enabled; native upstream TTFT otherwise.
 	UserAgent                    *string
 	IPAddress                    *string
+	QueueWaitMs                  *int
+	QueueTiming                  *QueueTiming
+	// In-process proof of a fresh durable commit; never serialized or accepted from clients.
+	durableBillingCommitted bool
+	durableBillingFresh     bool
 	// SessionID is the explicit client-provided request correlation identifier
 	// (e.g. the session_id / X-Session-Id headers). Nil when the client sent no
 	// valid session header. It is never derived from prompt_cache_key or content.

@@ -4,18 +4,22 @@ import "time"
 
 // APIKeyAuthSnapshot API Key 认证缓存快照（仅包含认证所需字段）
 type APIKeyAuthSnapshot struct {
-	Version     int                        `json:"version"`
-	APIKeyID    int64                      `json:"api_key_id"`
-	UserID      int64                      `json:"user_id"`
-	GroupID     *int64                     `json:"group_id,omitempty"`
-	GroupIDs    []int64                    `json:"group_ids"`
-	Groups      []*APIKeyAuthGroupSnapshot `json:"groups"`
-	Name        string                     `json:"name"`
-	Status      string                     `json:"status"`
-	IPWhitelist []string                   `json:"ip_whitelist,omitempty"`
-	IPBlacklist []string                   `json:"ip_blacklist,omitempty"`
-	User        APIKeyAuthUserSnapshot     `json:"user"`
-	Group       *APIKeyAuthGroupSnapshot   `json:"group,omitempty"`
+	Version          int                        `json:"version"`
+	APIKeyID         int64                      `json:"api_key_id"`
+	UserID           int64                      `json:"user_id"`
+	GroupID          *int64                     `json:"group_id,omitempty"`
+	GroupIDs         []int64                    `json:"group_ids"`
+	Groups           []*APIKeyAuthGroupSnapshot `json:"groups"`
+	Name             string                     `json:"name"`
+	Status           string                     `json:"status"`
+	IPWhitelist      []string                   `json:"ip_whitelist,omitempty"`
+	IPBlacklist      []string                   `json:"ip_blacklist,omitempty"`
+	User             APIKeyAuthUserSnapshot     `json:"user"`
+	Group            *APIKeyAuthGroupSnapshot   `json:"group,omitempty"`
+	ConcurrencyLimit int                        `json:"concurrency_limit"`
+	ModelMapping     map[string]string          `json:"model_mapping,omitempty"`
+	ReasoningEffort  string                     `json:"reasoning_effort,omitempty"`
+	AllowLongContext bool                       `json:"allow_long_context"`
 
 	// Quota fields for API Key independent quota feature
 	Quota     float64 `json:"quota"`      // Quota limit in USD (0 = unlimited)
@@ -55,6 +59,9 @@ type APIKeyAuthUserSnapshot struct {
 	// UserGroupRPMOverride 该 API Key 对应的 (user, group) 专属 RPM 覆盖值。
 	// nil = 无 override（回退到 group/user 级）；0 = 不限流；>0 = 专属上限。
 	UserGroupRPMOverride *int `json:"user_group_rpm_override,omitempty"`
+
+	// UserGroupDeniedModels 该 API Key 对应的 (user, group) 禁用模型；准入与模型列表据此拒绝 / 过滤。
+	UserGroupDeniedModels []string `json:"user_group_denied_models,omitempty"`
 }
 
 // APIKeyAuthGroupSnapshot 分组快照
@@ -95,6 +102,9 @@ type APIKeyAuthGroupSnapshot struct {
 	RequirePrivacySet               bool                          `json:"require_privacy_set"`
 	FallbackGroupID                 *int64                        `json:"fallback_group_id,omitempty"`
 	FallbackGroupIDOnInvalidRequest *int64                        `json:"fallback_group_id_on_invalid_request,omitempty"`
+	StreamOnly                      bool                          `json:"stream_only"`
+	CodexCLIOnly                    bool                          `json:"codex_cli_only"`
+	BlockSubagents                  bool                          `json:"block_subagents"`
 
 	// Model routing is used by gateway account selection, so it must be part of auth cache snapshot.
 	// Only anthropic groups use these fields; others may leave them empty.

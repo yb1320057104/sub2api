@@ -430,6 +430,11 @@ class Agent:
         # private source may fill a missing API release credential only.
         if role == 'api':
             self.fill_release_credential(spec)
+        # Both HA roles use one collection database. Older baselines ignore this
+        # new flag; new releases must never create per-container SQLite orders.
+        spec['Env'] = [entry for entry in spec.get('Env', [])
+                       if not entry.startswith('SUB2API_BEPUSDT_SHARED_POSTGRES=')]
+        spec['Env'].append('SUB2API_BEPUSDT_SHARED_POSTGRES=true')
         resources = role_resources(self.c, role)
         if resources is not None:
             # Each role has an independent budget. Apply it only to the next
@@ -722,20 +727,39 @@ class Agent:
             text = text.replace(old_probe, bounded_probe, 1)
         else:
             need(text.count(bounded_probe) == 1, 'supervisor_probe_timeout_anchor')
+        old_grace = "5 <= config['stop_grace_seconds'] <= 60, 'invalid_stop_grace')"
+        reviewed_grace = "5 <= config['stop_grace_seconds'] <= 900, 'invalid_stop_grace')"
+        if old_grace in text:
+            need(text.count(old_grace) == 1 and reviewed_grace not in text, 'supervisor_stop_grace_anchor')
+            text = text.replace(old_grace, reviewed_grace, 1)
+        else:
+            need(text.count(reviewed_grace) == 1, 'supervisor_stop_grace_anchor')
         compile(text, 'supervisor.py', 'exec')
         return text.encode()
 
-    def worker_unit(self, action):
-        return checked_command(['systemctl', action, self.c['worker_unit']], 100)
+    def worker_unit(self, action, seconds=100):
+        args = ['systemctl', action]
+        if action == 'stop':
+            # The agent independently joins both the container and supervisor.
+            # Old supervisors may report their shorter grace expired, but that
+            # must neither truncate a draining worker nor start its replacement.
+            args.append('--no-block')
+        return checked_command(args + [self.c['worker_unit']], seconds)
 
     def worker_service_contract(self):
         raw = checked_command(['systemctl', 'show', self.c['worker_unit'],
-                               '--property=KillMode,KillSignal,SendSIGKILL'], 10).decode()
+                               '--property=KillMode,KillSignal,SendSIGKILL,TimeoutStopUSec'], 10).decode()
         values = dict(line.split('=', 1) for line in raw.splitlines() if '=' in line)
         need(values.get('KillMode') == 'process' and values.get('KillSignal') in ('15', 'SIGTERM') and
              values.get('SendSIGKILL') == 'no', 'worker_service_could_force_kill')
+        stop_timeout = values.get('TimeoutStopUSec', '')
+        units = {'us': .000001, 'ms': .001, 's': 1, 'min': 60, 'h': 3600, 'd': 86400}
+        parts = re.findall(r'(\d+(?:\.\d+)?)(us|ms|min|s|h|d)', stop_timeout)
+        finite = (bool(parts) and ''.join(number + unit for number, unit in parts) == re.sub(r'\s+', '', stop_timeout)
+                  and sum(float(number) * units[unit] for number, unit in parts) >= 900)
+        need(stop_timeout == 'infinity' or finite, 'worker_service_shutdown_budget_too_short')
 
-    def worker_stopped(self, module, value, seconds=100):
+    def worker_stopped(self, module, value, seconds=900):
         until = time.monotonic() + seconds
         while True:
             state = module.Docker(value).inspect()
@@ -743,6 +767,22 @@ class Agent:
                 need(state.get('ExitCode') == 0, 'worker_unclean_exit')
                 return
             need(time.monotonic() < until, 'worker_shutdown_pending')
+            time.sleep(.5)
+
+    def stop_worker_orderly(self, module, value, seconds=900):
+        # Scheduled probes may take twelve minutes plus result persistence. The
+        # supervisor sends TERM and joins the worker; the budget is shared by
+        # systemd's stop and the container exit check, never a Docker KILL timer.
+        until = time.monotonic() + seconds
+        self.worker_unit('stop')
+        self.worker_stopped(module, value, seconds=max(0, until - time.monotonic()))
+        while True:
+            raw = checked_command(['systemctl', 'show', self.c['worker_unit'],
+                                   '--property=ActiveState,MainPID'], 10).decode()
+            state = dict(line.split('=', 1) for line in raw.splitlines() if '=' in line)
+            if state.get('MainPID') == '0' and state.get('ActiveState') in ('inactive', 'failed'):
+                return
+            need(time.monotonic() < until, 'worker_supervisor_shutdown_pending')
             time.sleep(.5)
 
     def verify_worker_role(self, module, value, seconds=25):
@@ -772,7 +812,7 @@ class Agent:
         spec = json.loads(read(specpath))
         newconfig.update({'revision': new['revision'], 'container_name': new['name'], 'container_id': new['id'],
                           'image_id': spec['Image'], 'spec_file': str(specpath), 'spec_sha256': new['spec_sha256'],
-                          'binary_sha256': new['binary_sha256']})
+                          'binary_sha256': new['binary_sha256'], 'stop_grace_seconds': 900})
         code = self.generic_supervisor(read(self.worker_root / 'supervisor.py'))
         put(self.job / 'next-supervisor.py', code)
         module = load(self.job / 'next-supervisor.py', 'next_worker')
@@ -785,8 +825,7 @@ class Agent:
         changed = False
         try:
             self.log('worker_stop_intent', id=previous['id'])
-            self.worker_unit('stop')
-            self.worker_stopped(wm, wc)
+            self.stop_worker_orderly(wm, wc)
             stopped = True
             self.log('worker_stopped', id=previous['id'])
             put(self.worker_root / 'supervisor.py', code, replace=True)
@@ -799,8 +838,7 @@ class Agent:
         except Exception:
             if changed:
                 try:
-                    self.worker_unit('stop')
-                    self.worker_stopped(module, newconfig)
+                    self.stop_worker_orderly(module, newconfig)
                     put(self.worker_root / 'supervisor.py', read(self.job / 'old-supervisor.py'), replace=True)
                     put(self.worker_root / 'config.json', read(self.job / 'old-worker-config.json'), replace=True)
                     self.worker_unit('start')

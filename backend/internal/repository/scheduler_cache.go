@@ -30,8 +30,12 @@ const (
 	schedulerVersionPrefix         = "sched:ver:"
 	schedulerEpochPrefix           = "sched:epoch:"
 	schedulerRetiredPrefix         = "sched:retired:"
+	schedulerPublishedPrefix       = "sched:published:"
 	schedulerSnapshotPrefix        = "sched:"
 	schedulerLockPrefix            = "sched:lock:"
+	// Redis cannot retain an empty sorted set. A version-local sentinel marks
+	// a deliberately published empty snapshot without accepting a missing key.
+	schedulerEmptySnapshotMember = "__empty__"
 	// 账号精简记录（sched:meta:<id>）的修订号：全局修订号与按平台划分的修订号（前缀后接平台名）。
 	// 改写精简记录后写入所涉平台的修订号；删除记录、改写平台为空或平台发生变化的记录、写入出错时写入全局修订号。
 	// 取值都是新的随机串，读侧只比较是否相等，键丢失后重建也不会与旧取值相同；
@@ -201,6 +205,7 @@ return 0
 	// KEYS[4] = snapshotKey   (新写入的快照 key)
 	// KEYS[5] = epochKey
 	// KEYS[6] = retiredKey
+	// KEYS[7] = publication stamp (generation + Redis clock, never reader-local time)
 	// ARGV[1] = 新版本号字符串
 	// ARGV[2] = bucket 字符串 (用于 SADD)
 	// ARGV[3] = 快照 key 前缀 (用于构造旧快照 key)
@@ -235,6 +240,11 @@ end
 redis.call('SET', KEYS[1], ARGV[1])
 redis.call('SET', KEYS[2], '1')
 redis.call('SADD', KEYS[3], ARGV[2])
+if currentActive ~= ARGV[1] then
+	local now = redis.call('TIME')
+	local millis = tonumber(now[1]) * 1000 + math.floor(tonumber(now[2]) / 1000)
+	redis.call('HSET', KEYS[7], 'version', ARGV[1], 'published_ms', tostring(millis))
+end
 
 if currentActive ~= false and currentActive ~= ARGV[1] then
 	redis.call('EXPIRE', ARGV[3] .. currentActive, tonumber(ARGV[4]))
@@ -300,24 +310,43 @@ func newSchedulerCacheWithChunkSizes(rdb *redis.Client, mgetChunkSize, writeChun
 // GetSnapshot 读取 bucket 的激活快照。解码后的精简记录按 bucket 常驻进程内存，
 // 只有 ready、active 版本、全局修订号与该 bucket 所涉平台的修订号都与 Redis 一致且未超过最长复用时长时才复用；
 // 否则重新从 Redis 加载。last_used 每次都从 Redis 读取。
-// 返回的账号对象由本次调用独占，可以修改其顶层字段；map、切片底层数组与指针指向的值与其它调用共享，不得原地修改。
+// 返回账号的 Credentials/Extra/分组模型列表为独立副本，兼容 fork 选号路径的本地修改。
 func (c *schedulerCache) GetSnapshot(ctx context.Context, bucket service.SchedulerBucket) ([]*service.Account, bool, error) {
 	bucketKey := bucket.String()
 	tagKeys := schedulerSnapshotTagKeys(bucket)
-	tags, err := c.rdb.MGet(ctx, tagKeys...).Result()
+	// GET preserves wrong-type errors; MGET would silently turn corrupt control
+	// keys into nil. Read every control/revision tag before any memo lookup.
+	pipe := c.rdb.Pipeline()
+	tagCommands := make([]*redis.StringCmd, len(tagKeys))
+	for i, key := range tagKeys {
+		tagCommands[i] = pipe.Get(ctx, key)
+	}
+	_, _ = pipe.Exec(ctx)
+	readyVal, err := tagCommands[0].Result()
+	if errors.Is(err, redis.Nil) || (err == nil && readyVal != "1") {
+		c.dropSnapshotEntry(bucketKey)
+		return nil, false, nil
+	}
 	if err != nil {
 		return nil, false, err
 	}
-	if len(tags) != len(tagKeys) {
-		return nil, false, fmt.Errorf("unexpected scheduler snapshot tag count: got %d, want %d", len(tags), len(tagKeys))
+	activeVal, err := tagCommands[1].Result()
+	if errors.Is(err, redis.Nil) {
+		c.dropSnapshotEntry(bucketKey)
+		return nil, false, nil
 	}
-	readyVal, err := schedulerCacheOptionalString(tags[0])
 	if err != nil {
 		return nil, false, err
 	}
-	activeVal, err := schedulerCacheOptionalString(tags[1])
-	if err != nil {
-		return nil, false, err
+	tags := make([]any, len(tagKeys))
+	for i := 2; i < len(tagCommands); i++ {
+		value, err := tagCommands[i].Result()
+		if err != nil && !errors.Is(err, redis.Nil) {
+			return nil, false, err
+		}
+		if err == nil {
+			tags[i] = value
+		}
 	}
 	// 修订号缺失（nil）按空字符串比较：它是一个独立取值，不会与任何写入过的随机修订号相等。
 	revisions := make([]string, 0, len(tags)-2)
@@ -339,6 +368,10 @@ func (c *schedulerCache) GetSnapshot(ctx context.Context, bucket service.Schedul
 		if err != nil {
 			return nil, false, err
 		}
+		if accounts == nil {
+			c.dropSnapshotEntry(bucketKey)
+			return nil, false, nil
+		}
 		return accounts, true, nil
 	}
 
@@ -347,10 +380,13 @@ func (c *schedulerCache) GetSnapshot(ctx context.Context, bucket service.Schedul
 		return nil, false, err
 	}
 	if len(ids) == 0 {
-		// 空快照视为缓存未命中，触发数据库回退查询
-		// 这解决了新分组创建后立即绑定账号时的竞态条件问题
+		// An active version without its data is incomplete, not an empty pool.
 		c.dropSnapshotEntry(bucketKey)
 		return nil, false, nil
+	}
+	if len(ids) == 1 && ids[0] == schedulerEmptySnapshotMember {
+		c.dropSnapshotEntry(bucketKey)
+		return []*service.Account{}, true, nil
 	}
 
 	keys := make([]string, 0, len(ids))
@@ -359,7 +395,7 @@ func (c *schedulerCache) GetSnapshot(ctx context.Context, bucket service.Schedul
 		keys = append(keys, schedulerAccountMetaKey(id))
 		lastUsedKeys = append(lastUsedKeys, schedulerLastUsedKey(id))
 	}
-	values, err := c.mgetChunked(ctx, keys)
+	values, lastUsedValues, err := c.mgetSnapshotFields(ctx, keys, lastUsedKeys)
 	if err != nil {
 		return nil, false, err
 	}
@@ -396,7 +432,7 @@ func (c *schedulerCache) GetSnapshot(ctx context.Context, bucket service.Schedul
 	}
 	c.storeSnapshotEntry(bucketKey, entry)
 
-	accounts, err := c.snapshotAccountsFromEntry(ctx, entry)
+	accounts, err := snapshotAccountsWithLastUsed(ctx, entry, lastUsedValues)
 	if err != nil {
 		return nil, false, err
 	}
@@ -413,8 +449,36 @@ func (e *schedulerSnapshotEntry) matches(active string, revisions []string, now 
 
 // snapshotAccountsFromEntry 读取最新 last_used，并为本次调用一次性分配一组母本副本。
 func (c *schedulerCache) snapshotAccountsFromEntry(ctx context.Context, entry *schedulerSnapshotEntry) ([]*service.Account, error) {
-	lastUsedValues, err := c.mgetChunked(ctx, entry.lastUsedKeys)
-	if err != nil {
+	// A deletion/revocation must also invalidate a warm memo if an older writer
+	// removes metadata without advancing the new revision keys. EXISTS transfers
+	// no JSON and is pipelined with the bounded, fresh last_used reads.
+	values := make([]any, 0, len(entry.accounts))
+	chunkSize := c.mgetChunkSize
+	if chunkSize <= 0 {
+		chunkSize = defaultSchedulerSnapshotMGetChunkSize
+	}
+	for start := 0; start < len(entry.accounts); start += chunkSize {
+		end := min(start+chunkSize, len(entry.accounts))
+		keys := make([]string, 0, end-start)
+		for _, account := range entry.accounts[start:end] {
+			keys = append(keys, schedulerAccountMetaKey(strconv.FormatInt(account.ID, 10)))
+		}
+		pipe := c.rdb.Pipeline()
+		exists := pipe.Exists(ctx, keys...)
+		lastUsed := pipe.MGet(ctx, entry.lastUsedKeys[start:end]...)
+		if _, err := pipe.Exec(ctx); err != nil {
+			return nil, err
+		}
+		if exists.Val() != int64(end-start) {
+			return nil, nil
+		}
+		values = append(values, lastUsed.Val()...)
+	}
+	return snapshotAccountsWithLastUsed(ctx, entry, values)
+}
+
+func snapshotAccountsWithLastUsed(ctx context.Context, entry *schedulerSnapshotEntry, lastUsedValues []any) ([]*service.Account, error) {
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	if len(lastUsedValues) != len(entry.accounts) {
@@ -423,7 +487,7 @@ func (c *schedulerCache) snapshotAccountsFromEntry(ctx context.Context, entry *s
 	slab := make([]service.Account, len(entry.accounts))
 	accounts := make([]*service.Account, len(entry.accounts))
 	for i, master := range entry.accounts {
-		slab[i] = *master
+		slab[i] = master.CopySchedulerSnapshot()
 		account := &slab[i]
 		if err := applySchedulerLastUsed(account, lastUsedValues[i]); err != nil {
 			return nil, err
@@ -708,7 +772,7 @@ func schedulerSnapshotMembers(accountIDs []int64) []redis.Z {
 
 func (c *schedulerCache) writeSnapshotMembers(ctx context.Context, bucket service.SchedulerBucket, version string, members []redis.Z) error {
 	if len(members) == 0 {
-		return nil
+		members = []redis.Z{{Score: 0, Member: schedulerEmptySnapshotMember}}
 	}
 	snapshotKey := schedulerSnapshotKey(bucket, version)
 	pipe := c.rdb.Pipeline()
@@ -740,6 +804,7 @@ func (c *schedulerCache) activateSnapshotVersion(ctx context.Context, bucket ser
 		snapshotKey,
 		schedulerBucketKey(schedulerEpochPrefix, bucket),
 		schedulerBucketKey(schedulerRetiredPrefix, bucket),
+		schedulerBucketKey(schedulerPublishedPrefix, bucket),
 	}
 	args := []any{version, bucket.String(), snapshotKeyPrefix, snapshotGraceTTLSeconds, token.Epoch}
 
@@ -778,6 +843,48 @@ func (c *schedulerCache) GetAccount(ctx context.Context, accountID int64) (*serv
 		return nil, err
 	}
 	return account, nil
+}
+
+// GetAccounts hydrates candidate IDs from complete account snapshots. Never
+// expand sched:meta with OAuth credentials or ticket blobs to support a gate.
+func (c *schedulerCache) GetAccounts(ctx context.Context, accountIDs []int64) (map[int64]*service.Account, error) {
+	ids := make([]int64, 0, len(accountIDs))
+	seen := make(map[int64]struct{}, len(accountIDs))
+	keys := make([]string, 0, 2*len(accountIDs))
+	for _, accountID := range accountIDs {
+		if accountID <= 0 {
+			continue
+		}
+		if _, exists := seen[accountID]; exists {
+			continue
+		}
+		seen[accountID] = struct{}{}
+		ids = append(ids, accountID)
+		id := strconv.FormatInt(accountID, 10)
+		keys = append(keys, schedulerAccountKey(id), schedulerLastUsedKey(id))
+	}
+	values, err := c.mgetChunked(ctx, keys)
+	if err != nil {
+		return nil, err
+	}
+	accounts := make(map[int64]*service.Account, len(ids))
+	for i, id := range ids {
+		if values[2*i] == nil {
+			continue
+		}
+		account, err := decodeCachedAccount(values[2*i])
+		if err != nil {
+			return nil, err
+		}
+		if account == nil || account.ID != id {
+			return nil, fmt.Errorf("scheduler account snapshot ID mismatch")
+		}
+		if err := applySchedulerLastUsed(account, values[2*i+1]); err != nil {
+			return nil, err
+		}
+		accounts[id] = account
+	}
+	return accounts, nil
 }
 
 func (c *schedulerCache) SetAccount(ctx context.Context, account *service.Account) error {
@@ -1008,7 +1115,7 @@ func decodeSchedulerMetadataAccount(val any) (*service.Account, bool, error) {
 // writeAccountIDs 分块写入整账号与精简记录，返回成功编码并写入的有序账号 ID。
 // 每块在追加下一个账号前才执行，最后一块总是非空；所涉平台的修订号追加在最后一块末尾，
 // 与最后一批精简记录同一次往返发出，且排在全部精简记录写入之后。
-// 精简记录用 SET ... GET 写入并取回旧值：旧值的平台与新平台不同时，旧平台 bucket 中可能仍缓存着该账号，
+// 精简记录用 Redis 6.0 兼容的原子 GETSET 写入并取回旧值（同时清除旧 TTL）：旧值的平台与新平台不同时，旧平台 bucket 中可能仍缓存着该账号，
 // 全部写入完成后另行写入全局修订号。该检测尽力而为（客户端在 pipeline 内部重试时取回的可能已是本次写入的值），
 // 漏检由进程内快照缓存的最长复用时长兜底。
 // 任一块执行出错时，此前已执行的块与出错的块都可能已有精简记录生效，返回时启动后台写入全局修订号。
@@ -1019,7 +1126,7 @@ func (c *schedulerCache) writeAccountIDs(ctx context.Context, accounts []service
 
 	type metaWrite struct {
 		platform string
-		previous *redis.StatusCmd
+		previous *redis.StringCmd
 	}
 	pipe := c.rdb.Pipeline()
 	accountIDs := make([]int64, 0, len(accounts))
@@ -1039,7 +1146,7 @@ func (c *schedulerCache) writeAccountIDs(ctx context.Context, accounts []service
 			execFailed = true
 			return err
 		}
-		// SET ... GET 在键原本不存在时返回 redis.Nil，不算失败；其余命令的错误逐条检查。
+		// GETSET 在键原本不存在时返回 redis.Nil，不算失败；其余命令的错误逐条检查。
 		for _, cmd := range cmds {
 			if cmdErr := cmd.Err(); cmdErr != nil && !errors.Is(cmdErr, redis.Nil) {
 				execFailed = true
@@ -1076,7 +1183,7 @@ func (c *schedulerCache) writeAccountIDs(ctx context.Context, accounts []service
 		pipe.Set(ctx, schedulerAccountKey(id), fullPayload, 0)
 		writes = append(writes, metaWrite{
 			platform: account.Platform,
-			previous: pipe.SetArgs(ctx, schedulerAccountMetaKey(id), metaPayload, redis.SetArgs{Get: true}),
+			previous: pipe.GetSet(ctx, schedulerAccountMetaKey(id), metaPayload), //nolint:staticcheck // Redis 6.0 compatibility; replacement options require Redis 6.2.
 		})
 		// Keep the hot LastUsedAt side key untouched: a lagging snapshot rebuild
 		// must not overwrite a newer scheduler update.
@@ -1102,9 +1209,9 @@ func (c *schedulerCache) writeAccountIDs(ctx context.Context, accounts []service
 	return accountIDs, nil
 }
 
-// schedulerMetaPlatformChanged 判断 SET ... GET 取回的旧精简记录是否属于另一个平台；
+// schedulerMetaPlatformChanged 判断 GETSET 取回的旧精简记录是否属于另一个平台；
 // 旧值不是合法 JSON 或缺少字符串类型的顶层 Platform 时按已变化处理。
-func schedulerMetaPlatformChanged(previous *redis.StatusCmd, platform string) bool {
+func schedulerMetaPlatformChanged(previous *redis.StringCmd, platform string) bool {
 	raw, err := previous.Result()
 	if err != nil {
 		return false
@@ -1169,6 +1276,33 @@ func marshalSchedulerCacheAccount(account service.Account) ([]byte, []byte, erro
 	return fullPayload, metaPayload, nil
 }
 
+// mgetSnapshotFields pipelines metadata and the independently updated LRU
+// side keys. Each command retains the configured key limit; only one pair
+// is in flight at a time to bound the queued reply size.
+func (c *schedulerCache) mgetSnapshotFields(ctx context.Context, keys, lastUsedKeys []string) ([]any, []any, error) {
+	if len(keys) != len(lastUsedKeys) {
+		return nil, nil, fmt.Errorf("scheduler snapshot field count mismatch")
+	}
+	values := make([]any, 0, len(keys))
+	lastUsed := make([]any, 0, len(keys))
+	chunkSize := c.mgetChunkSize
+	if chunkSize <= 0 {
+		chunkSize = defaultSchedulerSnapshotMGetChunkSize
+	}
+	for start := 0; start < len(keys); start += chunkSize {
+		end := min(start+chunkSize, len(keys))
+		pipe := c.rdb.Pipeline()
+		metaCmd := pipe.MGet(ctx, keys[start:end]...)
+		lastUsedCmd := pipe.MGet(ctx, lastUsedKeys[start:end]...)
+		if _, err := pipe.Exec(ctx); err != nil {
+			return nil, nil, err
+		}
+		values = append(values, metaCmd.Val()...)
+		lastUsed = append(lastUsed, lastUsedCmd.Val()...)
+	}
+	return values, lastUsed, nil
+}
+
 func (c *schedulerCache) mgetChunked(ctx context.Context, keys []string) ([]any, error) {
 	if len(keys) == 0 {
 		return []any{}, nil
@@ -1203,6 +1337,7 @@ func buildSchedulerMetadataAccount(account service.Account) service.Account {
 		LoadFactor:              account.LoadFactor,
 		Priority:                account.Priority,
 		RateMultiplier:          account.RateMultiplier,
+		GroupRateMultiplier:     account.GroupRateMultiplier,
 		Status:                  account.Status,
 		LastUsedAt:              account.LastUsedAt,
 		ExpiresAt:               account.ExpiresAt,
@@ -1235,11 +1370,13 @@ func filterSchedulerAccountGroups(accountGroups []service.AccountGroup) []servic
 		if ag.GroupID <= 0 {
 			continue
 		}
+		// 候选过滤读的是本投影：裁掉 AllowedModels，分组内的模型限制在选号阶段就会失效。
 		filtered = append(filtered, service.AccountGroup{
-			AccountID: ag.AccountID,
-			GroupID:   ag.GroupID,
-			Priority:  ag.Priority,
-			CreatedAt: ag.CreatedAt,
+			AccountID:     ag.AccountID,
+			GroupID:       ag.GroupID,
+			Priority:      ag.Priority,
+			AllowedModels: ag.AllowedModels,
+			CreatedAt:     ag.CreatedAt,
 		})
 	}
 	if len(filtered) == 0 {
@@ -1287,11 +1424,11 @@ func filterSchedulerCredentials(credentials map[string]any) map[string]any {
 	}
 	// Candidate-list admission evaluates the account override before hydrating
 	// the full account. Dropping it silently falls back to the platform threshold.
-	keys := []string{"model_mapping", "compact_model_mapping", "api_key", "project_id", "oauth_type", "plan_type", "account_scheduling_threshold",
+	keys := []string{"model_mapping", "model_mapping_mode", "compact_model_mapping", "api_key", "project_id", "oauth_type", "plan_type", "account_scheduling_threshold",
 		// Gemini 显式缓存的候选过滤（GeminiExplicitCacheExclusions）读本投影判定账号是否支持显式缓存：
 		// 官方地址、Vertex 认证方式与上游网关的显式缓存声明。缺这几个键时只能按类型粗筛，
 		// 不支持的账号要逐个选中后才被剔除。
-		"base_url", "auth_mode", service.GeminiExplicitCacheUpstreamCredentialKey, service.GeminiExplicitCacheUpstreamMaxTTLCredentialKey}
+		"base_url", "auth_mode", service.DeepSeekResponsesImageFieldCredential, service.GeminiExplicitCacheUpstreamCredentialKey, service.GeminiExplicitCacheUpstreamMaxTTLCredentialKey}
 	filtered := make(map[string]any)
 	for _, key := range keys {
 		if value, ok := credentials[key]; ok && value != nil {
@@ -1309,6 +1446,17 @@ func filterSchedulerExtra(extra map[string]any) map[string]any {
 		return nil
 	}
 	keys := []string{
+		service.OAuthDegradationActionExtraKey,
+		// Images candidate authorization runs before full-account hydration.
+		service.ExtraImageModelsKey,
+		service.ExtraImageModelPrefixesKey,
+		"openai_connections_managed", "openai_auth_connections",
+		// Usage settlement can receive an account from this projection. Preserve
+		// the explicit response-tier billing contract through scheduler caches.
+		service.OpenAIResponseTierBillingEnabledKey,
+		// Priority scoring runs on candidate metadata before full hydration.
+		// Dropping saved procurement cost silently substitutes the 0.1 default.
+		service.AccountCostMultiplierExtraKey,
 		// Anthropic shared-window and Fable-only threshold checks run on this
 		// projection. UpdateExtra refreshes both payloads without a bucket rebuild.
 		"session_window_utilization",
@@ -1357,10 +1505,22 @@ func filterSchedulerExtra(extra map[string]any) map[string]any {
 		// 裁掉它们，透传账号在选号阶段会退回按(常为过期的)白名单判定并被误判为
 		// model_not_supported —— 转发阶段却仍按透传工作，表现为"单独测账号能通、
 		// 走网关报 no available accounts"。
+		"astra_model_disabled",
+		"astra_model_blocked_keys",
+		"astra_model_empty_mapping",
 		"openai_passthrough",
 		"openai_oauth_passthrough",
+		"openai_excel_bps",
+		"openai_excel_bps_auto_disable_on_403",
+		service.ExcelBPSAutoRecoverOn403Key,
+		service.ExcelBPS403RecoveryIntervalMinutesKey,
+		service.ExcelBPSAutoMoveOn403Key,
+		service.ExcelBPS403TargetGroupIDKey,
+		"openai_excel_bps_mihomo",
+		"openai_excel_bps_models",
 		"codex_fingerprint_mode",
 		"codex_fingerprint_seed",
+		service.OpenAICodexSkipHarvestExtraKey,
 		"codex_5h_used_percent",
 		"codex_7d_used_percent",
 		"codex_5h_reset_at",
@@ -1380,13 +1540,14 @@ func filterSchedulerExtra(extra map[string]any) map[string]any {
 		service.OpenAIAutoResetCredit7dThresholdExtraKey,
 		service.OpenAIAutoResetCreditStateExtraKey,
 		"model_rate_limits",
+		service.QualityModelIsolationKey,
 		service.UpstreamBillingProbeExtraKey,
 		service.GrokMediaEligibleExtraKey,
 		"grok_billing_snapshot",
 	}
 	filtered := make(map[string]any)
 	for _, key := range keys {
-		if value, ok := extra[key]; ok && value != nil {
+		if value, ok := extra[key]; ok && (value != nil || key == "openai_excel_bps_models") {
 			if key == service.UpstreamBillingProbeExtraKey {
 				filteredProbe := filterSchedulerUpstreamBillingProbe(value)
 				if filteredProbe == nil {

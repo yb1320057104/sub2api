@@ -3,7 +3,7 @@
     <div class="space-y-6 pb-12">
       <!-- Ops-style elevated shell: title toolbar + filters (mirrors OpsDashboardHeader) -->
       <section
-        class="card sticky top-0 z-20 !rounded-3xl !border-0 p-0 shadow-sm ring-1 ring-gray-900/5 backdrop-blur-sm dark:!bg-dark-800 dark:ring-dark-700 supports-[backdrop-filter]:bg-white/95 dark:supports-[backdrop-filter]:bg-dark-800/95"
+        class="card z-20 !rounded-3xl !border-0 p-0 shadow-sm ring-1 ring-gray-900/5 backdrop-blur-sm dark:!bg-dark-800 dark:ring-dark-700 supports-[backdrop-filter]:bg-white/95 dark:supports-[backdrop-filter]:bg-dark-800/95 lg:sticky lg:top-[4.75rem]"
       >
         <header class="page-header mb-0 flex flex-wrap items-start justify-between gap-4 border-b border-gray-100 px-5 py-4 dark:border-dark-700 sm:px-6">
           <div class="min-w-0">
@@ -43,6 +43,8 @@
               </span>
             </div>
           </div>
+          <div class="flex items-center gap-2">
+          <button type="button" class="btn btn-secondary btn-sm" data-testid="monitor-layout-toggle" @click="analytics = !analytics">{{ t(analytics ? 'channelMonitorV2.cards.showCards' : 'channelMonitorV2.cards.showAnalytics') }}</button>
           <button
             class="btn btn-secondary btn-icon flex h-8 w-8 items-center justify-center rounded-lg bg-gray-100 text-gray-500 hover:bg-gray-200 dark:bg-dark-700 dark:text-gray-400 dark:hover:bg-dark-600"
             type="button"
@@ -52,6 +54,7 @@
           >
             <Icon name="refresh" size="sm" :class="loading ? 'animate-spin' : ''" />
           </button>
+          </div>
         </header>
 
         <!-- First-upgrade silent backfill: show until 30d product window is covered -->
@@ -108,6 +111,7 @@
             </button>
           </div>
 
+          <template v-if="analytics">
           <span class="mx-0.5 hidden h-5 w-px shrink-0 bg-gray-200 dark:bg-dark-700 sm:block" aria-hidden="true"></span>
 
           <FilterMultiSelect
@@ -190,9 +194,26 @@
               {{ option.label }}
             </button>
           </div>
+          </template>
+          <template v-else>
+            <span class="ml-3 text-xs text-gray-500 dark:text-gray-400">{{ t('channelMonitorV2.cards.passive') }}</span>
+            <button v-if="hasDimensionFilter" class="btn btn-ghost btn-sm" @click="clearDimensions">{{ t('channelMonitorV2.clearFilters') }}</button>
+            <span v-if="snapshot && hasMonitorSamples(snapshot.metrics)" class="ml-auto hidden text-xs text-gray-500 dark:text-gray-400 md:inline">{{ t('channelMonitorV2.cards.availability') }} {{ formatPercent(1 - snapshot.metrics.error_rate) }} · {{ t('channelMonitorV2.cards.cache') }} {{ formatPercent(snapshot.metrics.cache_rate) }}</span>
+          </template>
         </div>
       </section>
 
+      <MonitorStatusCards
+        v-if="!analytics"
+        :items="matrix?.items || []"
+        :coverage="matrix?.coverage"
+        :loading="loading"
+        :countdown="countdown"
+        :now="clockNow"
+        :platform-order="cardPlatformOrder"
+        :timeline-mode="cardTimelineMode"
+      />
+      <template v-else>
       <!-- Overview KPI: success · TTFT · tokens/s(optional) · cache · (+ RPM when throughput visible) -->
       <section
         v-if="snapshot"
@@ -310,7 +331,7 @@
                     <div class="flex items-center gap-2">
                       <span :class="statusDot(row.health)" aria-hidden="true"></span>
                       <div>
-                        <span class="block text-xs text-gray-500 dark:text-dark-400">{{ row.platform }}</span>
+                        <span class="block text-xs text-gray-500 dark:text-dark-400">{{ providerLabel(row.platform) }}</span>
                         <strong class="font-semibold text-gray-900 dark:text-white">
                           {{ row.model === '__other__' ? t('channelMonitorV2.otherModels') : row.model }}
                         </strong>
@@ -370,7 +391,7 @@
                     class="rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-600 dark:bg-dark-900/50 dark:text-dark-300"
                   >
                     <div class="mb-1 flex flex-wrap items-center gap-2">
-                      <span class="badge badge-gray !px-1.5 !py-0 text-[10px]">{{ detail.platform || '-' }}</span>
+                      <span class="badge badge-gray !px-1.5 !py-0 text-[10px]">{{ detail.platform ? providerLabel(detail.platform) : '-' }}</span>
                       <span class="truncate font-medium">{{ detail.model || '-' }}</span>
                       <span v-if="detail.status_code" class="text-gray-400">{{ t('channelMonitorV2.errorDetail.http', { code: detail.status_code }) }}</span>
                       <span v-if="detail.upstream_status_code" class="text-gray-400">{{ t('channelMonitorV2.errorDetail.upstream', { code: detail.upstream_status_code }) }}</span>
@@ -453,6 +474,7 @@
           </div>
         </div>
       </section>
+      </template>
     </div>
   </AppLayout>
 </template>
@@ -466,12 +488,16 @@ import Icon from '@/components/icons/Icon.vue'
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
 import Select from '@/components/common/Select.vue'
 import FilterMultiSelect from '@/features/channel-monitor-v2/FilterMultiSelect.vue'
+import MonitorStatusCards from '@/features/channel-monitor-v2/MonitorStatusCards.vue'
+import { hasMonitorSamples, monitorRefreshSeconds } from '@/features/channel-monitor-v2/monitorCards'
+import { monitorCardPlatformOrder } from '@/features/channel-monitor-v2/monitorFormat'
 import MetricCell from '@/features/channel-monitor-v2/MetricCell.vue'
 import MonitorRankBadge from '@/features/channel-monitor-v2/MonitorRankBadge.vue'
 import MonitorTrendChart from '@/features/channel-monitor-v2/MonitorTrendChart.vue'
 import RelayPulseMatrix from '@/features/channel-monitor-v2/RelayPulseMatrix.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useAppStore } from '@/stores/app'
+import { useChannelMonitorFormat } from '@/composables/useChannelMonitorFormat'
 import { extractApiErrorMessage } from '@/utils/apiError'
 import { isChannelMonitorThroughputHidden, isChannelMonitorUserRankingHidden } from '@/utils/featureFlags'
 import * as api from '@/api/channelMonitorV2'
@@ -510,6 +536,12 @@ const router = useRouter()
 const authStore = useAuthStore()
 const appStore = useAppStore()
 const { t, te, locale } = useI18n()
+const { providerLabel } = useChannelMonitorFormat()
+const analytics = ref(false)
+const clockNow = ref(Date.now())
+const nextRefreshAt = ref(0)
+const countdown = computed(() => Math.max(0, Math.ceil((nextRefreshAt.value - clockNow.value) / 1000)))
+let clockTimer: ReturnType<typeof setInterval> | undefined
 const isAdmin = computed(() => authStore.isAdmin)
 /** Admins always see RPM/TPM; users honor the hide-throughput system setting. */
 const showThroughput = computed(() => isAdmin.value || !isChannelMonitorThroughputHidden())
@@ -557,6 +589,10 @@ const healthMode = ref<HealthMode>(parseHealthMode(route.query.health_mode))
 const trendView = ref<TrendView>(parseTrendView(route.query.trend_view))
 const dimensions = ref<MonitorDimensions>({ platforms: [], groups: [], models: [] })
 const snapshot = ref<MonitorSnapshot | null>(null)
+// Dimensions load only in analytics mode. Cards are the default view, so their
+// order comes from the snapshot config fetched with the matrix.
+const cardPlatformOrder = computed(() => monitorCardPlatformOrder(snapshot.value?.config?.platforms))
+const cardTimelineMode = computed(() => snapshot.value?.config?.card_timeline_mode === 'samples' ? 'samples' : 'windows')
 const matrix = ref<MonitorMatrixResponse | null>(null)
 const modelRows = ref<MonitorModelRow[]>([])
 const errorRows = ref<MonitorErrorRow[]>([])
@@ -577,7 +613,7 @@ const hasDimensionFilter = computed(
 const platformOptions = computed(() =>
   (dimensions.value.platforms || []).map((item) => ({
     value: item.value,
-    label: item.label,
+    label: providerLabel(item.value) || item.label,
   }))
 )
 const selectedPlatforms = computed(() => new Set(filter.value.platforms))
@@ -591,7 +627,7 @@ const groupOptions = computed(() =>
     )
     .map((item) => ({
       value: String(item.id),
-      label: item.platform ? `${item.platform} / ${item.name || `#${item.id}`}` : item.name || `#${item.id}`,
+      label: item.platform ? `${providerLabel(item.platform)} / ${item.name || `#${item.id}`}` : item.name || `#${item.id}`,
     }))
 )
 const modelOptions = computed(() =>
@@ -604,10 +640,7 @@ const modelOptions = computed(() =>
     )
     .map((item) => ({
       value: item.value,
-      label:
-        item.platform && !item.label.includes(item.platform)
-          ? `${item.platform} / ${item.label}`
-          : item.label,
+      label: item.platform ? `${providerLabel(item.platform)} / ${item.label}` : item.label,
     }))
 )
 const selectedGroupIds = computed({
@@ -705,6 +738,7 @@ function syncQuery() {
 }
 /** Dimensions catalog: range only — never re-filtered by platform/group/model selection. */
 async function loadDimensions(signal?: AbortSignal, id = sequence) {
+  if (!analytics.value) return
   const rangeOnly: MonitorFilter = {
     range: filter.value.range,
     platforms: [],
@@ -719,7 +753,7 @@ async function loadDimensions(signal?: AbortSignal, id = sequence) {
 async function loadMetrics(signal?: AbortSignal, id = sequence) {
   const [nextSnapshot, nextMatrix] = await Promise.all([
     api.getSnapshot(filter.value, isAdmin.value, signal),
-    api.getMatrix(filter.value, matrixGroupBy.value, isAdmin.value, signal),
+    api.getMatrix(filter.value, analytics.value ? matrixGroupBy.value : 'platform_group', isAdmin.value, signal, { recentSamples: !analytics.value }),
   ])
   if (id !== sequence) return
   snapshot.value = nextSnapshot
@@ -777,6 +811,7 @@ async function reloadMetricsOnly(silent = true) {
   }
 }
 async function loadTab(signal?: AbortSignal, id = sequence) {
+  if (!analytics.value) return
   tabLoading.value = true
   try {
     if (activeTab.value === 'models') {
@@ -813,15 +848,18 @@ function scheduleAutoRefresh() {
     window.clearInterval(autoRefreshTimer)
     autoRefreshTimer = null
   }
-  // Poll faster while first-upgrade bootstrap is filling 90m→30d so the progress bar moves.
-  const seconds = bootstrapActive.value
-    ? 10
-    : snapshot.value?.config?.refresh_interval_seconds || 300
+  const seconds = monitorRefreshSeconds(
+    snapshot.value?.config?.refresh_interval_seconds,
+    matrixRows.value,
+    bootstrapActive.value,
+  )
+  clockNow.value = Date.now()
+  nextRefreshAt.value = clockNow.value + seconds * 1000
   autoRefreshTimer = window.setInterval(() => {
-    if (!loading.value && !refreshing.value) {
+    if (!document.hidden && !loading.value && !refreshing.value) {
       void reload(true)
     }
-  }, Math.max(bootstrapActive.value ? 10 : 60, seconds) * 1000)
+  }, seconds * 1000)
 }
 function drillModel(row: MonitorModelRow) {
   filter.value.platforms = [row.platform]
@@ -924,8 +962,13 @@ watch(showUserRanking, (allowed) => {
     activeTab.value = 'models'
   }
 })
-onMounted(() => void reload(false))
+watch(analytics, () => { void reload(false) })
+onMounted(() => {
+  clockTimer = setInterval(() => { clockNow.value = Date.now() }, 1000)
+  void reload(false)
+})
 onBeforeUnmount(() => {
+  if (clockTimer) clearInterval(clockTimer)
   controller?.abort()
   if (autoRefreshTimer) window.clearInterval(autoRefreshTimer)
 })

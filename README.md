@@ -1,39 +1,33 @@
-> **PK private edition:** For a fresh deployment, follow the [PK deployment guide (Chinese)](deploy/PK_DEPLOYMENT_CN.md). For migration, updates, rollback, and recovery, see [PK_MAINTENANCE.md](PK_MAINTENANCE.md). This edition uses the private `yb1320057104/sub2api` repository and GHCR images; current releases support `linux/amd64`. The upstream project introduction and author attribution are retained below.
+> **PK private edition:** For a fresh deployment, follow the [PK deployment guide (Chinese)](deploy/PK_DEPLOYMENT_CN.md). For migration, updates, rollback, and recovery, see [PK_MAINTENANCE.md](PK_MAINTENANCE.md). Source and formal releases come from the private `yb1320057104/sub2api` repository; current releases support `linux/amd64`. Use the verified assets attached to the selected private Release. A GHCR image is available only when that release explicitly records its publication. The upstream project introduction and author attribution are retained below.
 
 Maintenance requirements: [Project constraints](PROJECT_CONSTRAINTS.md) · [PK feature register](PK_FEATURES.md). Preserve every registered feature when merging upstream; register new customizations in the same change.
 
 <div align="center">
 
-<img src="assets/logo.svg" alt="Sub2API Logo" width="128" />
+<img src="assets/logo-icon.png" alt="Sub2API Logo" width="128" />
 
 # Sub2API
 
-[![Go](https://img.shields.io/badge/Go-1.27.0-00ADD8.svg)](https://golang.org/)
+[![Go](https://img.shields.io/badge/Go-1.27.3-00ADD8.svg)](https://golang.org/)
 [![Vue](https://img.shields.io/badge/Vue-3.4+-4FC08D.svg)](https://vuejs.org/)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15+-336791.svg)](https://www.postgresql.org/)
 [![Redis](https://img.shields.io/badge/Redis-7+-DC382D.svg)](https://redis.io/)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED.svg)](https://www.docker.com/)
 
-<a href="https://trendshift.io/repositories/21823" target="_blank"><img src="https://trendshift.io/api/badge/repositories/21823" alt="Wei-Shaw%2Fsub2api | Trendshift" width="250" height="55"/></a>
 
-**AI API Gateway Platform for Subscription Quota Distribution**
+**PK 私有版 Sub2API**
 
-English | [中文](README_CN.md) | [日本語](README_JA.md)
+基于 Wei-Shaw/sub2api，并集成 ranxi2001/sub2api 的功能；上游来源仅用于代码与许可溯源，正式发行走本私库。
+
+[平台](https://tosky.io/) · [使用文档](https://tosky.io/docs/) · [版本下载](https://github.com/yb1320057104/sub2api/releases) · [问题反馈](https://github.com/ranxi2001/sub2api/issues)
+
+中文 | [English](README_EN.md) | [日本語](README_JA.md)
 
 </div>
 
-## ⚠️ Important Notice
+## 上游社区与历史赞助
 
-Please read the following carefully before using this project:
-
-- **🚨 Terms of Service Risk**: Using this project may violate the terms of service of Anthropic and other upstream providers. Please review the relevant providers' user agreements before use; all risks arising from such use are borne solely by the user.
-- **⚖️ Compliant Use**: Use this project only in compliance with the laws and regulations of your country or region. Any unlawful use is strictly prohibited.
-- **📖 Disclaimer**: This project is provided for technical learning and research purposes only. The authors assume no liability for account bans, service interruptions, data loss, or any other direct or indirect damages resulting from the use of this project.
-- **🚫 No Commercial Authorization**: The developers of this project have never authorized any individual or organization to conduct any form of commercial operation based on this project. Any commercial activity conducted in the name of or based on this project is unrelated to this project and its developers, and all resulting disputes, losses, and legal liabilities shall be borne solely by the party conducting such activity.
-
-## ❤️ Sponsors
-
-> [Want to appear here?](mailto:support@sub2api.org)
+欢迎正在部署、使用或维护 Sub2API 的朋友加入 QQ 群「中转技术交流」（群号 **1004036018**），交流部署实践、协议兼容、出口代理和功能改进。也欢迎参与问题复现、测试、文档补充和 Pull Request，一起维护这个独立分支。
 
 <details open>
 <summary>Click to collapse</summary>
@@ -47,7 +41,6 @@ Please read the following carefully before using this project:
 ---
 
 <table>
-
 <tr>
 <td width="180"><a href="https://cctk.ai/register?aff=SUB2API"><img src="assets/partners/logos/cctk.jpg" alt="CCTK.AI" width="150"></a></td>
 <td>Thanks to CCTK.AI for sponsoring this project! <a href="https://cctk.ai/register?aff=SUB2API">CCTK.AI</a> is an AI API gateway focused on stability and cost-effectiveness, offering fast relay services for Claude, OpenAI, Gemini, and other popular models. It works seamlessly with Claude Code, Codex, and other mainstream coding tools, delivering the same model capabilities at a fraction of the official cost. Register via <a href="https://cctk.ai/register?aff=SUB2API">this link</a> for faster, more stable, and more affordable AI API access.</td>
@@ -192,56 +185,50 @@ Please read the following carefully before using this project:
 
 ## Overview
 
-Sub2API is an AI API gateway platform designed to distribute and manage API quotas from AI product subscriptions. Users can access upstream AI services through platform-generated API Keys, while the platform handles authentication, billing, load balancing, and request forwarding.
+## 快速开始
 
-## Features
+新人部署、官方版替换、Excel / BPS 配置和质量运维步骤，请阅读[新人入门文档](docs/新人入门.md)。
 
-- **Multi-Account Management** - Support multiple upstream account types (OAuth, API Key)
-- **API Key Distribution** - Generate and manage API Keys for users
-- **Precise Billing** - Token-level usage tracking and cost calculation
-- **Smart Scheduling** - Intelligent account selection with sticky sessions
-- **Concurrency Control** - Per-user and per-account concurrency limits
-- **Rate Limiting** - Configurable request and token rate limits
-- **Built-in Payment System** - Supports EasyPay, Alipay, WeChat Pay, and Stripe for user self-service top-up, no separate payment service needed ([Configuration Guide](docs/PAYMENT.md))
-- **Admin Dashboard** - Web interface for monitoring and management
-- **Composite Groups** - Admin routing layer that resolves requested models to concrete providers for multi-provider groups ([Operator Guide](docs/COMPOSITE_GROUPS.md))
-- **External System Integration** - Embed external systems (e.g. ticketing) via iframe to extend the admin dashboard
+账号检测、失败处置和自动恢复，请阅读[质量运维](docs/account-quality-operations.md)；BPS OAuth 登录、工具兼容和 403 恢复配置，请阅读[Excel / BPS 协议](docs/excel-bps.md)。
 
-## Ecosystem
+2.19.2 新增默认关闭的账号性能监控，支持指标阈值和独立暂停；启用、人工解除与区域传播边界见[账号性能监控](docs/account-performance-monitor.md)。
 
-Community projects that extend or integrate with Sub2API:
+已经托管账号或完成部署，想在 Codex 中使用？请阅读[新人入门：使用 Sub2API 接入 Codex](docs/新人入门-使用Sub2API.md)，按步骤创建 API Key、配置 Cockpit Tools 并验证调用。
 
-| Project | Description | Features |
-|---------|-------------|----------|
-| ~~[Sub2ApiPay](https://github.com/touwaeriol/sub2apipay)~~ | ~~Self-service payment system~~ | **Now Built-in** — Payment is now integrated into Sub2API, no separate deployment needed. See [Payment Configuration Guide](docs/PAYMENT.md) |
-| [sub2api-mobile](https://github.com/ckken/sub2api-mobile) | Mobile admin console | Cross-platform app (iOS/Android/Web) for user management, account management, monitoring dashboard, and multi-backend switching; built with Expo + React Native |
 
-## Tech Stack
+## 本仓库的维护方向
 
-| Component | Technology |
-|-----------|------------|
-| Backend | Go 1.27.0, Gin, Ent |
-| Frontend | Vue 3.4+, Vite 5+, TailwindCSS |
-| Database | PostgreSQL 15+ |
-| Cache/Queue | Redis 7+ |
+本仓库是 `ranxi2001/sub2api` 的独立生产 fork，基于 [Wei-Shaw/sub2api](https://github.com/Wei-Shaw/sub2api) 按需同步。应用功能、上游修复、Release 和生产验证都以 `production` 分支为准；不会用上游默认分支或 tag 直接覆盖本 fork 的生产历史。
 
----
+- **DeepSeek 与 Codex 适配**：支持 Responses 到 Chat Completions 的转换、工具调用历史和上下文压缩兼容。配置模型映射后，可通过切换 API Key 分组使用 DeepSeek，沿用客户端配置。[操作教程](https://tosky.io/docs/?doc=deepseek-switch-group)
+- **账号质量运维**：维护定时答题检测、判题记录、失败处置和自动恢复，支持按模型隔离及全部检测模型失败时移出指定分组。检测结果以实际回答和判题证据为准，不以票据形态判断质量。
+- **Mihomo 出口管理**：维护订阅、动态代理、节点状态和账号业务出口；支持从订阅节点或动态代理单条、批量添加为静态代理，再给账号分别选择固定节点。[操作说明](docs/mihomo-static-node-proxies.md)
+- **Excel / Basispoints**：维护模型级 BPS 路由、内嵌图片 HTTPS 中转、磁盘和并发保护、结构化输出校验，以及工具历史和 transport 恢复。路由遵循账号与模型配置；不支持的托管工具可按策略回退原生 Codex，或保持 BPS 并省略工具，具体边界见 [BPS 配置说明](docs/excel-bps.md)。
+- **上游修复维护**：持续跟踪上游 Codex、Responses、工具调用、密文恢复和限流修复；先确认与本 fork 的行为差异，再按提交级别移植并补充回归测试。
 
-## Nginx Reverse Proxy Note
+已有代理任务报 `unsupported_encrypted_agent_message` 或 `encrypted_agent_recovery_*` 时，先保留任务及工具结果，按[加密代理任务续接与恢复边界](docs/openai-agent-continuation.md)核对实际通道和恢复条件。
+- **独立发布与升级**：使用 `ranxi2001/sub2api` 的 Release、安装资源和容器镜像。版本变更见 [更新说明](https://github.com/yb1320057104/sub2api/releases)；Release 成功不代表生产服务已经部署，线上状态需要单独验证。
 
-When using Nginx as a reverse proxy for Sub2API (or CRS) with Codex CLI, add the following to the `http` block in your Nginx configuration:
+贡献代码时，请在独立分支中说明影响的请求路径、账号类型、配置默认值和兼容边界。涉及生产分支的修复应先进入原 PR head，通过 CI 后再合并；不要提交 Token、OAuth 导出、ticket、代理凭据或生产配置。
 
-```nginx
-underscores_in_headers on;
-```
+## 项目概述
 
-Nginx drops headers containing underscores by default (e.g. `session_id`), which breaks sticky session routing in multi-account setups.
+Sub2API 是一个 AI API 网关平台，用于分发和管理 AI 产品订阅的 API 配额。用户通过平台生成的 API Key 调用上游 AI 服务，平台负责鉴权、计费、负载均衡和请求转发。
 
----
+## 核心功能
 
-## Deployment
+- **多账号管理** - 支持多种上游账号类型（OAuth、API Key）
+- **API Key 分发** - 为用户生成和管理 API Key
+- **精确计费** - Token 级别的用量追踪和成本计算
+- **智能调度** - 智能账号选择，支持粘性会话
+- **并发控制** - 用户级、账号级和 API Key 级并发限制，支持可配置的 Key 等待队列
+- **速率限制** - 可配置的请求和 Token 速率限制
+- **内置支付系统** - 支持 EasyPay 易支付、支付宝官方、微信官方、Stripe，用户自助充值，无需独立部署支付服务（[配置指南](docs/PAYMENT_CN.md)）
+- **USDT / USDC 加密货币支付** - 内置 BEpusdt 引擎，无需外部网关 API 或 Token；支持钱包管理、故障补扫、多网络充值与订阅购买，保留外接网关模式和幂等入账（[配置指南](docs/BEPUSDT_PAYMENT.md)）
+- **管理后台** - Web 界面进行监控和管理
+- **外部系统集成** - 支持通过 iframe 嵌入外部系统（如工单等），扩展管理后台功能
 
-Current PK releases support `linux/amd64`. Deployment requires read access to the private `yb1320057104/sub2api` repository and its private GHCR images.
+Current PK releases support `linux/amd64`. Deployment requires read access to the private `yb1320057104/sub2api` repository and its Release assets. The release may include a Docker image archive; do not assume that the same version has been pushed to GHCR. If using a published private image, verify its recorded identity and registry access separately.
 
 - **Fresh deployment in an empty environment:** Follow the [PK deployment guide (Chinese)](deploy/PK_DEPLOYMENT_CN.md) for Docker Compose, authorization, configuration, and verification.
 - **Migration or recovery of an existing service:** Follow [PK_MAINTENANCE.md](PK_MAINTENANCE.md) and preserve the existing database, application data, and secrets.
@@ -252,7 +239,9 @@ With the v0.2.14 bootstrap changes, a fresh installation generates a random admi
 
 The user's 2026-10-21 instruction replaces the earlier source-test prerequisite: review the protected features and final diff, then commit, merge and push private `main` together with one unused formal `vX.Y.Z-pk.N` tag. Full source suites and `refs/notes/pk-source-validation` are optional, not prerequisites for committing, merging or a new formal release. Do not run the full suites automatically or describe tests that were not run as passing. Follow [the maintenance workflow](PK_MAINTENANCE.md) and keep existing features and published tags intact.
 
-The user starts Jenkins with `ACTION=release`, `SOURCE_REF=vX.Y.Z-pk.N` (the formal tag without `origin/`), and empty `COMMIT_SHA`/`PACKAGE_ID`. Jenkins requires the tag's commit to be in private `main` history; it rejects branch/SHA sources and commit overrides for release. New packages use `validation_profile=pk-artifact-only-v1` without requiring source notes. Jenkins builds once, runs all eleven isolated `pk-artifact-v2` runtime checks on those exact artifacts, verifies private sources, tag/main ancestry, unused versions and SHA256, then seals and publishes the same binary in both the image and update archive. Do not move existing formal tags, start Jenkins automatically or deploy to production without authorization.
+The current pk.61 task authorizes local builds, isolated verification on the server, private publication of validated packages with `deploy/local-release.py`, and a separately controlled HA rollout. The publisher does not build artifacts or deploy services. This supersedes the older Jenkins-only restriction for this task. The release still requires an unused formal `vX.Y.Z-pk.N` tag whose commit belongs to private `main`, exact source and SHA256 checks, and all eleven isolated `pk-artifact-v2` runtime checks on the artifacts being published. The image and update archive must contain the same verified binary. Follow the current authorization and stage record in [project constraints](PROJECT_CONSTRAINTS.md) and the [pk.61 integration review](docs/PK_UPSTREAM_INTEGRATION_PK61_REVIEW.md); source checks alone do not establish publication or deployment.
+
+Jenkins remains an available authorized runner. Its formal parameters are `ACTION=release`, `SOURCE_REF=vX.Y.Z-pk.N` (without `origin/`), and empty `COMMIT_SHA`/`PACKAGE_ID`; it enforces tag/main ancestry and the same artifact checks. Existing formal tags and sealed packages are immutable. Do not infer permission to publish or deploy from the availability of either runner.
 
 Run source checks only when requested or needed for investigation. The optional server entry point uses an isolated environment; local Linux/WSL remains supported. Production data and services are excluded, credentials stay in ignored local configuration, and reports name the actual environment, scope and result. A full `pk-source-v2` passing report still requires all nine suites and preflight, matching commit/tree and original log hashes; partial or historical results cannot stand in for it.
 
@@ -263,7 +252,7 @@ python -B scripts/test-server.py
 python -B scripts/test-local.py --bind-commit HEAD --report /path/to/local-validation.json --publish-evidence
 ```
 
-Optional local entries are `scripts/test-local.ps1` on Windows/WSL and `python3 scripts/test-local.py` on Linux. Old sealed `pk-source-artifact-v2` packages still require their original source and runtime evidence, and the legacy manual `pk-local-v1` path retains its ten-suite evidence requirements; never change a package profile to bypass validation. See [Jenkins instructions](deploy/jenkins/README.md) for manual `package`/`publish`. The private formal Release retains its update archive and `checksums.txt` for the web updater. Only Jenkins builds candidate/release artifacts; GitHub Actions does not build or test this fork, and release artifacts must not be built locally. Publishing does not update production.
+Optional local entries are `scripts/test-local.ps1` on Windows/WSL and `python3 scripts/test-local.py` on Linux. Old sealed `pk-source-artifact-v2` packages still require their original source and runtime evidence, and the legacy manual `pk-local-v1` path retains its ten-suite evidence requirements; never change a package profile to bypass validation. See [Jenkins instructions](deploy/jenkins/README.md) for that runner's manual `package`/`publish` and [release-tool scope](.github/release-tools/README.md) for the retained upstream helpers. The private formal Release retains its update archive and `checksums.txt` for the web updater. GitHub Actions is not this fork's release entry point. Publication and production rollout have separate verification records.
 
 **Key configuration in `config.yaml`:**
 
@@ -367,63 +356,56 @@ per-turn user and account concurrency slots, which are released between turns.
 
 ```yaml
 gateway:
-  openai_ws:
-    # Total time to receive and decompress the first client message.
-    client_first_message_timeout_seconds: 30
-    # Close a client socket idle between completed turns; 0 disables this safeguard.
-    ingress_inter_turn_idle_timeout_seconds: 300
-    # Distributed API-key limit for live client ingress sessions; 0 disables it.
-    max_ingress_connections_per_api_key: 64
+  api_key_queue:
+    max_waiting: 5
+    timeout_seconds: 30
 ```
 
-The first-message timeout is a total read deadline. Deployments that accept
-large contexts or image-heavy requests over slower links can raise it to
-120-300 seconds. It expires before HTTP bridge routing, so bridge mode does not
-override this limit.
+| 环境变量 | 默认值 | 说明 |
+|----------|--------|------|
+| `GATEWAY_API_KEY_QUEUE_MAX_WAITING` | `5` | 每个受限 Key 允许额外等待的请求数；`0` 关闭 Key 排队。 |
+| `GATEWAY_API_KEY_QUEUE_TIMEOUT_SECONDS` | `30` | 单个请求最长等待秒数，必须为正整数。 |
 
-The connection cap is coordinated through Redis using a 60-second lease that
-is refreshed every 20 seconds. A process that cannot confirm a lease for a
-full lease lifetime closes its local WebSocket rather than continuing outside
-the global cap.
+- 等待名额按 Key 独立计算，不保证 FIFO；`concurrency_limit: 0` 的 Key 不进入队列。
+- 队列用于 HTTP/SSE、OpenAI Responses WebSocket 每轮请求和 Live 创建的 Key 准入，与用户级、账号级等待限制独立。
+- 等待期间复核 Key、用户及当前请求的模型/能力权限。Key 换组、平台或计费模式变化返回可重试的 `503` / `API_KEY_GROUP_CHANGED`。WebSocket 鉴权/权限失败以 `1008` 关闭，容量或临时服务错误以 `1013` 关闭。
+- 关闭排队时达到上限返回 `429` / `gateway_concurrency_limit`；队列满返回 `429` / `api_key_queue_full`；等待超时返回 `429` / `api_key_queue_timeout`。
+- 两个配置值必须为整数；负数、小数、非法字符串或超出范围会阻止启动。即使关闭排队，超时也必须为正数。
+- 修改 Compose `.env` 后需要重建容器以更新环境变量。调大等待时间时，需要确认客户端及反向代理的首字节超时。
+- 升级自动应用 `237_add_api_key_concurrency_limit.sql`，旧 Key 默认为 `0`。回退二进制不会撤销数据库新增字段。
 
-Enable the v2 mode router before selecting an account-level WS mode such as
-`http_bridge`:
+### 中转 API Key 的上游 429
 
-```yaml
-gateway:
-  openai_ws:
-    mode_router_v2_enabled: true
-```
+- OpenAI 平台普通 API Key 收到上游 429 时，使用管理端已有的“429 兜底冷却”设置（默认启用、5 秒），不再把透传的 ChatGPT/Codex 周窗口、`resets_at` 或使用率快照写成整个 Key 的配额状态。关闭该设置时不新增本地兜底冷却，上游错误仍按原有响应与故障转移逻辑处理。
+- OAuth / Setup Token 保留真实配额窗口；Ollama Cloud、国产供应商和 OpenCode Go 的已识别专用配额逻辑，以及池模式、自定义错误策略和显式临时停调规则，仍按原有优先级处理。
+- 管理端测试 API Key 时，不再用透传的 ChatGPT 429 重置时间更新 Key 的调度状态。升级不会自动清理此前已写入的长冷却；核实状态后可使用管理端恢复功能处理。
 
-Or set `GATEWAY_OPENAI_WS_MODE_ROUTER_V2_ENABLED=true` in the environment.
-Use `http_bridge` for client-WebSocket/upstream-HTTP operation when rolling out
-or mitigating upstream WebSocket issues.
+## 技术栈
 
-#### Force OpenAI upstream HTTP/SSE
+| 组件 | 技术 |
+|------|------|
+| 后端 | Go 1.27.3, Gin, Ent |
+| 前端 | Vue 3.4+, Vite 5+, TailwindCSS |
+| 数据库 | PostgreSQL 15+ |
+| 缓存/队列 | Redis 6.0+ |
+| API 协议 | OpenAI Responses / Chat Completions、Anthropic Messages、Gemini、SSE、WebSocket |
+| 调度与可靠性 | 粘性会话、并发控制、限流、故障转移、模型隔离与冷却 |
+| 观测与运维 | 结构化日志、请求分段耗时、健康检查、Mihomo 出口与 systemd |
+| 交付与质量 | Docker Compose、私库 Release 与同制品验收、Go 定向测试、前端类型检查与构建 |
 
-When an egress proxy or network repeatedly reconnects OpenAI Responses
-WebSockets, set the global fallback in the persisted deployment configuration:
+## 贡献与协作
 
-```yaml
-gateway:
-  openai_ws:
-    force_http: true
-```
+欢迎围绕协议兼容、账号调度、质量运维、支付计费、管理后台和运维观测提交改进。高质量贡献应尽量保持边界清晰，并在 PR 中说明请求路径、状态变化、兼容性影响和验证证据。
 
-For Compose and Apple container deployments, the equivalent `.env` setting is:
+开始前请阅读 [贡献指南](CONTRIBUTING.md)：包含最小复现、日志脱敏、开发环境、验证命令和 PR 流程。[提交 Issue](https://github.com/ranxi2001/sub2api/issues/new/choose) 时可选择 Bug、功能建议、文档或使用问题表单；提交 PR 时按模板填写行为变化和实际验证结果。
 
-```bash
-GATEWAY_OPENAI_WS_FORCE_HTTP=true
-```
+建议按以下方式提交：
 
-This selects HTTP/SSE for OpenAI upstream Responses traffic that would
-otherwise use WebSocket. It does not change the client-facing protocol or force
-HTTP/1.1; configure `gateway.openai_http2.enabled` (or
-`GATEWAY_OPENAI_HTTP2_ENABLED=false`) separately when a proxy is incompatible
-with HTTP/2. Unlike the account-level `http_bridge` mode, this global fallback
-takes effect without enabling `mode_router_v2_enabled`. Keep the setting in the
-deployment's persisted `.env` or `config.yaml`, rather than inside a running
-container, so it is read again after an image update or container recreation.
+- **协议与网关**：补充请求/响应样例，覆盖流式终止、工具调用、重试和上游错误映射。
+- **调度与账号**：说明候选筛选、粘性状态、并发占用、冷却窗口和故障转移行为，避免改变幂等语义。
+- **后台与配置**：同步前后端类型、默认值、权限边界和迁移兼容性。
+- **运维与部署**：提供离线或 mock 验证，不在 PR 中写入 Token、ticket、代理凭据或生产配置。
+- **验证与审查**：列出实际运行的测试、构建或脚本检查；未运行的检查不要标记为通过。
 
 #### Creating the Admin Account
 
@@ -455,9 +437,8 @@ go generate ./cmd/server
 
 ---
 
-## Simple Mode
 
-Simple Mode is designed for individual developers or internal teams who want quick access without full SaaS features.
+## ⚠️ 重要提醒
 
 - Enable: Set environment variable `RUN_MODE=simple`
 - Default groups are seeded on each startup. Set `SIMPLE_MODE_AUTO_CREATE_DEFAULT_GROUPS=false` (or YAML `simple_mode.auto_create_default_groups: false`) to manage groups yourself. The default is `true`; disabling it does not delete existing groups or change runtime auto-binding or admin concurrency setup.
@@ -466,9 +447,12 @@ Simple Mode is designed for individual developers or internal teams who want qui
 - Window enforcement uses the database as its source of truth and records only API-key window usage. It is a post-request soft cap, so concurrent in-flight requests can overshoot by their final costs. Historical simple-mode usage is not backfilled.
 - Security note: In production, you must also set `SIMPLE_MODE_CONFIRM=true` to allow startup
 
----
+- **🚨 服务条款风险**：使用本项目可能违反 Anthropic 等上游服务商的服务条款。请在使用前仔细阅读相关服务商的用户协议，由此产生的一切风险由用户自行承担。
+- **⚖️ 合规使用**：请在符合您所在国家或地区法律法规的前提下使用本项目，严禁将其用于任何违法违规用途。
+- **📖 免责声明**：本项目仅供技术学习与研究使用，作者不对因使用本项目导致的账户封禁、服务中断、数据丢失或其他任何直接或间接损失承担责任。
+- **🚫 无商业授权**：本项目从未授权任何个人或组织基于本项目开展任何形式的商业化运营。任何以本项目名义或基于本项目从事的商业行为均与本项目及其开发者无关，由此产生的一切纠纷、损失和法律责任由行为主体自行承担。
 
-## Asynchronous Image Tasks
+## 许可证
 
 Long-running OpenAI/Grok image generation and editing can be submitted through `/v1/images/generations/async` or `/v1/images/edits/async`, then polled at `/v1/images/tasks/{task_id}` without holding a CDN connection open. See [Asynchronous Image Tasks](docs/ASYNC_IMAGE_TASKS.md) for request and response examples.
 
@@ -663,6 +647,22 @@ Copyright (c) 2026 Wesley Liddick
 
 <div align="center">
 
-**If you find this project useful, please give it a star!**
+**如果觉得有用，请给个 Star 支持一下！**
 
 </div>
+
+## 上游新增账号选项
+
+### OpenAI API Key 的 UltraFast 档位计费
+
+账号新增/编辑页提供默认关闭的 **UltraFast 档位计费** 开关。开启后，按该账号所有有价 token 模型的上游响应 `service_tier` 结算；`ultrafast` 使用标准单价×6，包含缓存读写，再应用有效账号/分组倍率。响应未返回档位时按请求档位回退，该开关不强制上游加速。
+
+客户端明确请求 `ultrafast` 且最终仍按该档位结算时，关闭此开关也按6倍收费。开关控制是否采用上游响应升档，不豁免客户端请求的 UltraFast 价格。配置字段、响应降档、长上下文和计费范围见 [UltraFast 账号计费说明](docs/openai-ultrafast-billing.md)。
+
+### Anthropic API Key 客户端模拟与计费
+
+创建或编辑 Anthropic API Key 账号时, 可开启 "模拟 Claude Code 客户端", 为要求 Claude Code 客户端的上游补齐缺失的请求头, system 身份句和会话信息. 原有 system 指令及缓存断点会保留, count_tokens 仅补请求头. 此选项与 "抹除 Claude Code 身份" 互斥, 同时存储为开启时以抹除身份为准. 身份句可能影响模型自述.
+
+管理员可单独选择 "按模型估算扣除身份句 token". 默认关闭, 按上游用量正常计费. 开启后, 仅在网关实际补入身份句时估算扣除约 14-24 个输入或缓存 token, 不修改返回客户端的 usage. 型号别名, 上游分词器和混合缓存会影响估算准确度; 需要按上游原始用量结算时, 保持此开关关闭.
+
+对应账号 extra 配置为 `anthropic_mimic_claude_code` 和 `anthropic_mimic_claude_code_deduct_tokens`, 均默认 `false`. 关闭模拟或开启抹除身份时, 页面同时清除估算扣减设置.

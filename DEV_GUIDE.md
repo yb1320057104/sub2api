@@ -1,7 +1,7 @@
 # sub2api 项目开发指南
 
 > 本文档记录项目环境配置、常见坑点和注意事项，供 Claude Code 和团队成员参考。
-> 本次 Jenkins 迁移不运行任何本地构建或测试。以下本地环境准备、测试命令及调试示例面向后续任务，必须符合当次明确授权；未来流程不覆盖当次禁令。
+> 当前授权与发布约束以 AGENTS.md、PROJECT_CONSTRAINTS.md 为准；以下旧流程示例不能覆盖当前任务的本机构建及隔离验收授权。
 
 ## 一、项目基本信息
 
@@ -35,18 +35,18 @@
 ### 开发工具
 
 ```bash
-# golangci-lint（本地验证使用 v2.13）
-go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13
+# golangci-lint（CI 用 v2.14.0，本地建议装同一版以免版本差异带来的噪音）
+go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0
 
 # pnpm (前端包管理)
-npm install -g pnpm@9.15.9
+npm install -g pnpm@10.25.0
 ```
 
 ## 三、CI/CD 流水线
 
 ### 版本分支规则
 
-`main` 是正式分支，新工作分支统一为 `codex/vX.Y.Z-pk.N`。例如 `codex/v0.2.13-pk.1` 仅说明格式，不能直接当作下一版本。新建前核对本地分支、私库远端分支、在途 PR 和正式标签；目标版本未明确时先明确，不随意建立临时分支。已有目标版本分支和 PR 必须复用；确需新建时从已核对的私库 `main` 创建。
+`main` 是正式分支，新工作分支统一为 `vX.Y.Z-pk.N`。例如 `v0.2.13-pk.1` 仅说明格式，不能直接当作下一版本。新建前核对本地分支、私库远端分支、在途 PR 和正式标签；目标版本未明确时先明确，不随意建立临时分支。已有目标版本分支和 PR 必须复用；确需新建时从已核对的私库 `main` 创建。
 
 同一未发布版本的功能、修复、文档、依赖调整、上游合并和并行助手工作共用一个分支及一个 PR，不加任务、日期、助手或功能后缀。默认只有一个在途版本，只有用户明确要求并行不同版本时例外。所有二开审查、本地测试授权、合入及发布门禁保持不变。
 
@@ -64,8 +64,8 @@ GitHub Actions 不再执行本项目的打包或测试。后续本地验证按�
 
 ### 工具链与发布要求
 
-- Go 版本以 `backend/go.mod` 为准，当前为 **1.27.0**。Jenkins 从该文件选择编译镜像，本地测试工具链必须匹配。升级时同时核对 `scripts/test-local.py` 和所有 Dockerfile 的 Go 镜像，避免其他受支持入口仍使用旧工具链。
-- Jenkins 使用 Node 24、pnpm 9.15.9 和 `pnpm install --frozen-lockfile`，必须同步提交 `pnpm-lock.yaml`；本地依赖和安全检查要求见维护文档。
+- Go 版本以 `backend/go.mod` 为准，当前为 **1.27.3**。Jenkins 从该文件选择编译镜像，本地测试工具链必须匹配。升级时同时核对 `scripts/test-local.py` 和所有 Dockerfile 的 Go 镜像，避免其他受支持入口仍使用旧工具链。
+- Jenkins 使用 Node 24、pnpm 10.25.0 和 `pnpm install --frozen-lockfile`，必须同步提交 `pnpm-lock.yaml`；本地依赖和安全检查要求见维护文档。
 - 正式发布先对已审阅的 `refs/tags/vX.Y.Z-pk.N` 打包，再下载该制品到本地验证。证据上传为 `/srv/jenkins-evidence/sub2api/{package_id}.json` 后才可执行 `publish`；不得用源码测试通过代替对应制品的运行时验收。
 
 ### 后续获准时使用的本地测试命令
@@ -251,6 +251,19 @@ git add ent/       # 生成的文件也要提交
 - [ ] 所有 test stub 补全新接口方法（如果改了 interface）
 - [ ] Ent 生成的代码已提交（如果改了 schema）
 
+### 新功能提示专项检查
+
+以下是贡献和审查要求，完整权威规则见[贡献指南：新功能提示登记与接入](CONTRIBUTING.md#新功能提示登记与接入)。按改动填写 PR 模板，非适用项逐项写“不适用 + 原因”：
+
+- [ ] 新增管理员可见功能、菜单、页签或设置项时，已在同一 PR 的 `frontend/src/constants/newFeatureNotices.ts` 登记稳定且唯一的新 ID，并在对应位置接入 `NewFeatureBadge`。
+- [ ] 同一功能多入口共用 ID，点击任一标签后相关入口同步隐藏；不同新功能使用不同 ID。
+- [ ] 普通修复、文案调整、重复发版沿用旧 ID；确需重新通知同一功能时，已明确作为新公告登记新 ID 并说明原因。
+- [ ] PR 已说明提示 ID、所有展示位置、关闭行为，并在同一 PR 补必要回归和证据，未留到 Release 发布后补录。
+- [ ] 已核对 A 已关闭后升级 B，新 ID 的 B 仍可见；B 任一入口的标签关闭后，所有相关入口同步隐藏。
+- [ ] 已核对同一浏览器同一管理员刷新/重新登录后 B 仍隐藏（本地存储可用且未清除）；后续 C 新 ID 正常显示，普通升级不复活 A/B。
+
+以上清单沿用当前浏览器、当前管理员 `localStorage` 的现有边界，不自动解析 Release，不承诺跨浏览器或服务端同步；这里只建立规范，不新增运行时功能。
+
 ## 五、常用命令速查
 
 ### 数据库操作
@@ -282,7 +295,7 @@ gh pr list --repo yb1320057104/sub2api --state open
 git fetch upstream --no-tags
 ```
 
-目标版本分支存在时直接检出；只有远端存在时跟踪它；两者都不存在且版本与单一在途规则已确认时，才从已核对的 `origin/main` 新建 `codex/vX.Y.Z-pk.N`。上游标签/分支先固定 commit，再合入该版本分支并更新同一 PR。具体步骤见 [维护流程](PK_MAINTENANCE.md#每次合并原作者的版本或分支)，不得通过改名分支、重建 PR 或直接推送正式分支绕过审核。
+目标版本分支存在时直接检出；只有远端存在时跟踪它；两者都不存在且版本与单一在途规则已确认时，才从已核对的 `origin/main` 新建 `vX.Y.Z-pk.N`。上游标签/分支先固定 commit，再合入该版本分支并更新同一 PR。具体步骤见 [维护流程](PK_MAINTENANCE.md#每次合并原作者的版本或分支)，不得通过改名分支、重建 PR 或直接推送正式分支绕过审核。
 
 ### 前端操作
 

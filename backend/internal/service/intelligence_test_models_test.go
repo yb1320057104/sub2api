@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/stretchr/testify/require"
@@ -18,6 +19,124 @@ type intelligenceModelsSettingsStub struct {
 	SettingRepository
 	value string
 	err   error
+}
+
+func intelligenceQualityTestConfig(t *testing.T, enabled, candy bool) string {
+	t.Helper()
+	cfg := defaultIntelligenceTestConfig()
+	cfg.Enabled, cfg.Candy.Enabled = enabled, candy
+	raw, err := json.Marshal(cfg)
+	require.NoError(t, err)
+	return string(raw)
+}
+
+func TestIntelligenceQualityDisplayGatesAndSelectedGroups(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		enabled, candy bool
+	}{
+		{"site disabled", false, true}, {"candy disabled", true, false}, {"selected groups only", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			require.NoError(t, err)
+			defer db.Close()
+			raw := intelligenceQualityTestConfig(t, tc.enabled, tc.candy)
+			mock.ExpectQuery("SELECT value FROM settings WHERE key=\\$1").WithArgs(intelligenceTestSettingKey).
+				WillReturnRows(sqlmock.NewRows([]string{"value"}).AddRow(raw))
+			if tc.enabled && tc.candy {
+				mock.ExpectQuery("SELECT g.id,g.name,g.platform FROM pk_intelligence_test_keys k JOIN groups g ON g.id=k.group_id AND g.status='active' AND g.deleted_at IS NULL JOIN settings configuration ON configuration.key='pk_intelligence_test_config' AND configuration.value=\\$1 ORDER BY g.id LIMIT \\$2").
+					WithArgs(raw, 2000).WillReturnRows(sqlmock.NewRows([]string{"id", "name", "platform"}).AddRow(7, "Visible group", "openai"))
+			}
+			view, err := (&IntelligenceTestService{db: db}).ListQualityGroups(context.Background())
+			require.NoError(t, err)
+			require.Equal(t, tc.enabled && tc.candy, view.Enabled)
+			if view.Enabled {
+				require.Equal(t, []IntelligenceTestQualityGroup{{ID: 7, Name: "Visible group", Platform: "openai"}}, view.Groups)
+			} else {
+				require.Empty(t, view.Groups)
+			}
+			body, err := json.Marshal(view)
+			require.NoError(t, err)
+			require.NotContains(t, string(body), "key_configured")
+			require.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}
+
+func TestIntelligenceQualityHistorySafeProjectionAndStates(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+	raw := intelligenceQualityTestConfig(t, true, true)
+	mock.ExpectQuery("SELECT value FROM settings WHERE key=\\$1").WithArgs(intelligenceTestSettingKey).
+		WillReturnRows(sqlmock.NewRows([]string{"value"}).AddRow(raw))
+	now := time.Now().UTC().Truncate(time.Second)
+	rows := sqlmock.NewRows([]string{"id", "model", "effort", "status", "passed", "started", "finished", "duration", "empty"}).
+		AddRow(6, "model-a", "high", "running", nil, now, nil, nil, false).
+		AddRow(5, "model-a", "high", "failed", nil, now, now, 10, false).
+		AddRow(4, "model-b", "", "completed", nil, now, now, 10, true).
+		AddRow(3, nil, nil, "completed", nil, now, now, 10, false).
+		AddRow(2, "model-b", "", "completed", false, now, now, 10, false).
+		AddRow(1, "model-a", "high", "completed", true, now, now, 10, false)
+	mock.ExpectQuery("SELECT r.id,r.request_model,r.request_effort,r.status,r.passed,.*FROM pk_intelligence_test_keys k JOIN groups g ON g.id=k.group_id AND g.status='active' AND g.deleted_at IS NULL JOIN settings configuration ON configuration.key='pk_intelligence_test_config' AND configuration.value=\\$2 LEFT JOIN LATERAL.*WHERE group_id=k.group_id AND mode='candy' ORDER BY id DESC LIMIT \\$3.*WHERE k.group_id=\\$1").
+		WithArgs(int64(7), raw, 30).WillReturnRows(rows)
+	view, err := (&IntelligenceTestService{db: db}).QualityHistory(context.Background(), 7)
+	require.NoError(t, err)
+	require.True(t, view.Enabled)
+	require.Equal(t, 5, view.IntervalMinutes)
+	require.Equal(t, 600, view.StaleAfterSeconds)
+	states := make([]string, 0, len(view.Results))
+	for _, result := range view.Results {
+		states = append(states, result.State)
+	}
+	require.Equal(t, []string{"running", "error", "empty_pool", "unknown", "incorrect", "correct"}, states)
+	body, err := json.Marshal(view)
+	require.NoError(t, err)
+	for _, field := range []string{"account_id", "key_configured", "error_code", "error_detail", "answer", "prompt", "cost", "ttft", "credentials", "egress_ip"} {
+		require.NotContains(t, string(body), `"`+field+`"`)
+	}
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestIntelligenceQualityHistoryRejectsOutOfScopeAndKeepsEmpty(t *testing.T) {
+	for _, mode := range []string{"unselected or inactive or changed config", "empty history", "disabled", "invalid group", "query failed"} {
+		t.Run(mode, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			require.NoError(t, err)
+			defer db.Close()
+			raw := intelligenceQualityTestConfig(t, mode != "disabled", true)
+			groupID := int64(7)
+			if mode == "invalid group" {
+				groupID = 0
+			} else {
+				mock.ExpectQuery("SELECT value FROM settings WHERE key=\\$1").WithArgs(intelligenceTestSettingKey).
+					WillReturnRows(sqlmock.NewRows([]string{"value"}).AddRow(raw))
+			}
+			if mode != "invalid group" && mode != "disabled" {
+				query := mock.ExpectQuery("SELECT r.id,r.request_model").WithArgs(groupID, raw, 30)
+				rows := sqlmock.NewRows([]string{"id", "model", "effort", "status", "passed", "started", "finished", "duration", "empty"})
+				if mode == "empty history" {
+					rows.AddRow(nil, nil, nil, nil, nil, nil, nil, nil, false)
+				}
+				if mode == "query failed" {
+					query.WillReturnError(errors.New("private database detail"))
+				} else {
+					query.WillReturnRows(rows)
+				}
+			}
+			view, err := (&IntelligenceTestService{db: db}).QualityHistory(context.Background(), groupID)
+			if mode == "empty history" || mode == "disabled" {
+				require.NoError(t, err)
+				require.Empty(t, view.Results)
+				require.Equal(t, mode == "empty history", view.Enabled)
+			} else {
+				require.Error(t, err)
+				require.Nil(t, view)
+			}
+			require.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
 }
 
 func (s *intelligenceModelsSettingsStub) GetValue(context.Context, string) (string, error) {

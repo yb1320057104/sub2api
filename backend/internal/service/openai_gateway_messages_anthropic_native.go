@@ -95,12 +95,15 @@ func (s *OpenAIGatewayService) forwardAnthropicViaNativeAnthropicEndpoint(
 	}
 
 	upstreamCtx, releaseUpstreamCtx := detachStreamUpstreamContext(ctx, clientStream)
-	upstreamReq, _, err := s.buildNativeAnthropicUpstreamRequest(upstreamCtx, c, account, body, apiKey, targetURL)
+	upstreamReq, forwardedBody, err := s.buildNativeAnthropicUpstreamRequest(upstreamCtx, c, account, body, apiKey, targetURL)
 	releaseUpstreamCtx()
 	if err != nil {
 		return nil, err
 	}
 
+	if err := s.checkAPIKeyLongContextBeforeSend(ctx, c, forwardedBody, upstreamModel); err != nil {
+		return nil, err
+	}
 	resp, err := s.doOpenAIUpstream(upstreamReq, proxyURL, account)
 	if err != nil {
 		return nil, s.handleOpenAIUpstreamTransportError(ctx, c, account, err, true)
@@ -297,6 +300,7 @@ func (s *OpenAIGatewayService) handleNativeAnthropicBufferedResponse(
 		c.Writer.Header().Del("Content-Length")
 	}
 	c.Data(resp.StatusCode, contentType, body)
+	applyObservedUpstreamResponseModel(c, result)
 	if cyberPolicy {
 		return result, errOpenAICyberPolicyForwarded
 	}
@@ -604,21 +608,23 @@ func (s *OpenAIGatewayService) nativeAnthropicStreamResult(
 	if usage == nil {
 		usage = &ClaudeUsage{}
 	}
-	return &OpenAIForwardResult{
-		RequestID:                 resp.Header.Get("x-request-id"),
+	result := &OpenAIForwardResult{
+		RequestID:        resp.Header.Get("x-request-id"),
 		AuditSettlementNegotiated: auditSettlementWasNegotiated(resp),
-		UpstreamHeaders:           resp.Header,
-		Usage:                     claudeUsageToOpenAIUsage(usage),
-		Model:                     originalModel,
-		BillingModel:              billingModel,
-		UpstreamModel:             upstreamModel,
-		UpstreamEndpoint:          "/v1/messages",
-		Stream:                    true,
-		ReasoningEffort:           reasoningEffort,
-		Duration:                  time.Since(startTime),
-		FirstTokenMs:              firstTokenMs,
-		ClientDisconnect:          clientDisconnect,
+		UpstreamHeaders:  resp.Header,
+		Usage:            claudeUsageToOpenAIUsage(usage),
+		Model:            originalModel,
+		BillingModel:     billingModel,
+		UpstreamModel:    upstreamModel,
+		UpstreamEndpoint: "/v1/messages",
+		Stream:           true,
+		ReasoningEffort:  reasoningEffort,
+		Duration:         time.Since(startTime),
+		FirstTokenMs:     firstTokenMs,
+		ClientDisconnect: clientDisconnect,
 	}
+	applyObservedUpstreamResponseModel(c, result)
+	return result
 }
 
 // claudeUsageToOpenAIUsage 把 Anthropic 格式 usage 映射到 OpenAI 网关统一的

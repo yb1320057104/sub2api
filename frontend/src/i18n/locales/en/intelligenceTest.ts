@@ -1,5 +1,20 @@
 export default {
   intelligenceTest: {
+    quality: {
+      title: 'Quality checks',
+      scopeHint: 'Saved candy puzzle checks for the selected group. An incorrect answer describes this check, not all requests or permanent model capability. Failed checks, unknown outcomes and empty pools do not count as incorrect answers.',
+      cadence: 'Checked every {minutes} minutes',
+      disabled: 'Candy puzzle checks are disabled. No results are currently shared.',
+      waiting: 'No checks recorded yet. Waiting for the scheduled check.',
+      historyCount: '{count} recorded checks, up to {limit}; empty gray slots have not been checked',
+      latestCheck: 'Latest check: {time}',
+      notChecked: 'Not checked',
+      legend: 'Check status legend',
+      states: {
+        correct: 'Normal', incorrect: 'Incorrect answer', error: 'Check failed', unknown: 'Unknown outcome',
+        empty_pool: 'Empty pool', running: 'Checking', stale: 'Result is stale',
+      },
+    },
     title: 'Intelligence test',
     description: 'Recent SVG creations and candy puzzle results for each group.',
     homeEyebrow: 'Models in action',

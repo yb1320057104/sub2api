@@ -93,6 +93,12 @@ export default {
 
     // Proxies Management
     proxies: {
+      managementSections: '代理管理分类',
+      proxyList: '静态代理 / IP 代理池',
+      subscriptions: '订阅',
+      dynamicProxies: '动态代理',
+      nodes: '节点',
+      kernelRules: '内核与规则',
       title: 'IP管理',
       description: '管理代理服务器配置',
       createProxy: '添加代理',
@@ -290,7 +296,8 @@ export default {
       nDays: '{days} 天',
       expiryDaysPlaceholder: '自定义天数，留空 = 永不过期',
       expiryWarnDays: '到期提醒提前天数',
-      fallbackMode: '到期回退',
+      fallbackMode: '故障/到期回退',
+      fallbackModeHint: '到期时按所选策略处理；OpenAI HTTP 转发遇到符合条件的建连故障时，仅在确认请求尚未发出时回退，不重放已输出的流。直连使用 Sub2API 所在运行环境的网络。',
       fallbackNone: '不回退',
       fallbackProxy: '指定备用代理',
       fallbackDirect: '回退直连',
@@ -478,9 +485,18 @@ export default {
         conditionType: '条件类型',
         conditionSubscription: '订阅套餐',
         conditionBalance: '余额',
+        conditionUser: '指定用户',
         operator: '运算符',
         balanceValue: '余额阈值',
-        selectPackages: '选择套餐'
+        selectPackages: '选择套餐',
+        targetingUsers: '指定用户',
+        targetingUsersHint: '只有选中的用户能看到这条公告，适合单独提醒或警告某个用户。通知方式选「弹窗」时，对方登录或刷新页面后会弹出提醒，直到点「标记已读」为止。',
+        selectUsers: '选择用户',
+        selectUsersRequired: '请至少选择一个用户',
+        searchUsersPlaceholder: '输入邮箱或用户名搜索',
+        noUsersFound: '没有找到匹配的用户',
+        noUsersSelected: '还没有选择用户',
+        userUnavailable: '用户不存在'
       },
       operators: {
         gt: '>',
@@ -491,6 +507,7 @@ export default {
       },
       targetingSummaryAll: '全部用户',
       targetingSummaryCustom: '自定义（{groups} 组）',
+      targetingSummaryUsers: '指定用户（{count} 人）',
       timeImmediate: '立即',
       timeNever: '永久',
       readStatus: '已读情况',
@@ -635,6 +652,7 @@ export default {
         button: '清理',
         title: '清理使用记录',
         warning: '清理不可恢复，且会影响历史统计回看。',
+        calendarRangeRequired: '滚动或精确时间范围不可直接清理。请先选择自然日；清理将删除所选日期的整日记录。',
         submit: '提交清理',
         submitting: '提交中...',
         confirmTitle: '确认清理',

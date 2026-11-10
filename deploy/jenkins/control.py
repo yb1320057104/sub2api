@@ -27,6 +27,7 @@ import deployment_bundle as deployment
 import browser_payload as browser
 import repository_policy as provenance
 import startup_guard_publication as startup_guard
+import corresponding_source
 
 REPOSITORY = provenance.REPOSITORY
 IMAGE = provenance.image(REPOSITORY)
@@ -224,6 +225,7 @@ def manifest(directory: Path, *, allow_legacy: bool = False) -> dict:
 
 
 def verify_artifacts(directory: Path, data: dict) -> None:
+    corresponding_source.verify(directory, data)
     dependencies.verify(directory, data)
     deployment.verify(directory, data)
     browser.verify(directory, data)
@@ -263,6 +265,7 @@ def inventory() -> None:
     data["image_id"] = (output / "image-id.txt").read_text().strip()
     browser.record(output, data)
     deployment.create(output, data, Path(__file__).resolve().parents[2])
+    corresponding_source.create(output, data, Path("source"))
     (output / "checksums.txt").write_text(deployment.checksums(data))
     write_json(output / "manifest.json", data)
     verify_artifacts(output, data)
@@ -590,7 +593,7 @@ def publish() -> None:
                                 "name": data["version"] + " PK出版", "body": notes,
                                 "draft": True, "prerelease": False})
         deployment_assets = [data["deployment_archive"]] if deployment.declaration(data) else []
-        for name in [data["binary_archive"], *deployment_assets, "checksums.txt", "manifest.json", *reports]:
+        for name in [data["binary_archive"], *deployment_assets, *corresponding_source.assets(data), "checksums.txt", "manifest.json", *reports]:
             upload_asset(release["id"], Path("output") / name, credential)
         startup_guard.authorize(Path("output"), data, "check")
         released = request("/repos/" + REPOSITORY + "/releases/" + str(release["id"]),

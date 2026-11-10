@@ -15,10 +15,14 @@ var (
 		{Name: "created_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
 		{Name: "updated_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
 		{Name: "deleted_at", Type: field.TypeTime, Nullable: true, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "concurrency_limit", Type: field.TypeInt, Default: 0},
 		{Name: "key", Type: field.TypeString, Unique: true, Size: 128},
 		{Name: "name", Type: field.TypeString, Size: 100},
 		{Name: "group_ids", Type: field.TypeJSON, Nullable: true},
 		{Name: "status", Type: field.TypeString, Size: 20, Default: "active"},
+		{Name: "model_mapping", Type: field.TypeJSON},
+		{Name: "reasoning_effort", Type: field.TypeString, Size: 16, Default: ""},
+		{Name: "allow_long_context", Type: field.TypeBool, Default: true},
 		{Name: "last_used_at", Type: field.TypeTime, Nullable: true},
 		{Name: "ip_whitelist", Type: field.TypeJSON, Nullable: true},
 		{Name: "ip_blacklist", Type: field.TypeJSON, Nullable: true},
@@ -45,13 +49,13 @@ var (
 		ForeignKeys: []*schema.ForeignKey{
 			{
 				Symbol:     "api_keys_groups_api_keys",
-				Columns:    []*schema.Column{APIKeysColumns[23]},
+				Columns:    []*schema.Column{APIKeysColumns[27]},
 				RefColumns: []*schema.Column{GroupsColumns[0]},
 				OnDelete:   schema.SetNull,
 			},
 			{
 				Symbol:     "api_keys_users_api_keys",
-				Columns:    []*schema.Column{APIKeysColumns[24]},
+				Columns:    []*schema.Column{APIKeysColumns[28]},
 				RefColumns: []*schema.Column{UsersColumns[0]},
 				OnDelete:   schema.NoAction,
 			},
@@ -60,17 +64,17 @@ var (
 			{
 				Name:    "apikey_user_id",
 				Unique:  false,
-				Columns: []*schema.Column{APIKeysColumns[24]},
+				Columns: []*schema.Column{APIKeysColumns[28]},
 			},
 			{
 				Name:    "apikey_group_id",
 				Unique:  false,
-				Columns: []*schema.Column{APIKeysColumns[23]},
+				Columns: []*schema.Column{APIKeysColumns[27]},
 			},
 			{
 				Name:    "apikey_status",
 				Unique:  false,
-				Columns: []*schema.Column{APIKeysColumns[7]},
+				Columns: []*schema.Column{APIKeysColumns[8]},
 			},
 			{
 				Name:    "apikey_deleted_at",
@@ -80,17 +84,17 @@ var (
 			{
 				Name:    "apikey_last_used_at",
 				Unique:  false,
-				Columns: []*schema.Column{APIKeysColumns[8]},
+				Columns: []*schema.Column{APIKeysColumns[12]},
 			},
 			{
 				Name:    "apikey_quota_quota_used",
 				Unique:  false,
-				Columns: []*schema.Column{APIKeysColumns[11], APIKeysColumns[12]},
+				Columns: []*schema.Column{APIKeysColumns[15], APIKeysColumns[16]},
 			},
 			{
 				Name:    "apikey_expires_at",
 				Unique:  false,
-				Columns: []*schema.Column{APIKeysColumns[13]},
+				Columns: []*schema.Column{APIKeysColumns[17]},
 			},
 		},
 	}
@@ -111,6 +115,7 @@ var (
 		{Name: "load_factor", Type: field.TypeInt, Nullable: true},
 		{Name: "priority", Type: field.TypeInt, Default: 50},
 		{Name: "rate_multiplier", Type: field.TypeFloat64, Default: 1, SchemaType: map[string]string{"postgres": "decimal(10,4)"}},
+		{Name: "group_rate_multiplier", Type: field.TypeFloat64, Default: 1, SchemaType: map[string]string{"postgres": "decimal(10,4)"}},
 		{Name: "status", Type: field.TypeString, Size: 20, Default: "active"},
 		{Name: "error_message", Type: field.TypeString, Nullable: true, SchemaType: map[string]string{"postgres": "text"}},
 		{Name: "last_used_at", Type: field.TypeTime, Nullable: true, SchemaType: map[string]string{"postgres": "timestamptz"}},
@@ -137,13 +142,13 @@ var (
 		ForeignKeys: []*schema.ForeignKey{
 			{
 				Symbol:     "accounts_proxies_proxy",
-				Columns:    []*schema.Column{AccountsColumns[30]},
+				Columns:    []*schema.Column{AccountsColumns[31]},
 				RefColumns: []*schema.Column{ProxiesColumns[0]},
 				OnDelete:   schema.SetNull,
 			},
 			{
 				Symbol:     "accounts_accounts_children",
-				Columns:    []*schema.Column{AccountsColumns[31]},
+				Columns:    []*schema.Column{AccountsColumns[32]},
 				RefColumns: []*schema.Column{AccountsColumns[0]},
 				OnDelete:   schema.Restrict,
 			},
@@ -162,12 +167,12 @@ var (
 			{
 				Name:    "account_status",
 				Unique:  false,
-				Columns: []*schema.Column{AccountsColumns[15]},
+				Columns: []*schema.Column{AccountsColumns[16]},
 			},
 			{
 				Name:    "account_proxy_id",
 				Unique:  false,
-				Columns: []*schema.Column{AccountsColumns[30]},
+				Columns: []*schema.Column{AccountsColumns[31]},
 			},
 			{
 				Name:    "account_priority",
@@ -177,27 +182,27 @@ var (
 			{
 				Name:    "account_last_used_at",
 				Unique:  false,
-				Columns: []*schema.Column{AccountsColumns[17]},
+				Columns: []*schema.Column{AccountsColumns[18]},
 			},
 			{
 				Name:    "account_schedulable",
 				Unique:  false,
-				Columns: []*schema.Column{AccountsColumns[20]},
+				Columns: []*schema.Column{AccountsColumns[21]},
 			},
 			{
 				Name:    "account_rate_limited_at",
 				Unique:  false,
-				Columns: []*schema.Column{AccountsColumns[21]},
+				Columns: []*schema.Column{AccountsColumns[22]},
 			},
 			{
 				Name:    "account_rate_limit_reset_at",
 				Unique:  false,
-				Columns: []*schema.Column{AccountsColumns[22]},
+				Columns: []*schema.Column{AccountsColumns[23]},
 			},
 			{
 				Name:    "account_overload_until",
 				Unique:  false,
-				Columns: []*schema.Column{AccountsColumns[23]},
+				Columns: []*schema.Column{AccountsColumns[24]},
 			},
 			{
 				Name:    "account_platform_priority",
@@ -207,7 +212,7 @@ var (
 			{
 				Name:    "account_priority_status",
 				Unique:  false,
-				Columns: []*schema.Column{AccountsColumns[13], AccountsColumns[15]},
+				Columns: []*schema.Column{AccountsColumns[13], AccountsColumns[16]},
 			},
 			{
 				Name:    "account_deleted_at",
@@ -217,13 +222,14 @@ var (
 			{
 				Name:    "account_parent_account_id",
 				Unique:  false,
-				Columns: []*schema.Column{AccountsColumns[31]},
+				Columns: []*schema.Column{AccountsColumns[32]},
 			},
 		},
 	}
 	// AccountGroupsColumns holds the columns for the "account_groups" table.
 	AccountGroupsColumns = []*schema.Column{
 		{Name: "priority", Type: field.TypeInt, Default: 50},
+		{Name: "allowed_models", Type: field.TypeJSON, Nullable: true, SchemaType: map[string]string{"postgres": "jsonb"}},
 		{Name: "created_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
 		{Name: "account_id", Type: field.TypeInt64},
 		{Name: "group_id", Type: field.TypeInt64},
@@ -232,17 +238,17 @@ var (
 	AccountGroupsTable = &schema.Table{
 		Name:       "account_groups",
 		Columns:    AccountGroupsColumns,
-		PrimaryKey: []*schema.Column{AccountGroupsColumns[2], AccountGroupsColumns[3]},
+		PrimaryKey: []*schema.Column{AccountGroupsColumns[3], AccountGroupsColumns[4]},
 		ForeignKeys: []*schema.ForeignKey{
 			{
 				Symbol:     "account_groups_accounts_account",
-				Columns:    []*schema.Column{AccountGroupsColumns[2]},
+				Columns:    []*schema.Column{AccountGroupsColumns[3]},
 				RefColumns: []*schema.Column{AccountsColumns[0]},
 				OnDelete:   schema.NoAction,
 			},
 			{
 				Symbol:     "account_groups_groups_group",
-				Columns:    []*schema.Column{AccountGroupsColumns[3]},
+				Columns:    []*schema.Column{AccountGroupsColumns[4]},
 				RefColumns: []*schema.Column{GroupsColumns[0]},
 				OnDelete:   schema.NoAction,
 			},
@@ -251,7 +257,7 @@ var (
 			{
 				Name:    "accountgroup_group_id",
 				Unique:  false,
-				Columns: []*schema.Column{AccountGroupsColumns[3]},
+				Columns: []*schema.Column{AccountGroupsColumns[4]},
 			},
 			{
 				Name:    "accountgroup_priority",
@@ -950,6 +956,9 @@ var (
 		{Name: "claude_code_only", Type: field.TypeBool, Default: false},
 		{Name: "fallback_group_id", Type: field.TypeInt64, Nullable: true},
 		{Name: "fallback_group_id_on_invalid_request", Type: field.TypeInt64, Nullable: true},
+		{Name: "block_subagents", Type: field.TypeBool, Default: false},
+		{Name: "codex_cli_only", Type: field.TypeBool, Default: false},
+		{Name: "stream_only", Type: field.TypeBool, Default: false},
 		{Name: "model_routing", Type: field.TypeJSON, Nullable: true, SchemaType: map[string]string{"postgres": "jsonb"}},
 		{Name: "model_routing_enabled", Type: field.TypeBool, Default: false},
 		{Name: "mcp_xml_inject", Type: field.TypeBool, Default: true},
@@ -1007,7 +1016,7 @@ var (
 			{
 				Name:    "group_sort_order",
 				Unique:  false,
-				Columns: []*schema.Column{GroupsColumns[51]},
+				Columns: []*schema.Column{GroupsColumns[54]},
 			},
 			{
 				Name:    "idx_groups_duplicate_operation_id_active",
@@ -1100,6 +1109,258 @@ var (
 			},
 		},
 	}
+	// LotteryAccountsColumns holds the columns for the "lottery_accounts" table.
+	LotteryAccountsColumns = []*schema.Column{
+		{Name: "id", Type: field.TypeInt64, Increment: true},
+		{Name: "pool_id", Type: field.TypeInt64},
+		{Name: "user_id", Type: field.TypeInt64},
+		{Name: "total_units", Type: field.TypeInt64, Default: 0},
+		{Name: "earned", Type: field.TypeInt64, Default: 0},
+		{Name: "used", Type: field.TypeInt64, Default: 0},
+		{Name: "updated_at", Type: field.TypeTime},
+	}
+	// LotteryAccountsTable holds the schema information for the "lottery_accounts" table.
+	LotteryAccountsTable = &schema.Table{
+		Name:       "lottery_accounts",
+		Columns:    LotteryAccountsColumns,
+		PrimaryKey: []*schema.Column{LotteryAccountsColumns[0]},
+		Indexes: []*schema.Index{
+			{
+				Name:    "lotteryaccount_pool_id_user_id",
+				Unique:  true,
+				Columns: []*schema.Column{LotteryAccountsColumns[1], LotteryAccountsColumns[2]},
+			},
+			{
+				Name:    "lotteryaccount_user_id",
+				Unique:  false,
+				Columns: []*schema.Column{LotteryAccountsColumns[2]},
+			},
+		},
+	}
+	// LotteryContributionsColumns holds the columns for the "lottery_contributions" table.
+	LotteryContributionsColumns = []*schema.Column{
+		{Name: "id", Type: field.TypeInt64, Increment: true},
+		{Name: "pool_id", Type: field.TypeInt64},
+		{Name: "user_id", Type: field.TypeInt64},
+		{Name: "source_type", Type: field.TypeString, Size: 20},
+		{Name: "source_id", Type: field.TypeString, Size: 128},
+		{Name: "amount_units", Type: field.TypeInt64},
+		{Name: "net_units", Type: field.TypeInt64},
+		{Name: "created_at", Type: field.TypeTime},
+		{Name: "updated_at", Type: field.TypeTime},
+	}
+	// LotteryContributionsTable holds the schema information for the "lottery_contributions" table.
+	LotteryContributionsTable = &schema.Table{
+		Name:       "lottery_contributions",
+		Columns:    LotteryContributionsColumns,
+		PrimaryKey: []*schema.Column{LotteryContributionsColumns[0]},
+		Indexes: []*schema.Index{
+			{
+				Name:    "lotterycontribution_pool_id_source_type_source_id",
+				Unique:  true,
+				Columns: []*schema.Column{LotteryContributionsColumns[1], LotteryContributionsColumns[3], LotteryContributionsColumns[4]},
+			},
+			{
+				Name:    "lotterycontribution_user_id_pool_id",
+				Unique:  false,
+				Columns: []*schema.Column{LotteryContributionsColumns[2], LotteryContributionsColumns[1]},
+			},
+			{
+				Name:    "lotterycontribution_source_type_source_id",
+				Unique:  false,
+				Columns: []*schema.Column{LotteryContributionsColumns[3], LotteryContributionsColumns[4]},
+			},
+		},
+	}
+	// LotteryDrawsColumns holds the columns for the "lottery_draws" table.
+	LotteryDrawsColumns = []*schema.Column{
+		{Name: "id", Type: field.TypeInt64, Increment: true},
+		{Name: "pool_id", Type: field.TypeInt64},
+		{Name: "user_id", Type: field.TypeInt64},
+		{Name: "prize_id", Type: field.TypeInt64},
+		{Name: "request_key", Type: field.TypeString, Size: 128},
+		{Name: "prize_snapshot", Type: field.TypeJSON},
+		{Name: "created_at", Type: field.TypeTime},
+	}
+	// LotteryDrawsTable holds the schema information for the "lottery_draws" table.
+	LotteryDrawsTable = &schema.Table{
+		Name:       "lottery_draws",
+		Columns:    LotteryDrawsColumns,
+		PrimaryKey: []*schema.Column{LotteryDrawsColumns[0]},
+		Indexes: []*schema.Index{
+			{
+				Name:    "lotterydraw_user_id_request_key",
+				Unique:  true,
+				Columns: []*schema.Column{LotteryDrawsColumns[2], LotteryDrawsColumns[4]},
+			},
+			{
+				Name:    "lotterydraw_pool_id_created_at",
+				Unique:  false,
+				Columns: []*schema.Column{LotteryDrawsColumns[1], LotteryDrawsColumns[6]},
+			},
+			{
+				Name:    "lotterydraw_user_id_created_at",
+				Unique:  false,
+				Columns: []*schema.Column{LotteryDrawsColumns[2], LotteryDrawsColumns[6]},
+			},
+		},
+	}
+	// LotteryInvitationsColumns holds the columns for the "lottery_invitations" table.
+	LotteryInvitationsColumns = []*schema.Column{
+		{Name: "id", Type: field.TypeInt64, Increment: true},
+		{Name: "pool_id", Type: field.TypeInt64},
+		{Name: "inviter_id", Type: field.TypeInt64},
+		{Name: "invitee_id", Type: field.TypeInt64, Nullable: true},
+		{Name: "visitor_key", Type: field.TypeString, Size: 64},
+		{Name: "ip_address", Type: field.TypeString, Size: 45},
+		{Name: "country", Type: field.TypeString, Size: 2, Default: ""},
+		{Name: "net_units", Type: field.TypeInt64, Default: 0},
+		{Name: "qualified", Type: field.TypeBool, Default: false},
+		{Name: "inviter_awarded", Type: field.TypeBool, Default: false},
+		{Name: "invitee_awarded", Type: field.TypeBool, Default: false},
+		{Name: "registered_at", Type: field.TypeTime, Nullable: true},
+		{Name: "created_at", Type: field.TypeTime},
+		{Name: "updated_at", Type: field.TypeTime},
+	}
+	// LotteryInvitationsTable holds the schema information for the "lottery_invitations" table.
+	LotteryInvitationsTable = &schema.Table{
+		Name:       "lottery_invitations",
+		Columns:    LotteryInvitationsColumns,
+		PrimaryKey: []*schema.Column{LotteryInvitationsColumns[0]},
+		Indexes: []*schema.Index{
+			{
+				Name:    "lotteryinvitation_pool_id_visitor_key",
+				Unique:  true,
+				Columns: []*schema.Column{LotteryInvitationsColumns[1], LotteryInvitationsColumns[4]},
+			},
+			{
+				Name:    "lotteryinvitation_pool_id_invitee_id",
+				Unique:  true,
+				Columns: []*schema.Column{LotteryInvitationsColumns[1], LotteryInvitationsColumns[3]},
+			},
+			{
+				Name:    "lotteryinvitation_inviter_id_pool_id",
+				Unique:  false,
+				Columns: []*schema.Column{LotteryInvitationsColumns[2], LotteryInvitationsColumns[1]},
+			},
+			{
+				Name:    "lotteryinvitation_invitee_id",
+				Unique:  false,
+				Columns: []*schema.Column{LotteryInvitationsColumns[3]},
+			},
+			{
+				Name:    "lotteryinvitation_pool_id_ip_address_created_at",
+				Unique:  false,
+				Columns: []*schema.Column{LotteryInvitationsColumns[1], LotteryInvitationsColumns[5], LotteryInvitationsColumns[12]},
+			},
+		},
+	}
+	// LotteryInviteLinksColumns holds the columns for the "lottery_invite_links" table.
+	LotteryInviteLinksColumns = []*schema.Column{
+		{Name: "id", Type: field.TypeInt64, Increment: true},
+		{Name: "pool_id", Type: field.TypeInt64},
+		{Name: "user_id", Type: field.TypeInt64},
+		{Name: "code", Type: field.TypeString, Unique: true, Size: 64},
+		{Name: "created_at", Type: field.TypeTime},
+	}
+	// LotteryInviteLinksTable holds the schema information for the "lottery_invite_links" table.
+	LotteryInviteLinksTable = &schema.Table{
+		Name:       "lottery_invite_links",
+		Columns:    LotteryInviteLinksColumns,
+		PrimaryKey: []*schema.Column{LotteryInviteLinksColumns[0]},
+		Indexes: []*schema.Index{
+			{
+				Name:    "lotteryinvitelink_pool_id_user_id",
+				Unique:  true,
+				Columns: []*schema.Column{LotteryInviteLinksColumns[1], LotteryInviteLinksColumns[2]},
+			},
+		},
+	}
+	// LotteryLedgerColumns holds the columns for the "lottery_ledger" table.
+	LotteryLedgerColumns = []*schema.Column{
+		{Name: "id", Type: field.TypeInt64, Increment: true},
+		{Name: "pool_id", Type: field.TypeInt64},
+		{Name: "user_id", Type: field.TypeInt64},
+		{Name: "action", Type: field.TypeString, Size: 20},
+		{Name: "source_type", Type: field.TypeString, Size: 20},
+		{Name: "source_id", Type: field.TypeString, Size: 128},
+		{Name: "amount_units", Type: field.TypeInt64},
+		{Name: "ticket_delta", Type: field.TypeInt64},
+		{Name: "created_at", Type: field.TypeTime},
+	}
+	// LotteryLedgerTable holds the schema information for the "lottery_ledger" table.
+	LotteryLedgerTable = &schema.Table{
+		Name:       "lottery_ledger",
+		Columns:    LotteryLedgerColumns,
+		PrimaryKey: []*schema.Column{LotteryLedgerColumns[0]},
+		Indexes: []*schema.Index{
+			{
+				Name:    "lotteryledger_pool_id_user_id_created_at",
+				Unique:  false,
+				Columns: []*schema.Column{LotteryLedgerColumns[1], LotteryLedgerColumns[2], LotteryLedgerColumns[8]},
+			},
+			{
+				Name:    "lotteryledger_user_id",
+				Unique:  false,
+				Columns: []*schema.Column{LotteryLedgerColumns[2]},
+			},
+		},
+	}
+	// LotteryPoolsColumns holds the columns for the "lottery_pools" table.
+	LotteryPoolsColumns = []*schema.Column{
+		{Name: "id", Type: field.TypeInt64, Increment: true},
+		{Name: "name", Type: field.TypeString, Size: 100},
+		{Name: "mode", Type: field.TypeString, Size: 20},
+		{Name: "invite_config", Type: field.TypeJSON, Nullable: true},
+		{Name: "threshold_units", Type: field.TypeInt64},
+		{Name: "grant_enabled", Type: field.TypeBool, Default: false},
+		{Name: "draw_enabled", Type: field.TypeBool, Default: false},
+		{Name: "rule_locked", Type: field.TypeBool, Default: false},
+		{Name: "sort_order", Type: field.TypeInt, Default: 0},
+		{Name: "activated_at", Type: field.TypeTime, Nullable: true},
+		{Name: "deleted_at", Type: field.TypeTime, Nullable: true},
+		{Name: "created_at", Type: field.TypeTime},
+		{Name: "updated_at", Type: field.TypeTime},
+	}
+	// LotteryPoolsTable holds the schema information for the "lottery_pools" table.
+	LotteryPoolsTable = &schema.Table{
+		Name:       "lottery_pools",
+		Columns:    LotteryPoolsColumns,
+		PrimaryKey: []*schema.Column{LotteryPoolsColumns[0]},
+	}
+	// LotteryPrizesColumns holds the columns for the "lottery_prizes" table.
+	LotteryPrizesColumns = []*schema.Column{
+		{Name: "id", Type: field.TypeInt64, Increment: true},
+		{Name: "pool_id", Type: field.TypeInt64},
+		{Name: "name", Type: field.TypeString, Size: 100},
+		{Name: "kind", Type: field.TypeString, Size: 20},
+		{Name: "weight", Type: field.TypeInt64},
+		{Name: "stock", Type: field.TypeInt64, Default: -1},
+		{Name: "enabled", Type: field.TypeBool, Default: true},
+		{Name: "sort_order", Type: field.TypeInt, Default: 0},
+		{Name: "amount_units", Type: field.TypeInt64, Default: 0},
+		{Name: "plan_id", Type: field.TypeInt64, Default: 0},
+		{Name: "plan_name", Type: field.TypeString, Default: ""},
+		{Name: "group_id", Type: field.TypeInt64, Default: 0},
+		{Name: "validity_days", Type: field.TypeInt, Default: 0},
+		{Name: "text", Type: field.TypeString, Default: ""},
+		{Name: "deleted_at", Type: field.TypeTime, Nullable: true},
+		{Name: "created_at", Type: field.TypeTime},
+		{Name: "updated_at", Type: field.TypeTime},
+	}
+	// LotteryPrizesTable holds the schema information for the "lottery_prizes" table.
+	LotteryPrizesTable = &schema.Table{
+		Name:       "lottery_prizes",
+		Columns:    LotteryPrizesColumns,
+		PrimaryKey: []*schema.Column{LotteryPrizesColumns[0]},
+		Indexes: []*schema.Index{
+			{
+				Name:    "lotteryprize_pool_id",
+				Unique:  false,
+				Columns: []*schema.Column{LotteryPrizesColumns[1]},
+			},
+		},
+	}
 	// PaymentAuditLogsColumns holds the columns for the "payment_audit_logs" table.
 	PaymentAuditLogsColumns = []*schema.Column{
 		{Name: "id", Type: field.TypeInt64, Increment: true},
@@ -1143,6 +1404,7 @@ var (
 		{Name: "plan_id", Type: field.TypeInt64, Nullable: true},
 		{Name: "subscription_group_id", Type: field.TypeInt64, Nullable: true},
 		{Name: "subscription_days", Type: field.TypeInt, Nullable: true},
+		{Name: "subscription_renewal_mode", Type: field.TypeString, Size: 16, Default: "extend"},
 		{Name: "provider_instance_id", Type: field.TypeString, Nullable: true, Size: 64},
 		{Name: "provider_key", Type: field.TypeString, Nullable: true, Size: 30},
 		{Name: "provider_snapshot", Type: field.TypeJSON, Nullable: true, SchemaType: map[string]string{"postgres": "jsonb"}},
@@ -1174,7 +1436,7 @@ var (
 		ForeignKeys: []*schema.ForeignKey{
 			{
 				Symbol:     "payment_orders_users_payment_orders",
-				Columns:    []*schema.Column{PaymentOrdersColumns[40]},
+				Columns:    []*schema.Column{PaymentOrdersColumns[41]},
 				RefColumns: []*schema.Column{UsersColumns[0]},
 				OnDelete:   schema.NoAction,
 			},
@@ -1191,32 +1453,32 @@ var (
 			{
 				Name:    "paymentorder_user_id",
 				Unique:  false,
-				Columns: []*schema.Column{PaymentOrdersColumns[40]},
+				Columns: []*schema.Column{PaymentOrdersColumns[41]},
 			},
 			{
 				Name:    "paymentorder_status",
 				Unique:  false,
-				Columns: []*schema.Column{PaymentOrdersColumns[22]},
+				Columns: []*schema.Column{PaymentOrdersColumns[23]},
 			},
 			{
 				Name:    "paymentorder_expires_at",
 				Unique:  false,
-				Columns: []*schema.Column{PaymentOrdersColumns[30]},
+				Columns: []*schema.Column{PaymentOrdersColumns[31]},
 			},
 			{
 				Name:    "paymentorder_created_at",
 				Unique:  false,
-				Columns: []*schema.Column{PaymentOrdersColumns[38]},
+				Columns: []*schema.Column{PaymentOrdersColumns[39]},
 			},
 			{
 				Name:    "paymentorder_paid_at",
 				Unique:  false,
-				Columns: []*schema.Column{PaymentOrdersColumns[31]},
+				Columns: []*schema.Column{PaymentOrdersColumns[32]},
 			},
 			{
 				Name:    "paymentorder_payment_type_paid_at",
 				Unique:  false,
-				Columns: []*schema.Column{PaymentOrdersColumns[10], PaymentOrdersColumns[31]},
+				Columns: []*schema.Column{PaymentOrdersColumns[10], PaymentOrdersColumns[32]},
 			},
 			{
 				Name:    "paymentorder_order_type",
@@ -1411,6 +1673,7 @@ var (
 		{Name: "protocol", Type: field.TypeString, Size: 20},
 		{Name: "host", Type: field.TypeString, Size: 255},
 		{Name: "port", Type: field.TypeInt},
+		{Name: "mihomo_node_id", Type: field.TypeString, Nullable: true, Size: 128},
 		{Name: "username", Type: field.TypeString, Nullable: true, Size: 100},
 		{Name: "password", Type: field.TypeString, Nullable: true, Size: 100},
 		{Name: "status", Type: field.TypeString, Size: 20, Default: "active"},
@@ -1427,7 +1690,7 @@ var (
 		ForeignKeys: []*schema.ForeignKey{
 			{
 				Symbol:     "proxies_proxies_backup_proxy",
-				Columns:    []*schema.Column{ProxiesColumns[14]},
+				Columns:    []*schema.Column{ProxiesColumns[15]},
 				RefColumns: []*schema.Column{ProxiesColumns[0]},
 				OnDelete:   schema.SetNull,
 			},
@@ -1436,7 +1699,7 @@ var (
 			{
 				Name:    "proxy_status",
 				Unique:  false,
-				Columns: []*schema.Column{ProxiesColumns[10]},
+				Columns: []*schema.Column{ProxiesColumns[11]},
 			},
 			{
 				Name:    "proxy_deleted_at",
@@ -1446,12 +1709,20 @@ var (
 			{
 				Name:    "proxy_expires_at",
 				Unique:  false,
-				Columns: []*schema.Column{ProxiesColumns[11]},
+				Columns: []*schema.Column{ProxiesColumns[12]},
 			},
 			{
 				Name:    "proxy_backup_proxy_id",
 				Unique:  false,
-				Columns: []*schema.Column{ProxiesColumns[14]},
+				Columns: []*schema.Column{ProxiesColumns[15]},
+			},
+			{
+				Name:    "idx_proxies_mihomo_node_id_active",
+				Unique:  true,
+				Columns: []*schema.Column{ProxiesColumns[8]},
+				Annotation: &entsql.IndexAnnotation{
+					Where: "mihomo_node_id IS NOT NULL AND deleted_at IS NULL",
+				},
 			},
 		},
 	}
@@ -1670,6 +1941,7 @@ var (
 		{Name: "audit_settlement_imported_event", Type: field.TypeBool, Default: false},
 		{Name: "duration_ms", Type: field.TypeInt, Nullable: true},
 		{Name: "first_token_ms", Type: field.TypeInt, Nullable: true},
+		{Name: "queue_wait_ms", Type: field.TypeInt, Nullable: true},
 		{Name: "user_agent", Type: field.TypeString, Nullable: true, Size: 512},
 		{Name: "ip_address", Type: field.TypeString, Nullable: true, Size: 45},
 		{Name: "image_count", Type: field.TypeInt, Default: 0},
@@ -1682,6 +1954,7 @@ var (
 		{Name: "video_resolution", Type: field.TypeString, Nullable: true, Size: 10},
 		{Name: "video_duration_seconds", Type: field.TypeInt, Nullable: true},
 		{Name: "cache_ttl_overridden", Type: field.TypeBool, Default: false},
+		{Name: "queue_timing", Type: field.TypeJSON, Nullable: true},
 		{Name: "created_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
 		{Name: "api_key_id", Type: field.TypeInt64},
 		{Name: "account_id", Type: field.TypeInt64},
@@ -1697,31 +1970,31 @@ var (
 		ForeignKeys: []*schema.ForeignKey{
 			{
 				Symbol:     "usage_logs_api_keys_usage_logs",
-				Columns:    []*schema.Column{UsageLogsColumns[44]},
+				Columns:    []*schema.Column{UsageLogsColumns[46]},
 				RefColumns: []*schema.Column{APIKeysColumns[0]},
 				OnDelete:   schema.NoAction,
 			},
 			{
 				Symbol:     "usage_logs_accounts_usage_logs",
-				Columns:    []*schema.Column{UsageLogsColumns[45]},
+				Columns:    []*schema.Column{UsageLogsColumns[47]},
 				RefColumns: []*schema.Column{AccountsColumns[0]},
 				OnDelete:   schema.NoAction,
 			},
 			{
 				Symbol:     "usage_logs_groups_usage_logs",
-				Columns:    []*schema.Column{UsageLogsColumns[46]},
+				Columns:    []*schema.Column{UsageLogsColumns[48]},
 				RefColumns: []*schema.Column{GroupsColumns[0]},
 				OnDelete:   schema.SetNull,
 			},
 			{
 				Symbol:     "usage_logs_users_usage_logs",
-				Columns:    []*schema.Column{UsageLogsColumns[47]},
+				Columns:    []*schema.Column{UsageLogsColumns[49]},
 				RefColumns: []*schema.Column{UsersColumns[0]},
 				OnDelete:   schema.NoAction,
 			},
 			{
 				Symbol:     "usage_logs_user_subscriptions_usage_logs",
-				Columns:    []*schema.Column{UsageLogsColumns[48]},
+				Columns:    []*schema.Column{UsageLogsColumns[50]},
 				RefColumns: []*schema.Column{UserSubscriptionsColumns[0]},
 				OnDelete:   schema.SetNull,
 			},
@@ -1730,32 +2003,32 @@ var (
 			{
 				Name:    "usagelog_user_id",
 				Unique:  false,
-				Columns: []*schema.Column{UsageLogsColumns[47]},
+				Columns: []*schema.Column{UsageLogsColumns[49]},
 			},
 			{
 				Name:    "usagelog_api_key_id",
 				Unique:  false,
-				Columns: []*schema.Column{UsageLogsColumns[44]},
+				Columns: []*schema.Column{UsageLogsColumns[46]},
 			},
 			{
 				Name:    "usagelog_account_id",
 				Unique:  false,
-				Columns: []*schema.Column{UsageLogsColumns[45]},
+				Columns: []*schema.Column{UsageLogsColumns[47]},
 			},
 			{
 				Name:    "usagelog_group_id",
 				Unique:  false,
-				Columns: []*schema.Column{UsageLogsColumns[46]},
+				Columns: []*schema.Column{UsageLogsColumns[48]},
 			},
 			{
 				Name:    "usagelog_subscription_id",
 				Unique:  false,
-				Columns: []*schema.Column{UsageLogsColumns[48]},
+				Columns: []*schema.Column{UsageLogsColumns[50]},
 			},
 			{
 				Name:    "usagelog_created_at",
 				Unique:  false,
-				Columns: []*schema.Column{UsageLogsColumns[43]},
+				Columns: []*schema.Column{UsageLogsColumns[45]},
 			},
 			{
 				Name:    "usagelog_model",
@@ -1775,17 +2048,17 @@ var (
 			{
 				Name:    "usagelog_user_id_created_at",
 				Unique:  false,
-				Columns: []*schema.Column{UsageLogsColumns[47], UsageLogsColumns[43]},
+				Columns: []*schema.Column{UsageLogsColumns[49], UsageLogsColumns[45]},
 			},
 			{
 				Name:    "usagelog_api_key_id_created_at",
 				Unique:  false,
-				Columns: []*schema.Column{UsageLogsColumns[44], UsageLogsColumns[43]},
+				Columns: []*schema.Column{UsageLogsColumns[46], UsageLogsColumns[45]},
 			},
 			{
 				Name:    "usagelog_group_id_created_at",
 				Unique:  false,
-				Columns: []*schema.Column{UsageLogsColumns[46], UsageLogsColumns[43]},
+				Columns: []*schema.Column{UsageLogsColumns[48], UsageLogsColumns[45]},
 			},
 		},
 	}
@@ -1797,6 +2070,7 @@ var (
 		{Name: "deleted_at", Type: field.TypeTime, Nullable: true, SchemaType: map[string]string{"postgres": "timestamptz"}},
 		{Name: "email", Type: field.TypeString, Size: 255},
 		{Name: "password_hash", Type: field.TypeString, Size: 255},
+		{Name: "observer_group_ids", Type: field.TypeJSON},
 		{Name: "role", Type: field.TypeString, Size: 20, Default: "user"},
 		{Name: "balance", Type: field.TypeFloat64, Default: 0, SchemaType: map[string]string{"postgres": "decimal(20,8)"}},
 		{Name: "frozen_balance", Type: field.TypeFloat64, Default: 0, SchemaType: map[string]string{"postgres": "decimal(20,8)"}},
@@ -1827,7 +2101,7 @@ var (
 			{
 				Name:    "user_status",
 				Unique:  false,
-				Columns: []*schema.Column{UsersColumns[10]},
+				Columns: []*schema.Column{UsersColumns[11]},
 			},
 			{
 				Name:    "user_deleted_at",
@@ -2112,6 +2386,14 @@ var (
 		GroupsTable,
 		IdempotencyRecordsTable,
 		IdentityAdoptionDecisionsTable,
+		LotteryAccountsTable,
+		LotteryContributionsTable,
+		LotteryDrawsTable,
+		LotteryInvitationsTable,
+		LotteryInviteLinksTable,
+		LotteryLedgerTable,
+		LotteryPoolsTable,
+		LotteryPrizesTable,
 		PaymentAuditLogsTable,
 		PaymentOrdersTable,
 		PaymentProviderInstancesTable,
@@ -2208,6 +2490,30 @@ func init() {
 	IdentityAdoptionDecisionsTable.ForeignKeys[1].RefTable = PendingAuthSessionsTable
 	IdentityAdoptionDecisionsTable.Annotation = &entsql.Annotation{
 		Table: "identity_adoption_decisions",
+	}
+	LotteryAccountsTable.Annotation = &entsql.Annotation{
+		Table: "lottery_accounts",
+	}
+	LotteryContributionsTable.Annotation = &entsql.Annotation{
+		Table: "lottery_contributions",
+	}
+	LotteryDrawsTable.Annotation = &entsql.Annotation{
+		Table: "lottery_draws",
+	}
+	LotteryInvitationsTable.Annotation = &entsql.Annotation{
+		Table: "lottery_invitations",
+	}
+	LotteryInviteLinksTable.Annotation = &entsql.Annotation{
+		Table: "lottery_invite_links",
+	}
+	LotteryLedgerTable.Annotation = &entsql.Annotation{
+		Table: "lottery_ledger",
+	}
+	LotteryPoolsTable.Annotation = &entsql.Annotation{
+		Table: "lottery_pools",
+	}
+	LotteryPrizesTable.Annotation = &entsql.Annotation{
+		Table: "lottery_prizes",
 	}
 	PaymentAuditLogsTable.Annotation = &entsql.Annotation{
 		Table: "payment_audit_logs",

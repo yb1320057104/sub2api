@@ -137,7 +137,7 @@ func openAIGroupAntiDistillationContentHasMedia(value gjson.Result) bool {
 }
 
 func openAIGroupAntiDistillationUsageEligible(result *OpenAIForwardResult) bool {
-	return result != nil && result.Usage.CacheReadKnown && !result.Usage.cacheReadMediaObserved && !result.ClientDisconnect &&
+	return result != nil && result.Usage.CacheReadKnown && !result.Usage.cacheReadMediaObserved && !result.UsageUnavailable && !result.ClientDisconnect &&
 		result.SucceededForScheduling() && result.Usage.InputTokens > 0 && result.Usage.CacheReadInputTokens >= 0 &&
 		!result.ImageEndpoint && result.ImageCount == 0 && result.VideoCount == 0 && result.AudioUsage == nil &&
 		result.Usage.ImageInputTokens == 0 && result.Usage.ImageOutputTokens == 0

@@ -6,15 +6,18 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/mihomo"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/sysutil"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/Wei-Shaw/sub2api/internal/setup"
 
 	"github.com/gin-gonic/gin"
 )
@@ -25,6 +28,8 @@ type SystemHandler struct {
 	lockSvc         *service.SystemOperationLockService
 	restartSchedule func(func())
 	restartSignal   func() error
+	kernel *mihomo.Manager
+	nodeChecker mihomoNodeChecker
 }
 
 // systemUpdateTimeout bounds a full in-place update or rollback: the release
@@ -65,6 +70,7 @@ func NewSystemHandler(updateSvc systemUpdateService, lockSvc *service.SystemOper
 		lockSvc:         lockSvc,
 		restartSchedule: func(run func()) { time.AfterFunc(500*time.Millisecond, run) },
 		restartSignal:   sysutil.SignalServiceRestart,
+		kernel: mihomo.New(filepath.Join(setup.GetDataDir(), "mihomo-codex")),
 	}
 }
 

@@ -88,3 +88,75 @@ func TestIntelligenceModelsHandlerSafeFailure(t *testing.T) {
 	require.NotContains(t, recorder.Body.String(), "internal.private")
 	require.NoError(t, mock.ExpectationsWereMet())
 }
+
+func TestIntelligenceQualityHandlerReadOnlyAuthentication(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, path := range []string{"groups", "results?group_id=7"} {
+		for _, authenticated := range []bool{false, true} {
+			t.Run(path+map[bool]string{false: "/anonymous", true: "/user"}[authenticated], func(t *testing.T) {
+				db, mock, err := sqlmock.New()
+				require.NoError(t, err)
+				defer db.Close()
+				if authenticated {
+					mock.ExpectQuery("SELECT value FROM settings WHERE key=\\$1").WithArgs("pk_intelligence_test_config").
+						WillReturnRows(sqlmock.NewRows([]string{"value"}).AddRow(`{"enabled":false}`))
+				}
+				svc := service.NewIntelligenceTestService(db, nil, intelligenceModelsHandlerSettings{}, nil, nil, nil)
+				h := NewIntelligenceTestHandler(svc)
+				router := gin.New()
+				router.Use(func(c *gin.Context) {
+					if authenticated {
+						c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 8})
+						c.Set(string(middleware.ContextKeyUserRole), service.RoleUser)
+					}
+				})
+				router.GET("/quality/groups", h.QualityGroups)
+				router.GET("/quality/results", h.QualityResults)
+				response := httptest.NewRecorder()
+				router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/quality/"+path, nil))
+				if authenticated {
+					require.Equal(t, http.StatusOK, response.Code)
+					require.Contains(t, response.Body.String(), `"enabled":false`)
+					require.Equal(t, "no-store", response.Header().Get("Cache-Control"))
+				} else {
+					require.Equal(t, http.StatusUnauthorized, response.Code)
+				}
+				response = httptest.NewRecorder()
+				router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/quality/"+path, nil))
+				require.Equal(t, http.StatusNotFound, response.Code, "quality display has no execution or save route")
+				require.NoError(t, mock.ExpectationsWereMet())
+			})
+		}
+	}
+}
+
+func TestIntelligenceQualityHandlerSafeFailures(t *testing.T) {
+	for _, tc := range []struct {
+		path string
+		want int
+	}{{"/quality/groups", http.StatusInternalServerError}, {"/quality/results?group_id=7", http.StatusInternalServerError}, {"/quality/results?group_id=0", http.StatusBadRequest}} {
+		t.Run(tc.path, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			require.NoError(t, err)
+			defer db.Close()
+			if tc.want == http.StatusInternalServerError {
+				mock.ExpectQuery("SELECT value FROM settings").WillReturnError(errors.New("postgres://secret@internal.private/database"))
+			}
+			svc := service.NewIntelligenceTestService(db, nil, intelligenceModelsHandlerSettings{}, nil, nil, nil)
+			h := NewIntelligenceTestHandler(svc)
+			router := gin.New()
+			router.Use(func(c *gin.Context) {
+				c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: 8})
+				c.Set(string(middleware.ContextKeyUserRole), service.RoleUser)
+			})
+			router.GET("/quality/groups", h.QualityGroups)
+			router.GET("/quality/results", h.QualityResults)
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, tc.path, nil))
+			require.Equal(t, tc.want, response.Code)
+			require.NotContains(t, response.Body.String(), "secret")
+			require.NotContains(t, response.Body.String(), "internal.private")
+			require.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}

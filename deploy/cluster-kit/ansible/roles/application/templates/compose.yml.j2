@@ -14,6 +14,7 @@ services:
       SKIP_SETUP: 'false'
       SUB2API_BACKGROUND_MODE: disabled
       SUB2API_WORKER_ONLY: 'false'
+      SUB2API_BEPUSDT_SHARED_POSTGRES: 'true'
       DATABASE_MAX_OPEN_CONNS: '24'
       SERVER_HOST: {{ mesh_ip | to_json }}
       SERVER_PORT: '18080'
@@ -54,6 +55,7 @@ services:
       SKIP_SETUP: 'true'
       SUB2API_BACKGROUND_MODE: active
       SUB2API_WORKER_ONLY: 'true'
+      SUB2API_BEPUSDT_SHARED_POSTGRES: 'true'
       DATABASE_MAX_OPEN_CONNS: '12'
     volumes:
       - './worker-data:/app/data'
