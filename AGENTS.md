@@ -1,5 +1,7 @@
 # 项目约束入口
 
+2026-11-10 HA运行故障恢复：按用户授权恢复渠道统计、五分钟账号糖果和授权巡检，调整两API CPU/内存预算。集群代理生成supervisor时仅将Docker临时超时标为可重试75、启动预算30秒；身份/配置拒绝仍78，writer门控、有序退出及单活保持，探测预算允许1/3秒。可选api_resources同时写候选Docker/Go限额，资源纳入spec/hash/receipt；同一pk.59 HA二进制完成候选代次10正常滚动，未创建新正式Release。渠道停机缺口已从原始用量补回，20组同快照对账通过，未重放计费。另有聚合器持久水位追赶与旧事实保留期/粗桶重算Go源码修复，最终54个顶层（含子项81个pass事件）隔离测试通过，但尚未编入现网应用；不能将其写成已部署。详细范围及限制见docs/PK_CLUSTER_RUNTIME_RECOVERY_REVIEW.md。沿用PK-019/034/035/036/047，无新增ID。
+
 2026-11-09 当前目标 v0.2.19-pk.59：按用户要求移植 ranxi2001/sub2api production 固定提交1c3882e935a01b376f9aefdf844863125fff7c2b的分组防蒸馏保护，登记PK-048。默认关闭，OpenAI分组独立保存暂停时长，按客户跨Key/已启用组统计最近20个有效文本请求，至少18个上游明确零缓存时在共享Redis原子暂停；不改账号状态、不自动换组、不修改计费、首字及缓存转换。适配PK-042多组WS、排队后复查与本地错误归因，WS2确认终帧交付才采样；复用settings/Redis/SMTP，无SQL迁移或依赖升级。只执行定向隔离验证，实际结果见docs/PK_GROUP_ANTI_DISTILLATION_PK59_REVIEW.md；未获本次发行/部署要求，不自动构建正式包或更新生产。来源许可、保护边界与后续集群更新约束保留。
 
 2026-11-09 HA授权浏览器补充已上线：两节点从固定原镜像构建独立Chromium/Xvfb运行镜像，二次构建加入临时profile的XDG目录修复；只读、用户1000下headless与后台CDP启动均通过。更新器以完整镜像ID和来源标签校验`browser_runtime_images`，候选代次8仅替换Image，API与worker均就绪，主writer单worker运行，控制器已恢复`in_sync`。代理106实际检查返回`passed`、`chatgpt.com GET预检通过`。未修改数据库结构、账号凭据或正式Release。

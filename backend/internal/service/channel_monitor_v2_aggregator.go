@@ -20,6 +20,12 @@ const (
 	// Always refresh a small trailing window so late writes land without
 	// re-aggregating large history every tick.
 	channelMonitorV2RecentOverlap = 10 * time.Minute
+	// Resume a stopped worker from its durable endpoint without making one
+	// recovery transaction scan an unbounded outage window.
+	channelMonitorV2CatchUpChunk = time.Hour
+	// ChannelMonitorV2MinFactRetention is shared with the repository's shortest
+	// fact TTL. Older recovery must rebuild complete UTC days before pruning.
+	ChannelMonitorV2MinFactRetention = 3 * 24 * time.Hour
 
 	// Gentle backfill: small adaptive chunks, never default 24h hammering.
 	// Initial historical chunk after the 2h seed.
@@ -55,6 +61,7 @@ type ChannelMonitorV2Aggregator struct {
 	// backfillAt is the earliest minute already recomputed (mirrors DB cursor).
 	// Zero means "not yet loaded from durable watermark this process".
 	backfillAt       time.Time
+	dataThrough      time.Time
 	backfillChunk    time.Duration
 	backfillFailures int
 	// nextWaitFloor is applied after runOnce when failures require backoff.
@@ -214,6 +221,10 @@ func (s *ChannelMonitorV2Aggregator) wait(interval time.Duration) bool {
 }
 
 func (s *ChannelMonitorV2Aggregator) runOnce() {
+	s.runOnceAt(time.Now())
+}
+
+func (s *ChannelMonitorV2Aggregator) runOnceAt(now time.Time) {
 	s.mu.Lock()
 	parent := s.ctx
 	s.mu.Unlock()
@@ -230,7 +241,7 @@ func (s *ChannelMonitorV2Aggregator) runOnce() {
 		defer release()
 	}
 
-	now := time.Now().UTC().Truncate(time.Minute)
+	now = now.UTC().Truncate(time.Minute)
 	if err := s.ensureCursor(ctx, now); err != nil {
 		logger.LegacyPrintf("service.channel_monitor_v2", "[ChannelMonitorV2] load watermark failed: %v", err)
 		return
@@ -239,6 +250,7 @@ func (s *ChannelMonitorV2Aggregator) runOnce() {
 	s.mu.Lock()
 	cursor := s.backfillAt
 	hasData := s.hasAggregated
+	dataThrough := s.dataThrough
 	s.mu.Unlock()
 
 	// Phase 1 (first upgrade / empty): seed the default 90m UI window quickly.
@@ -254,9 +266,17 @@ func (s *ChannelMonitorV2Aggregator) runOnce() {
 		return
 	}
 
-	// Always refresh the trailing overlap so late usage/error writes land in 1m facts.
-	if err := s.repo.RecomputeRange(ctx, now.Add(-channelMonitorV2RecentOverlap), now); err != nil {
+	// A restart or a long failed tick can leave a gap older than the trailing
+	// overlap. Rebuild continuously from the last committed endpoint before
+	// advancing it; otherwise a fresh watermark would hide the missing minutes.
+	start, end := channelMonitorV2RecoveryWindow(now, dataThrough)
+	if err := s.repo.RecomputeRange(ctx, start, end); err != nil {
 		logger.LegacyPrintf("service.channel_monitor_v2", "[ChannelMonitorV2] overlap aggregation failed: %v", err)
+		return
+	}
+	if end.Before(now) {
+		// Keep each tick bounded and prioritize the interrupted recent window.
+		// RecomputeRange persisted this endpoint, so a further restart resumes it.
 		return
 	}
 
@@ -266,7 +286,7 @@ func (s *ChannelMonitorV2Aggregator) runOnce() {
 	if !cursor.After(retentionCutoff) {
 		return
 	}
-	end := cursor
+	end = cursor
 	s.mu.Lock()
 	chunk := s.backfillChunk
 	s.mu.Unlock()
@@ -280,7 +300,7 @@ func (s *ChannelMonitorV2Aggregator) runOnce() {
 	if chunk < channelMonitorV2MinBackfillChunk {
 		chunk = channelMonitorV2MinBackfillChunk
 	}
-	start := end.Add(-chunk)
+	start = end.Add(-chunk)
 	// Once bootstrap reaches historical data, keep chunks on day boundaries so
 	// daily rollups never depend on 1m rows from two independently pruned chunks.
 	if end.Before(now.Add(-7 * 24 * time.Hour)) {
@@ -302,6 +322,40 @@ func (s *ChannelMonitorV2Aggregator) runOnce() {
 		return
 	}
 	s.recordBackfillSuccess(start, time.Since(started), now)
+}
+
+func channelMonitorV2RecoveryWindow(now, dataThrough time.Time) (start, end time.Time) {
+	now = now.UTC().Truncate(time.Minute)
+	start, end = now.Add(-channelMonitorV2RecentOverlap), now
+	if dataThrough.IsZero() || !dataThrough.Before(start) {
+		return start, end
+	}
+	dataThrough = dataThrough.UTC().Truncate(time.Minute)
+	dayStart := dataThrough.Truncate(24 * time.Hour)
+	factCutoff := now.Add(-ChannelMonitorV2MinFactRetention)
+	if dayStart.Before(factCutoff) {
+		// Rebuilding part of an old bucket would overwrite its retained rollup
+		// with only this chunk's facts: earlier facts have already been pruned.
+		// Start from the endpoint's day (not its overlap's day), so a committed
+		// midnight endpoint advances to the following day after a restart.
+		start = dayStart
+		if cutoff := now.Add(-channelMonitorV2RetentionMax); start.Before(cutoff) {
+			start = cutoff
+		}
+		end = start.Truncate(24 * time.Hour).Add(24 * time.Hour)
+	} else {
+		start = dataThrough.Add(-channelMonitorV2RecentOverlap)
+		if start.Truncate(24 * time.Hour).Before(factCutoff) {
+			// Do not let the overlap re-enter a day rebuilt and pruned by the
+			// preceding recovery transaction.
+			start = dayStart
+		}
+		end = start.Add(channelMonitorV2CatchUpChunk)
+	}
+	if end.After(now) {
+		end = now
+	}
+	return start, end
 }
 
 // channelMonitorV2MaxChunkForDepth returns the hard ceiling for a historical
@@ -378,21 +432,20 @@ func (s *ChannelMonitorV2Aggregator) recordBackfillFailure(now, end time.Time) {
 	s.nextWaitFloor = floor
 }
 
-// ensureCursor restores durable backfill_cursor after process restart so progress
-// and historical walk continue instead of re-seeding only the last 2h.
+// ensureCursor restores historical progress once and refreshes the committed
+// endpoint on every acquired tick. Another worker or a prior failed transaction
+// must not be replaced by an optimistic in-memory coverage endpoint.
 func (s *ChannelMonitorV2Aggregator) ensureCursor(ctx context.Context, now time.Time) error {
-	s.mu.Lock()
-	loaded := s.cursorLoaded
-	s.mu.Unlock()
-	if loaded {
-		return nil
-	}
 	wm, err := s.repo.GetAggregationWatermark(ctx)
 	if err != nil {
 		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.dataThrough = time.Time{}
+	if wm != nil && !wm.DataThrough.IsZero() {
+		s.dataThrough = wm.DataThrough.UTC().Truncate(time.Minute)
+	}
 	if s.cursorLoaded {
 		return nil
 	}

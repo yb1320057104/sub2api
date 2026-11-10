@@ -24,7 +24,13 @@ GitHub 私库发布正式 Release 后，管理员在 `/cluster-update/` 确认�
 
 `server.py` 提供管理员确认界面；`builder.py` 解析正式 Release 并构建；`cluster_rollout.py` 按顺序协调；`agent.py` 在各节点执行限定动作。远端密钥使用 SSH forced command，不提供交互 shell、转发或 SFTP。
 
-控制器配置包含 `root`、`rollout_enabled`、`auth_port`、`auth_host`、`allowed_origins`、`listen_port`、`poll_interval_seconds`、`github_token_file`、`overlay_dir`、`work_dir`、`nodes`。节点代理配置包含 `schema=1`、`node`、`root`、`gate_runtime_dir`、`worker_runtime_dir`、`edge_rollout_module`、`candidate_root`，可选 `worker_unit`、`github_token_file` 与 `browser_runtime_images`。这些文件及密钥需要 root 私有权限。
+控制器配置包含 `root`、`rollout_enabled`、`auth_port`、`auth_host`、`allowed_origins`、`listen_port`、`poll_interval_seconds`、`github_token_file`、`overlay_dir`、`work_dir`、`nodes`。节点代理配置包含 `schema=1`、`node`、`root`、`gate_runtime_dir`、`worker_runtime_dir`、`edge_rollout_module`、`candidate_root`，可选 `worker_unit`、`github_token_file`、`browser_runtime_images` 与 `api_resources`。这些文件及密钥需要 root 私有权限。
+
+`api_resources` 可选为完整对象，例如 `{"cpus":8,"memory_mib":4096,"go_memory_mib":3276}`，只对本节点下一代 API 候选生效：`cpus` 必须是 1～32 的整数；`memory_mib` 是 1024～65536 的整数；`go_memory_mib` 是大于 0 且严格小于容器内存的整数，建议约为内存上限的 80%。三项必须同时配置，显式 null、布尔值、小数和未知字段均拒绝。按宿主实际 CPU、可用内存、其他服务与容器外内存开销选择值；该配置不为宿主增加实际资源。
+
+代理同步设置 Docker `NanoCpus`/`Memory` 与 Go `GOMAXPROCS`/`GOMEMLIMIT`，后者使用 `MiB` 单位。worker 和其他服务保持原规格；未配置时完整继承原有资源和环境。非零 `CpuQuota` 或 `CpuPeriod` 拒绝与新限额混用。原 `MemorySwap` 为正数时保留其与原 `Memory` 之差，即允许使用的额外 swap 字节数：两者原本相等则继续禁用 swap；Docker 默认值 `0` 和不限 swap 的 `-1` 保留。无效的旧 memory/swap 关系拒绝转换；新内存不能小于原 `MemoryReservation`。
+
+资源变更写入新候选规格及回执哈希，仍通过现有摘流、排空、就绪和回退流程；修改私有配置本身不会调整运行容器。运维端可以用 `cluster_rollout.deploy(config, artifact, report)` 对同一受校验产物发起新的 revision，先更新 secondary，再更新 primary；普通版本界面会把相同 baseline 显示为已同步。不要用未记录的 `docker update` 代替候选更新，否则下一次更新仍会继承旧规格。
 
 节点代理的可选 `github_token_file` 指向本机已有、root私有的GitHub令牌文件。只在创建API候选且原环境的 `UPDATE_GITHUB_TOKEN` 缺失或为空时补入；已有非空令牌保持，不给worker补入，不向构建容器提供。未配置该字段时不改变原凭据行为，令牌值不进入公开回执或日志。这解决API访问私库正式版本时缺凭据导致强制检查失败的情况。
 

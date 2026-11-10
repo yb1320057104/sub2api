@@ -155,10 +155,24 @@ def browser_runtime_images(value):
     return value
 
 
+def api_resources(settings):
+    if 'api_resources' not in settings:
+        return None
+    value = settings['api_resources']
+    need(isinstance(value, dict) and set(value) == {'cpus', 'memory_mib', 'go_memory_mib'},
+         'api_resources_shape')
+    need(type(value['cpus']) is int and 1 <= value['cpus'] <= 32, 'api_resources_cpu_range')
+    need(type(value['memory_mib']) is int and 1024 <= value['memory_mib'] <= 65536,
+         'api_resources_memory_range')
+    need(type(value['go_memory_mib']) is int and 1 <= value['go_memory_mib'] < value['memory_mib'],
+         'api_resources_go_memory_range')
+    return value
+
+
 def config(path):
     value = json.loads(read(path))
     required = {'node', 'root', 'gate_runtime_dir', 'worker_runtime_dir', 'edge_rollout_module', 'candidate_root'}
-    need(required.issubset(value) and set(value).issubset(required | {'schema', 'worker_unit', 'github_token_file', 'browser_runtime_images'}), 'config_shape')
+    need(required.issubset(value) and set(value).issubset(required | {'schema', 'worker_unit', 'github_token_file', 'browser_runtime_images', 'api_resources'}), 'config_shape')
     need(type(value.get('schema', 1)) is int and value.get('schema', 1) == 1, 'config_schema')
     need(value['node'] in NODES, 'config_node')
     for key in required - {'node'}:
@@ -169,6 +183,7 @@ def config(path):
         need(isinstance(value['github_token_file'], str) and Path(value['github_token_file']).is_absolute(), 'github_token_file_path')
         secure(value['github_token_file'])
     browser_runtime_images(value.get('browser_runtime_images', {}))
+    api_resources(value)
     need(re.fullmatch(r'[a-zA-Z0-9_.-]+\.service', value['worker_unit']), 'worker_unit')
     return value
 
@@ -404,6 +419,29 @@ class Agent:
         # private source may fill a missing API release credential only.
         if role == 'api':
             self.fill_release_credential(spec)
+            resources = api_resources(self.c)
+            if resources is not None:
+                # Record resource changes in the new candidate and its receipt.
+                # Never alter the running container outside the rollout contract.
+                need(not spec['HostConfig'].get('CpuQuota') and not spec['HostConfig'].get('CpuPeriod'),
+                     'api_resources_legacy_quota_conflict')
+                host = spec['HostConfig']
+                memory = resources['memory_mib'] * 1024 * 1024
+                swap = host.get('MemorySwap', 0)
+                # Docker MemorySwap is memory plus swap. Preserve the existing
+                # additional swap allowance (including zero), not an invalid
+                # old combined ceiling below the newly configured memory.
+                need(swap in (0, -1) or (host.get('Memory', 0) > 0 and swap >= host['Memory']),
+                     'api_resources_memory_swap_conflict')
+                need(host.get('MemoryReservation', 0) <= memory, 'api_resources_memory_reservation_conflict')
+                if swap > 0:
+                    host['MemorySwap'] = memory + swap - host['Memory']
+                host['NanoCpus'] = resources['cpus'] * 1000000000
+                host['Memory'] = memory
+                spec['Env'] = [entry for entry in spec.get('Env', [])
+                               if not entry.startswith(('GOMAXPROCS=', 'GOMEMLIMIT='))]
+                spec['Env'].extend(['GOMAXPROCS=' + str(resources['cpus']),
+                                    'GOMEMLIMIT=' + str(resources['go_memory_mib']) + 'MiB'])
         spec['Labels']['sub2api.storage-ha.binary-sha256'] = meta['sha256']
         name = 'sub2api-ha-{}-ha-{}-r{}'.format(self.node, role, meta['revision'])
         output = self.candidates / name
@@ -632,6 +670,45 @@ class Agent:
         text = text.replace(old_expression, 'str(binary.parent) in ' + repr(tuple(allowed)), 1)
         # Repeated updates already have an allowlist; support that without widening
         # access beyond the previously pinned path and configured artifact store.
+        # A slow Docker start can outlive the CLI timeout even though the container
+        # has started. Keep the original finally/TERM and startup reconciliation;
+        # only this operation gets a longer budget. Inspect and writer probes
+        # retain their short failure-detection bounds.
+        start_command = "command(['/usr/bin/docker', 'start', self.config['container_id']])"
+        bounded_start = "command(['/usr/bin/docker', 'start', self.config['container_id']], timeout=30)"
+        if start_command in text:
+            need(text.count(start_command) == 1 and bounded_start not in text,
+                 'supervisor_start_timeout_anchor')
+            text = text.replace(start_command, bounded_start, 1)
+        else:
+            need(text.count(bounded_start) == 1, 'supervisor_start_timeout_anchor')
+        # Configuration/ownership refusals still exit 78 and require review.
+        # Only a subprocess timeout may restart through systemd; startup first
+        # reconciles the pinned worker and then requires fresh writer samples.
+        old_handler = ("    except Exception as error:\n"
+                       "        event('supervisor_blocked', reason=str(error) if isinstance(error, Refused) else type(error).__name__)\n"
+                       "        raise SystemExit(78)")
+        retry_handler = ("    except subprocess.TimeoutExpired:\n"
+                         "        event('supervisor_retryable', reason='docker_command_timeout')\n"
+                         "        raise SystemExit(75)\n" + old_handler)
+        if retry_handler not in text:
+            need(text.count(old_handler) == 1 and 'supervisor_retryable' not in text,
+                 'supervisor_retry_handler_anchor')
+            text = text.replace(old_handler, retry_handler, 1)
+        else:
+            need(text.count(retry_handler) == 1, 'supervisor_retry_handler_anchor')
+        # Preserve immediate refusal of a non-writer response, while allowing a
+        # reviewed three-second TLS/read budget on a heavily contended host.
+        # The default remains one second; this does not add failed-probe grace.
+        old_probe = "and config.get('http_timeout_seconds') == 1, 'reviewed_probe_timing_required')"
+        bounded_probe = ("and type(config.get('http_timeout_seconds')) is int\n"
+                         "         and config.get('http_timeout_seconds') in (1, 3), 'reviewed_probe_timing_required')")
+        if old_probe in text:
+            need(text.count(old_probe) == 1 and bounded_probe not in text,
+                 'supervisor_probe_timeout_anchor')
+            text = text.replace(old_probe, bounded_probe, 1)
+        else:
+            need(text.count(bounded_probe) == 1, 'supervisor_probe_timeout_anchor')
         compile(text, 'supervisor.py', 'exec')
         return text.encode()
 

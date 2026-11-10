@@ -2,6 +2,9 @@ package repository
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -380,6 +383,158 @@ func TestSameFixedRollupBucket(t *testing.T) {
 	require.True(t, sameFixedRollupBucket(start, start.Add(10*time.Minute), 86400))
 	require.False(t, sameFixedRollupBucket(start, start.Add(15*time.Hour), 43200))
 	require.False(t, sameFixedRollupBucket(start, start.Add(24*time.Hour), 86400))
+}
+
+func TestChannelMonitorV2CompleteCoarseRollupWindow(t *testing.T) {
+	day := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		start, end time.Time
+		seconds    int
+		want       bool
+	}{
+		{day, day.Add(24 * time.Hour), 86400, true},
+		{day, day.Add(12 * time.Hour), 43200, true},
+		{day, day.Add(12 * time.Hour), 86400, false},
+		{day, day.Add(10 * time.Minute), 86400, false},
+		{day.Add(11*time.Hour + 55*time.Minute), day.Add(12*time.Hour + 5*time.Minute), 43200, true},
+		{day.Add(-5 * time.Minute), day.Add(5 * time.Minute), 86400, true},
+		{day, day, 86400, false},
+	} {
+		require.Equal(t, tc.want, shouldRecomputeFixedRollup(tc.start, tc.end, tc.seconds), "%v", tc)
+	}
+}
+
+// Opt in with a disposable PostgreSQL DSN. Every fixture and migrated table is
+// temporary, on one connection, with pg_temp as the only search path. This
+// exercises the real transaction, rollup SQL and retention deletes together.
+func TestChannelMonitorV2RecomputeRetentionPostgres(t *testing.T) {
+	dsn := os.Getenv("SUB2API_CHANNEL_MONITOR_TEST_DSN")
+	if dsn == "" {
+		t.Skip("set SUB2API_CHANNEL_MONITOR_TEST_DSN to an isolated PostgreSQL instance")
+	}
+	db, err := sql.Open("postgres", dsn)
+	require.NoError(t, err)
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	exec := func(query string, args ...any) {
+		t.Helper()
+		_, err := db.ExecContext(ctx, query, args...)
+		require.NoError(t, err)
+	}
+	exec(`SET search_path TO pg_temp; SET TIME ZONE 'UTC';
+CREATE TEMP TABLE groups (id bigint PRIMARY KEY, platform text);
+CREATE TEMP TABLE accounts (id bigint PRIMARY KEY, platform text);
+CREATE TEMP TABLE usage_logs (
+ id bigserial PRIMARY KEY, created_at timestamptz, group_id bigint, account_id bigint, user_id bigint,
+ requested_model text, model text, request_id text, request_type integer DEFAULT 0,
+ actual_cost numeric DEFAULT 1, input_tokens bigint DEFAULT 10, output_tokens bigint DEFAULT 20,
+ cache_creation_tokens bigint DEFAULT 3, cache_read_tokens bigint DEFAULT 4,
+ first_token_ms bigint DEFAULT 100, duration_ms bigint DEFAULT 500);
+CREATE TEMP TABLE ops_error_logs (
+ id bigserial PRIMARY KEY, created_at timestamptz, group_id bigint, account_id bigint, user_id bigint,
+ requested_model text, model text, request_id text, platform text, error_type text, error_owner text,
+ status_code integer, upstream_status_code integer, error_source text, error_message text,
+ upstream_error_message text, upstream_error_detail text, error_body text, upstream_errors jsonb,
+ is_count_tokens boolean DEFAULT false);
+INSERT INTO groups VALUES (1,'openai'),(2,'openai');
+INSERT INTO accounts VALUES (1,'openai');`)
+	for _, migration := range []string{"194_channel_monitor_v2.sql", "199_channel_monitor_v2_fixed_rollups.sql"} {
+		source, err := os.ReadFile("../../migrations/" + migration)
+		require.NoError(t, err)
+		exec(strings.ReplaceAll(string(source), "CREATE TABLE IF NOT EXISTS", "CREATE TEMP TABLE IF NOT EXISTS"))
+	}
+	exec(`UPDATE channel_monitor_v2_watermarks SET backfill_cursor = NOW() - INTERVAL '100 days' WHERE id = 1`)
+	repo := &channelMonitorV2Repository{db: db}
+	now := time.Now().UTC().Truncate(time.Minute)
+	seed := func(day time.Time) {
+		for _, group := range []int{1, 2} {
+			for _, offset := range []time.Duration{5 * time.Minute, 55 * time.Minute, 12*time.Hour + 5*time.Minute, 23*time.Hour + 55*time.Minute} {
+				exec(`INSERT INTO usage_logs (created_at,group_id,account_id,user_id,model) VALUES ($1,$2,1,$3,$4)`, day.Add(offset), group, group*11, fmt.Sprintf("fixture-%d", group))
+			}
+			exec(`INSERT INTO ops_error_logs (created_at,group_id,account_id,user_id,model,platform,error_type,error_owner,status_code,upstream_status_code)
+VALUES ($1,$2,1,$3,$4,'openai','upstream','provider',429,429)`, day.Add(12*time.Hour+8*time.Minute), group, group*11, fmt.Sprintf("fixture-%d", group))
+		}
+	}
+	check := func(day time.Time) {
+		t.Helper()
+		for _, seconds := range channelMonitorV2FixedRollupSeconds {
+			for _, group := range []int{1, 2} {
+				interval := time.Duration(seconds) * time.Second
+				want := map[time.Time][2]int64{}
+				for _, offset := range []time.Duration{5 * time.Minute, 55 * time.Minute, 12*time.Hour + 5*time.Minute, 23*time.Hour + 55*time.Minute} {
+					bucket := day.Add(offset).Truncate(interval)
+					counts := want[bucket]
+					counts[0]++
+					want[bucket] = counts
+				}
+				errorBucket := day.Add(12*time.Hour + 8*time.Minute).Truncate(interval)
+				counts := want[errorBucket]
+				counts[1]++
+				want[errorBucket] = counts
+				for bucket, counts := range want {
+					if seconds == 300 && bucket.Before(now.Add(-channelMonitorV2RetentionRollup5m)) {
+						counts = [2]int64{}
+					}
+					for _, table := range []string{"channel_monitor_v2_metrics_rollup", "channel_monitor_v2_user_metrics_rollup"} {
+						var success, failures, input, output, ttft, duration int64
+						query := fmt.Sprintf(`SELECT COALESCE(SUM(success_requests),0),COALESCE(SUM(error_requests),0),COALESCE(SUM(input_tokens),0),COALESCE(SUM(output_tokens),0),COALESCE(SUM(ttft_sum_ms),0),COALESCE(SUM(duration_sum_ms),0) FROM %s WHERE bucket_seconds=$1 AND bucket_start=$2 AND group_id=$3 AND model=$4`, table)
+						if strings.Contains(table, "user_metrics") {
+							query += fmt.Sprintf(" AND user_id=%d", group*11)
+						}
+						require.NoError(t, db.QueryRowContext(ctx, query, seconds, bucket, group, fmt.Sprintf("fixture-%d", group)).Scan(&success, &failures, &input, &output, &ttft, &duration))
+						require.Equal(t, []int64{counts[0], counts[1], counts[0] * 10, counts[0] * 20, counts[0] * 100, counts[0] * 500}, []int64{success, failures, input, output, ttft, duration}, "%s %s %ds group %d", table, bucket, seconds, group)
+					}
+					var errors, samples int64
+					require.NoError(t, db.QueryRowContext(ctx, `SELECT COALESCE(SUM(error_requests),0) FROM channel_monitor_v2_error_metrics_rollup WHERE bucket_seconds=$1 AND bucket_start=$2 AND group_id=$3 AND error_category='rate_or_capacity' AND taxonomy_version=1`, seconds, bucket, group).Scan(&errors))
+					require.Equal(t, counts[1], errors)
+					require.NoError(t, db.QueryRowContext(ctx, `SELECT COALESCE(SUM(sample_count),0) FROM channel_monitor_v2_latency_histograms_rollup WHERE bucket_seconds=$1 AND bucket_start=$2 AND group_id=$3`, seconds, bucket, group).Scan(&samples))
+					require.Equal(t, counts[0]*4, samples, "two latency metrics, global and user audiences")
+				}
+			}
+		}
+		for _, table := range []string{"channel_monitor_v2_user_metrics_1m", "channel_monitor_v2_metrics_1m", "channel_monitor_v2_error_metrics_1m", "channel_monitor_v2_latency_histograms_1m"} {
+			var count int
+			require.NoError(t, db.QueryRowContext(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE bucket_start >= $1 AND bucket_start < $2`, table), day, day.Add(24*time.Hour)).Scan(&count))
+			if table == "channel_monitor_v2_user_metrics_1m" || day.Add(24*time.Hour).Before(now.Add(-7*24*time.Hour)) {
+				require.Zero(t, count, "real retention must run for %s", table)
+			} else {
+				require.Positive(t, count, "ordinary facts remain before their seven-day TTL")
+			}
+		}
+	}
+	for _, age := range []int{4, 10} {
+		{
+			t.Logf("checking actual recompute/prune at %d days old", age)
+			day := now.Truncate(24 * time.Hour).Add(-time.Duration(age) * 24 * time.Hour)
+			seed(day)
+			seed(day.Add(-24 * time.Hour))
+			// Recompute, prune, then rebuild an adjacent day and retry the first.
+			for _, current := range []time.Time{day.Add(-24 * time.Hour), day, day.Add(-24 * time.Hour)} {
+				require.NoError(t, repo.RecomputeRange(ctx, current, current.Add(24*time.Hour)))
+				check(current)
+			}
+			check(day)
+		}
+	}
+	// A partial refresh starting exactly at midnight used to delete the daily
+	// bucket before skipping its rebuild. Half-day coverage must rebuild only
+	// the half-day tier, preserving the daily sentinel until a full-day rebuild.
+	day := now.Truncate(24 * time.Hour).Add(-24 * time.Hour)
+	seed(day)
+	require.NoError(t, repo.RecomputeRange(ctx, day, day.Add(24*time.Hour)))
+	exec(`UPDATE channel_monitor_v2_metrics_rollup SET success_requests=777 WHERE bucket_seconds=86400 AND bucket_start=$1 AND group_id=1`, day)
+	for _, end := range []time.Time{day.Add(10 * time.Minute), day.Add(12 * time.Hour)} {
+		require.NoError(t, repo.RecomputeRange(ctx, day, end))
+		var success int64
+		require.NoError(t, db.QueryRowContext(ctx, `SELECT success_requests FROM channel_monitor_v2_metrics_rollup WHERE bucket_seconds=86400 AND bucket_start=$1 AND group_id=1`, day).Scan(&success))
+		require.Equal(t, int64(777), success)
+	}
+	var halfday int64
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT success_requests FROM channel_monitor_v2_metrics_rollup WHERE bucket_seconds=43200 AND bucket_start=$1 AND group_id=1`, day).Scan(&halfday))
+	require.Equal(t, int64(2), halfday)
 }
 
 // Needles present in service.ClassifyChannelMonitorV2Error must appear in the

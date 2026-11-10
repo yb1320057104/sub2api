@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/service"
 )
 
 // Platform is derived from group/account (usage_logs has no provider column on upstream schema).
@@ -19,7 +21,7 @@ const channelMonitorV2ModelSQL = `COALESCE(NULLIF(TRIM(ul.requested_model), ''),
 // Backfill may still write short-lived 1m rows for old windows so rollups can be
 // built; prune at end of each recompute drops them past their TTL while rollups remain.
 const (
-	channelMonitorV2RetentionUser1m      = 3 * 24 * time.Hour
+	channelMonitorV2RetentionUser1m      = service.ChannelMonitorV2MinFactRetention
 	channelMonitorV2RetentionMetrics1m   = 7 * 24 * time.Hour
 	channelMonitorV2RetentionError1m     = 7 * 24 * time.Hour
 	channelMonitorV2RetentionHistogram1m = 7 * 24 * time.Hour
@@ -118,12 +120,9 @@ func (r *channelMonitorV2Repository) RecomputeRange(ctx context.Context, start, 
 		}
 	}()
 
-	// Idempotent window rewrite: drop existing facts/rollups in [start,end) then re-insert.
+	// Rewrite facts in [start,end). Each rollup tier deletes only when it is
+	// rebuilt below; deleting a skipped coarse bucket would silently lose it.
 	for _, table := range []string{
-		"channel_monitor_v2_latency_histograms_rollup",
-		"channel_monitor_v2_error_metrics_rollup",
-		"channel_monitor_v2_user_metrics_rollup",
-		"channel_monitor_v2_metrics_rollup",
 		"channel_monitor_v2_latency_histograms_1m",
 		"channel_monitor_v2_error_metrics_1m",
 		"channel_monitor_v2_user_metrics_1m",
@@ -358,7 +357,7 @@ func (r *channelMonitorV2Repository) recomputeFixedRollups(ctx context.Context, 
 		// trailing refresh. Historical backfills and boundary-crossing windows
 		// still rebuild them; this avoids repeatedly regrouping the full current
 		// day/user table every few minutes.
-		if seconds >= 43200 && sameFixedRollupBucket(start, end, seconds) {
+		if !shouldRecomputeFixedRollup(start, end, seconds) {
 			continue
 		}
 		interval := fmt.Sprintf("%d seconds", seconds)
@@ -386,6 +385,19 @@ func (r *channelMonitorV2Repository) recomputeFixedRollups(ctx context.Context, 
 		}
 	}
 	return nil
+}
+
+func shouldRecomputeFixedRollup(start, end time.Time, seconds int) bool {
+	if !end.After(start) {
+		return false
+	}
+	if seconds < 43200 || !sameFixedRollupBucket(start, end, seconds) {
+		return true
+	}
+	// An exact [midnight,next-midnight) range is in one bucket, but contains
+	// that entire bucket and must replace it during historical recovery.
+	interval := time.Duration(seconds) * time.Second
+	return start.Equal(start.Truncate(interval)) && end.Equal(start.Add(interval))
 }
 
 func sameFixedRollupBucket(start, end time.Time, seconds int) bool {
