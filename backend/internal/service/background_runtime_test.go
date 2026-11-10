@@ -152,3 +152,44 @@ func TestCodexHarvesterConstructorWaitsForActivation(t *testing.T) {
 	require.NotNil(t, svc.openaiCodexTicketDone)
 	svc.StopOpenAICodexTicketHarvester()
 }
+
+type activationFallbackMetrics struct {
+	started chan struct{}
+	stopped chan struct{}
+}
+
+func (r *activationFallbackMetrics) GetOpenAIAPIKeyFallbackMetric(ctx context.Context, _ string, _, _ time.Time) (*OpenAIAPIKeyFallbackObservation, error) {
+	close(r.started)
+	<-ctx.Done()
+	close(r.stopped)
+	return nil, ctx.Err()
+}
+
+func TestOpenAIAPIKeyFallbackActivationOwnsEvaluationAndShutdown(t *testing.T) {
+	svc := apiKeyFallbackFixture(t, &apiKeyFallbackAccounts{}, &apiKeyFallbackMetrics{})
+	svc.sharedJobsEnabled.Store(false)
+	reader := &activationFallbackMetrics{started: make(chan struct{}), stopped: make(chan struct{})}
+	svc.start(false)
+	defer svc.Stop()
+	svc.setOpenAIAPIKeyFallbackSLAReader(reader, nil)
+	select {
+	case <-reader.started:
+		t.Fatal("reader construction must not evaluate before writer activation")
+	default:
+	}
+	svc.enableSharedJobs()
+	select {
+	case <-reader.started:
+	case <-time.After(time.Second):
+		t.Fatal("activation must wake the owned loop without waiting for the ticker")
+	}
+	svc.Stop()
+	select {
+	case <-reader.stopped:
+	default:
+		t.Fatal("shutdown must cancel and join the in-flight evaluation")
+	}
+	svc.enableSharedJobs()
+	svc.start(true)
+	require.False(t, svc.sharedJobsEnabled.Load(), "delayed activation must not resurrect a stopped worker")
+}

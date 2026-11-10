@@ -45,11 +45,21 @@ func TestAccountOpsFailureClassification(t *testing.T) {
 
 type accountOpsSettingsStub struct {
 	SettingRepository
-	raw string
+	raw            string
+	fallbackStatus string
 }
 
-func (s *accountOpsSettingsStub) GetValue(context.Context, string) (string, error) { return s.raw, nil }
-func (s *accountOpsSettingsStub) Set(_ context.Context, _ string, v string) error {
+func (s *accountOpsSettingsStub) GetValue(_ context.Context, key string) (string, error) {
+	if key == openAIAPIKeyFallbackStatusSetting {
+		return s.fallbackStatus, nil
+	}
+	return s.raw, nil
+}
+func (s *accountOpsSettingsStub) Set(_ context.Context, key string, v string) error {
+	if key == openAIAPIKeyFallbackStatusSetting {
+		s.fallbackStatus = v
+		return nil
+	}
 	s.raw = v
 	return nil
 }

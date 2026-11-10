@@ -1406,6 +1406,8 @@ pk.50追加PK-036联动：账号授权“入库账号出口”可设置每账号
 
 ## PK-047 独立站点与存储高可用部署
 
+2026-11-11 pk.62 增量：PK-076 备用池评估复用唯一 `sharedJobsEnabled`，构造 reader 仅唤醒已纳入停止等待的后台循环，writer 激活后才评估；Stop 撤销共享任务、取消并等待在途，迟到激活不复活 worker。管理 API 只读共享 settings 状态，校验配置 revision 与45秒新鲜度，缺失/过期明确展示；不让两个 API 同时写调度。源码及验收阶段见 `docs/PK_UPSTREAM_INCREMENT_PK62_REVIEW.md`。
+
 2026-11-11 pk.61：正式发行前的 HA source admission 使用 PK-017 所列独立 schema 2 合同，保持运行时 writer/worker 与现有授权；发行准入回执不等于 HA 更新完成，实际私有 hook 与逐节点更新各自留证。
 
 2026-11-10 全项目资源优化：节点代理扩展可选 `worker_resources`，与 `api_resources` 独立配置；两角色均支持可选严格整数 `cpu_shares`（2～262144）。资源仅写入下一候选及其spec/hash/receipt，未设置角色或权重继承原值，worker不继承API预算或补入发行令牌；swap额外额度、旧quota/reservation拒绝及单writer worker门控保持。10项Linux隔离夹具检查通过，同一pk.59 HA二进制已按原排空流程完成候选代次11；没有新Release或标签。两入口普通请求已偏好原副API、原主备用；存储切主准备中止，PG/Redis writer与唯一worker仍在原主，双gate已释放、更新器恢复。原主PG4CPU/3GiB、副PG4CPU/4GiB在线调整通过，冷目录迁盘与约85分钟维护停流的原因、恢复及实际结果见 `docs/PK_CLUSTER_FLEET_CAPACITY_REVIEW.md`。CPU权重是竞争时的相对优先级，内存上限不是预留，也不是3000真实并发容量证明。
@@ -1434,6 +1436,8 @@ pk.50追加PK-036联动：账号授权“入库账号出口”可设置每账号
 
 
 ## PK-048 分组防蒸馏保护
+
+2026-11-11 pk.62 交叉修复：Responses 成功路径删除遗留的无条件重复采样，只在没有安全审计拦截标记时调用一次，恢复与 Messages/WS 相同的边界。保留 request ID 去重、按组豁免、原始缓存证据、账务和已有暂停；不回写历史样本。
 
 2026-11-11 pk.61：上游增量合并后保留 pk.60 的可搜索多选用户豁免、settings CAS 保存及实际组 HTTP/WS 复查；共用选择器其他场景默认行为保持。完整管理员写接口保留一份注册，二次复核修复重复 GET/PUT 注册造成的 Gin 启动 panic。名单不是全局审计/计费豁免，不解除其他组暂停。新入口和用户边界已纳入本轮 handler/server、前端及服务合同定向检查；本条只补本轮证据，不将下方 pk.59 上线记录视为 pk.60/61 已部署。
 
@@ -1464,6 +1468,8 @@ pk.50追加PK-036联动：账号授权“入库账号出口”可设置每账号
 - 已知边界：页面展示不是模型能力认证；没有真实上游模型调用验收，也不借公开结果扩大管理员 API 权限。
 
 ## PK-050 OpenAI 多授权连接与安全重授权操作
+
+2026-11-11 pk.62 增量：合入固定上游 `8545bf9ffac5a870ade18fbe7c4b61a48755c8db` 的入口能力桥接。未投影的托管母账号按实际 Responses 入口与发送前连接能力一致选号；BPS 原生 responses 可参与普通回合/原生压缩，但不错误进入旧 compact 或 Chat 入口。非托管/已投影账号及 PK 利润、分组、代理边界保持。
 
 **状态：有效保护项，pk.61 集成源码；发行与上线另行验收。** 引入：本轮固定上游全域集成及用户指定适配；对应 R12/R13/R14。
 
@@ -1545,6 +1551,8 @@ pk.50追加PK-036联动：账号授权“入库账号出口”可设置每账号
 
 ## PK-058 优先调度、账号运维与自动配置
 
+2026-11-11 pk.62 增量：OAuth 429 永久关闭调度需同时满足已启用策略及有效七天用量严格超过阈值（默认98%，可配0～100）；五小时用量不参与，当前响应头存在但无效/不足时不回退旧高值，缺响应头才检查可信且未过期快照。首次配置模板向新账号保存阈值，旧客户端省略保留，非法/null拒绝；更换2FA逻辑独立。新增API Key备用池独立登记PK-076。
+
 **状态：有效保护项，pk.61 集成源码；发行与上线另行验收。** 引入：本轮固定上游全域集成及用户指定适配；对应 R24/R25/R26/R59。
 
 - 用途与必须保持：保留延迟反馈、公平/粘性会话运营、账号阈值、通知、自动配置日志和定时调度窗口；PK-045 严格 Priority/ID 顺序作为明确模式保留。
@@ -1574,6 +1582,8 @@ pk.50追加PK-036联动：账号授权“入库账号出口”可设置每账号
 - 已知边界：外置内核是否安装、订阅可达性和出口 IP 需部署验收；动态代理不能解除全局物理容量。
 
 ## PK-061 BPS OAuth、网关与工具任务
+
+2026-11-11 pk.62 增量：托管BPS连接的Responses选号与实际发送路径能力对齐；429路径传递完整响应头给周额度守卫，正常临时冷却与请求重放边界保持。图片、修复/补发及stream失败路径均带同一响应头，不把5小时限额当永久停调度证据。
 
 **状态：有效保护项，pk.61 集成源码；发行与上线另行验收。** 引入：本轮固定上游全域集成及用户指定适配；对应 R29。
 
@@ -1722,3 +1732,13 @@ pk.50追加PK-036联动：账号授权“入库账号出口”可设置每账号
 - 代码/UI 入口：`backend/internal/service/serverless.go`、`backend/internal/service/regional_auth_sync.go`、`backend/internal/service/regional_metering.go`、`backend/internal/service/regional_scheduler_runtime.go`、`frontend/src/components/settings/ServerlessSettings.vue`；相关路由/DTO/仓储与迁移随入口一并核对。
 - 验证：区域/代理交叉定向测试通过，首轮夹具缓存缺失和单项复验保留；完整迁移与跨区域运行待单独验收。本轮未启用公开 Actions 作为验证入口。
 - 已知边界：本轮没有开启生产区域计费、切换存储 writer 或证明跨区域容量；预览功能不越过发行和运行门禁。
+
+## PK-076 OpenAI API Key 备用池与共享运行状态
+
+**状态：pk.62 新增集成源码，正式构建、发行和上线各自验收。** 来源：固定上游 `8545bf9ffac5a870ade18fbe7c4b61a48755c8db`，与 PK-047/058 配套。
+
+- 管理员在自动配置独立开启，默认关闭；选择1～100个有效、未到期且非影子的OpenAI API Key账号。OpenAI OAuth非空池全部不可调度，或所选OpenAI SLA/健康分的有效样本低于阈值时开启名单账号调度。默认SLA95、5分钟窗口；无有效样本不触发指标条件。
+- 复用settings，不增加迁移或依赖。实际更新再次核对配置revision、enabled、名单及账号归属/状态，只设置schedulable；不清错误、凭据、冷却或任务，不自动关闭已开启账号，恢复后管理员手动关闭。
+- 评估每15秒，指标至多每分钟读取一次，由writer激活的唯一worker执行；构造/网关API不触发写任务。激活唤醒现有循环，Stop取消并等待，迟到激活不复活。
+- worker将时间、计数、指标与安全错误类别写入共享settings状态；管理API按当前配置revision读取，45秒外或未来异常状态标记过期，缺失/失败明确不可用。状态展示不启动评估，不将空本地状态写成健康。
+- 入口：`backend/internal/service/openai_apikey_fallback.go`、`openai_apikey_fallback_shared_status.go`、`backend/internal/repository/account_apikey_fallback.go`、`frontend/src/components/admin/operations/OpenAIAPIKeyFallbackCard.vue`。新增上游测试保留，实际pk.62定向4包30个顶层及前端2文件90项全部通过，0失败/跳过；真实PostgreSQL CAS专项与正式制品/发行仍分别待验。证据见 `docs/PK_UPSTREAM_INCREMENT_PK62_REVIEW.md`，不复用pk.61通过冒充本版。

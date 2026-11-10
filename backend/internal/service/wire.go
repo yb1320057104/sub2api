@@ -946,6 +946,7 @@ func ProvideOpsService(
 	svc.authCacheInvalidationWorker = authCacheInvalidationWorker
 	svc.apiKeyService = apiKeyService
 	svc.StartRuntimeSettingsRefresh(context.Background())
+	accountOps.setOpenAIAPIKeyFallbackSLAReader(svc, settingService)
 	svc.StartAIOpsController(context.Background())
 	return svc
 }
@@ -1391,7 +1392,7 @@ func ProvideAccountOpsService(settings SettingRepository, repo AccountOpsReposit
 	svc.autoAccounts, _ = accounts.(AccountConcurrencyRepository)
 	svc.autoGroups = groups
 	svc.start(false)
-	StartBackgroundJob(cfg, "AccountOpsSharedJobs", func() { svc.sharedJobsEnabled.Store(true) })
+	StartBackgroundJob(cfg, "AccountOpsSharedJobs", svc.enableSharedJobs)
 	return svc
 }
 

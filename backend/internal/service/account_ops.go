@@ -127,13 +127,17 @@ type AccountOpsService struct {
 	wg                sync.WaitGroup
 	lifecycle         sync.Mutex
 	sharedJobsEnabled atomic.Bool
+	sharedJobsWake    chan struct{}
+	stopped           bool
+	fallbackSLAReader atomic.Value
+	fallbackStatus    atomic.Value
 	settingsMu        sync.Mutex
 	dropped           atomic.Uint64
 	failures          atomic.Uint64
 }
 
 func NewAccountOpsService(settings SettingRepository, repo AccountOpsRepository, email accountOpsEmailSender) *AccountOpsService {
-	s := &AccountOpsService{settings: settings, repo: repo, email: email, queue: make(chan AccountOpsEvent, 256), timezone: time.FixedZone("Asia/Shanghai", 8*3600), robotLast: make(map[string]time.Time)}
+	s := &AccountOpsService{settings: settings, repo: repo, email: email, queue: make(chan AccountOpsEvent, 256), sharedJobsWake: make(chan struct{}, 1), timezone: time.FixedZone("Asia/Shanghai", 8*3600), robotLast: make(map[string]time.Time)}
 	s.config.Store(defaultAccountOpsConfig())
 	s.autoConfig.Store(DefaultOAuthAutoConfig())
 	s.autoResults = make(chan AccountConcurrencyResult, 1024)
@@ -202,7 +206,7 @@ func (s *AccountOpsService) Start() {
 func (s *AccountOpsService) start(runSharedJobs bool) {
 	s.lifecycle.Lock()
 	defer s.lifecycle.Unlock()
-	if s.cancel != nil {
+	if s.cancel != nil || s.stopped {
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -213,12 +217,19 @@ func (s *AccountOpsService) start(runSharedJobs bool) {
 	go func() {
 		defer s.wg.Done()
 		s.refreshConfig(ctx, s.sharedJobsEnabled.Load())
+		if s.sharedJobsEnabled.Load() {
+			s.evaluateOpenAIAPIKeyFallback(ctx)
+		}
 		ticker := time.NewTicker(15 * time.Second)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				return
+			case <-s.sharedJobsWake:
+				if s.sharedJobsEnabled.Load() {
+					s.evaluateOpenAIAPIKeyFallback(ctx)
+				}
 			case event := <-s.queue:
 				if !s.currentConfig().Allows(event.Kind) {
 					continue
@@ -231,6 +242,9 @@ func (s *AccountOpsService) start(runSharedJobs bool) {
 				}
 			case <-ticker.C:
 				runSharedJobs := s.sharedJobsEnabled.Load()
+				if runSharedJobs {
+					s.evaluateOpenAIAPIKeyFallback(ctx)
+				}
 				if s.refreshConfig(ctx, runSharedJobs) && runSharedJobs {
 					s.scanBalances(ctx)
 					s.deliver(ctx)
@@ -239,8 +253,30 @@ func (s *AccountOpsService) start(runSharedJobs bool) {
 		}
 	}()
 }
+
+// Activation and reader readiness wake the already joined local loop. Neither
+// constructors nor a delayed activation may start an unowned shared task.
+func (s *AccountOpsService) wakeSharedJobs() {
+	select {
+	case s.sharedJobsWake <- struct{}{}:
+	default:
+	}
+}
+
+func (s *AccountOpsService) enableSharedJobs() {
+	s.lifecycle.Lock()
+	defer s.lifecycle.Unlock()
+	if s.stopped || s.cancel == nil {
+		return
+	}
+	s.sharedJobsEnabled.Store(true)
+	s.wakeSharedJobs()
+}
+
 func (s *AccountOpsService) Stop() {
 	s.lifecycle.Lock()
+	s.stopped = true
+	s.sharedJobsEnabled.Store(false)
 	cancel := s.cancel
 	s.lifecycle.Unlock()
 	if cancel != nil {
