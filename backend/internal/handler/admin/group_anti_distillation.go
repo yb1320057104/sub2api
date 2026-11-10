@@ -1,6 +1,8 @@
 package admin
 
 import (
+	"bytes"
+	"encoding/json"
 	"net/http"
 	"strconv"
 
@@ -53,17 +55,25 @@ func (h *GroupHandler) SaveAntiDistillation(c *gin.Context) {
 	// Both fields are required: an incomplete or null body must not silently
 	// disable protection or reset the pause duration.
 	var input struct {
-		Enabled      *bool `json:"enabled"`
-		PauseMinutes *int  `json:"pause_minutes"`
+		Enabled          *bool           `json:"enabled"`
+		PauseMinutes     *int            `json:"pause_minutes"`
+		UserAllowlistIDs json.RawMessage `json:"user_allowlist_ids"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil || input.Enabled == nil || input.PauseMinutes == nil {
 		response.BadRequest(c, "请提供 enabled 和 pause_minutes")
 		return
 	}
 	cfg := service.GroupAntiDistillationConfig{Enabled: *input.Enabled, PauseMinutes: *input.PauseMinutes}
-	if err := h.antiDistillation.SaveConfig(c.Request.Context(), id, cfg); err != nil {
+	if len(input.UserAllowlistIDs) > 0 {
+		if bytes.Equal(bytes.TrimSpace(input.UserAllowlistIDs), []byte("null")) || json.Unmarshal(input.UserAllowlistIDs, &cfg.UserAllowlistIDs) != nil {
+			response.BadRequest(c, "user_allowlist_ids 必须为用户 ID 数组，不能为 null")
+			return
+		}
+	}
+	saved, err := h.antiDistillation.SaveConfigWithResult(c.Request.Context(), id, cfg)
+	if err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}
-	response.Success(c, cfg)
+	response.Success(c, saved)
 }

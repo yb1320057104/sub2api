@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,20 +17,33 @@ import (
 )
 
 const (
-	groupAntiDistillationSettingPrefix = "group_anti_distillation:"
-	groupAntiDistillationConfigTTL     = 10 * time.Second
-	groupAntiDistillationCacheLimit    = 512
+	groupAntiDistillationSettingPrefix  = "group_anti_distillation:"
+	groupAntiDistillationConfigTTL      = 10 * time.Second
+	groupAntiDistillationCacheLimit     = 512
+	groupAntiDistillationAllowlistLimit = 500
+	groupAntiDistillationSaveAttempts   = 3
 )
 
 // GroupAntiDistillationConfig belongs to a group, never to an upstream account.
 // The zero-cache signal is a protection heuristic, not proof of distillation.
 type GroupAntiDistillationConfig struct {
-	Enabled      bool `json:"enabled"`
-	PauseMinutes int  `json:"pause_minutes"`
+	Enabled          bool    `json:"enabled"`
+	PauseMinutes     int     `json:"pause_minutes"`
+	UserAllowlistIDs []int64 `json:"user_allowlist_ids"`
 }
 
 func DefaultGroupAntiDistillationConfig() GroupAntiDistillationConfig {
-	return GroupAntiDistillationConfig{PauseMinutes: 5}
+	return GroupAntiDistillationConfig{PauseMinutes: 5, UserAllowlistIDs: []int64{}}
+}
+
+func cloneGroupAntiDistillationConfig(cfg GroupAntiDistillationConfig) GroupAntiDistillationConfig {
+	cfg.UserAllowlistIDs = append([]int64{}, cfg.UserAllowlistIDs...)
+	return cfg
+}
+
+func (cfg GroupAntiDistillationConfig) allowsUser(userID int64) bool {
+	index := sort.Search(len(cfg.UserAllowlistIDs), func(i int) bool { return cfg.UserAllowlistIDs[i] >= userID })
+	return index < len(cfg.UserAllowlistIDs) && cfg.UserAllowlistIDs[index] == userID
 }
 
 type groupAntiDistillationCachedConfig struct {
@@ -42,6 +56,12 @@ type groupAntiDistillationCachedConfig struct {
 type GroupAntiDistillationCache interface {
 	PauseRemaining(ctx context.Context, userID int64) (time.Duration, error)
 	Observe(ctx context.Context, userID int64, requestID string, zero bool, pause time.Duration, startedAt time.Time) (bool, time.Time, error)
+}
+
+// Omitted allowlists require an atomic update so a legacy client cannot restore
+// exemptions removed concurrently by another administrator or application node.
+type groupAntiDistillationSettingCAS interface {
+	CompareAndSwap(ctx context.Context, key string, expected *string, value string) (bool, error)
 }
 
 type GroupAntiDistillationService struct {
@@ -89,7 +109,7 @@ func (s *GroupAntiDistillationService) GetConfig(ctx context.Context, groupID in
 	now := time.Now()
 	s.mu.Lock()
 	if cached, ok := s.configs[groupID]; ok && now.Before(cached.expiresAt) {
-		cfg := cached.config
+		cfg := cloneGroupAntiDistillationConfig(cached.config)
 		s.mu.Unlock()
 		return &cfg, nil
 	}
@@ -100,7 +120,7 @@ func (s *GroupAntiDistillationService) GetConfig(ctx context.Context, groupID in
 		s.mu.Lock()
 		epoch := s.configEpoch
 		if cached, ok := s.configs[groupID]; ok && time.Now().Before(cached.expiresAt) {
-			cfg := cached.config
+			cfg := cloneGroupAntiDistillationConfig(cached.config)
 			s.mu.Unlock()
 			return cfg, nil
 		}
@@ -128,6 +148,7 @@ func (s *GroupAntiDistillationService) GetConfig(ctx context.Context, groupID in
 		if !ok {
 			return nil, errors.New("invalid group protection config result")
 		}
+		cfg = cloneGroupAntiDistillationConfig(cfg)
 		return &cfg, nil
 	}
 }
@@ -146,13 +167,21 @@ func (s *GroupAntiDistillationService) loadConfig(ctx context.Context, groupID i
 		if err != nil && !errors.Is(err, ErrSettingNotFound) {
 			return cfg, fmt.Errorf("read group protection config: %w", err)
 		}
-		if err == nil && strings.TrimSpace(raw) != "" {
-			if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
-				return cfg, errors.New("invalid stored group protection config")
-			}
-			if err := validateGroupAntiDistillationConfig(&cfg); err != nil {
-				return cfg, err
-			}
+		if err == nil {
+			return parseGroupAntiDistillationConfig(raw)
+		}
+	}
+	return cfg, nil
+}
+
+func parseGroupAntiDistillationConfig(raw string) (GroupAntiDistillationConfig, error) {
+	cfg := DefaultGroupAntiDistillationConfig()
+	if strings.TrimSpace(raw) != "" {
+		if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+			return cfg, errors.New("invalid stored group protection config")
+		}
+		if err := validateGroupAntiDistillationConfig(&cfg); err != nil {
+			return cfg, err
 		}
 	}
 	return cfg, nil
@@ -162,34 +191,82 @@ func validateGroupAntiDistillationConfig(cfg *GroupAntiDistillationConfig) error
 	if cfg.PauseMinutes < 1 || cfg.PauseMinutes > 1440 {
 		return infraerrors.BadRequest("INVALID_GROUP_ANTI_DISTILLATION", "暂停请求时长必须为 1–1440 分钟")
 	}
+	if len(cfg.UserAllowlistIDs) > groupAntiDistillationAllowlistLimit {
+		return infraerrors.BadRequest("INVALID_GROUP_ANTI_DISTILLATION_ALLOWLIST", "用户白名单最多包含 500 项")
+	}
+	ids := append([]int64{}, cfg.UserAllowlistIDs...)
+	for _, id := range ids {
+		if id <= 0 {
+			return infraerrors.BadRequest("INVALID_GROUP_ANTI_DISTILLATION_ALLOWLIST", "用户白名单必须为有效的正整数用户 ID")
+		}
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	unique := ids[:0]
+	for _, id := range ids {
+		if len(unique) == 0 || unique[len(unique)-1] != id {
+			unique = append(unique, id)
+		}
+	}
+	cfg.UserAllowlistIDs = unique
 	return nil
 }
 
 // SaveConfig updates only this group's independent setting. It does not save the
 // rest of the group form or invalidate unrelated users or accounts.
 func (s *GroupAntiDistillationService) SaveConfig(ctx context.Context, groupID int64, cfg GroupAntiDistillationConfig) error {
+	_, err := s.SaveConfigWithResult(ctx, groupID, cfg)
+	return err
+}
+
+// SaveConfigWithResult returns this save's normalized value, without a subsequent
+// read that could report a concurrent administrator's different save. A nil list
+// preserves the stored allowlist for older clients; an explicit empty list clears it.
+func (s *GroupAntiDistillationService) SaveConfigWithResult(ctx context.Context, groupID int64, cfg GroupAntiDistillationConfig) (*GroupAntiDistillationConfig, error) {
+	allowlistProvided := cfg.UserAllowlistIDs != nil
 	if err := validateGroupAntiDistillationConfig(&cfg); err != nil {
-		return err
+		return nil, err
 	}
 	if s == nil || s.groups == nil || s.settings == nil {
-		return infraerrors.ServiceUnavailable("GROUP_PROTECTION_UNAVAILABLE", "分组保护暂时不可用")
+		return nil, infraerrors.ServiceUnavailable("GROUP_PROTECTION_UNAVAILABLE", "分组保护暂时不可用")
 	}
 	group, err := s.groups.GetByIDLite(ctx, groupID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if group == nil {
-		return ErrGroupNotFound
+		return nil, ErrGroupNotFound
 	}
 	if group.Platform != PlatformOpenAI {
-		return infraerrors.BadRequest("GROUP_PROTECTION_OPENAI_ONLY", "仅 OpenAI 分组支持此保护")
+		return nil, infraerrors.BadRequest("GROUP_PROTECTION_OPENAI_ONLY", "仅 OpenAI 分组支持此保护")
 	}
-	raw, err := json.Marshal(cfg)
-	if err != nil {
-		return err
+	if allowlistProvided && len(cfg.UserAllowlistIDs) > 0 {
+		if s.users == nil {
+			return nil, infraerrors.ServiceUnavailable("GROUP_PROTECTION_UNAVAILABLE", "用户白名单校验暂时不可用")
+		}
+		// UserRepository has no batch-by-ID reader. This bounded validation runs
+		// only on an administrator save, never on gateway admission/observation.
+		for _, id := range cfg.UserAllowlistIDs {
+			user, err := s.users.GetByID(ctx, id)
+			if err != nil && !errors.Is(err, ErrUserNotFound) {
+				return nil, fmt.Errorf("validate group protection allowlist: %w", err)
+			}
+			if err != nil || user == nil || user.ID != id || user.DeletedAt != nil {
+				return nil, infraerrors.BadRequest("INVALID_GROUP_ANTI_DISTILLATION_ALLOWLIST", fmt.Sprintf("用户 #%d 不存在或已删除，请从白名单移除后重试", id))
+			}
+		}
 	}
-	if err := s.settings.Set(ctx, groupAntiDistillationSettingKey(groupID), string(raw)); err != nil {
-		return err
+	if !allowlistProvided {
+		if err := s.saveConfigPreservingAllowlist(ctx, groupID, &cfg); err != nil {
+			return nil, err
+		}
+	} else {
+		raw, err := json.Marshal(cfg)
+		if err != nil {
+			return nil, err
+		}
+		if err := s.settings.Set(ctx, groupAntiDistillationSettingKey(groupID), string(raw)); err != nil {
+			return nil, err
+		}
 	}
 	s.mu.Lock()
 	s.configEpoch++
@@ -198,7 +275,45 @@ func (s *GroupAntiDistillationService) SaveConfig(ctx context.Context, groupID i
 	// In-flight reads from before the save may finish, but cannot repopulate the
 	// cache. Invalidation instead of setting avoids concurrent-save cache races.
 	s.configLoads.Forget(strconv.FormatInt(groupID, 10))
-	return nil
+	result := cloneGroupAntiDistillationConfig(cfg)
+	return &result, nil
+}
+
+func (s *GroupAntiDistillationService) saveConfigPreservingAllowlist(ctx context.Context, groupID int64, cfg *GroupAntiDistillationConfig) error {
+	writer, ok := s.settings.(groupAntiDistillationSettingCAS)
+	if !ok {
+		return infraerrors.ServiceUnavailable("GROUP_PROTECTION_UNAVAILABLE", "分组保护配置暂不支持安全更新，请稍后重试")
+	}
+	key := groupAntiDistillationSettingKey(groupID)
+	for attempt := 0; attempt < groupAntiDistillationSaveAttempts; attempt++ {
+		// Read storage directly, not the local TTL cache. Comparing the original
+		// text detects any concurrent explicit clear/change before this save.
+		raw, err := s.settings.GetValue(ctx, key)
+		var expected *string
+		stored := DefaultGroupAntiDistillationConfig()
+		if err == nil {
+			expected = &raw
+			stored, err = parseGroupAntiDistillationConfig(raw)
+		} else if errors.Is(err, ErrSettingNotFound) {
+			err = nil
+		}
+		if err != nil {
+			return fmt.Errorf("read group protection config: %w", err)
+		}
+		cfg.UserAllowlistIDs = append([]int64{}, stored.UserAllowlistIDs...)
+		value, err := json.Marshal(cfg)
+		if err != nil {
+			return err
+		}
+		updated, err := writer.CompareAndSwap(ctx, key, expected, string(value))
+		if err != nil {
+			return fmt.Errorf("save group protection config: %w", err)
+		}
+		if updated {
+			return nil
+		}
+	}
+	return infraerrors.Conflict("GROUP_PROTECTION_CONFIG_CHANGED", "分组保护配置已被其他管理员修改，请刷新后重试")
 }
 
 func (s *GroupAntiDistillationService) cacheConfigLocked(groupID int64, cfg GroupAntiDistillationConfig, now time.Time) {
@@ -219,7 +334,7 @@ func (s *GroupAntiDistillationService) cacheConfigLocked(groupID int64, cfg Grou
 			delete(s.configs, oldestID)
 		}
 	}
-	s.configs[groupID] = groupAntiDistillationCachedConfig{config: cfg, expiresAt: now.Add(groupAntiDistillationConfigTTL)}
+	s.configs[groupID] = groupAntiDistillationCachedConfig{config: cloneGroupAntiDistillationConfig(cfg), expiresAt: now.Add(groupAntiDistillationConfigTTL)}
 }
 
 // Check returns the remaining pause for enabled groups only. Errors must be
@@ -232,7 +347,7 @@ func (s *GroupAntiDistillationService) Check(ctx context.Context, userID, groupI
 	if err != nil {
 		return 0, err
 	}
-	if !cfg.Enabled {
+	if !cfg.Enabled || cfg.allowsUser(userID) {
 		return 0, nil
 	}
 	if s.cache == nil {
@@ -256,7 +371,7 @@ func (s *GroupAntiDistillationService) Observe(ctx context.Context, key *APIKey,
 		slog.Warn("group zero-cache protection config unavailable", "group_id", key.Group.ID)
 		return
 	}
-	if !cfg.Enabled || s.cache == nil {
+	if !cfg.Enabled || cfg.allowsUser(key.UserID) || s.cache == nil {
 		return
 	}
 	triggered, until, err := s.observe(ctx, key.UserID, requestID, cacheReadTokens, time.Duration(cfg.PauseMinutes)*time.Minute)

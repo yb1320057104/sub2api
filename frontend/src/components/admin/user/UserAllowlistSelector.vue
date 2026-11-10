@@ -3,9 +3,9 @@
     <legend class="px-1 text-sm font-medium text-gray-900 dark:text-white">{{ title }}</legend>
     <p class="text-sm text-gray-500 dark:text-gray-400">{{ hint }}</p>
     <div class="flex flex-wrap gap-2">
-      <input v-model="query" type="search" class="input min-w-0 flex-1" :placeholder="t('admin.userAllowlist.search')" :aria-label="t('admin.userAllowlist.search')" data-test="allowlist-search" @input="invalidateSearch" @keydown.enter.prevent="search" />
+      <input v-model="query" type="search" class="input min-w-0 flex-1" :placeholder="t('admin.userAllowlist.search')" :aria-label="t('admin.userAllowlist.search')" data-test="allowlist-search" @input="queueSearch" @keydown.enter.prevent="search" />
       <button type="button" class="btn btn-secondary" :disabled="searching || !query.trim()" data-test="allowlist-search-button" @click="search">{{ searching ? t('common.loading') : t('common.search') }}</button>
-      <button type="button" class="btn btn-secondary" :disabled="!selectedIds.length" data-test="allowlist-clear" @click="emit('update:modelValue', [])">{{ t('admin.userAllowlist.clear') }}</button>
+      <button type="button" class="btn btn-secondary" :disabled="!selectedIds.length" data-test="allowlist-clear" @click="clear">{{ t('admin.userAllowlist.clear') }}</button>
     </div>
     <p v-if="searchError" role="alert" class="text-sm text-red-600 dark:text-red-400">{{ t('admin.userAllowlist.searchFailed') }}</p>
     <div v-else-if="searched" class="max-h-52 space-y-1 overflow-auto rounded-lg bg-gray-50 p-2 dark:bg-dark-900/40" data-test="allowlist-results">
@@ -33,10 +33,19 @@ import { useI18n } from 'vue-i18n'
 import usersAPI from '@/api/admin/users'
 import type { AdminUser } from '@/types'
 
-const props = withDefaults(defineProps<{ modelValue: number[]; title: string; hint: string; disabled?: boolean; testId?: string }>(), { disabled: false, testId: 'user-allowlist' })
+const props = withDefaults(defineProps<{
+  modelValue: number[]
+  title: string
+  hint: string
+  disabled?: boolean
+  testId?: string
+  maxUsers?: number
+  searchDebounceMs?: number
+  hydrateLimit?: number
+}>(), { disabled: false, testId: 'user-allowlist', maxUsers: 1000, searchDebounceMs: 0, hydrateLimit: 1000 })
 const emit = defineEmits<{ 'update:modelValue': [value: number[]] }>()
 const { t } = useI18n()
-const maxUsers = 1000
+const maxUsers = computed(() => props.maxUsers)
 const query = ref('')
 const searching = ref(false)
 const searched = ref(false)
@@ -49,9 +58,12 @@ const selectedIds = computed(() => [...new Set(props.modelValue)].sort((a, b) =>
 let revision = 0
 let mounted = true
 let controller: AbortController | undefined
+let searchTimer: ReturnType<typeof setTimeout> | undefined
 
 function invalidateSearch() {
   revision++
+  if (searchTimer !== undefined) clearTimeout(searchTimer)
+  searchTimer = undefined
   controller?.abort()
   controller = undefined
   searching.value = false
@@ -59,6 +71,13 @@ function invalidateSearch() {
   searchError.value = false
   results.value = []
   moreResults.value = false
+}
+
+function queueSearch() {
+  invalidateSearch()
+  if (!props.disabled && query.value.trim() && props.searchDebounceMs > 0) {
+    searchTimer = setTimeout(() => { void search() }, props.searchDebounceMs)
+  }
 }
 
 async function search() {
@@ -93,7 +112,7 @@ async function search() {
 }
 
 function add(user: AdminUser) {
-  if (props.disabled || user.deleted_at || selectedIds.value.includes(user.id) || selectedIds.value.length >= maxUsers) return
+  if (props.disabled || user.deleted_at || selectedIds.value.includes(user.id) || selectedIds.value.length >= maxUsers.value) return
   users.value[user.id] = user
   emit('update:modelValue', [...selectedIds.value, user.id].sort((a, b) => a - b))
 }
@@ -102,8 +121,12 @@ function remove(id: number) {
   if (!props.disabled) emit('update:modelValue', selectedIds.value.filter((selected) => selected !== id))
 }
 
+function clear() {
+  if (!props.disabled) emit('update:modelValue', [])
+}
+
 async function hydrate(ids: number[]) {
-  const missing = ids.filter((id) => users.value[id] === undefined && !loadingIds.has(id))
+  const missing = ids.slice(0, props.hydrateLimit).filter((id) => users.value[id] === undefined && !loadingIds.has(id))
   missing.forEach((id) => loadingIds.add(id))
   // Limit requests when an existing configuration contains many selected IDs.
   await Promise.all(Array.from({ length: Math.min(5, missing.length) }, async () => {
@@ -122,5 +145,6 @@ async function hydrate(ids: number[]) {
 }
 
 watch(selectedIds, (ids) => { void hydrate(ids) }, { immediate: true })
+watch(() => props.disabled, (disabled) => { if (disabled) invalidateSearch() })
 onUnmounted(() => { mounted = false; invalidateSearch() })
 </script>

@@ -4,9 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -311,10 +315,13 @@ func TestGroupHandlerSimpleModeBlocksAdvancedOperations(t *testing.T) {
 
 type groupProtectionSettings struct {
 	service.SettingRepository
+	mu     sync.Mutex
 	values map[string]string
 }
 
 func (s *groupProtectionSettings) GetValue(_ context.Context, key string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if value, ok := s.values[key]; ok {
 		return value, nil
 	}
@@ -322,8 +329,21 @@ func (s *groupProtectionSettings) GetValue(_ context.Context, key string) (strin
 }
 
 func (s *groupProtectionSettings) Set(_ context.Context, key, value string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.values[key] = value
 	return nil
+}
+
+func (s *groupProtectionSettings) CompareAndSwap(_ context.Context, key string, expected *string, value string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, exists := s.values[key]
+	if expected == nil && exists || expected != nil && (!exists || current != *expected) {
+		return false, nil
+	}
+	s.values[key] = value
+	return true, nil
 }
 
 type groupProtectionGroups struct{ service.GroupRepository }
@@ -333,6 +353,22 @@ func (groupProtectionGroups) GetByIDLite(_ context.Context, id int64) (*service.
 		return nil, service.ErrGroupNotFound
 	}
 	return &service.Group{ID: id, Platform: service.PlatformOpenAI}, nil
+}
+
+type groupProtectionUsers struct {
+	service.UserRepository
+	users map[int64]*service.User
+	err   error
+}
+
+func (r *groupProtectionUsers) GetByID(_ context.Context, id int64) (*service.User, error) {
+	if r.err != nil {
+		return nil, r.err
+	}
+	if user := r.users[id]; user != nil {
+		return user, nil
+	}
+	return nil, service.ErrUserNotFound
 }
 
 func TestGroupAntiDistillationIndependentSettingsAPI(t *testing.T) {
@@ -347,6 +383,7 @@ func TestGroupAntiDistillationIndependentSettingsAPI(t *testing.T) {
 	require.Equal(t, 200, res.Code)
 	require.Contains(t, res.Body.String(), `"enabled":false`)
 	require.Contains(t, res.Body.String(), `"pause_minutes":5`)
+	require.Contains(t, res.Body.String(), `"user_allowlist_ids":[]`)
 	res = serveGroupProtectionRequest(r, "PUT", "/groups/7/anti-distillation", `{"enabled":true,"pause_minutes":10}`)
 	require.Equal(t, 200, res.Code)
 	res = serveGroupProtectionRequest(r, "GET", "/groups/7/anti-distillation", "")
@@ -358,6 +395,83 @@ func TestGroupAntiDistillationIndependentSettingsAPI(t *testing.T) {
 	}
 	res = serveGroupProtectionRequest(r, "GET", "/groups/8/anti-distillation", "")
 	require.Equal(t, 404, res.Code)
+}
+
+func TestGroupAntiDistillationAllowlistSettingsAPI(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	settings := &groupProtectionSettings{values: map[string]string{}}
+	deletedAt := time.Now()
+	users := &groupProtectionUsers{users: map[int64]*service.User{7: {ID: 7}, 8: {ID: 8}, 9: {ID: 9, DeletedAt: &deletedAt}}}
+	protection := service.NewGroupAntiDistillationService(settings, groupProtectionGroups{}, nil, users, nil)
+	h := ProvideGroupHandlerWithProtection(newStubAdminService(), nil, nil, &config.Config{}, protection)
+	r := gin.New()
+	r.GET("/groups/:id/anti-distillation", h.GetAntiDistillation)
+	r.PUT("/groups/:id/anti-distillation", h.SaveAntiDistillation)
+	const path = "/groups/7/anti-distillation"
+	res := serveGroupProtectionRequest(r, http.MethodPut, path, `{"enabled":true,"pause_minutes":10,"user_allowlist_ids":[8,7,8]}`)
+	require.Equal(t, http.StatusOK, res.Code, res.Body.String())
+	require.Contains(t, res.Body.String(), `"user_allowlist_ids":[7,8]`)
+	res = serveGroupProtectionRequest(r, http.MethodGet, path, "")
+	require.Equal(t, http.StatusOK, res.Code)
+	require.Contains(t, res.Body.String(), `"user_allowlist_ids":[7,8]`)
+	res = serveGroupProtectionRequest(r, http.MethodPut, path, `{"enabled":false,"pause_minutes":15}`)
+	require.Equal(t, http.StatusOK, res.Code)
+	require.Contains(t, res.Body.String(), `"user_allowlist_ids":[7,8]`, "older clients must preserve the list when changing other fields")
+	stored := settings.values["group_anti_distillation:7"]
+	for _, value := range []string{"null", "7", `"7"`, "{}", "[null]", `["7"]`, "[true]", "[7.5]", "[0]", "[-1]", "[9223372036854775808]", "[404]", "[9]", "[" + strings.Repeat("7,", 500) + "7]"} {
+		t.Run(value[:min(len(value), 40)], func(t *testing.T) {
+			body := `{"enabled":true,"pause_minutes":5,"user_allowlist_ids":` + value + `}`
+			res := serveGroupProtectionRequest(r, http.MethodPut, path, body)
+			require.Equal(t, http.StatusBadRequest, res.Code, res.Body.String())
+			if value == "[9]" || value == "[404]" {
+				require.Contains(t, res.Body.String(), "#"+strings.Trim(value, "[]"), "identify the missing or deleted user so administrators can remove it")
+			}
+			require.Equal(t, stored, settings.values["group_anti_distillation:7"], "invalid allowlists must not alter any setting")
+		})
+	}
+	users.err = errors.New("user repository offline")
+	res = serveGroupProtectionRequest(r, http.MethodPut, path, `{"enabled":true,"pause_minutes":5,"user_allowlist_ids":[7]}`)
+	require.Equal(t, http.StatusInternalServerError, res.Code)
+	require.Equal(t, stored, settings.values["group_anti_distillation:7"])
+	res = serveGroupProtectionRequest(r, http.MethodPut, path, `{"enabled":false,"pause_minutes":15,"user_allowlist_ids":[]}`)
+	require.Equal(t, http.StatusOK, res.Code)
+	require.Contains(t, res.Body.String(), `"user_allowlist_ids":[]`, "explicit empty must clear without querying users")
+	res = serveGroupProtectionRequest(r, http.MethodGet, path, "")
+	require.Equal(t, http.StatusOK, res.Code)
+	require.Contains(t, res.Body.String(), `"user_allowlist_ids":[]`)
+}
+
+type groupProtectionConflictingSettings struct{ *groupProtectionSettings }
+
+func (s groupProtectionConflictingSettings) CompareAndSwap(context.Context, string, *string, string) (bool, error) {
+	return false, nil
+}
+
+func TestGroupAntiDistillationAllowlistOmissionAtomicSaveErrors(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, tc := range []struct {
+		name   string
+		status int
+	}{
+		{"continuous conflict", http.StatusConflict},
+		{"atomic writer unavailable", http.StatusServiceUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const original = `{"enabled":true,"pause_minutes":5,"user_allowlist_ids":[7]}`
+			settings := &groupProtectionSettings{values: map[string]string{"group_anti_distillation:7": original}}
+			var repository service.SettingRepository = groupProtectionConflictingSettings{settings}
+			if tc.status == http.StatusServiceUnavailable {
+				repository = struct{ service.SettingRepository }{settings}
+			}
+			protection := service.NewGroupAntiDistillationService(repository, groupProtectionGroups{}, nil, nil, nil)
+			h := ProvideGroupHandlerWithProtection(newStubAdminService(), nil, nil, &config.Config{}, protection)
+			r := gin.New()
+			r.PUT("/groups/:id/anti-distillation", h.SaveAntiDistillation)
+			res := serveGroupProtectionRequest(r, http.MethodPut, "/groups/7/anti-distillation", `{"enabled":false,"pause_minutes":15}`)
+			require.Equal(t, tc.status, res.Code, res.Body.String())
+			require.Equal(t, original, settings.values["group_anti_distillation:7"])
+		})
+	}
 }
 
 func serveGroupProtectionRequest(r *gin.Engine, method, path, body string) *httptest.ResponseRecorder {

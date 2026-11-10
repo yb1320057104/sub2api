@@ -24,17 +24,22 @@ export interface LiveCapability {
 export interface GroupAntiDistillationConfig {
   enabled: boolean
   pause_minutes: number
+  user_allowlist_ids: number[]
+}
+
+function normalizeAntiDistillation(config: GroupAntiDistillationConfig): GroupAntiDistillationConfig {
+  return { ...config, user_allowlist_ids: [...(config.user_allowlist_ids ?? [])] }
 }
 
 /** Group protection is saved independently from billing and other group settings. */
 export async function getAntiDistillation(id: number): Promise<GroupAntiDistillationConfig> {
   const { data } = await apiClient.get<GroupAntiDistillationConfig>(`/admin/groups/${id}/anti-distillation`)
-  return data
+  return normalizeAntiDistillation(data)
 }
 
 export async function saveAntiDistillation(id: number, config: GroupAntiDistillationConfig): Promise<GroupAntiDistillationConfig> {
-  const { data } = await apiClient.put<GroupAntiDistillationConfig>(`/admin/groups/${id}/anti-distillation`, config)
-  return data
+  const { data } = await apiClient.put<GroupAntiDistillationConfig>(`/admin/groups/${id}/anti-distillation`, normalizeAntiDistillation(config))
+  return normalizeAntiDistillation(data)
 }
 
 /**

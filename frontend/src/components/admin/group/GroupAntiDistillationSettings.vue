@@ -48,15 +48,33 @@
           {{ t('admin.groups.antiDistillation.invalidMinutes') }}
         </p>
       </div>
+      <UserAllowlistSelector
+        v-if="active && loaded"
+        :key="fieldId"
+        v-model="userAllowlistIds"
+        :title="t('admin.groups.antiDistillation.userAllowlistTitle')"
+        :hint="t('admin.groups.antiDistillation.userAllowlistHint')"
+        :disabled="loading || saving || !loaded"
+        :max-users="500"
+        :search-debounce-ms="300"
+        :hydrate-limit="20"
+        test-id="anti-distillation-user-allowlist"
+      />
+      <p v-if="active && loaded" class="text-xs text-gray-500 dark:text-gray-400">
+        {{ t('admin.groups.antiDistillation.userAllowlistIDHint') }}
+      </p>
+      <p v-if="!validAllowlist" class="text-xs text-red-600 dark:text-red-400" role="alert">
+        {{ t('admin.groups.antiDistillation.invalidAllowlist') }}
+      </p>
     </fieldset>
 
     <p class="mt-3 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.groups.antiDistillation.scopeHint') }}</p>
     <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.groups.antiDistillation.saveHint') }}</p>
-    <p v-if="saveFailed" class="mt-2 text-sm text-red-600 dark:text-red-400" role="alert">{{ t('admin.groups.antiDistillation.saveFailed') }}</p>
+    <p v-if="saveFailed" class="mt-2 text-sm text-red-600 dark:text-red-400" role="alert">{{ saveFailed }}</p>
     <button
       type="button"
       class="btn btn-secondary mt-3"
-      :disabled="loading || saving || !loaded || (enabled && !validMinutes)"
+      :disabled="loading || saving || !loaded || !validAllowlist || (enabled && !validMinutes)"
       data-testid="anti-distillation-save"
       @click="save"
     >
@@ -70,7 +88,9 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { adminAPI } from '@/api/admin'
 import Toggle from '@/components/common/Toggle.vue'
+import UserAllowlistSelector from '@/components/admin/user/UserAllowlistSelector.vue'
 import { useAppStore } from '@/stores/app'
+import { extractApiErrorMessage } from '@/utils/apiError'
 
 const props = withDefaults(defineProps<{
   groupId: number
@@ -83,12 +103,15 @@ const loading = ref(false)
 const loaded = ref(false)
 const saving = ref(false)
 const loadFailed = ref(false)
-const saveFailed = ref(false)
+const saveFailed = ref('')
 const enabled = ref(false)
 const pauseMinutes = ref('5')
+const userAllowlistIds = ref<number[]>([])
 const fieldId = computed(() => `group-${props.groupId}-anti-distillation`)
 const validMinutes = computed(() => /^\d+$/.test(pauseMinutes.value)
   && Number(pauseMinutes.value) >= 1 && Number(pauseMinutes.value) <= 1440)
+const validAllowlist = computed(() => userAllowlistIds.value.length <= 500
+  && userAllowlistIds.value.every((id) => Number.isSafeInteger(id) && id > 0))
 let generation = 0
 
 async function load(): Promise<void> {
@@ -97,9 +120,10 @@ async function load(): Promise<void> {
   loading.value = false
   saving.value = false
   loadFailed.value = false
-  saveFailed.value = false
+  saveFailed.value = ''
   enabled.value = false
   pauseMinutes.value = '5'
+  userAllowlistIds.value = []
   if (!props.active || props.groupId <= 0) return
   loading.value = true
   try {
@@ -107,6 +131,7 @@ async function load(): Promise<void> {
     if (generation !== current) return
     enabled.value = config.enabled
     pauseMinutes.value = String(config.pause_minutes)
+    userAllowlistIds.value = [...(config.user_allowlist_ids ?? [])]
     loaded.value = true
   } catch {
     if (generation === current) loadFailed.value = true
@@ -116,22 +141,24 @@ async function load(): Promise<void> {
 }
 
 async function save(): Promise<void> {
-  if (!props.active || !loaded.value || loading.value || saving.value || (enabled.value && !validMinutes.value)) return
+  if (!props.active || !loaded.value || loading.value || saving.value || !validAllowlist.value || (enabled.value && !validMinutes.value)) return
   const current = generation
   const groupId = props.groupId
   saving.value = true
-  saveFailed.value = false
+  saveFailed.value = ''
   try {
     const config = await adminAPI.groups.saveAntiDistillation(groupId, {
       enabled: enabled.value,
       pause_minutes: validMinutes.value ? Number(pauseMinutes.value) : 5,
+      user_allowlist_ids: [...new Set(userAllowlistIds.value)].sort((a, b) => a - b),
     })
     if (generation !== current) return
     enabled.value = config.enabled
     pauseMinutes.value = String(config.pause_minutes)
+    userAllowlistIds.value = [...(config.user_allowlist_ids ?? [])]
     appStore.showSuccess(t('admin.groups.antiDistillation.saved'))
-  } catch {
-    if (generation === current) saveFailed.value = true
+  } catch (error) {
+    if (generation === current) saveFailed.value = extractApiErrorMessage(error, t('admin.groups.antiDistillation.saveFailed'))
   } finally {
     if (generation === current) saving.value = false
   }

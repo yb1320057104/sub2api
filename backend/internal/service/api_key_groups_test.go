@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -144,6 +145,7 @@ type antiDistillationSettings struct {
 
 func TestAPIKeyGroupAntiDistillationUsesEffectiveGroupAndUser(t *testing.T) {
 	protection, cache := antiDistillationTestService(t)
+	protection.users = &antiDistillationUsers{users: map[int64]*User{7: {ID: 7}}}
 	ctx := context.Background()
 	require.NoError(t, protection.SaveConfig(ctx, 1, GroupAntiDistillationConfig{Enabled: true, PauseMinutes: 5}))
 	cache.remaining[7] = time.Minute
@@ -159,6 +161,26 @@ func TestAPIKeyGroupAntiDistillationUsesEffectiveGroupAndUser(t *testing.T) {
 		{"other platform", &APIKey{UserID: 7, Group: &Group{ID: 3, Platform: PlatformAnthropic}}, 0},
 		{"missing group", &APIKey{UserID: 7}, 0},
 		{"missing key", nil, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			remaining, err := svc.CheckGroupAntiDistillation(ctx, tc.key)
+			require.NoError(t, err)
+			require.Equal(t, tc.want, remaining)
+		})
+	}
+	require.NoError(t, protection.SaveConfig(ctx, 1, GroupAntiDistillationConfig{Enabled: true, PauseMinutes: 5, UserAllowlistIDs: []int64{7}}))
+	require.NoError(t, protection.SaveConfig(ctx, 2, GroupAntiDistillationConfig{Enabled: true, PauseMinutes: 5}))
+	cache.remaining[8] = 2 * time.Minute
+	primary := int64(2)
+	for _, tc := range []struct {
+		name string
+		key  *APIKey
+		want time.Duration
+	}{
+		{"allowlisted effective group", &APIKey{ID: 101, UserID: 7, GroupID: &primary, GroupIDs: []int64{2, 1}, Group: &Group{ID: 1, Platform: PlatformOpenAI}}, 0},
+		{"same user another key", &APIKey{ID: 102, UserID: 7, Group: &Group{ID: 1, Platform: PlatformOpenAI}}, 0},
+		{"same user another enabled group", &APIKey{ID: 101, UserID: 7, Group: &Group{ID: 2, Platform: PlatformOpenAI}}, time.Minute},
+		{"same group another paused user", &APIKey{ID: 103, UserID: 8, Group: &Group{ID: 1, Platform: PlatformOpenAI}}, 2 * time.Minute},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			remaining, err := svc.CheckGroupAntiDistillation(ctx, tc.key)
@@ -191,9 +213,41 @@ func (r *antiDistillationSettings) Set(_ context.Context, key, value string) err
 	return nil
 }
 
+func (r *antiDistillationSettings) CompareAndSwap(_ context.Context, key string, expected *string, value string) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.err != nil {
+		return false, r.err
+	}
+	current, exists := r.values[key]
+	if expected == nil && exists || expected != nil && (!exists || current != *expected) {
+		return false, nil
+	}
+	r.values[key] = value
+	return true, nil
+}
+
 type antiDistillationGroups struct {
 	GroupRepository
 	groups map[int64]*Group
+}
+
+type antiDistillationUsers struct {
+	UserRepository
+	users map[int64]*User
+	err   error
+	calls []int64
+}
+
+func (r *antiDistillationUsers) GetByID(_ context.Context, id int64) (*User, error) {
+	r.calls = append(r.calls, id)
+	if r.err != nil {
+		return nil, r.err
+	}
+	if user := r.users[id]; user != nil {
+		return user, nil
+	}
+	return nil, ErrUserNotFound
 }
 
 func (r *antiDistillationGroups) GetByIDLite(_ context.Context, id int64) (*Group, error) {
@@ -217,12 +271,14 @@ type antiDistillationCacheFake struct {
 	mu           sync.Mutex
 	observations []antiDistillationObservation
 	remaining    map[int64]time.Duration
+	checks       []int64
 	err          error
 }
 
 func (f *antiDistillationCacheFake) PauseRemaining(_ context.Context, userID int64) (time.Duration, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.checks = append(f.checks, userID)
 	if f.err != nil {
 		return 0, f.err
 	}
@@ -304,6 +360,294 @@ func TestGroupAntiDistillationConfigurationDefaultsAndValidation(t *testing.T) {
 	stored, err := svc.GetConfig(ctx, 1)
 	require.NoError(t, err)
 	require.False(t, stored.Enabled)
+}
+
+func TestGroupAntiDistillationAllowlistValidationAndNormalization(t *testing.T) {
+	svc, _ := antiDistillationTestService(t)
+	ctx := context.Background()
+	deletedAt := time.Now()
+	users := &antiDistillationUsers{users: map[int64]*User{7: {ID: 7}, 8: {ID: 8}, 9: {ID: 9, DeletedAt: &deletedAt}, 10: {ID: 11}}}
+	svc.users = users
+	input := []int64{8, 7, 8}
+	saved, err := svc.SaveConfigWithResult(ctx, 1, GroupAntiDistillationConfig{Enabled: true, PauseMinutes: 5, UserAllowlistIDs: input})
+	require.NoError(t, err)
+	require.Equal(t, []int64{7, 8}, saved.UserAllowlistIDs)
+	require.Equal(t, []int64{8, 7, 8}, input, "normalization must not mutate caller slices")
+	require.Equal(t, []int64{7, 8}, users.calls, "validate each distinct ID once")
+	settings := antiDistillationTestSettings(t, svc)
+	before, err := settings.GetValue(ctx, groupAntiDistillationSettingKey(1))
+	require.NoError(t, err)
+	tooMany := make([]int64, 501)
+	for i := range tooMany {
+		tooMany[i] = 7
+	}
+	for _, ids := range [][]int64{{0}, {-1}, {404}, {9}, {10}, tooMany} {
+		require.Error(t, svc.SaveConfig(ctx, 1, GroupAntiDistillationConfig{PauseMinutes: 5, UserAllowlistIDs: ids}))
+		after, err := settings.GetValue(ctx, groupAntiDistillationSettingKey(1))
+		require.NoError(t, err)
+		require.Equal(t, before, after, "invalid input must never partially persist")
+	}
+	users.err = errors.New("user lookup offline")
+	require.ErrorIs(t, svc.SaveConfig(ctx, 1, GroupAntiDistillationConfig{PauseMinutes: 5, UserAllowlistIDs: []int64{7}}), users.err)
+	svc.users = nil
+	require.Error(t, svc.SaveConfig(ctx, 1, GroupAntiDistillationConfig{PauseMinutes: 5, UserAllowlistIDs: []int64{7}}))
+	after, err := settings.GetValue(ctx, groupAntiDistillationSettingKey(1))
+	require.NoError(t, err)
+	require.Equal(t, before, after)
+	users.err = nil
+	svc.users = users
+	boundary := make([]int64, 500)
+	for i := range boundary {
+		boundary[i] = int64(i + 1)
+		users.users[int64(i+1)] = &User{ID: int64(i + 1)}
+	}
+	require.NoError(t, svc.SaveConfig(ctx, 1, GroupAntiDistillationConfig{PauseMinutes: 5, UserAllowlistIDs: boundary}))
+}
+
+func TestGroupAntiDistillationAllowlistOmissionAndCrossNodeRefresh(t *testing.T) {
+	svc, _ := antiDistillationTestService(t)
+	ctx := context.Background()
+	settings := antiDistillationTestSettings(t, svc)
+	require.NoError(t, settings.Set(ctx, groupAntiDistillationSettingKey(1), `{"enabled":true,"pause_minutes":5}`))
+	legacy, err := svc.GetConfig(ctx, 1)
+	require.NoError(t, err)
+	require.Equal(t, []int64{}, legacy.UserAllowlistIDs)
+	node := NewGroupAntiDistillationService(settings, svc.groups, svc.cache, &antiDistillationUsers{users: map[int64]*User{7: {ID: 7}, 8: {ID: 8}}}, nil)
+	require.NoError(t, node.SaveConfig(ctx, 1, GroupAntiDistillationConfig{Enabled: true, PauseMinutes: 5, UserAllowlistIDs: []int64{7}}))
+	cached, err := svc.GetConfig(ctx, 1)
+	require.NoError(t, err)
+	require.Empty(t, cached.UserAllowlistIDs, "other nodes retain the existing short TTL")
+	preserved, err := svc.SaveConfigWithResult(ctx, 1, GroupAntiDistillationConfig{Enabled: true, PauseMinutes: 9})
+	require.NoError(t, err)
+	require.Equal(t, []int64{7}, preserved.UserAllowlistIDs, "omission reads current storage instead of stale local cache")
+	cached, err = svc.GetConfig(ctx, 1)
+	require.NoError(t, err)
+	require.Equal(t, []int64{7}, cached.UserAllowlistIDs)
+	require.NoError(t, node.SaveConfig(ctx, 1, GroupAntiDistillationConfig{Enabled: true, PauseMinutes: 9, UserAllowlistIDs: []int64{8}}))
+	svc.mu.Lock()
+	entry := svc.configs[1]
+	entry.expiresAt = time.Now().Add(-time.Second)
+	svc.configs[1] = entry
+	svc.mu.Unlock()
+	refreshed, err := svc.GetConfig(ctx, 1)
+	require.NoError(t, err)
+	require.Equal(t, []int64{8}, refreshed.UserAllowlistIDs)
+	cleared, err := svc.SaveConfigWithResult(ctx, 1, GroupAntiDistillationConfig{Enabled: true, PauseMinutes: 9, UserAllowlistIDs: []int64{}})
+	require.NoError(t, err)
+	require.Equal(t, []int64{}, cleared.UserAllowlistIDs)
+	raw, err := settings.GetValue(ctx, groupAntiDistillationSettingKey(1))
+	require.NoError(t, err)
+	require.Contains(t, raw, `"user_allowlist_ids":[]`)
+}
+
+type antiDistillationInterceptedCASSettings struct {
+	*antiDistillationSettings
+	beforeCompare func(attempt int, expected *string)
+	compareCalls  int
+	compareErr    error
+}
+
+func (s *antiDistillationInterceptedCASSettings) CompareAndSwap(ctx context.Context, key string, expected *string, value string) (bool, error) {
+	s.compareCalls++
+	if s.beforeCompare != nil {
+		s.beforeCompare(s.compareCalls, expected)
+	}
+	if s.compareErr != nil {
+		return false, s.compareErr
+	}
+	return s.antiDistillationSettings.CompareAndSwap(ctx, key, expected, value)
+}
+
+func TestGroupAntiDistillationAllowlistOmissionRetriesConcurrentUpdates(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		initial     string
+		concurrent  []int64
+		firstAbsent bool
+	}{
+		{"concurrent clear is not restored", `{"enabled":true,"pause_minutes":5,"user_allowlist_ids":[7]}`, []int64{}, false},
+		{"concurrent creation is preserved", "", []int64{7}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, _ := antiDistillationTestService(t)
+			ctx := context.Background()
+			settings := antiDistillationTestSettings(t, svc)
+			if tc.initial != "" {
+				require.NoError(t, settings.Set(ctx, groupAntiDistillationSettingKey(1), tc.initial))
+			}
+			node := NewGroupAntiDistillationService(settings, svc.groups, svc.cache, &antiDistillationUsers{users: map[int64]*User{7: {ID: 7}}}, nil)
+			interleaved := &antiDistillationInterceptedCASSettings{antiDistillationSettings: settings}
+			interleaved.beforeCompare = func(attempt int, expected *string) {
+				if attempt == 1 {
+					require.Equal(t, tc.firstAbsent, expected == nil)
+					require.NoError(t, node.SaveConfig(ctx, 1, GroupAntiDistillationConfig{Enabled: false, PauseMinutes: 30, UserAllowlistIDs: tc.concurrent}))
+				} else {
+					require.NotNil(t, expected)
+				}
+			}
+			svc.settings = interleaved
+			saved, err := svc.SaveConfigWithResult(ctx, 1, GroupAntiDistillationConfig{Enabled: true, PauseMinutes: 9})
+			require.NoError(t, err)
+			require.Equal(t, 2, interleaved.compareCalls, "the stale write must fail before a fresh storage read")
+			require.Equal(t, tc.concurrent, saved.UserAllowlistIDs)
+			require.True(t, saved.Enabled)
+			require.Equal(t, 9, saved.PauseMinutes)
+			current, err := svc.GetConfig(ctx, 1)
+			require.NoError(t, err)
+			require.Equal(t, *saved, *current)
+		})
+	}
+}
+
+func TestGroupAntiDistillationAllowlistOmissionFailsSafely(t *testing.T) {
+	ctx := context.Background()
+	for _, mode := range []string{"missing atomic writer", "continuous conflicts", "atomic write error"} {
+		t.Run(mode, func(t *testing.T) {
+			svc, _ := antiDistillationTestService(t)
+			settings := antiDistillationTestSettings(t, svc)
+			key := groupAntiDistillationSettingKey(1)
+			lastConcurrent := `{"enabled":false,"pause_minutes":5,"user_allowlist_ids":[8]}`
+			require.NoError(t, settings.Set(ctx, key, lastConcurrent))
+			interleaved := &antiDistillationInterceptedCASSettings{antiDistillationSettings: settings}
+			svc.settings = interleaved
+			switch mode {
+			case "missing atomic writer":
+				svc.settings = struct{ SettingRepository }{settings}
+			case "continuous conflicts":
+				interleaved.beforeCompare = func(attempt int, _ *string) {
+					lastConcurrent = fmt.Sprintf(`{"enabled":false,"pause_minutes":%d,"user_allowlist_ids":[8]}`, 20+attempt)
+					require.NoError(t, settings.Set(ctx, key, lastConcurrent))
+				}
+			case "atomic write error":
+				interleaved.compareErr = errors.New("atomic writer offline")
+			}
+			saved, err := svc.SaveConfigWithResult(ctx, 1, GroupAntiDistillationConfig{Enabled: true, PauseMinutes: 9})
+			require.Error(t, err)
+			require.Nil(t, saved)
+			if mode == "continuous conflicts" {
+				require.Equal(t, 3, interleaved.compareCalls, "retry budget must be bounded")
+			}
+			if interleaved.compareErr != nil {
+				require.ErrorIs(t, err, interleaved.compareErr)
+			}
+			raw, err := settings.GetValue(ctx, key)
+			require.NoError(t, err)
+			require.Equal(t, lastConcurrent, raw, "failed atomic save must never fall back to unconditional Set")
+			require.Zero(t, svc.configEpoch, "failed saves do not invalidate or publish a new config")
+		})
+	}
+}
+
+func TestGroupAntiDistillationAllowlistPreservesSharedStateAndAvoidsHotPathUserLookup(t *testing.T) {
+	svc, cache := antiDistillationTestService(t)
+	ctx := context.Background()
+	users := &antiDistillationUsers{users: map[int64]*User{7: {ID: 7}}}
+	svc.users = users
+	require.NoError(t, svc.SaveConfig(ctx, 1, GroupAntiDistillationConfig{Enabled: true, PauseMinutes: 5, UserAllowlistIDs: []int64{7}}))
+	require.NoError(t, svc.SaveConfig(ctx, 2, GroupAntiDistillationConfig{Enabled: true, PauseMinutes: 10}))
+	cache.remaining[7] = 10 * time.Minute
+	users.calls = nil
+	for _, keyID := range []int64{101, 102} {
+		remaining, err := svc.Check(ctx, 7, 1)
+		require.NoError(t, err)
+		require.Zero(t, remaining)
+		svc.Observe(ctx, &APIKey{ID: keyID, UserID: 7, Group: &Group{ID: 1, Platform: PlatformOpenAI}}, fmt.Sprint(keyID), 0)
+	}
+	require.Empty(t, cache.checks, "allowlisted admission never reads or changes shared pause")
+	require.Empty(t, cache.Observations(), "allowlisted requests never contribute evidence")
+	remaining, err := svc.Check(ctx, 7, 2)
+	require.NoError(t, err)
+	require.Equal(t, 10*time.Minute, remaining)
+	svc.Observe(ctx, &APIKey{UserID: 7, Group: &Group{ID: 2, Platform: PlatformOpenAI}}, "other-group", 0)
+	svc.Observe(ctx, &APIKey{UserID: 8, Group: &Group{ID: 1, Platform: PlatformOpenAI}}, "other-user", 0)
+	require.Equal(t, []string{"other-group", "other-user"}, cache.Keys())
+	require.Empty(t, users.calls, "gateway admission and evidence must not query users")
+	require.NoError(t, svc.SaveConfig(ctx, 1, GroupAntiDistillationConfig{Enabled: true, PauseMinutes: 5, UserAllowlistIDs: []int64{}}))
+	remaining, err = svc.Check(ctx, 7, 1)
+	require.NoError(t, err)
+	require.Equal(t, 10*time.Minute, remaining, "removing exemption restores enforcement of the original pause")
+	require.Equal(t, []string{"other-group", "other-user"}, cache.Keys(), "saving cannot clear the cross-group evidence window")
+}
+
+type antiDistillationOverwrittenSettings struct{ *antiDistillationSettings }
+
+func (s antiDistillationOverwrittenSettings) Set(ctx context.Context, key, value string) error {
+	if err := s.antiDistillationSettings.Set(ctx, key, value); err != nil {
+		return err
+	}
+	return s.antiDistillationSettings.Set(ctx, key, `{"enabled":false,"pause_minutes":30,"user_allowlist_ids":[8]}`)
+}
+
+func TestGroupAntiDistillationSaveReturnsOwnNormalizedValue(t *testing.T) {
+	svc, _ := antiDistillationTestService(t)
+	svc.settings = antiDistillationOverwrittenSettings{antiDistillationTestSettings(t, svc)}
+	svc.users = &antiDistillationUsers{users: map[int64]*User{7: {ID: 7}}}
+	saved, err := svc.SaveConfigWithResult(context.Background(), 1, GroupAntiDistillationConfig{Enabled: true, PauseMinutes: 5, UserAllowlistIDs: []int64{7, 7}})
+	require.NoError(t, err)
+	require.True(t, saved.Enabled)
+	require.Equal(t, 5, saved.PauseMinutes)
+	require.Equal(t, []int64{7}, saved.UserAllowlistIDs)
+	current, err := svc.GetConfig(context.Background(), 1)
+	require.NoError(t, err)
+	require.False(t, current.Enabled)
+	require.Equal(t, []int64{8}, current.UserAllowlistIDs, "a later writer cannot change this save's response")
+}
+
+func TestGroupAntiDistillationAllowlistConfigCopiesAreIndependent(t *testing.T) {
+	svc, _ := antiDistillationTestService(t)
+	ctx := context.Background()
+	settings := antiDistillationTestSettings(t, svc)
+	raw, err := json.Marshal(GroupAntiDistillationConfig{Enabled: true, PauseMinutes: 5, UserAllowlistIDs: []int64{7, 8}})
+	require.NoError(t, err)
+	require.NoError(t, settings.Set(ctx, groupAntiDistillationSettingKey(1), string(raw)))
+	blocked := &antiDistillationBlockedSettings{antiDistillationSettings: settings, started: make(chan struct{}), release: make(chan struct{})}
+	svc.settings = blocked
+	type result struct {
+		config *GroupAntiDistillationConfig
+		err    error
+	}
+	results := make(chan result, 32)
+	for i := 0; i < cap(results); i++ {
+		go func() {
+			cfg, err := svc.GetConfig(ctx, 1)
+			results <- result{cfg, err}
+		}()
+	}
+	select {
+	case <-blocked.started:
+	case <-time.After(time.Second):
+		t.Fatal("shared config load did not start")
+	}
+	close(blocked.release)
+	configs := make([]*GroupAntiDistillationConfig, 0, cap(results))
+	for i := 0; i < cap(results); i++ {
+		select {
+		case result := <-results:
+			require.NoError(t, result.err)
+			configs = append(configs, result.config)
+		case <-time.After(time.Second):
+			t.Fatal("config waiter did not finish")
+		}
+	}
+	for _, cfg := range configs {
+		require.Equal(t, []int64{7, 8}, cfg.UserAllowlistIDs)
+		cfg.UserAllowlistIDs[0] = 99
+	}
+	cached, err := svc.GetConfig(ctx, 1)
+	require.NoError(t, err)
+	require.Equal(t, []int64{7, 8}, cached.UserAllowlistIDs)
+	cached.UserAllowlistIDs[0] = 100
+	cached, err = svc.GetConfig(ctx, 1)
+	require.NoError(t, err)
+	require.Equal(t, []int64{7, 8}, cached.UserAllowlistIDs)
+	input := GroupAntiDistillationConfig{PauseMinutes: 5, UserAllowlistIDs: []int64{10}}
+	svc.mu.Lock()
+	svc.cacheConfigLocked(2, input, time.Now())
+	svc.mu.Unlock()
+	input.UserAllowlistIDs[0] = 99
+	cached, err = svc.GetConfig(ctx, 2)
+	require.NoError(t, err)
+	require.Equal(t, []int64{10}, cached.UserAllowlistIDs, "cache insertion owns its slice")
 }
 
 func TestGroupAntiDistillationDelegatesUserScopeAcrossKeysAndGroups(t *testing.T) {

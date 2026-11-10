@@ -6,16 +6,73 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"entgo.io/ent/dialect"
+	entsql "entgo.io/ent/dialect/sql"
+	"github.com/DATA-DOG/go-sqlmock"
+	dbent "github.com/Wei-Shaw/sub2api/ent"
 	"github.com/alicebob/miniredis/v2"
+	"github.com/lib/pq"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 )
+
+func TestGroupAntiDistillationSettingCompareAndSwap(t *testing.T) {
+	const key = "group_anti_distillation:7"
+	const next = `{"enabled":true,"pause_minutes":9,"user_allowlist_ids":[]}`
+	previous := `{"enabled":false,"pause_minutes":5,"user_allowlist_ids":[]}`
+	for _, rows := range []int64{0, 1} {
+		t.Run(fmt.Sprintf("update affected %d", rows), func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			require.NoError(t, err)
+			client := dbent.NewClient(dbent.Driver(entsql.OpenDB(dialect.Postgres, db)))
+			t.Cleanup(func() { _ = client.Close() })
+			mock.ExpectExec(`UPDATE "settings" SET "value" = \$1, "updated_at" = \$2 WHERE "settings"\."key" = \$3 AND "settings"\."value" = \$4`).
+				WithArgs(next, sqlmock.AnyArg(), key, previous).WillReturnResult(sqlmock.NewResult(0, rows))
+			ok, err := (&settingRepository{client: client}).CompareAndSwap(context.Background(), key, &previous, next)
+			require.NoError(t, err)
+			require.Equal(t, rows == 1, ok, "a changed or deleted row must not be recreated or overwritten")
+			require.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+	for _, tc := range []struct {
+		name              string
+		err               error
+		wantOK, wantError bool
+	}{
+		{"new key", nil, true, false},
+		{"concurrent insert", &pq.Error{Code: "23505"}, false, false},
+		{"storage failure", errors.New("storage offline"), false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			require.NoError(t, err)
+			client := dbent.NewClient(dbent.Driver(entsql.OpenDB(dialect.Postgres, db)))
+			t.Cleanup(func() { _ = client.Close() })
+			query := mock.ExpectQuery(`INSERT INTO "settings" \("key", "value", "updated_at"\) VALUES \(\$1, \$2, \$3\) RETURNING "id"`).
+				WithArgs(key, next, sqlmock.AnyArg())
+			if tc.err != nil {
+				query.WillReturnError(tc.err)
+			} else {
+				query.WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(7))
+			}
+			ok, err := (&settingRepository{client: client}).CompareAndSwap(context.Background(), key, nil, next)
+			require.Equal(t, tc.wantOK, ok)
+			if tc.wantError {
+				require.ErrorIs(t, err, tc.err)
+			} else {
+				require.NoError(t, err)
+			}
+			require.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}
 
 func newLeaderLockTestCache(t *testing.T) (*leaderLockCache, *miniredis.Miniredis) {
 	t.Helper()
