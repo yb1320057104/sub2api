@@ -565,6 +565,8 @@
 
 ## PK-019
 
+2026-11-10 角色资源扩展：HA代理支持独立worker预算和可选CPU调度权重，资源进入worker候选spec/hash及守卫配置；继续仅在当前数据库writer运行一个后台worker，保留有序停止和原调度周期。候选代次11已完成；存储布局的后续验收见 `docs/PK_CLUSTER_FLEET_CAPACITY_REVIEW.md`。
+
 2026-11-10 运行恢复：HA worker 管理器将 Docker 临时超时与身份/配置拒绝区分，前者退出75交由原systemd重试，后者仍退出78停待检查。Docker启动预算30秒；保留短inspect、原有序停止、重启先核对并停止旧worker、连续两次writer确认和启动后复查。writer TLS探测允许经过审查的1或3秒预算，非writer响应仍立即停止，不增加失败宽限、不绕过单活。仅持久化至集群更新代理生成的supervisor，不改业务计费与定时测试周期。渠道V2聚合器的额外源码修复每轮读取持久data_through，对长停机缺口分块向前追赶，失败不跳过；最近窗口最多一小时，受最短三天事实保留期影响的旧窗口完整按UTC日重建并跨午夜前进。仓库只在实际重建时删除对应粗桶，完整日桶/半日桶不跳过；该Go补丁完成定向验证但尚未随正式应用制品上线。部署与验证范围见 `docs/PK_CLUSTER_RUNTIME_RECOVERY_REVIEW.md`。
 
 2026-10-31 v0.2.19-pk.27：单账号立即授权/失败重试提交后唤醒现有授权worker，启动门、停止取消、同机互斥和70360002会话锁不变；手动任务在下一批优先领取，不抢占正在运行的任务。每任务45分钟，消费轮次在45分钟后停止新开批、最迟90分钟上下文截止，给末批完整执行预算且保持数据库调用有界；巡检3分钟和统一重授权10分钟cron不变。
@@ -1361,6 +1363,8 @@ pk.50追加PK-036联动：账号授权“入库账号出口”可设置每账号
 
 
 ## PK-047 独立站点与存储高可用部署
+
+2026-11-10 全项目资源优化：节点代理扩展可选 `worker_resources`，与 `api_resources` 独立配置；两角色均支持可选严格整数 `cpu_shares`（2～262144）。资源仅写入下一候选及其spec/hash/receipt，未设置角色或权重继承原值，worker不继承API预算或补入发行令牌；swap额外额度、旧quota/reservation拒绝及单writer worker门控保持。10项Linux隔离夹具检查通过，同一pk.59 HA二进制已按原排空流程完成候选代次11；没有新Release或标签。两入口普通请求已偏好原副API、原主备用；存储切主准备中止，PG/Redis writer与唯一worker仍在原主，双gate已释放、更新器恢复。原主PG4CPU/3GiB、副PG4CPU/4GiB在线调整通过，冷目录迁盘与约85分钟维护停流的原因、恢复及实际结果见 `docs/PK_CLUSTER_FLEET_CAPACITY_REVIEW.md`。CPU权重是竞争时的相对优先级，内存上限不是预留，也不是3000真实并发容量证明。
 
 2026-11-10 运行恢复与资源调整：`deploy/cluster-updater/agent.py` 新增可选完整 `api_resources={cpus,memory_mib,go_memory_mib}`，仅在下一API候选同步Docker CPU/内存与Go并行度/软内存上限；未配置维持旧值，worker保持原规格。严格拒绝布尔/小数/越界和不完整对象；保留既有额外swap额度，冲突的旧CPU quota、memory/swap或reservation在创建前拒绝。资源写入正式候选spec及其hash/receipt，经原串行drain/replace流程切换，禁止只改运行容器形成漂移。现网同一pk.59 HA程序已完成候选代次10切换；没有创建新正式Release或移动旧标签。worker恢复策略继承PK-019，源码和运行结果见 `docs/PK_CLUSTER_RUNTIME_RECOVERY_REVIEW.md`。
 
