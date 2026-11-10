@@ -1406,6 +1406,8 @@ pk.50追加PK-036联动：账号授权“入库账号出口”可设置每账号
 
 ## PK-047 独立站点与存储高可用部署
 
+2026-11-11 pk.62 运维维护：应用版本不变，独立更新器增加可信操作配置的候选 commit/overlay/profile 三项基线 pin，兼容真实 pk.59 迁移回退证明；旧 r4 无配置仍固定 pk.58。API replace RPC 由 1200 提升为 2100 秒以覆盖排空和回退，保持正常 TERM、真实 ExitCode 及失败保留单节点摘流边界。20 项隔离 Linux 检查通过；安装与实际滚动各自留证，见 [运维维护复核](docs/PK_CLUSTER_UPDATER_PK62_OPERATIONS_REVIEW.md)。
+
 2026-11-11 pk.62 增量：PK-076 备用池评估复用唯一 `sharedJobsEnabled`，构造 reader 仅唤醒已纳入停止等待的后台循环，writer 激活后才评估；Stop 撤销共享任务、取消并等待在途，迟到激活不复活 worker。管理 API 只读共享 settings 状态，校验配置 revision 与45秒新鲜度，缺失/过期明确展示；不让两个 API 同时写调度。源码及验收阶段见 `docs/PK_UPSTREAM_INCREMENT_PK62_REVIEW.md`。
 
 2026-11-11 pk.61：正式发行前的 HA source admission 使用 PK-017 所列独立 schema 2 合同，保持运行时 writer/worker 与现有授权；发行准入回执不等于 HA 更新完成，实际私有 hook 与逐节点更新各自留证。

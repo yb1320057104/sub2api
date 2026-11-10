@@ -653,6 +653,36 @@ def trusted_migration_json(config, filename, expected):
         os.close(fd)
 
 
+def migration_evidence_baseline(config, commit, overlay_sha, overlay):
+    """Only a private operator pin may select a reviewed historical release.
+
+    Legacy r4 configurations retain the pk.58 baseline. The candidate receipt
+    cannot choose its own baseline; an override also pins the exact source,
+    adaptation profile and generated overlay reviewed by the operator.
+    """
+    bindings = config.get("migration_compatibility_baselines", {})
+    need(isinstance(bindings, dict), "migration_baseline_bindings_invalid")
+    if commit not in bindings:
+        return BASE_RELEASE_COMMIT
+    binding = bindings[commit]
+    required = {"baseline_commit", "overlay_manifest_sha256", "adaptation_profile_sha256"}
+    need(isinstance(binding, dict) and set(binding) == required,
+         "migration_baseline_binding_invalid")
+    baseline = binding["baseline_commit"]
+    need(isinstance(baseline, str) and COMMIT.fullmatch(baseline),
+         "migration_baseline_commit_invalid")
+    need(isinstance(binding["overlay_manifest_sha256"], str)
+         and DIGEST.fullmatch(binding["overlay_manifest_sha256"])
+         and binding["overlay_manifest_sha256"] == overlay_sha,
+         "migration_baseline_overlay_mismatch")
+    profile = binding["adaptation_profile_sha256"]
+    need(isinstance(profile, str) and DIGEST.fullmatch(profile)
+         and profile == overlay.get("adaptation_profile_sha256")
+         and overlay.get("candidate_base_commit") == commit,
+         "migration_baseline_profile_mismatch")
+    return baseline
+
+
 def migration_compatibility(config, actual, overlay_sha, overlay, files):
     """Retain the original strict pin unless an exact, trusted release receipt exists."""
     base = overlay["base_migrations"]
@@ -676,10 +706,11 @@ def migration_compatibility(config, actual, overlay_sha, overlay, files):
     need(isinstance(evidence, dict) and set(evidence) == set(MIGRATION_EVIDENCE_CHECKS),
          "migration_receipt_evidence_missing")
     candidate_sha = migration_manifest_digest(files)
+    evidence_baseline = migration_evidence_baseline(config, commit, overlay_sha, overlay)
     for scenario, required in MIGRATION_EVIDENCE_CHECKS.items():
         proof = trusted_migration_json(config, commit + "." + scenario + ".json", evidence[scenario])
         need(proof.get("schema") == 1 and proof.get("scenario") == scenario
-             and proof.get("source_commit") == commit and proof.get("baseline_commit") == BASE_RELEASE_COMMIT
+             and proof.get("source_commit") == commit and proof.get("baseline_commit") == evidence_baseline
              and proof.get("overlay_manifest_sha256") == overlay_sha
              and proof.get("candidate_migrations_sha256") == candidate_sha,
              "migration_evidence_identity_mismatch")

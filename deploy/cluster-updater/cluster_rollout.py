@@ -146,7 +146,7 @@ def deploy(config, artifact, report):
                     drains.append(rpc(config,edge,'route',job_id,target=node,state='drain',timeout=35))
                 ready(config,peer,artifact['version'] if peer=='secondary' else None)
                 progress('updating_'+node,node)
-                updated=rpc(config,node,'replace_api',job_id,peer_receipt=state['nodes'][peer]['staged']['api_receipt'],drains=drains,timeout=1200)
+                updated=rpc(config,node,'replace_api',job_id,peer_receipt=state['nodes'][peer]['staged']['api_receipt'],drains=drains,timeout=2100)
                 ready(config,node,artifact['version'])
                 state['nodes'][node]['api']=updated;atomic(record,state)
             finally:
