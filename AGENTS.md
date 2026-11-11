@@ -1,5 +1,9 @@
 # 项目约束入口
 
+2026-11-11 pk.62 HA r4候选构建完成：仅在独立profile修复内容审计关闭空队列的消费者退出，保留r3两处provider修复；正式fdec/tag/资产不动。190顶层/477pass定向通过，4项Drain另重复3轮，旧实现负对照真实失败。新同制品验收显式启用HA Drain，实际完整退出回执与恢复操作分别核对；构建成功不代表线上恢复。旧两个r12 API都有此缺陷，副节点仍在原hold下，主节点承流；独立事故方案须固定旧进程与新r4制品，逐节点先副后主，任何额外终止授权须明确记录，普通exit0门禁保持。详见后台恢复复核。
+
+2026-11-11 pk.62 HA 恢复再次中止：r3 单节点切换时旧副API在正常TERM后卡于ContentModeration.Drain，主API未更新、保持ready且gate开放承接流量；副API已无HTTP/连接/待记账，但仍Running、gate held、两edge副路由DOWN。失败记录 secondary_api_failed_rollback_pending，不能重放原dispatch、放宽普通exit0门禁或提前继续主节点。r3的8项同制品夹具漏设SUB2API_GRACEFUL_DRAIN，实际覆盖普通退出，不能作为生产HA Drain通过证明。已发现空关闭审计队列的worker轮询死锁，准备独立pk62-r4和真实HA排空验收，r3及旧证据保留。此时尚未获终止卡死旧API的额外授权，不强杀；具体状态与证据边界见后台恢复复核。
+
 2026-11-11 pk.62 HA 恢复追加复核：r2 实际 provider 回放又发现额度自动重置的同类嵌套启动门死锁，最终候选改用独立 pk62-r3，旧 r2 源码、profile 和失败证据保留。r3 仅修改 HA wire.go 的两处 provider，扩展原有测试；183 个顶层定向检查通过，完整同制品 worker 初始化与生产恢复仍须实际验收。独立更新工具新增按 overlay SHA 隔离迁移证明目录，29 项 Linux 准入检查通过，同一正式 commit 的旧证明不覆盖。正式 pk.62 标签/资产保持，API 逐台排空，旧 worker 的事故 TERM 143 需独立排空回执，普通 exit0 门禁不放宽。详见 docs/PK_CLUSTER_UPDATER_PK62_R2_REVIEW.md。
 
 2026-11-11 pk.62 HA 后台恢复进行中：正式 pk.62 发布及代次12滚动已完成，但现场验收发现 HA BackupService 的内外启动门重入死锁，worker 部分定时服务未启动。继续本轮已授权更新，独立新增 pk62-r2 HA profile 与唯一运行版本，正式 fdec 提交、pk.62标签/分支/十项资产及原profile不动；补真实provider及隔离同制品完整worker启动验收，随后逐节点恢复。当前卡死worker在信号处理注册前，须独立核对任务/记账排空和正常TERM真实退出，不伪造exit0、不强杀、不双gate停流。当前进度与失败实证见 docs/PK_CLUSTER_UPDATER_PK62_R2_REVIEW.md；未完成结果不得写成通过。

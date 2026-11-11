@@ -18,7 +18,7 @@
 
 前端 AutoConfigView / OAuthDegradationActions 两文件90项通过、0失败/0跳过，证据 `incremental-frontend.json` 与日志。正式前端构建另由主任务执行并按本版输入哈希留证；Go Provider函数签名和生成图未变，不制造无意义wire_gen改动。现有包锁与pk.61审计快照相同，依赖审计依据 `frontend-audit-reuse.json` 真实复用，不声称重新扫描。
 
-repository 的 `TestAPIKeyFallbackChecksSavedPolicyAndAccountEligibility` 真实PostgreSQL专项仍待隔离执行，本记录不把unit SQL模拟当数据库验收。正式普通/HA程序、十一项同制品、迁移/回退、私库发行与滚动上线按pk.62最终commit/tree分别验收；目前未宣称pk.62已发布或生产已升级。未发真实模型、账号登录、支付或邮件请求。
+repository 的 `TestAPIKeyFallbackChecksSavedPolicyAndAccountEligibility` 已在网络隔离 DinD 内以真实 PostgreSQL/Redis 完成：应用442份迁移，1个顶层、9个子项通过，0失败/0跳过，退出0，隔离资源清理通过，未访问生产数据库。证据目录名 `pk62-sql-cas-b8bb6b353741` 的 `receipt.private.json` 绑定最终提交 `fdec871f36b965dfc272b46bd12eca76ba448300` 和 tree `ae82fc643023fd26667af0e8f9aa1b8de05a23e4`；测试程序在最终提交前编译，三份相关源码的SHA256已逐字节匹配该提交Git blob，`test.stdout.log` SHA256为 `f3b5b3b955eabf4c1a2380ada82afc692ce6aa746849b3477499e93bd1beb16c`，本次补录再次核对一致。该专项不是HA恢复或生产上线证明。正式普通/HA程序、十一项同制品、迁移/回退、私库发行与滚动上线以各自实际回执为准；不因本专项通过宣称这些阶段完成。
 
 
 ## 44文件处置与原64域边界

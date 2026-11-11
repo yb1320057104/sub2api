@@ -24,3 +24,4 @@ Dockerfile text eol=lf
 # HA adaptation patches are byte-pinned by their manifests, including line endings.
 deploy/cluster-updater/overlays/pk62-r2/adaptation.patch -text
 deploy/cluster-updater/overlays/pk62-r3/adaptation.patch -text
+deploy/cluster-updater/overlays/pk62-r4/adaptation.patch -text
