@@ -142,10 +142,12 @@ def prepare() -> None:
     require(not git("status", "--porcelain"), "The source checkout is not clean")
     require(git("remote", "get-url", "origin") == "git@github.com:" + REPOSITORY + ".git",
             "Unexpected source repository")
-    # The dedicated deploy key proves source access. Anonymous API must not expose
-    # its metadata; an HTTP/network error other than 404 fails closed.
+    # The dedicated deploy key and exact origin prove checkout access. A private
+    # source may return 404 anonymously; public metadata must retain our identity.
+    # HTTP/network errors other than 404 still fail closed.
     public = request("/repos/" + REPOSITORY, allow_404=True)
-    require(public is None, "Repository metadata is publicly accessible; refuse private packaging")
+    if public is not None:
+        provenance.release_repository(public)
     ref = os.environ["SOURCE_REF"]
     commit = git("rev-parse", "HEAD")
     tree = git("rev-parse", "HEAD^{tree}")
@@ -470,7 +472,7 @@ def release_ready(data: dict, *, credential: str | None = None) -> None:
     credential = token() if credential is None else credential
     require(bool(credential), "The private-release credential is not configured")
     repo = request("/repos/" + REPOSITORY, token=credential)
-    require(repo.get("private") is True and repo.get("full_name") == REPOSITORY, "Release repository must remain private")
+    provenance.release_repository(repo)
     ref = request("/repos/" + REPOSITORY + "/git/ref/tags/" + tag, token=credential)["object"]
     for _ in range(8):
         if ref["type"] == "commit":

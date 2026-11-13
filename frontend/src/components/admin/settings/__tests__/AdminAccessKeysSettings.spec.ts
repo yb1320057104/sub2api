@@ -1,28 +1,82 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { createPinia } from 'pinia'
+import { NEW_FEATURE_NOTICES } from '@/constants/newFeatureNotices'
+import { useNewFeatureNoticeStore } from '@/stores/newFeatureNotices'
+import NewFeatureBadge from '@/components/common/NewFeatureBadge.vue'
 import AdminAccessKeysSettings from '../AdminAccessKeysSettings.vue'
 import zh from '@/i18n/locales/zh/adminAccessKeys'
 import en from '@/i18n/locales/en/adminAccessKeys'
-const mountSettings = () => mount(AdminAccessKeysSettings)
+const mountSettings = (pinia = createPinia()) => mount(AdminAccessKeysSettings, { global: { plugins: [pinia] } })
 vi.mock('vue-i18n', () => ({ useI18n: () => ({
   t: (key: string, values: Record<string, unknown> = {}) => {
+    if (key === 'common.newFeature') return '新功能'
+    if (key === 'common.dismissNewFeature') return '关闭新功能提示'
     const message = zh[key.replace('adminAccessKeys.', '') as keyof typeof zh]
     if (!message) throw new Error(`缺少翻译：${key}`)
     return message.replace(/\{(\w+)\}/g, (_, name: string) => String(values[name]))
   }
 }) }))
 import { getAllIncludingInactive } from '@/api/admin/groups'
-const mocks = vi.hoisted(() => ({ list: vi.fn(), create: vi.fn(), update: vi.fn(), rotate: vi.fn(), revoke: vi.fn(), deleteRecord: vi.fn(), stepUp: vi.fn((fn: () => unknown) => fn()) }))
+const mocks = vi.hoisted(() => ({ list: vi.fn(), create: vi.fn(), update: vi.fn(), rotate: vi.fn(), revoke: vi.fn(), deleteRecord: vi.fn(), stepUp: vi.fn((fn: () => unknown) => fn()), auth: { user: { id: 41 } as { id: number } | null } }))
+vi.mock('@/stores/auth', () => ({ useAuthStore: () => mocks.auth }))
 vi.mock('@/api/admin/adminAccessKeys', () => mocks)
 vi.mock('@/api/admin/groups', () => ({ getAllIncludingInactive: vi.fn().mockResolvedValue([{ id: 7, name: '测试分组' }]) }))
 vi.mock('@/components/auth/TotpStepUpDialog.vue', () => ({ default: { template: '<div />' } }))
 vi.mock('@/composables/useStepUp', () => ({ useStepUp: () => ({ run: mocks.stepUp }), isStepUpCancelled: () => false }))
 beforeEach(() => {
   vi.clearAllMocks()
+  localStorage.clear()
+  mocks.auth.user = { id: 41 }
   vi.mocked(getAllIncludingInactive).mockResolvedValue([{ id: 7, name: '测试分组' }] as Awaited<ReturnType<typeof getAllIncludingInactive>>)
   mocks.list.mockResolvedValue({ items: [], permissions: [{ id: 'accounts.read', label: '读取账户', scope: 'account', category: '账户' }, { id: 'settings.write', label: '修改设置', scope: 'global', category: '设置' }] })
 })
 describe('管理员受限密钥配置', () => {
+  it('IP分组权限的三个提示同步关闭并按管理员持久保存，不勾选或授予权限', async () => {
+    const A = NEW_FEATURE_NOTICES.protocolFeatureSwitches
+    const B = NEW_FEATURE_NOTICES.scopedAdminProxyGroups
+    expect(B).not.toBe(A)
+    expect(new Set(Object.values(NEW_FEATURE_NOTICES)).size).toBe(Object.values(NEW_FEATURE_NOTICES).length)
+    mocks.list.mockResolvedValue({ items: [], permissions: [
+      { id: 'proxy-groups.read', label: '读取全站 IP 分组', scope: 'global', category: '代理' },
+      { id: 'proxy-groups.assign', label: '修改共享 IP 全局并发及取消绑定账号上限', scope: 'global', category: '代理' }
+    ] })
+    const pinia = createPinia()
+    const notices = useNewFeatureNoticeStore(pinia)
+    notices.dismiss(41, A)
+    const wrapper = mountSettings(pinia)
+    await flushPromises()
+    expect(wrapper.findAll('[data-testid="new-feature-badge"]')).toHaveLength(1)
+    await wrapper.get('[data-test="create"]').trigger('click')
+    expect(wrapper.findAll('[data-testid="new-feature-badge"]')).toHaveLength(3)
+    expect(wrapper.text()).toContain('修改共享 IP 全局并发及取消绑定账号上限')
+    await wrapper.findAll('[data-testid="new-feature-badge"]')[1]!.trigger('click')
+    expect(wrapper.findAll('[data-testid="new-feature-badge"]')).toHaveLength(0)
+    expect((wrapper.get('input[value="proxy-groups.read"]').element as HTMLInputElement).checked).toBe(false)
+    expect((wrapper.get('input[value="proxy-groups.assign"]').element as HTMLInputElement).checked).toBe(false)
+    expect(mocks.create).not.toHaveBeenCalled()
+    expect(mocks.update).not.toHaveBeenCalled()
+    expect(notices.isDismissed(41, A)).toBe(true)
+    wrapper.unmount()
+    const refreshedPinia = createPinia()
+    const refreshed = mountSettings(refreshedPinia)
+    await flushPromises()
+    await refreshed.get('[data-test="create"]').trigger('click')
+    expect(refreshed.find('[data-testid="new-feature-badge"]').exists()).toBe(false)
+    const badge = mount(NewFeatureBadge, { props: { noticeId: B, userId: 41 }, global: { plugins: [refreshedPinia] } })
+    await badge.setProps({ userId: null })
+    await badge.setProps({ userId: 41 })
+    expect(badge.find('button').exists()).toBe(false)
+    await badge.setProps({ noticeId: 'future-scoped-permission-feature' })
+    expect(badge.find('button').exists()).toBe(true)
+    const stored = useNewFeatureNoticeStore(refreshedPinia)
+    expect(stored.isDismissed(41, A)).toBe(true)
+    expect(stored.isDismissed(41, B)).toBe(true)
+    expect(stored.isDismissed(42, B)).toBe(false)
+    refreshed.unmount()
+    badge.unmount()
+  })
+
   it('中英文文案键保持一致，模型限制提示采用上游白名单语义', () => {
     expect(Object.keys(en).sort()).toEqual(Object.keys(zh).sort())
     expect(en.modelAllowlistHint).toContain('restricts')

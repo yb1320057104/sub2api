@@ -93,6 +93,16 @@ type AccountProxyGroupAssignmentInput struct {
 	ProxyGroupID       int64   `json:"proxy_group_id"`
 	ProxyConcurrency   int     `json:"proxy_concurrency"`
 	AccountConcurrency *int    `json:"account_concurrency,omitempty"`
+	ExpectedProxyIDs   []int64 `json:"expected_proxy_ids,omitempty"`
+}
+
+type ScopedProxyGroupAssignmentResult struct {
+	AccountProxyAssignmentResult
+	Replayed bool `json:"-"`
+}
+
+type ScopedProxyGroupAssignmentService interface {
+	AssignScopedAccountProxyGroup(context.Context, AccountProxyGroupAssignmentInput, string) (*ScopedProxyGroupAssignmentResult, error)
 }
 
 type GroupProxyPriorityUpdateResult struct {
@@ -116,6 +126,12 @@ type GroupProxyPolicyRepository interface {
 type AccountProxyGroupRepository interface {
 	AssignAccountProxyGroup(context.Context, AccountProxyGroupAssignmentInput) (*AccountProxyAssignmentResult, error)
 	UpdateGroupProxyPriorityPolicies(context.Context, GroupProxyPriorityUpdateInput) (*GroupProxyPriorityUpdateResult, error)
+}
+
+// ScopedProxyGroupAssignmentValidator rechecks current account scope and pool
+// membership under the same resource locks used by assignment, including replay.
+type ScopedProxyGroupAssignmentValidator interface {
+	ValidateScopedProxyGroupAssignment(context.Context, AccountProxyGroupAssignmentInput) error
 }
 
 type ProxyGroupManagementService interface {
@@ -251,4 +267,20 @@ func (s *adminServiceImpl) AssignAccountProxyGroup(ctx context.Context, input Ac
 		return nil, fmt.Errorf("proxy group assignment unavailable")
 	}
 	return repo.AssignAccountProxyGroup(ctx, input)
+}
+
+func (s *adminServiceImpl) ValidateScopedProxyGroupAssignment(ctx context.Context, input AccountProxyGroupAssignmentInput) error {
+	repo, ok := s.accountRepo.(ScopedProxyGroupAssignmentValidator)
+	if !ok {
+		return fmt.Errorf("scoped proxy group assignment unavailable")
+	}
+	return repo.ValidateScopedProxyGroupAssignment(ctx, input)
+}
+
+func (s *adminServiceImpl) AssignScopedAccountProxyGroup(ctx context.Context, input AccountProxyGroupAssignmentInput, key string) (*ScopedProxyGroupAssignmentResult, error) {
+	repo, ok := s.accountRepo.(ScopedProxyGroupAssignmentService)
+	if !ok {
+		return nil, fmt.Errorf("scoped proxy group assignment unavailable")
+	}
+	return repo.AssignScopedAccountProxyGroup(ctx, input, key)
 }

@@ -7,10 +7,68 @@ import (
 	"testing"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/adminaccess"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/stretchr/testify/require"
 )
+
+func TestScopedProxyGroupDurableReplayAndCurrentAuthority(t *testing.T) {
+	tx := testEntTx(t)
+	ctx := dbent.NewTxContext(context.Background(), tx)
+	client := tx.Client()
+	proxies := newProxyRepositoryWithSQL(client, client)
+	accounts := newAccountRepositoryWithSQL(client, client, nil)
+	p1 := mustCreateProxy(t, client, &service.Proxy{Name: "scoped-first"})
+	p2 := mustCreateProxy(t, client, &service.Proxy{Name: "scoped-second"})
+	pg, err := proxies.SaveProxyGroup(ctx, 0, service.ProxyGroupInput{Name: "scoped-pool"})
+	require.NoError(t, err)
+	_, err = proxies.SetProxyGroupMembers(ctx, service.ProxyGroupMembersInput{ProxyIDs: []int64{p1.ID, p2.ID}, ProxyGroupID: &pg.ID})
+	require.NoError(t, err)
+	a := mustCreateAccount(t, client, &service.Account{Name: "scoped-account", Platform: service.PlatformOpenAI, Type: service.AccountTypeOAuth})
+	p := &adminaccess.Principal{KeyID: "scoped-integration-key", Policy: adminaccess.Policy{GlobalPermissions: []string{"proxy-groups.assign"}, Rules: []adminaccess.Rule{{Permissions: []string{"accounts.read", "accounts.network", "accounts.schedule"}, IncludeUngrouped: true, AccountTypes: []string{"oauth"}, Platforms: []string{"openai"}}}}}
+	scoped := adminaccess.WithPrincipal(ctx, p)
+	concurrency := 100
+	input := service.AccountProxyGroupAssignmentInput{AccountIDs: []int64{a.ID}, ProxyGroupID: pg.ID, ProxyConcurrency: 10, AccountConcurrency: &concurrency, ExpectedProxyIDs: []int64{p2.ID, p1.ID}}
+	result, err := accounts.AssignScopedAccountProxyGroup(scoped, input, "stable-operation")
+	require.NoError(t, err)
+	require.False(t, result.Replayed)
+	require.Equal(t, 2, result.BindingCount)
+	var durable bool
+	require.NoError(t, scanSingleRow(ctx, client, `SELECT expires_at='infinity'::timestamptz FROM idempotency_records WHERE scope=$1 AND idempotency_key_hash=$2`, []any{"pk.scoped-proxy-assignment.v1:" + service.HashIdempotencyKey(p.KeyID), service.HashIdempotencyKey("stable-operation")}, &durable))
+	require.True(t, durable)
+	// A lost response followed by a later administrator edit must not repeat the
+	// old global mutation, even though there is no generic TTL cache to consult.
+	_, err = client.ExecContext(ctx, `UPDATE pk_proxy_limits SET max_concurrency=7 WHERE proxy_id=$1`, p1.ID)
+	require.NoError(t, err)
+	result, err = accounts.AssignScopedAccountProxyGroup(scoped, input, "stable-operation")
+	require.NoError(t, err)
+	require.True(t, result.Replayed)
+	bindings, err := accounts.GetAccountProxyBindings(ctx, a.ID)
+	require.NoError(t, err)
+	require.Equal(t, 7, bindings[0].MaxConcurrency)
+	// Same creator, different key: it owns a separate durable operation.
+	other := *p
+	other.KeyID = "scoped-integration-other"
+	result, err = accounts.AssignScopedAccountProxyGroup(adminaccess.WithPrincipal(ctx, &other), input, "stable-operation")
+	require.NoError(t, err)
+	require.False(t, result.Replayed)
+	narrow := *p
+	narrow.Policy.Rules = []adminaccess.Rule{{Permissions: []string{"accounts.read"}, IncludeUngrouped: true, AccountTypes: []string{"oauth"}, Platforms: []string{"openai"}}}
+	_, err = accounts.AssignScopedAccountProxyGroup(adminaccess.WithPrincipal(ctx, &narrow), input, "stable-operation")
+	require.ErrorIs(t, err, service.ErrAccountNotFound, "replay must recheck narrowed policy")
+	changed := input
+	changed.ProxyConcurrency = 11
+	_, err = accounts.AssignScopedAccountProxyGroup(scoped, changed, "stable-operation")
+	require.ErrorIs(t, err, service.ErrIdempotencyKeyConflict)
+	_, err = proxies.SetProxyGroupMembers(ctx, service.ProxyGroupMembersInput{ProxyIDs: []int64{p2.ID}, ProxyGroupID: nil})
+	require.NoError(t, err)
+	_, err = accounts.AssignScopedAccountProxyGroup(scoped, input, "stable-operation")
+	require.ErrorContains(t, err, "成员已变化")
+	bindings, err = accounts.GetAccountProxyBindings(ctx, a.ID)
+	require.NoError(t, err)
+	require.Len(t, bindings, 2, "membership mismatch cannot partially replace bindings")
+}
 
 func TestPK51ProxyGroupsAssignmentAndStrictPolicy(t *testing.T) {
 	tx := testEntTx(t)

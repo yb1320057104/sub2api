@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"slices"
 	"strconv"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/adminaccess"
@@ -47,6 +48,31 @@ func applyProxyGroupRequestFilter(c *gin.Context) bool {
 	return true
 }
 func (h *ProxyHandler) ListGroups(c *gin.Context) {
+	if principal := adminaccess.FromContext(c.Request.Context()); principal != nil {
+		if !slices.Contains(principal.Policy.GlobalPermissions, "proxy-groups.read") {
+			response.Error(c, 403, "IP分组读取未授权")
+			return
+		}
+		api, ok := h.adminService.(service.ProxyGroupManagementService)
+		if !ok {
+			response.Error(c, 503, "IP分组服务不可用")
+			return
+		}
+		items, err := api.ListProxyGroups(c.Request.Context())
+		if err != nil {
+			response.Error(c, 503, "IP分组读取失败")
+			return
+		}
+		// Explicit allowlist: descriptions and proxy connection credentials are
+		// not part of the external client's selection contract.
+		out := make([]gin.H, 0, len(items))
+		for _, item := range items {
+			out = append(out, gin.H{"id": item.ID, "name": item.Name, "proxy_ids": item.ProxyIDs, "proxy_count": item.ProxyCount, "active_proxy_count": item.ActiveProxyCount})
+		}
+		c.Header("Cache-Control", "no-store")
+		response.Success(c, out)
+		return
+	}
 	api, ok := proxyGroupAPI(c, h.adminService)
 	if !ok {
 		return
@@ -154,6 +180,10 @@ func (h *GroupHandler) UpdateProxyPolicies(c *gin.Context) {
 	}{in, in.ProxyGroupIDSet}, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) { return api.UpdateGroupProxyPriorityPolicies(ctx, in) })
 }
 func (h *AccountHandler) AssignProxyGroup(c *gin.Context) {
+	if adminaccess.FromContext(c.Request.Context()) != nil {
+		h.assignScopedProxyGroup(c)
+		return
+	}
 	api, ok := proxyGroupAPI(c, h.adminService)
 	if !ok {
 		return

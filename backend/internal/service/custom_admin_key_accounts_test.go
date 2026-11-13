@@ -8,6 +8,7 @@ import (
 	"errors"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
 	"entgo.io/ent/dialect"
@@ -15,8 +16,176 @@ import (
 	dbent "github.com/Wei-Shaw/sub2api/ent"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/adminaccess"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
+	"github.com/Wei-Shaw/sub2api/migrations"
 	"github.com/stretchr/testify/require"
 )
+
+func zhongcaiTestRequest(t *testing.T) []byte {
+	t.Helper()
+	return []byte(`{"source_id":"11111111-1111-4111-8111-111111111111","operation_id":"22222222-2222-4222-8222-222222222222","account":{"name":"test@example.com","platform":"openai","type":"oauth","credentials":{"access_token":"synthetic-access","refresh_token":"synthetic-refresh","email":"test@example.com","chatgpt_account_id":"workspace-a","chatgpt_user_id":"user-a","expires_at":1900000000},"group_ids":[1],"concurrency":3,"priority":1,"proxy_id":null,"extra":{"zhongcai_source":"11111111-1111-4111-8111-111111111111","zhongcai_import_id":"22222222-2222-4222-8222-222222222222"}}}`)
+}
+
+func TestZhongcaiImportStrictInputAndIndependentPermissions(t *testing.T) {
+	raw := zhongcaiTestRequest(t)
+	req, input, err := parseZhongcaiImport(raw)
+	require.NoError(t, err)
+	require.True(t, req.requiresNetwork, "explicit null is still a network choice")
+	require.Equal(t, "2030-03-17T17:46:40Z", input.Credentials["expires_at"])
+	require.Empty(t, input.Extra)
+	for _, body := range []string{
+		strings.Replace(string(raw), `"priority":1`, `"priority":1,"priority":2`, 1),
+		strings.Replace(string(raw), `"priority":1`, `"priority":1,"PRIORITY":2`, 1),
+		strings.Replace(string(raw), `"priority":1`, `"priority":1,"status":"active"`, 1),
+		strings.Replace(string(raw), `"expires_at":1900000000`, `"expires_at":"1900000000"`, 1),
+		strings.Replace(string(raw), `"access_token":"synthetic-access"`, `"access_token":"synthetic-access","base_url":"https://example.invalid"`, 1),
+		strings.Replace(string(raw), `"group_ids":[1]`, `"group_ids":null`, 1),
+		strings.Replace(string(raw), `"group_ids":[1]`, `"group_ids":[1,1]`, 1),
+		string(raw) + "{}", strings.Repeat(" ", ZhongcaiImportMaxBody+1),
+	} {
+		_, _, err := parseZhongcaiImport([]byte(body))
+		require.Equal(t, 400, infraerrors.Code(err))
+	}
+	permissions := []string{"accounts.create", "accounts.credentials", "accounts.schedule", "accounts.read", "accounts.network"}
+	resource := adminaccess.Account{Platform: "openai", Type: "oauth", GroupIDs: []int64{1}}
+	for i := range permissions {
+		allowed := append(append([]string{}, permissions[:i]...), permissions[i+1:]...)
+		ctx := adminaccess.WithPrincipal(context.Background(), &adminaccess.Principal{KeyID: "key-a", Policy: adminaccess.Policy{Rules: []adminaccess.Rule{{Permissions: allowed, GroupIDs: []int64{1}, AccountTypes: []string{"oauth"}, Platforms: []string{"openai"}}}}})
+		require.Equal(t, 403, infraerrors.Code(authorizeZhongcaiImport(ctx, resource, true)), permissions[i])
+	}
+}
+
+type zhongcaiReceiptTestRepo struct {
+	*scopedAdminWriteTestRepo
+	forceGroups []int64
+}
+
+func (r *zhongcaiReceiptTestRepo) BindGroups(ctx context.Context, id int64, groups []int64) error {
+	if r.forceGroups != nil {
+		groups = r.forceGroups
+	}
+	return r.scopedAdminWriteTestRepo.BindGroups(ctx, id, groups)
+}
+
+func (r *zhongcaiReceiptTestRepo) Create(ctx context.Context, a *Account) error {
+	if err := r.scopedAdminWriteTestRepo.Create(ctx, a); err != nil {
+		return err
+	}
+	return r.scopedAdminWriteTestRepo.Update(ctx, a)
+}
+
+func TestZhongcaiImportDurableAtomicReceipts(t *testing.T) {
+	login, db := scopedAdminAccountTestDB(t)
+	_, err := db.Exec(`CREATE TABLE account_groups(account_id BIGINT,group_id BIGINT);`)
+	require.NoError(t, err)
+	migration, err := migrations.FS.ReadFile("340_zhongcai_import_receipts.sql")
+	require.NoError(t, err)
+	_, err = db.Exec(string(migration))
+	require.NoError(t, err)
+	_, err = db.Exec(string(migration))
+	require.NoError(t, err, "migration remains idempotent")
+	repo := &zhongcaiReceiptTestRepo{scopedAdminWriteTestRepo: &scopedAdminWriteTestRepo{login: login}}
+	admin := &adminServiceImpl{accountRepo: repo, groupRepo: &scopedAdminWriteTestGroups{}, entClient: dbent.NewClient(dbent.Driver(entsql.OpenDB(dialect.Postgres, db)))}
+	ctxFor := func(key string, groups []int64, permissions []string) context.Context {
+		return adminaccess.WithPrincipal(context.Background(), &adminaccess.Principal{KeyID: key, Policy: adminaccess.Policy{Rules: []adminaccess.Rule{{Permissions: permissions, GroupIDs: groups, AccountTypes: []string{"oauth"}, Platforms: []string{"openai"}}}}})
+	}
+	all := []string{"accounts.create", "accounts.credentials", "accounts.schedule", "accounts.read", "accounts.network"}
+	ctx := ctxFor("key-a", []int64{1}, all)
+	raw := zhongcaiTestRequest(t)
+	source, operation := "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"
+	count := func(table string) int {
+		var n int
+		require.NoError(t, db.QueryRow("SELECT count(*) FROM "+table).Scan(&n))
+		return n
+	}
+
+	// A failure after account/group insertion but before receipt commit rolls all state back.
+	_, err = db.Exec(`ALTER TABLE zhongcai_import_receipts ADD CONSTRAINT test_reject_receipt CHECK (account_id < 0)`)
+	require.NoError(t, err)
+	_, err = admin.ScopedZhongcaiImport(ctx, raw)
+	require.Error(t, err)
+	require.Zero(t, count("accounts"))
+	require.Zero(t, count("account_groups"))
+	require.Zero(t, count("zhongcai_import_receipts"))
+	_, err = db.Exec(`ALTER TABLE zhongcai_import_receipts DROP CONSTRAINT test_reject_receipt`)
+	require.NoError(t, err)
+
+	// Recheck actual persisted groups, even when an internal initializer changes them.
+	repo.forceGroups = []int64{2}
+	_, err = admin.ScopedZhongcaiImport(ctx, raw)
+	require.Equal(t, 403, infraerrors.Code(err))
+	require.Zero(t, count("accounts"))
+	require.Zero(t, count("account_groups"))
+	require.Zero(t, count("zhongcai_import_receipts"))
+	repo.forceGroups = nil
+
+	// Concurrent same-operation requests commit exactly one account and receipt.
+	var wg sync.WaitGroup
+	ids, failures := make(chan int64, 8), make(chan error, 8)
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			receipt, e := admin.ScopedZhongcaiImport(ctx, raw)
+			if e != nil {
+				failures <- e
+				return
+			}
+			ids <- receipt.AccountID
+		}()
+	}
+	wg.Wait()
+	close(ids)
+	close(failures)
+	for e := range failures {
+		require.NoError(t, e)
+	}
+	var accountID int64
+	for id := range ids {
+		if accountID == 0 {
+			accountID = id
+		}
+		require.Equal(t, accountID, id)
+	}
+	require.Positive(t, accountID)
+	require.Equal(t, 1, count("accounts"))
+	require.Equal(t, 1, count("zhongcai_import_receipts"))
+
+	// Discarded POST response is recovered by GET and exact replay; no cache TTL is involved.
+	receipt, err := admin.ScopedZhongcaiReceipt(ctx, source, operation)
+	require.NoError(t, err)
+	require.Equal(t, accountID, receipt.AccountID)
+	require.Equal(t, zhongcaiSHA256(raw), receipt.RequestSHA256)
+	body, err := json.Marshal(receipt)
+	require.NoError(t, err)
+	for _, secret := range []string{"synthetic-access", "synthetic-refresh", "test@example.com", "workspace-a", "user-a", "credentials", "extra"} {
+		require.NotContains(t, string(body), secret)
+	}
+	_, err = admin.ScopedZhongcaiImport(ctx, append(raw, ' '))
+	require.Equal(t, "ZHONGCAI_IMPORT_CONFLICT", infraerrors.Reason(err))
+	_, err = admin.ScopedZhongcaiReceipt(ctxFor("key-b", []int64{1}, all), source, operation)
+	require.Equal(t, "ZHONGCAI_IMPORT_NOT_FOUND", infraerrors.Reason(err))
+	_, err = admin.ScopedZhongcaiReceipt(ctxFor("key-a", []int64{2}, all), source, operation)
+	require.Equal(t, 403, infraerrors.Code(err))
+	_, err = admin.ScopedZhongcaiImport(ctxFor("key-a", []int64{1}, []string{"accounts.read"}), raw)
+	require.Equal(t, 403, infraerrors.Code(err))
+
+	// Same operation under a different authenticated key is isolated.
+	other, err := admin.ScopedZhongcaiImport(ctxFor("key-b", []int64{1}, all), raw)
+	require.NoError(t, err)
+	require.NotEqual(t, accountID, other.AccountID)
+	_, err = db.Exec(`UPDATE accounts SET credentials=jsonb_set(credentials,'{chatgpt_user_id}','"repurposed"') WHERE id=$1`, accountID)
+	require.NoError(t, err)
+	_, err = admin.ScopedZhongcaiReceipt(ctx, source, operation)
+	require.Equal(t, "ZHONGCAI_IMPORT_ACCOUNT_CHANGED", infraerrors.Reason(err))
+	_, err = db.Exec(`DELETE FROM account_groups WHERE account_id=$1;`, accountID)
+	require.NoError(t, err)
+	_, err = db.Exec(`DELETE FROM accounts WHERE id=$1`, accountID)
+	require.NoError(t, err)
+	_, err = admin.ScopedZhongcaiImport(ctx, raw)
+	require.Equal(t, "ZHONGCAI_IMPORT_ACCOUNT_UNAVAILABLE", infraerrors.Reason(err))
+	require.Equal(t, 1, count("accounts"))
+	require.Equal(t, 2, count("zhongcai_import_receipts"))
+}
 
 func TestScopedAdminAccountFieldsRejectUnknown(t *testing.T) {
 	for _, body := range []string{`{"credentials":{}}`, `{"extra":{}}`, `{"platform":"openai"}`} {

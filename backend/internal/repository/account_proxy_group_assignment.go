@@ -109,6 +109,9 @@ func (r *accountRepository) AssignAccountProxyGroup(ctx context.Context, input s
 		if err != nil {
 			return err
 		}
+		if err = authorizeScopedProxyGroupAccounts(ctx, c, ids, input.AccountConcurrency != nil); err != nil {
+			return err
+		}
 		if err = assignWholeProxyGroup(ctx, c, ids, items, input.AccountConcurrency); err != nil {
 			return err
 		}

@@ -137,6 +137,36 @@ func TestScopedAdminPrincipalContext(t *testing.T) {
 	require.Same(t, p, FromContext(WithPrincipal(context.Background(), p)))
 }
 
+func TestScopedProxyGroupPermissionsRemainExplicit(t *testing.T) {
+	p := Policy{GlobalPermissions: []string{"proxy-groups.read", "proxy-groups.assign"}, Rules: []Rule{{
+		Permissions: []string{"accounts.read", "accounts.network", "accounts.schedule"},
+		GroupIDs:    []int64{1}, AccountTypes: []string{"oauth"}, Platforms: []string{"openai"},
+	}}}
+	require.NoError(t, ValidatePolicy(p))
+	require.True(t, RouteAllowed(p, "GET", "/api/v1/admin/proxy-groups"))
+	require.True(t, RouteAllowed(p, "POST", "/api/v1/admin/accounts/assign-proxy-group"))
+	for _, path := range []string{"/api/v1/admin/proxy-groups", "/api/v1/admin/proxies/batch-group", "/api/v1/admin/groups/proxy-policy"} {
+		require.False(t, RouteAllowed(p, "POST", path))
+	}
+	a := Account{ID: 2, GroupIDs: []int64{1}, Type: "oauth", Platform: "openai"}
+	require.True(t, p.AllowsProxyGroupAssignment(a, true))
+	for _, permissions := range [][]string{{"accounts.read", "accounts.network"}, {"accounts.read", "accounts.schedule"}, {"accounts.network", "accounts.schedule"}} {
+		copy := p
+		copy.Rules = []Rule{p.Rules[0]}
+		copy.Rules[0].Permissions = permissions
+		require.False(t, copy.AllowsProxyGroupAssignment(a, true))
+	}
+	p.Rules[0].Permissions = []string{"accounts.read", "accounts.network"}
+	require.True(t, p.AllowsProxyGroupAssignment(a, false))
+	for _, denied := range []Account{{GroupIDs: []int64{2}, Type: "oauth", Platform: "openai"}, {GroupIDs: []int64{1}, Type: "apikey", Platform: "openai"}, {GroupIDs: []int64{1}, Type: "oauth", Platform: "anthropic"}} {
+		require.False(t, p.AllowsProxyGroupAssignment(denied, false))
+	}
+	p.GlobalPermissions = []string{"proxies.read"}
+	require.False(t, p.AllowsProxyGroupAssignment(a, false))
+	require.False(t, RouteAllowed(p, "GET", "/api/v1/admin/proxy-groups"))
+	require.False(t, RouteAllowed(p, "POST", "/api/v1/admin/accounts/assign-proxy-group"))
+}
+
 func TestScopedAdminGroupModelsAreExplicitAndScoped(t *testing.T) {
 	p := Policy{Rules: []Rule{
 		{Permissions: []string{"groups.models.read"}, GroupIDs: []int64{2}, Platforms: []string{"openai"}},

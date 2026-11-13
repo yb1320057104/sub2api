@@ -157,8 +157,13 @@ def resolve_latest(config):
 def resolve_target(config, baseline):
     need(isinstance(baseline, str) and BASELINE.fullmatch(baseline), "invalid_target_baseline")
     repository = request(config, API)
-    need(repository.get("private") is True and repository.get("full_name") == REPOSITORY,
-         "source_repository_not_private")
+    need(isinstance(repository, dict) and repository.get("full_name") == REPOSITORY,
+         "source_repository_identity_mismatch")
+    private = repository.get("private")
+    need(type(private) is bool
+         and repository.get("visibility", "private" if private else "public") == ("private" if private else "public")
+         and repository.get("archived", False) is False and repository.get("disabled", False) is False,
+         "source_repository_unavailable")
     tag = "v" + baseline
     release = request(config, API + "/releases/tags/" + tag)
     need(release.get("tag_name") == tag and release.get("draft") is False

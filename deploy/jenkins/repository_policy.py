@@ -9,6 +9,19 @@ REPOSITORY = "yb1320057104/sub2api"
 LEGACY_REPOSITORY = "pengkang0322/sub2api"
 
 
+def release_repository(metadata: dict) -> str:
+    """Accept either visibility only for the active configured release source."""
+    if not isinstance(metadata, dict) or metadata.get("full_name") != REPOSITORY:
+        raise RuntimeError("Unexpected release repository identity")
+    private = metadata.get("private")
+    expected_visibility = "private" if private else "public"
+    if type(private) is not bool or metadata.get("visibility", expected_visibility) != expected_visibility:
+        raise RuntimeError("Unexpected release repository visibility")
+    if metadata.get("archived", False) is not False or metadata.get("disabled", False) is not False:
+        raise RuntimeError("Release repository is unavailable")
+    return REPOSITORY
+
+
 def package_repository(data: dict, *, allow_legacy: bool = False) -> str:
     repository = data.get("repository")
     allowed = (REPOSITORY, LEGACY_REPOSITORY) if allow_legacy else (REPOSITORY,)

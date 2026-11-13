@@ -386,5 +386,102 @@ class CorrespondingSourceTests(unittest.TestCase):
                     source.create(output, data, repo)
 
 
+class RepositoryVisibilityTests(unittest.TestCase):
+    """Real release entry points retain provenance for either source visibility."""
+
+    @classmethod
+    def setUpClass(cls):
+        source = SOURCE.parents[1] / "cluster-updater/builder.py"
+        spec = importlib.util.spec_from_file_location("visibility_cluster_builder", source)
+        cls.builder = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.builder)
+
+    def metadata(self, private=False, **changes):
+        return {"full_name": local.REPOSITORY, "private": private,
+                "visibility": "private" if private else "public",
+                "archived": False, "disabled": False, **changes}
+
+    def release_fixture(self):
+        return {"repository": local.REPOSITORY, "version": "0.2.19-pk.63",
+                "source_ref": "refs/tags/v0.2.19-pk.63", "build_type": "release",
+                "commit": "a" * 40, "tree": "b" * 40}
+
+    def test_trusted_public_and_private_keep_local_source_and_main_checks(self):
+        for private in (False, True):
+            with self.subTest(private=private):
+                responses = [self.metadata(private), {"object": {"type": "commit", "sha": "a" * 40}},
+                             {"tree": {"sha": "b" * 40}}, {"status": "identical"}]
+                with patch.object(local, "request", side_effect=responses) as requests, patch.object(local, "pages", return_value=[]):
+                    local.verify_source(self.release_fixture(), "synthetic-token")
+                    self.assertEqual(requests.call_count, 4)
+                responses = [self.metadata(private), {"object": {"type": "commit", "sha": "a" * 40}},
+                             {"status": "identical"}, None]
+                with patch.object(local.control, "request", side_effect=responses) as requests:
+                    local.control.release_ready(self.release_fixture(), credential="synthetic-token")
+                    self.assertEqual(requests.call_count, 4)
+
+    def test_source_identity_unavailability_and_invalid_visibility_reject(self):
+        invalid = [None, {}, self.metadata(full_name="other/sub2api"),
+                   self.metadata(full_name="pengkang0322/sub2api"), self.metadata(archived=True),
+                   self.metadata(disabled=True), self.metadata(private="false"),
+                   self.metadata(visibility="internal"), self.metadata(visibility="private")]
+        for metadata in invalid:
+            with self.subTest(metadata=metadata):
+                with patch.object(local, "request", return_value=metadata) as requests, patch.object(local, "pages") as pages:
+                    with self.assertRaises(RuntimeError):
+                        local.verify_source(self.release_fixture(), "synthetic-token")
+                    self.assertEqual(requests.call_count, 1)
+                    pages.assert_not_called()
+                with patch.object(local.control, "request", return_value=metadata) as requests:
+                    with self.assertRaises(RuntimeError):
+                        local.control.release_ready(self.release_fixture(), credential="synthetic-token")
+                    self.assertEqual(requests.call_count, 1)
+                with patch.object(self.builder, "request", return_value=metadata) as requests:
+                    with self.assertRaises(self.builder.BuildError):
+                        self.builder.resolve_target({}, "0.2.19-pk.63")
+                    self.assertEqual(requests.call_count, 1)
+
+    def test_cluster_public_and_private_preserve_formal_tag_and_ancestry(self):
+        for private in (False, True):
+            for ancestry in ("identical", "behind"):
+                responses = [self.metadata(private),
+                             {"tag_name": "v0.2.19-pk.63", "draft": False, "prerelease": False, "published_at": "fixture"},
+                             {"object": {"type": "commit", "sha": "a" * 40}},
+                             {"status": ancestry}, {"status": "ahead"}]
+                with self.subTest(private=private, ancestry=ancestry), patch.object(self.builder, "request", side_effect=responses) as requests:
+                    if ancestry == "identical":
+                        result = self.builder.resolve_target({}, "0.2.19-pk.63")
+                        self.assertEqual(result["commit"], "a" * 40)
+                        self.assertEqual(requests.call_count, 5)
+                    else:
+                        with self.assertRaisesRegex(self.builder.BuildError, "release_outside_main_history"):
+                            self.builder.resolve_target({}, "0.2.19-pk.63")
+
+    def test_public_source_still_refuses_moved_tags_and_used_version(self):
+        responses = [self.metadata(), {"object": {"type": "commit", "sha": "c" * 40}}]
+        with patch.object(local, "request", side_effect=responses), patch.object(local, "pages") as pages:
+            with self.assertRaisesRegex(RuntimeError, "formal tag no longer matches"):
+                local.verify_source(self.release_fixture(), "synthetic-token")
+            pages.assert_not_called()
+        responses = [self.metadata(), {"object": {"type": "commit", "sha": "a" * 40}},
+                     {"tree": {"sha": "b" * 40}}, {"status": "identical"}]
+        with patch.object(local, "request", side_effect=responses), patch.object(local, "pages", return_value=[{"tag_name": "v0.2.19-pk.63"}]):
+            with self.assertRaisesRegex(RuntimeError, "already has a Release"):
+                local.verify_source(self.release_fixture(), "synthetic-token")
+
+    def test_packaging_accepts_trusted_public_or_anonymous_private_404(self):
+        def git(*args):
+            return {('status', '--porcelain'): "", ('remote', 'get-url', 'origin'):
+                    "git@github.com:" + local.REPOSITORY + ".git", ('rev-parse', 'HEAD'): "a" * 40,
+                    ('rev-parse', 'HEAD^{tree}'): "b" * 40}[args]
+        for metadata in (None, self.metadata(False), self.metadata(True)):
+            with self.subTest(metadata=metadata), patch.object(local.control, "parameters"), patch.object(local.control, "git", side_effect=git), patch.object(local.control, "request", return_value=metadata), patch.dict(os.environ, {"SOURCE_REF": "refs/tags/v0.2.19-pk.63", "BUILD_NUMBER": "invalid"}):
+                with self.assertRaisesRegex(RuntimeError, "Invalid Jenkins build number"):
+                    local.control.prepare()
+        with patch.object(local.control, "parameters"), patch.object(local.control, "git", side_effect=git), patch.object(local.control, "request", return_value=self.metadata(full_name="other/sub2api")):
+            with self.assertRaisesRegex(RuntimeError, "repository identity"):
+                local.control.prepare()
+
+
 if __name__ == "__main__":
     unittest.main()

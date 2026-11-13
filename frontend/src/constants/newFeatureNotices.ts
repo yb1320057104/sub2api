@@ -4,6 +4,7 @@
  * browser; use a new ID to announce the feature again in a later release.
  */
 export const NEW_FEATURE_NOTICES = {
+  scopedAdminProxyGroups: 'scoped-admin-proxy-groups-initial-announcement',
   oauthDegradationActions: 'oauth-degradation-actions-initial-announcement',
   openaiAPIKeyFallback: 'openai-apikey-fallback-initial-announcement',
   dashboardAccountConcurrency: 'dashboard-account-concurrency-initial-announcement',

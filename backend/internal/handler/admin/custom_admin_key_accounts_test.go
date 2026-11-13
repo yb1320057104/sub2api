@@ -3,6 +3,7 @@
 package admin
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -18,6 +19,61 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
+
+type zhongcaiHandlerTestService struct {
+	service.AdminService
+	raw []byte
+	err error
+}
+
+func (s *zhongcaiHandlerTestService) ScopedZhongcaiImport(_ context.Context, raw []byte) (*service.ZhongcaiImportReceipt, error) {
+	s.raw = append([]byte(nil), raw...)
+	return &service.ZhongcaiImportReceipt{Protocol: service.ZhongcaiImportProtocol}, s.err
+}
+func (s *zhongcaiHandlerTestService) ScopedZhongcaiReceipt(context.Context, string, string) (*service.ZhongcaiImportReceipt, error) {
+	return nil, s.err
+}
+
+func TestZhongcaiImportHandlerRawBytesScopeAndSafeErrors(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	api := &zhongcaiHandlerTestService{}
+	h := &AccountHandler{adminService: api}
+	request := func(scoped bool, method, path string, body []byte) *httptest.ResponseRecorder {
+		r := gin.New()
+		r.Use(func(c *gin.Context) {
+			if scoped {
+				c.Request = c.Request.WithContext(adminaccess.WithPrincipal(c.Request.Context(), &adminaccess.Principal{KeyID: "test-key", Policy: adminaccess.Policy{Rules: []adminaccess.Rule{{Permissions: []string{"accounts.create", "accounts.read"}, GroupIDs: []int64{1}, AccountTypes: []string{"oauth"}, Platforms: []string{"openai"}}}}}))
+			}
+		})
+		r.Use(h.ScopedAdminKeyAccounts)
+		r.GET("/api/v1/admin/accounts/import/zhongcai", h.ZhongcaiImport)
+		r.POST("/api/v1/admin/accounts/import/zhongcai", h.ZhongcaiImport)
+		r.GET("/api/v1/admin/accounts/import/zhongcai/:source/:operation", h.ZhongcaiImport)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, httptest.NewRequest(method, path, bytes.NewReader(body)))
+		return w
+	}
+	base := "/api/v1/admin/accounts/import/zhongcai"
+	w := request(false, "GET", base, nil)
+	require.Equal(t, 404, w.Code)
+	require.Contains(t, w.Body.String(), "ZHONGCAI_IMPORT_UNSUPPORTED")
+	w = request(true, "GET", base, nil)
+	require.Equal(t, 200, w.Code)
+	require.Contains(t, w.Body.String(), service.ZhongcaiImportProtocol)
+	raw := []byte(" {\"opaque\":\"\\u4e2d\"} ")
+	w = request(true, "POST", base, raw)
+	require.Equal(t, 200, w.Code)
+	require.Equal(t, raw, api.raw, "fingerprint receives exact wire bytes")
+	w = request(true, "POST", base, bytes.Repeat([]byte("x"), service.ZhongcaiImportMaxBody+1))
+	require.Equal(t, 400, w.Code)
+	require.Contains(t, w.Body.String(), "ZHONGCAI_IMPORT_INVALID")
+	for _, e := range []error{errors.New("private database credential"), infraerrors.BadRequest("PRIVATE_FIELD", "private token"), infraerrors.Forbidden("PRIVATE_PERMISSION", "private identity"), infraerrors.NotFound("ZHONGCAI_IMPORT_NOT_FOUND", "private text"), infraerrors.Conflict("ZHONGCAI_IMPORT_ACCOUNT_CHANGED", "private text")} {
+		api.err = e
+		w = request(true, "GET", base+"/source/operation", nil)
+		require.NotContains(t, w.Body.String(), "private")
+		require.NotEqual(t, 200, w.Code)
+	}
+}
 
 func TestScopedAdminAccountDTORedactsSecretsAndForeignGroups(t *testing.T) {
 	p := adminaccess.Policy{Rules: []adminaccess.Rule{{Permissions: []string{"accounts.read"}, GroupIDs: []int64{1}, AccountTypes: []string{"oauth"}}}}

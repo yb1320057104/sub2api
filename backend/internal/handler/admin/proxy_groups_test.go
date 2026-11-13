@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/adminaccess"
+	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -17,13 +18,20 @@ import (
 type proxyGroupHandlerStub struct {
 	service.AdminService
 	service.ProxyGroupManagementService
-	calls int
-	input service.GroupProxyPriorityUpdateInput
+	calls       int
+	input       service.GroupProxyPriorityUpdateInput
+	assignInput service.AccountProxyGroupAssignmentInput
+	assignError error
 }
 
 func (s *proxyGroupHandlerStub) ListProxyGroups(context.Context) ([]service.ProxyGroup, error) {
 	s.calls++
-	return []service.ProxyGroup{{ID: 1, Name: "static", ProxyIDs: []int64{2}, ProxyCount: 1, ActiveProxyCount: 1}}, nil
+	return []service.ProxyGroup{{ID: 1, Name: "static", Description: "private-description", ProxyIDs: []int64{2}, ProxyCount: 1, ActiveProxyCount: 1}}, nil
+}
+func (s *proxyGroupHandlerStub) AssignScopedAccountProxyGroup(_ context.Context, input service.AccountProxyGroupAssignmentInput, _ string) (*service.ScopedProxyGroupAssignmentResult, error) {
+	s.calls++
+	s.assignInput = input
+	return &service.ScopedProxyGroupAssignmentResult{AccountProxyAssignmentResult: service.AccountProxyAssignmentResult{AccountCount: 1, BindingCount: 1, ProxyCount: 1}, Replayed: true}, s.assignError
 }
 func (s *proxyGroupHandlerStub) UpdateGroupProxyPriorityPolicies(_ context.Context, input service.GroupProxyPriorityUpdateInput) (*service.GroupProxyPriorityUpdateResult, error) {
 	s.calls++
@@ -88,5 +96,46 @@ func TestPK51ProxyGroupListAndFilterContract(t *testing.T) {
 			r.ServeHTTP(w, httptest.NewRequest("GET", "/proxies"+tc.query, nil))
 			require.Equal(t, tc.code, w.Code)
 		})
+	}
+}
+
+func TestScopedProxyGroupSafeListAndAssignment(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	s := &proxyGroupHandlerStub{}
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		c.Request = c.Request.WithContext(adminaccess.WithPrincipal(c.Request.Context(), &adminaccess.Principal{KeyID: "key-1", Policy: adminaccess.Policy{GlobalPermissions: []string{"proxy-groups.read", "proxy-groups.assign"}}}))
+	})
+	r.GET("/proxy-groups", NewProxyHandler(s).ListGroups)
+	r.POST("/accounts/assign-proxy-group", (&AccountHandler{adminService: s}).AssignProxyGroup)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/proxy-groups", nil))
+	require.Equal(t, 200, w.Code)
+	require.NotContains(t, w.Body.String(), "description")
+	require.NotContains(t, w.Body.String(), "private-description")
+	require.Contains(t, w.Body.String(), `"proxy_ids":[2]`)
+	for _, tc := range []struct {
+		body string
+		err  error
+		code int
+	}{
+		{`{"account_ids":[1],"proxy_group_id":1,"proxy_concurrency":10,"expected_proxy_ids":[2]}`, nil, 200},
+		{`{"account_ids":[1],"proxy_group_id":1,"proxy_concurrency":10,"expected_proxy_ids":[2]}`, infraerrors.Conflict("SCOPED_PROXY_GROUP_CHANGED", "hidden-detail"), 409},
+		{`{"account_ids":[1],"proxy_group_id":1,"proxy_concurrency":10,"unexpected":true}`, nil, 400},
+	} {
+		s.assignError = tc.err
+		req := httptest.NewRequest("POST", "/accounts/assign-proxy-group", strings.NewReader(tc.body))
+		req.Header.Set("Idempotency-Key", "stable-operation")
+		w = httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		require.Equal(t, tc.code, w.Code, w.Body.String())
+		if tc.code == 200 {
+			require.Equal(t, "true", w.Header().Get("X-Idempotency-Replayed"))
+			require.Equal(t, []int64{2}, s.assignInput.ExpectedProxyIDs)
+		}
+		if tc.code == 409 {
+			require.Contains(t, w.Body.String(), "SCOPED_PROXY_GROUP_CHANGED")
+			require.NotContains(t, w.Body.String(), "hidden-detail")
+		}
 	}
 }

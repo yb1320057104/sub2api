@@ -1,6 +1,9 @@
 <template>
   <section class="card space-y-4 p-6" :aria-label="t('adminAccessKeys.title')">
-    <h2 class="text-lg font-semibold">{{ t('adminAccessKeys.title') }}</h2>
+    <h2 class="flex flex-wrap items-center gap-2 text-lg font-semibold">
+      <span>{{ t('adminAccessKeys.title') }}</span>
+      <NewFeatureBadge v-if="hasScopedProxyGroups" :notice-id="NEW_FEATURE_NOTICES.scopedAdminProxyGroups" :user-id="authStore.user?.id" />
+    </h2>
     <p class="text-sm text-gray-500">{{ t('adminAccessKeys.authorizationHint') }}</p>
     <p class="rounded-lg bg-amber-50 p-3 text-sm text-amber-800 dark:bg-amber-900/20 dark:text-amber-200">{{ t('adminAccessKeys.sharedAccountWarning') }}</p>
     <p v-if="error" role="alert" class="text-sm text-red-600">{{ error }}</p>
@@ -61,7 +64,10 @@
         <legend>{{ t('adminAccessKeys.globalPermissions') }}</legend>
         <fieldset v-for="category in globalCategories" :key="category.name" class="space-y-2 rounded border border-gray-200 p-3 dark:border-dark-700">
           <legend class="text-sm font-medium">{{ category.name }}</legend>
-          <label v-for="permission in category.permissions" :key="permission.id" class="flex gap-2"><input v-model="draft.policy.global_permissions" type="checkbox" :value="permission.id" />{{ permission.label }} <span class="text-xs text-gray-500">{{ permission.id }}</span></label>
+          <div v-for="permission in category.permissions" :key="permission.id" class="flex flex-wrap items-start gap-2">
+            <label class="flex gap-2"><input v-model="draft.policy.global_permissions" type="checkbox" :value="permission.id" />{{ permission.label }} <span class="text-xs text-gray-500">{{ permission.id }}</span></label>
+            <NewFeatureBadge v-if="isScopedProxyGroupPermission(permission.id)" :notice-id="NEW_FEATURE_NOTICES.scopedAdminProxyGroups" :user-id="authStore.user?.id" />
+          </div>
         </fieldset>
       </fieldset>
       <div class="flex gap-2"><button type="button" data-test="save" class="btn btn-primary" :disabled="busy" @click="save">{{ busy ? t('adminAccessKeys.processing') : t('adminAccessKeys.save') }}</button><button type="button" class="btn btn-secondary" :disabled="busy" @click="draft = null">{{ t('adminAccessKeys.cancel') }}</button></div>
@@ -77,11 +83,15 @@ import * as api from '@/api/admin/adminAccessKeys'
 import type { AccessRule, AdminKey, AdminKeyInput, Permission } from '@/api/admin/adminAccessKeys'
 import { getAllIncludingInactive } from '@/api/admin/groups'
 import { CONCRETE_PLATFORM_OPTIONS } from '@/constants/platforms'
+import { NEW_FEATURE_NOTICES } from '@/constants/newFeatureNotices'
+import NewFeatureBadge from '@/components/common/NewFeatureBadge.vue'
+import { useAuthStore } from '@/stores/auth'
 import TotpStepUpDialog from '@/components/auth/TotpStepUpDialog.vue'
 import { isStepUpCancelled, useStepUp } from '@/composables/useStepUp'
 
 const { t } = useI18n()
 const stepUp = useStepUp()
+const authStore = useAuthStore()
 const items = ref<AdminKey[]>([])
 const permissions = ref<Permission[]>([])
 const groups = ref<{ id: number; name: string }[]>([])
@@ -99,6 +109,8 @@ const ips = ref('')
 const accountTypes = ['oauth', 'setup-token', 'apikey', 'upstream', 'bedrock', 'service_account']
 const accountPermissions = computed(() => permissions.value.filter(p => p.scope === 'account'))
 const groupPermissions = computed(() => permissions.value.filter(p => p.scope === 'group'))
+const isScopedProxyGroupPermission = (id: string) => id === 'proxy-groups.read' || id === 'proxy-groups.assign'
+const hasScopedProxyGroups = computed(() => permissions.value.some(p => isScopedProxyGroupPermission(p.id)))
 const globalCategories = computed(() => {
   const categories = new Map<string, Permission[]>()
   for (const permission of permissions.value.filter(p => p.scope === 'global')) {

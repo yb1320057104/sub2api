@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Publish already validated local builds to the fixed private GitHub repository.
+"""Publish already validated local builds to the fixed trusted GitHub repository.
 
 Requires Python 3.11+ and PK_GITHUB_TOKEN. This tool neither builds nor deploys,
 runs no Docker commands, and never publishes to a container registry. The image
@@ -94,8 +94,7 @@ def pages(path: str, credential: str) -> list[dict]:
 def verify_source(data: dict, credential: str, own_draft: int | None = None) -> None:
     """Recheck provenance after upload without treating our own draft as unused."""
     repository = request(API_ROOT, credential)
-    require(repository.get("private") is True and repository.get("full_name") == REPOSITORY,
-            "The release repository must remain private")
+    control.provenance.release_repository(repository)
     tag = "v" + data["version"]
     ref = request(API_ROOT + "/git/ref/tags/" + tag, credential)["object"]
     for _ in range(8):
