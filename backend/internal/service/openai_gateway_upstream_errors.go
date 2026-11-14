@@ -338,11 +338,12 @@ func (s *OpenAIGatewayService) shouldFailoverOpenAIUpstreamResponse(account *Acc
 	// their existing opt-in 400 behavior.
 	// A bare forwarding service has no account-selection owner to consume a
 	// failover sentinel. In that mode (used by direct/single-account callers),
-	// preserve the deterministic upstream 400 instead of returning an unwritten
-	// retry signal. Managed gateway instances always have an account repository;
+	// preserve direct error handling instead of returning an unwritten retry
+	// signal. Managed gateway instances always have an account repository;
 	// their handler can exclude this account and actually select another one.
-	if s != nil && s.accountRepo != nil && account != nil && account.IsOpenAICompatible() && statusCode == http.StatusBadRequest &&
-		isOpenAICompatibleModelNotFound400(upstreamBody) {
+	if s != nil && s.accountRepo != nil && account != nil && account.IsOpenAICompatible() &&
+		((statusCode == http.StatusBadRequest && isOpenAICompatibleModelNotFound400(upstreamBody)) ||
+			isUpstreamModelNotFoundError(statusCode, upstreamBody)) {
 		return true
 	}
 	if s.shouldFailoverUpstreamError(statusCode) {
@@ -407,6 +408,16 @@ func (e *UpstreamFailoverError) IsOpenAIToolProtocolUnavailable() bool {
 	return e != nil && e.Reason == openAIToolProtocolUnavailableReason && isOpenAIToolProtocolRejection(e.StatusCode, e.ResponseBody)
 }
 
+const OpenAIModelRouteUnavailableMessage = "No available upstream route can serve the requested model. Please contact the administrator or retry later."
+const openAIModelRouteUnavailableReason = GatewayFailureReason("openai_model_route_unavailable")
+
+// A provider's missing-model 404 is not proof that our public model is
+// unconfigured. Use a temporary route error on exhaustion so downstream
+// relays do not amplify it into another long-lived model-not-found cache.
+func (e *UpstreamFailoverError) IsOpenAIModelRouteUnavailable() bool {
+	return e != nil && e.Reason == openAIModelRouteUnavailableReason && isUpstreamModelNotFoundError(e.StatusCode, e.ResponseBody)
+}
+
 // OpenAIRequestBodyTooLargeClientMessage is the fixed downstream message used
 // after all account-specific request body limit failovers are exhausted.
 const OpenAIRequestBodyTooLargeClientMessage = "Request payload is too large"
@@ -443,6 +454,15 @@ func newOpenAIUpstreamFailoverError(
 		failoverErr.NextAccountAction = NextAccountRetry
 		failoverErr.ClientStatusCode = http.StatusServiceUnavailable
 		failoverErr.ClientMessage = OpenAIToolProtocolUnavailableMessage
+	}
+	if isUpstreamModelNotFoundError(statusCode, responseBody) {
+		failoverErr.RetryableOnSameAccount = false
+		failoverErr.RequestScopedTransient = false
+		failoverErr.Scope = GatewayFailureScopeAccount
+		failoverErr.Reason = openAIModelRouteUnavailableReason
+		failoverErr.NextAccountAction = NextAccountRetry
+		failoverErr.ClientStatusCode = http.StatusServiceUnavailable
+		failoverErr.ClientMessage = OpenAIModelRouteUnavailableMessage
 	}
 	if isOpenAIRequestBodyTooLargeError(statusCode, upstreamMsg, responseBody) {
 		failoverErr.RetryableOnSameAccount = false

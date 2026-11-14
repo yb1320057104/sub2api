@@ -18,6 +18,9 @@ type OpenAIAgentRecoveryError struct {
 func (e *OpenAIAgentRecoveryError) Error() string { return e.ClientMessage() }
 func (e *OpenAIAgentRecoveryError) Unwrap() error { return errOpenAIAgentRecoveryUnavailable }
 func (e *OpenAIAgentRecoveryError) ClientCode() string {
+	if e.Reason == "unverified_history" {
+		return "encrypted_history_recovery_unverified_owner"
+	}
 	return "encrypted_agent_recovery_" + e.Reason
 }
 func (e *OpenAIAgentRecoveryError) HTTPStatus() int {
@@ -43,6 +46,8 @@ func (e *OpenAIAgentRecoveryError) ClientType() string {
 func (e *OpenAIAgentRecoveryError) ClientMessage() string {
 	var reason, action string
 	switch e.Reason {
+	case "unverified_history":
+		return "Automatic replay was stopped because no compatible owner has been verified for this opaque history. " + openAIEncryptedHistoryRecoveryGuidance
 	case "http_previous_response_unsupported":
 		reason = "HTTP previous_response_id continuation is unsupported for this encrypted agent owner."
 		action = "For HTTP continuation, send the complete original history without previous_response_id; current permissions and route compatibility still apply. Waiting alone will not make this request supported. Do not replay tool results while an earlier delivery is uncertain."

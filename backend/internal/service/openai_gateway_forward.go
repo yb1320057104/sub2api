@@ -1101,9 +1101,10 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			removedReasoningItems := stripOpenAIInvalidEncryptedContentItems(wsReqBody, openAIEncryptedDigestSet(invalidDigests)) > 0
 			if !removedReasoningItems {
 				logOpenAIWSModeInfo(
-					"reconnect_invalid_encrypted_content_recovery_skip account_id=%d attempt=%d reason=missing_encrypted_reasoning_items",
+					"reconnect_invalid_encrypted_content_recovery_skip account_id=%d attempt=%d reason=%s",
 					account.ID,
 					attempt,
+					openAIEncryptedRecoverySkipReason(rejectedBody),
 				)
 				return false
 			}
@@ -1185,6 +1186,19 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			reason, retryable := classifyOpenAIWSReconnectReason(wsErr)
 			if reason != "" {
 				wsLastFailureReason = reason
+			}
+			// These failures occur after attempting the generation write. A
+			// missing reply cannot prove that a submitted tool result was unused.
+			// Dial/acquire/prewarm failures retain their existing retry policy.
+			if reason == "read_event" || reason == "write_request" || reason == "missing_final_response" || reason == "upstream_error_event" {
+				if recovery, hasToolResult := OpenAIUnverifiedOpaqueHistoryRecovery(ctx, lineageEntryBody); recovery != nil && hasToolResult {
+					appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+						Platform: account.Platform, AccountID: account.ID, AccountName: account.Name,
+						Kind: "recovery_skip", Reason: "opaque_tool_submission_unconfirmed",
+						Message: "A tool result may have been submitted; the original opaque history was not replayed",
+					})
+					return nil, recovery
+				}
 			}
 			// previous_response_not_found 说明续链锚点不可用：
 			// 对非 function_call_output 场景，允许一次“去掉 previous_response_id 后重放”。
@@ -1359,6 +1373,13 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			return false, decodeErr
 		}
 		if stripOpenAIInvalidEncryptedContentItems(decoded, openAIEncryptedDigestSet(openAIRejectedEncryptedDigests(body, rejection))) == 0 {
+			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+				ProxyID: opsUpstreamProxyID(account), ProxyName: opsUpstreamProxyName(account),
+				Platform: account.Platform, AccountID: account.ID, AccountName: account.Name,
+				UpstreamStatusCode: resp.StatusCode, UpstreamRequestID: resp.Header.Get("x-request-id"),
+				Kind: "recovery_skip", Reason: openAIEncryptedRecoverySkipReason(body),
+				Message: "Encrypted history could not be safely reconstructed; the original history was preserved",
+			})
 			return false, nil
 		}
 		retryBody, marshalErr := marshalOpenAIUpstreamJSON(decoded)

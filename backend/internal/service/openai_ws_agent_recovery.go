@@ -189,7 +189,8 @@ func (r *openAIWSAgentRecovery) begin(account *Account, source, payload []byte, 
 		return err
 	}
 	r.finish = finish
-	if r.request.owner != nil || len(r.request.items) > 0 {
+	opaqueKind, _ := openAIOpaqueHistoryKind(source)
+	if r.request.owner != nil || len(r.request.items) > 0 || opaqueKind != "" {
 		r.preventReplay()
 	}
 	return nil

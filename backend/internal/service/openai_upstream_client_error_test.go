@@ -45,6 +45,18 @@ func newOpenAIUpstreamErrorTestAccount() *Account {
 	return &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeOAuth, Name: "acct"}
 }
 
+func TestEncryptedHistoryClientGuidancePreservesStructuredError(t *testing.T) {
+	c, rec := newOpenAIUpstreamErrorTestContext(t)
+	body := []byte(`{"error":{"type":"invalid_request_error","code":"invalid_encrypted_content","param":"input[0].encrypted_content","message":"fixture-private-ciphertext"}}`)
+	writeOpenAIUpstreamClientError(c, http.StatusBadRequest, body, openAIEncryptedErrorRedacted)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Equal(t, "invalid_encrypted_content", gjson.Get(rec.Body.String(), "error.code").String())
+	require.Equal(t, "input[0].encrypted_content", gjson.Get(rec.Body.String(), "error.param").String())
+	require.Contains(t, rec.Body.String(), "complete original plaintext history")
+	require.Contains(t, rec.Body.String(), "repeat completed tool actions")
+	require.NotContains(t, rec.Body.String(), "fixture-private-ciphertext")
+}
+
 type modelNotFoundManagedAccountRepo struct{ AccountRepository }
 
 func TestOpenAICompatibleModelNotFound400FailoverScope(t *testing.T) {

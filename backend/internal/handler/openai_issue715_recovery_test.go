@@ -53,7 +53,7 @@ func (u *issue715Upstream) Do(req *http.Request, _ string, accountID int64, _ in
 	u.mu.Lock()
 	u.ids = append(u.ids, accountID)
 	u.bodies = append(u.bodies, body)
-	mode := u.mode
+	mode, calls := u.mode, len(u.ids)
 	u.mu.Unlock()
 	response := func(status int, contentType, payload string) (*http.Response, error) {
 		return &http.Response{StatusCode: status, Header: http.Header{"Content-Type": {contentType}}, Body: io.NopCloser(bytes.NewBufferString(payload))}, nil
@@ -68,7 +68,7 @@ func (u *issue715Upstream) Do(req *http.Request, _ string, accountID int64, _ in
 	if (!bytes.Contains([]byte(input), []byte("fixture-task-reference-715")) && !strings.HasPrefix(mode, "generated")) || !bytes.Contains([]byte(input), []byte("Keep ledger balance 11")) {
 		return response(400, "application/json", `{"error":{"code":"missing_fixture_task_or_context"}}`)
 	}
-	if mode == "pool_failure" {
+	if mode == "pool_failure" || (mode == "pool_failure_once" && calls == 1) {
 		return response(520, "application/json", `{"error":{"type":"server_error","message":"fixture result submission interrupted"}}`)
 	}
 	if mode == "tool_protocol_failure" {
@@ -659,4 +659,69 @@ func TestIssue715HTTPPoolCustomToolResultNeverReplays(t *testing.T) {
 	issue715Request(t, handler, body, 99, "fixture-715-thread", false)
 	require.Equal(t, []int64{1, 1}, upstream.ids, "a custom tool result must also stop pool-mode auto replay")
 	require.Contains(t, string(upstream.bodies[1]), "fixture note already written")
+}
+
+func TestOpaqueHistoryHTTPFailurePreservesAdmissionAndRetryScope(t *testing.T) {
+	for _, tc := range []struct {
+		name, item, mode string
+		tool             bool
+		wantStatus       int
+		wantIDs          []int64
+	}{
+		{"first admission", issue715Agent, "", false, 200, []int64{1}},
+		{"same account recovers", issue715Agent, "pool_failure_once", false, 200, []int64{1, 1}},
+		{"agent cannot switch", issue715Agent, "pool_failure", false, 409, []int64{1, 1}},
+		{"tool result never replays", issue715Agent, "pool_failure", true, 409, []int64{1}},
+		{"compaction cannot switch", `{"type":"compaction","encrypted_content":"fixture-task-reference-715"}`, "pool_failure", false, 409, []int64{1, 1}},
+		{"plaintext summary may switch", `{"type":"compaction_summary","summary":"fixture-task-reference-715"}`, "pool_failure", false, 400, []int64{1, 1, 2}},
+		{"ordinary reasoning may switch", `{"type":"reasoning","encrypted_content":"fixture-task-reference-715","summary":[]}`, "pool_failure", false, 400, []int64{1, 1, 2}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			accounts := issue715Accounts()
+			accounts[0].Type = service.AccountTypeAPIKey
+			accounts[0].Credentials = map[string]any{"api_key": "fixture-key", "pool_mode": true, "pool_mode_retry_count": 1, "pool_mode_retry_status_codes": []any{520}}
+			upstream := &issue715Upstream{mode: tc.mode}
+			h := newOpenAIResponsesFailoverTestHandler(t, upstream, accounts...)
+			body := strings.Replace(issue715Body(tc.tool, false), issue715Agent, tc.item, 1)
+			status, answer := issue715Request(t, h, body, 99, "opaque-replay-scope", false)
+			require.Equal(t, tc.wantStatus, status, answer)
+			require.Equal(t, tc.wantIDs, upstream.ids)
+			if status == 409 {
+				require.Contains(t, answer, "encrypted_history_recovery_unverified_owner")
+				require.Contains(t, answer, "complete original plaintext history")
+				require.NotContains(t, answer, "fixture-task-reference-715")
+			}
+			for _, forwarded := range upstream.bodies {
+				require.Contains(t, string(forwarded), "fixture-task-reference-715", "the original opaque history is never stripped")
+			}
+		})
+	}
+}
+
+func TestOpaqueHistoryHTTPFailoverKeepsAdministratorRulePriority(t *testing.T) {
+	accounts := issue715Accounts()
+	accounts[0].Type = service.AccountTypeAPIKey
+	accounts[0].Credentials = map[string]any{"api_key": "fixture-key", "pool_mode": true, "pool_mode_retry_count": 1, "pool_mode_retry_status_codes": []any{520}}
+	upstream := &issue715Upstream{mode: "pool_failure"}
+	h := newOpenAIResponsesFailoverTestHandler(t, upstream, accounts...)
+	rule := newBodyLimitPassthroughRule(http.StatusTeapot, "administrator recovery instructions")
+	rule.ErrorCodes = []int{520}
+	h.errorPassthroughService = newBodyLimitPassthroughHandler(t, rule).errorPassthroughService
+	status, answer := issue715Request(t, h, issue715Body(true, false), 99, "opaque-admin-rule", false)
+	require.Equal(t, http.StatusTeapot, status, answer)
+	require.Contains(t, answer, "administrator recovery instructions")
+	require.Equal(t, []int64{1}, upstream.ids)
+}
+
+func TestOpaqueHistoryHTTPCommittedStreamReturnsError(t *testing.T) {
+	c, rec := newIssue715Context(t, issue715Body(false, true))
+	c.Writer.WriteHeader(http.StatusOK)
+	_, err := c.Writer.WriteString(": heartbeat\n\n")
+	require.NoError(t, err)
+	c.Writer.Flush()
+	h := &OpenAIGatewayHandler{}
+	h.handleOpenAIOpaqueHistoryFailover(c, &service.UpstreamFailoverError{StatusCode: 520}, &service.OpenAIAgentRecoveryError{Reason: "unverified_history"}, true)
+	require.Equal(t, http.StatusOK, rec.Code, "an already committed HTTP status cannot be rewritten")
+	require.Contains(t, rec.Body.String(), "encrypted_history_recovery_unverified_owner")
+	require.NotContains(t, rec.Body.String(), "response.completed")
 }

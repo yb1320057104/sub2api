@@ -26,6 +26,13 @@ func (h *OpenAIGatewayHandler) handleOpenAIAgentRecoveryError(c *gin.Context, er
 	return true
 }
 
+func (h *OpenAIGatewayHandler) handleOpenAIOpaqueHistoryFailover(c *gin.Context, failover *service.UpstreamFailoverError, recovery *service.OpenAIAgentRecoveryError, streamStarted bool) {
+	if h.applyOpenAIFailoverPassthroughRule(c, failover.StatusCode, failover.ResponseBody, streamStarted) {
+		return
+	}
+	h.handleOpenAIAgentRecoveryError(c, recovery, streamStarted)
+}
+
 // The socket has already upgraded when initial scheduling runs. Send the full
 // recovery guidance as an error event; close reasons alone are length limited.
 func (h *OpenAIGatewayHandler) handleOpenAIWSAgentRecoveryError(ctx context.Context, conn *coderws.Conn, err error) bool {

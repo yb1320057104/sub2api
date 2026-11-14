@@ -68,6 +68,97 @@ func TestIsUpstreamModelNotFoundError(t *testing.T) {
 			want:       true,
 		},
 		{
+			name:       "404 named model without copula",
+			statusCode: http.StatusNotFound,
+			body:       []byte(`{"error":{"message":"Model gpt-example not found"}}`),
+			want:       true,
+		},
+		{
+			name:       "404 single quoted named model",
+			statusCode: http.StatusNotFound,
+			body:       []byte(`{"error":{"message":"The model 'gpt-example' not found."}}`),
+			want:       true,
+		},
+		{
+			name:       "404 double quoted named model",
+			statusCode: http.StatusNotFound,
+			body:       []byte(`{"error":{"message":"The requested model \"gpt-example\" not found!"}}`),
+			want:       true,
+		},
+		{
+			name:       "404 backtick quoted namespaced model",
+			statusCode: http.StatusNotFound,
+			body:       []byte("{\"error\":{\"message\":\"Model `provider/gpt-example` not found.\"}}"),
+			want:       true,
+		},
+		{
+			name:       "404 unquoted namespaced model",
+			statusCode: http.StatusNotFound,
+			body:       []byte(`{"error":{"message":"Model provider/gpt-example:latest not found."}}`),
+			want:       true,
+		},
+		{
+			name:       "404 plaintext named model",
+			statusCode: http.StatusNotFound,
+			body:       []byte(`Model gpt-example not found`),
+			want:       true,
+		},
+		{
+			name:       "404 model registry endpoint is not a model",
+			statusCode: http.StatusNotFound,
+			body:       []byte(`{"error":{"message":"Model registry endpoint not found"}}`),
+		},
+		{
+			name:       "404 model endpoint noun is not a model",
+			statusCode: http.StatusNotFound,
+			body:       []byte(`{"error":{"message":"Model endpoint not found"}}`),
+		},
+		{
+			name:       "404 quoted registry description is not a model",
+			statusCode: http.StatusNotFound,
+			body:       []byte(`{"error":{"message":"Model 'registry endpoint' not found"}}`),
+		},
+		{
+			name:       "404 absolute model URL path is not a model",
+			statusCode: http.StatusNotFound,
+			body:       []byte(`{"error":{"message":"Model /v1/models not found"}}`),
+		},
+		{
+			name:       "404 relative model URL path is not a model",
+			statusCode: http.StatusNotFound,
+			body:       []byte(`{"error":{"message":"Model v1/models not found"}}`),
+		},
+		{
+			name:       "404 model URL is not a model identifier",
+			statusCode: http.StatusNotFound,
+			body:       []byte(`{"error":{"message":"Model https://example.test/v1/models not found"}}`),
+		},
+		{
+			name:       "404 mismatched model quotes are not accepted",
+			statusCode: http.StatusNotFound,
+			body:       []byte(`{"error":{"message":"Model 'gpt-example\" not found"}}`),
+		},
+		{
+			name:       "404 named model trailing echo is not accepted",
+			statusCode: http.StatusNotFound,
+			body:       []byte(`{"error":{"message":"Model gpt-example not found in user input"}}`),
+		},
+		{
+			name:       "404 auth code overrides named model without copula",
+			statusCode: http.StatusNotFound,
+			body:       []byte(`{"error":{"code":"invalid_api_key","message":"Model gpt-example not found"}}`),
+		},
+		{
+			name:       "404 auth type overrides named model without copula",
+			statusCode: http.StatusNotFound,
+			body:       []byte(`{"error":{"type":"authentication_error","message":"Model gpt-example not found"}}`),
+		},
+		{
+			name:       "404 echoed named model outside error is ignored",
+			statusCode: http.StatusNotFound,
+			body:       []byte(`{"error":{"message":"Endpoint not found"},"request":{"input":"Model gpt-example not found"}}`),
+		},
+		{
 			name:       "404 unknown model message",
 			statusCode: http.StatusNotFound,
 			body:       []byte(`{"error":{"message":"unknown model gpt-5.4"}}`),
@@ -86,6 +177,49 @@ func TestIsUpstreamModelNotFoundError(t *testing.T) {
 			want:       false,
 		},
 		{
+			name:       "404 relay model type",
+			statusCode: http.StatusNotFound,
+			body:       []byte(`{"error":{"type":"model_not_found","message":"Model \"gpt-6-luna\" is not supported by any configured account in this group"}}`),
+			want:       true,
+		},
+		{
+			name:       "404 relay model message without code",
+			statusCode: http.StatusNotFound,
+			body:       []byte(`{"error":{"message":"Model \"gpt-6-luna\" is not supported by any configured account in this group"}}`),
+			want:       true,
+		},
+		{
+			name:       "404 auth code overrides echoed model refusal",
+			statusCode: http.StatusNotFound,
+			body:       []byte(`{"error":{"code":"invalid_api_key","message":"Model \"gpt-6-luna\" is not supported by any configured account in this group"}}`),
+		},
+		{
+			name:       "404 google numeric envelope remains model specific",
+			statusCode: http.StatusNotFound,
+			body:       []byte(`{"error":{"code":404,"message":"models/gemini-example is not found for API version v1beta","status":"NOT_FOUND"}}`),
+			want:       true,
+		},
+		{
+			name:       "404 top level auth code overrides model refusal",
+			statusCode: http.StatusNotFound,
+			body:       []byte(`{"code":"invalid_api_key","message":"Model not found"}`),
+		},
+		{
+			name:       "404 auth type overrides model message",
+			statusCode: http.StatusNotFound,
+			body:       []byte(`{"error":{"type":"authentication_error","message":"Model not found"}}`),
+		},
+		{
+			name:       "404 route error with echoed model",
+			statusCode: http.StatusNotFound,
+			body:       []byte(`{"error":{"message":"Endpoint not found"},"request":{"model":"gpt-6-luna","input":"model not found"}}`),
+		},
+		{
+			name:       "404 account lookup is not a model refusal",
+			statusCode: http.StatusNotFound,
+			body:       []byte(`{"error":{"message":"API key not found for model gpt-6-luna"}}`),
+		},
+		{
 			name:       "non 404 does not match",
 			statusCode: http.StatusBadRequest,
 			body:       []byte(`{"error":{"message":"model not found"}}`),
@@ -99,6 +233,36 @@ func TestIsUpstreamModelNotFoundError(t *testing.T) {
 				t.Fatalf("isUpstreamModelNotFoundError() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestPK65ModelNotFound404FailoverSkipsSameAccount(t *testing.T) {
+	account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Credentials: map[string]any{"pool_mode": true, "pool_mode_retry_count": float64(3)}}
+	svc := &OpenAIGatewayService{accountRepo: schedulerTestOpenAIAccountRepo{}}
+	for _, body := range []string{
+		`{"error":{"code":"model_not_found","message":"Model \"gpt-6-luna\" is not supported by any configured account in this group"}}`,
+		`{"error":{"type":"model_not_found","message":"Model \"gpt-6-luna\" is not supported by any configured account in this group"}}`,
+		`{"error":{"message":"Model gpt-example not found"}}`,
+	} {
+		require.True(t, svc.shouldFailoverOpenAIUpstreamResponse(account, http.StatusNotFound, "", []byte(body)))
+		direct := &OpenAIGatewayService{}
+		require.False(t, direct.shouldFailoverOpenAIUpstreamResponse(account, http.StatusNotFound, "", []byte(body)))
+		failure := newOpenAIUpstreamFailoverError(http.StatusNotFound, http.Header{}, []byte(body), "", true)
+		require.True(t, failure.IsOpenAIModelRouteUnavailable())
+		require.False(t, failure.RetryableOnSameAccount)
+		require.False(t, failure.RequestScopedTransient)
+		require.Equal(t, NextAccountRetry, failure.NextAccountAction)
+		require.Equal(t, http.StatusServiceUnavailable, failure.ClientStatusCode)
+		require.Equal(t, OpenAIModelRouteUnavailableMessage, failure.ClientMessage)
+	}
+	for _, body := range []string{
+		`{"error":{"code":"invalid_api_key","message":"Model not found"}}`,
+		`{"error":{"message":"Endpoint not found"},"model":"gpt-6-luna"}`,
+		`{"error":{"message":"Model registry endpoint not found"}}`,
+	} {
+		require.False(t, svc.shouldFailoverOpenAIUpstreamResponse(account, http.StatusNotFound, "", []byte(body)))
+		require.False(t, newOpenAIUpstreamFailoverError(http.StatusNotFound, nil, []byte(body), "", false).IsOpenAIModelRouteUnavailable())
 	}
 }
 

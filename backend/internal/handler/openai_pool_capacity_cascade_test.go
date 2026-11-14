@@ -201,6 +201,65 @@ func TestPK64ToolProtocolRoutingAndProviderFailoverOnWire(t *testing.T) {
 	}
 }
 
+func TestPK65ModelNotFound404RoutingOnWire(t *testing.T) {
+	for _, endpoint := range []string{"responses", "chat/completions", "messages"} {
+		for _, stream := range []bool{false, true} {
+			for _, passthrough := range []bool{false, true} {
+				for _, healthy := range []bool{false, true} {
+					t.Run(fmt.Sprintf("%s/stream=%t/passthrough=%t/healthy=%t", endpoint, stream, passthrough, healthy), func(t *testing.T) {
+						repo := &poolCapacityRepo{openAIWSFailoverHandlerAccountRepoStub: openAIWSFailoverHandlerAccountRepoStub{accounts: []service.Account{poolCapacityAccount(11, 1, true), poolCapacityAccount(12, 2, true)}}}
+						for i := range repo.accounts {
+							repo.accounts[i].Extra["openai_passthrough"] = passthrough
+							repo.accounts[i].Extra["openai_responses_supported"] = true
+							repo.accounts[i].Credentials["pool_mode_retry_count"] = float64(3)
+							repo.accounts[i].Credentials["model_mapping"] = map[string]any{"public-agent": "gpt-6.1-sol"}
+						}
+						upstream := &poolCapacityTransport{reply: func(req *http.Request, id int64) *http.Response {
+							body, err := io.ReadAll(req.Body)
+							require.NoError(t, err)
+							wantModel := "gpt-6.1-sol"
+							if passthrough && endpoint == "responses" {
+								wantModel = "public-agent" // passthrough preserves the original model spelling
+							}
+							require.Equal(t, wantModel, gjson.GetBytes(body, "model").String(), "failover must preserve the original forwarding policy")
+							if id == 11 || !healthy {
+								return poolCapacityResponse(404, "application/json", `{"error":{"type":"model_not_found","message":"Model \"gpt-6.1-sol\" is not supported by any configured account in this group","debug":"private-upstream-detail"}}`, "")
+							}
+							payload := strings.Replace(poolCapacityCompleted, `"output":[]`, `"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}]`, 1)
+							if gjson.GetBytes(body, "stream").Bool() {
+								return poolCapacityResponse(200, "text/event-stream", "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":"+payload+"}\n\ndata: [DONE]\n\n", "")
+							}
+							return poolCapacityResponse(200, "application/json", payload, "")
+						}}
+						router := newPoolCapacityRouter(t, repo, upstream)
+						input := `"input":"hello"`
+						if endpoint != "responses" {
+							input = `"messages":[{"role":"user","content":"hello"}],"max_tokens":64`
+						}
+						for repeat := 0; repeat < 2; repeat++ {
+							rec := httptest.NewRecorder()
+							requestInput := strings.ReplaceAll(input, "hello", fmt.Sprintf("hello-%d", repeat))
+							req := httptest.NewRequest(http.MethodPost, "/v1/"+endpoint, strings.NewReader(fmt.Sprintf(`{"model":"public-agent","stream":%t,%s}`, stream, requestInput)))
+							req.Header.Set("Content-Type", "application/json")
+							router.ServeHTTP(rec, req)
+							if healthy {
+								require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+							} else {
+								require.Equal(t, http.StatusServiceUnavailable, rec.Code, rec.Body.String())
+								require.Contains(t, rec.Body.String(), service.OpenAIModelRouteUnavailableMessage)
+								require.NotContains(t, rec.Body.String(), "private-upstream-detail")
+							}
+						}
+						require.Equal(t, []int64{11, 12, 11, 12}, upstream.hits, "one attempt per account per request; default pools remain available to later requests")
+						require.Zero(t, repo.modelWrites, "default relay pools must not add a persistent negative model cache")
+						require.Empty(t, repo.rateLimitedIDs)
+					})
+				}
+			}
+		}
+	}
+}
+
 func servePoolCapacity(router *gin.Engine, stream bool) *httptest.ResponseRecorder {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(fmt.Sprintf(

@@ -763,6 +763,77 @@ func TestCheckUserPlatformQuotaEligibility_SentinelCrossDay_NoRefresh(t *testing
 	}
 }
 
+type delayedQuotaFillCache struct {
+	*fakeFullCache
+	delay    time.Duration
+	attempts int
+	timedOut bool
+}
+
+func (c *delayedQuotaFillCache) SetUserPlatformQuotaCache(ctx context.Context, userID int64, platform string, entry *UserPlatformQuotaCacheEntry, ttl time.Duration) error {
+	c.attempts++
+	timer := time.NewTimer(c.delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		c.timedOut = true
+		return ctx.Err()
+	case <-timer.C:
+		return c.fakeFullCache.SetUserPlatformQuotaCache(ctx, userID, platform, entry, ttl)
+	}
+}
+
+func TestCheckUserPlatformQuotaEligibility_RemoteCacheFill(t *testing.T) {
+	for _, path := range []string{"unlimited sentinel", "database limit", "expired window"} {
+		t.Run(path, func(t *testing.T) {
+			daily := 5.0
+			repo := &fakeQuotaRepo{}
+			cache := &delayedQuotaFillCache{fakeFullCache: &fakeFullCache{}, delay: 100 * time.Millisecond}
+			var wantErr error
+			switch path {
+			case "database limit":
+				repo.rec = &UserPlatformQuotaRecord{DailyLimitUSD: &daily, DailyUsageUSD: 6, DailyWindowStart: currentDayStart()}
+				wantErr = ErrUserPlatformDailyQuotaExhausted
+			case "expired window":
+				past := time.Now().AddDate(0, 0, -2)
+				cache.entry = &UserPlatformQuotaCacheEntry{DailyLimitUSD: &daily, DailyUsageUSD: 10, DailyWindowStart: &past, SchemaVersion: UserPlatformQuotaCacheSchemaV1}
+			}
+			svc := newServiceForPreflight(t, repo, cache)
+			if err := svc.checkUserPlatformQuotaEligibility(context.Background(), 1, "openai"); !errors.Is(err, wantErr) {
+				t.Fatalf("quota enforcement changed: got %v, want %v", err, wantErr)
+			}
+			if cache.timedOut || cache.attempts != 1 || cache.getSetCalls() != 1 {
+				t.Fatalf("remote cache fill did not complete once: timeout=%v attempts=%d writes=%d", cache.timedOut, cache.attempts, cache.getSetCalls())
+			}
+			entry := cache.getEntry()
+			if entry == nil || entry.SchemaVersion != UserPlatformQuotaCacheSchemaV1 {
+				t.Fatal("next request must find the current cache schema")
+			}
+			if path == "expired window" && (entry.DailyUsageUSD != 0 || entry.DailyLimitUSD == nil || *entry.DailyLimitUSD != daily) {
+				t.Fatalf("expired-window fill lost reset or limit: %+v", entry)
+			}
+			if path == "unlimited sentinel" && (entry.DailyLimitUSD != nil || entry.WeeklyLimitUSD != nil || entry.MonthlyLimitUSD != nil) {
+				t.Fatal("unlimited sentinel acquired a limit")
+			}
+		})
+	}
+}
+
+func TestCheckUserPlatformQuotaEligibility_RemoteCacheFillRemainsBounded(t *testing.T) {
+	cache := &delayedQuotaFillCache{fakeFullCache: &fakeFullCache{}, delay: 5 * time.Second}
+	svc := newServiceForPreflight(t, &fakeQuotaRepo{}, cache)
+	started := time.Now()
+	if err := svc.checkUserPlatformQuotaEligibility(context.Background(), 1, "openai"); err != nil {
+		t.Fatalf("failed unlimited-sentinel fill changed admission: %v", err)
+	}
+	if !cache.timedOut || cache.attempts != 1 || cache.getEntry() != nil {
+		t.Fatalf("stalled cache write was not canceled once: timeout=%v attempts=%d", cache.timedOut, cache.attempts)
+	}
+	if elapsed := time.Since(started); elapsed >= 2*time.Second {
+		t.Fatalf("cache fill blocked request for %v", elapsed)
+	}
+}
+
 // ── TestHasUserPlatformQuotaLimit ────────────────────────────────────────────
 
 func TestHasUserPlatformQuotaLimit(t *testing.T) {

@@ -368,6 +368,76 @@ func TestIssue715WSAmbiguousToolSubmissionIsNotReplayed(t *testing.T) {
 	}
 }
 
+func TestOpaqueHistoryWSHandshakeFailureNeverSwitchesAccount(t *testing.T) {
+	for _, mode := range []string{service.OpenAIWSIngressModeCtxPool, service.OpenAIWSIngressModePassthrough} {
+		t.Run(mode, func(t *testing.T) {
+			var mu sync.Mutex
+			var authorizations []string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				authorizations = append(authorizations, r.Header.Get("Authorization"))
+				mu.Unlock()
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = io.WriteString(w, `{"error":{"type":"authentication_error","message":"fixture handshake rejected"}}`)
+			}))
+			defer srv.Close()
+			server := miniredis.RunT(t)
+			client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+			t.Cleanup(func() { _ = client.Close() })
+			h := issue715WSNode(t, mode, srv.URL, repository.NewGatewayCache(client), false)
+			issue715WSSend(t, h.clientConn, issue715WSCreate("", true))
+			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+			defer cancel()
+			for {
+				_, event, err := h.clientConn.Read(ctx)
+				if err != nil {
+					require.NotErrorIs(t, err, context.DeadlineExceeded)
+					break
+				}
+				require.NotEqual(t, "response.completed", gjson.GetBytes(event, "type").String())
+			}
+			issue600Finish(t, h, http.Header{"Session_id": {"fixture-ws715-session"}, "Thread-Id": {"fixture-ws715-thread"}})
+			mu.Lock()
+			defer mu.Unlock()
+			require.NotEmpty(t, authorizations)
+			for _, authorization := range authorizations {
+				require.Equal(t, "Bearer fixture-ws-one", authorization, "an opaque task must not be sent to another account")
+			}
+		})
+	}
+}
+
+func TestOpaqueCompactionWSAmbiguousSubmissionIsNotReplayed(t *testing.T) {
+	for _, mode := range []string{service.OpenAIWSIngressModeCtxPool, service.OpenAIWSIngressModePassthrough, service.OpenAIWSIngressModeHTTPBridge} {
+		t.Run(mode, func(t *testing.T) {
+			u := &issue715WSOracle{fail: true}
+			srv := u.server(t)
+			server := miniredis.RunT(t)
+			client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+			t.Cleanup(func() { _ = client.Close() })
+			h := issue715WSNode(t, mode, srv.URL, repository.NewGatewayCache(client), false)
+			body := strings.Replace(issue715WSCreate("", true), issue715Agent, `{"type":"compaction","encrypted_content":"fixture-compacted-history"}`, 1)
+			issue715WSSend(t, h.clientConn, body)
+			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+			defer cancel()
+			for {
+				_, event, err := h.clientConn.Read(ctx)
+				if err != nil {
+					require.NotErrorIs(t, err, context.DeadlineExceeded)
+					break
+				}
+				require.NotEqual(t, "response.completed", gjson.GetBytes(event, "type").String())
+			}
+			issue600Finish(t, h, http.Header{"Session_id": {"fixture-ws715-session"}, "Thread-Id": {"fixture-ws715-thread"}})
+			u.mu.Lock()
+			defer u.mu.Unlock()
+			require.Equal(t, []int64{1}, u.ids, "the possibly executed compacted continuation must not be replayed")
+			require.Contains(t, string(u.frames[0]), "fixture-compacted-history")
+			require.Contains(t, string(u.frames[0]), "ledger balance 18; applied once")
+		})
+	}
+}
+
 func TestIssue715WSPreviousResponseMustBelongToTaskOwner(t *testing.T) {
 	for _, mode := range []string{service.OpenAIWSIngressModeCtxPool, service.OpenAIWSIngressModePassthrough, service.OpenAIWSIngressModeHTTPBridge} {
 		t.Run(mode, func(t *testing.T) {

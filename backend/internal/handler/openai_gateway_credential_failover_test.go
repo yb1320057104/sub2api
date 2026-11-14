@@ -4,6 +4,7 @@ package handler
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -164,6 +165,43 @@ func TestOpenAIManagedModelNotFoundExhaustionSanitizesMessage(t *testing.T) {
 	require.True(t, ok)
 	require.NotContains(t, recorded, "super-secret-value")
 	require.Contains(t, recorded, "access_token=***")
+}
+
+func TestPK65ModelRouteExhaustionPreservesPassthroughRules(t *testing.T) {
+	for _, messages := range []bool{false, true} {
+		for _, streaming := range []bool{false, true} {
+			t.Run(fmt.Sprintf("messages=%t/streaming=%t", messages, streaming), func(t *testing.T) {
+				recorder := httptest.NewRecorder()
+				c, _ := gin.CreateTestContext(recorder)
+				c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+				rule := newBodyLimitPassthroughRule(http.StatusBadRequest, "Choose an enabled model")
+				rule.ErrorCodes = []int{http.StatusNotFound}
+				rule.SkipMonitoring = true
+				h := newBodyLimitPassthroughHandler(t, rule)
+				failure := &service.UpstreamFailoverError{
+					StatusCode: http.StatusNotFound, Reason: service.GatewayFailureReason("openai_model_route_unavailable"),
+					ResponseBody: []byte(`{"error":{"code":"model_not_found","message":"Private upstream model detail"}}`),
+				}
+				if messages {
+					h.handleAnthropicFailoverExhausted(c, failure, streaming)
+				} else {
+					h.handleFailoverExhausted(c, failure, streaming)
+				}
+				require.Contains(t, recorder.Body.String(), "Choose an enabled model")
+				require.NotContains(t, recorder.Body.String(), "Private upstream model detail")
+				require.Equal(t, true, c.GetBool(service.OpsSkipPassthroughKey))
+				if streaming {
+					if messages {
+						require.Contains(t, recorder.Body.String(), "event: error")
+					} else {
+						require.Contains(t, recorder.Body.String(), "event: response.failed")
+					}
+				} else {
+					require.Equal(t, http.StatusBadRequest, recorder.Code)
+				}
+			})
+		}
+	}
 }
 
 func TestResponsesFailoverExhaustedAfterForwardedTerminalMarksOpsWithoutDuplicateFrame(t *testing.T) {

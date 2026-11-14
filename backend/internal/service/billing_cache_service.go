@@ -80,6 +80,9 @@ const (
 	cacheWriteTimeout         = 2 * time.Second // 单个写入操作超时
 	cacheWriteDropLogInterval = 5 * time.Second // 丢弃日志节流间隔
 	balanceLoadTimeout        = 3 * time.Second
+	// Cache fills may cross a network hop. Keep the request bounded without
+	// expiring normal remote Redis operations at the old 50ms deadline.
+	platformQuotaCacheFillTimeout = 250 * time.Millisecond
 )
 
 // cacheWriteTask 缓存写入任务
@@ -1329,7 +1332,7 @@ func (s *BillingCacheService) checkUserPlatformQuotaEligibility(
 		// 旧实现 Delete 后,期间到达的 IncrUserPlatformQuotaUsage 调用让 Lua 看到
 		// EXISTS=0 直接 return 0,并发请求的 cost 永久丢失,直到下次 cache MISS 回填。
 		// 改为 SetCache 原子覆盖:key 不断链,Lua INCR 可在新窗口 entry 上正确累加。
-		// 超时 50ms:覆盖正常路径与可接受抖动;Redis 异常时 hot path 不阻塞超过此值。
+		// 回填使用统一的有界预算，容纳跨节点 Redis 往返。
 		// 用 context.Background()+短超时,避免请求 ctx 取消导致刷新丢失。
 		// 显式 setCancel()(而非 defer):缩短 context 生命周期,避免 defer 延迟到函数返回。
 		// isSentinel 判定「该 entry 无任何 limit」(DB 无行时回填的短 TTL sentinel),跨窗口命中时跳过 refresh:
@@ -1350,7 +1353,7 @@ func (s *BillingCacheService) checkUserPlatformQuotaEligibility(
 				MonthlyWindowStart: newMonthlyStart,
 			}
 			ttl := time.Duration(s.cfg.Billing.UserPlatformQuotaCacheTTLSeconds) * time.Second
-			setCtx, setCancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+			setCtx, setCancel := context.WithTimeout(context.Background(), platformQuotaCacheFillTimeout)
 			if setErr := s.setPlatformQuotaCache(setCtx, userID, platform, refreshed, ttl); setErr != nil {
 				logger.LegacyPrintf("service.billing_cache",
 					"Warning: refresh expired user platform quota cache failed user=%d platform=%s: %v",
@@ -1419,7 +1422,7 @@ func (s *BillingCacheService) checkUserPlatformQuotaEligibility(
 				// sentinel 不持久化 → 每请求击穿 DB。配置缺失/误配为 0 时 fallback 到 1h。
 				sentinelTTL = time.Hour
 			}
-			setCtx, setCancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+			setCtx, setCancel := context.WithTimeout(context.Background(), platformQuotaCacheFillTimeout)
 			if setErr := s.setPlatformQuotaCache(setCtx, userID, platform, sentinel, sentinelTTL); setErr != nil {
 				userPlatformQuotaSentinelSetCacheErrorTotal.Add(1)
 				logger.LegacyPrintf("service.billing_cache", "Warning: set sentinel quota cache failed user=%d platform=%s: %v", userID, platform, setErr)
@@ -1472,10 +1475,10 @@ func (s *BillingCacheService) checkUserPlatformQuotaEligibility(
 	}
 	if s.cache != nil {
 		ttl := time.Duration(s.cfg.Billing.UserPlatformQuotaCacheTTLSeconds) * time.Second
-		// 与 HIT 过期回填路径（上文 SetCache 调用）保持一致：用 context.Background()+50ms,
+		// 与 HIT 过期回填路径保持相同的独立、有界超时，
 		// 避免请求 ctx 提前取消（客户端断连/上游超时）导致 cache 回填失败,
 		// 让下一次 preflight 仍然 MISS 并击穿到 DB（高并发下增大 DB 压力）。
-		setCtx, setCancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		setCtx, setCancel := context.WithTimeout(context.Background(), platformQuotaCacheFillTimeout)
 		if setErr := s.setPlatformQuotaCache(setCtx, userID, platform, newEntry, ttl); setErr != nil {
 			logger.LegacyPrintf("service.billing_cache", "Warning: set user platform quota cache failed user=%d platform=%s: %v", userID, platform, setErr)
 		}

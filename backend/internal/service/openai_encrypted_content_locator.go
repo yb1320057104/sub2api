@@ -2,6 +2,7 @@ package service
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,6 +14,63 @@ import (
 )
 
 const openAIEncryptedErrorRedacted = "Upstream encrypted content error (details redacted)"
+
+const openAIEncryptedHistoryRecoveryGuidance = "Preserve this task and its complete context. Verify the original compatible account and the outcome of any previous tool execution. If recovery requires a new conversation, reconstruct it from the complete original plaintext history; do not discard opaque items or repeat completed tool actions."
+
+// Inspect actual input items, never words inside user messages. A plaintext
+// summary and ordinary encrypted reasoning do not require this replay guard.
+func openAIOpaqueHistoryKind(body []byte) (kind string, toolResult bool) {
+	visit := func(item gjson.Result) {
+		itemType := item.Get("type").String()
+		toolResult = toolResult || isCodexToolCallOutputItemType(itemType)
+		if itemType != "agent_message" && itemType != "compaction" && itemType != "compaction_summary" {
+			return
+		}
+		encrypted := item.Get("encrypted_content")
+		opaque := encrypted.Type == gjson.String && encrypted.String() != ""
+		content := item.Get("content")
+		if content.IsArray() {
+			content.ForEach(func(_, part gjson.Result) bool {
+				value := part.Get("encrypted_content")
+				opaque = opaque || (part.Get("type").String() == "encrypted_content" && value.Type == gjson.String && value.String() != "")
+				return true
+			})
+		}
+		if opaque && kind == "" {
+			kind = "opaque_" + itemType
+		}
+	}
+	input := gjson.GetBytes(body, "input")
+	if input.IsArray() {
+		input.ForEach(func(_, item gjson.Result) bool { visit(item); return true })
+	} else if input.IsObject() {
+		visit(input)
+	}
+	return kind, toolResult
+}
+
+// OpenAIUnverifiedOpaqueHistoryRecovery is consulted only after a failed
+// attempt, never during first admission. Proven owners retain their existing
+// route checks. Without one, sending intact opaque history to a different
+// account cannot establish compatibility. Tool results also preclude replay
+// after an ambiguous submission to the same account.
+func OpenAIUnverifiedOpaqueHistoryRecovery(ctx context.Context, body []byte) (*OpenAIAgentRecoveryError, bool) {
+	if request := openAIAgentRecoveryFromContext(ctx); request != nil && request.owner != nil {
+		return nil, false
+	}
+	kind, toolResult := openAIOpaqueHistoryKind(body)
+	if kind == "" {
+		return nil, false
+	}
+	return &OpenAIAgentRecoveryError{Reason: "unverified_history"}, toolResult
+}
+
+func openAIEncryptedRecoverySkipReason(body []byte) string {
+	if kind, _ := openAIOpaqueHistoryKind(body); kind != "" {
+		return kind
+	}
+	return "no_uniquely_verified_reasoning"
+}
 
 var openAIEncryptedRelayTrace = regexp.MustCompile(`^（traceid: [0-9a-fA-F]{32}）$`)
 

@@ -51,6 +51,9 @@ func writeOpenAIUpstreamClientError(c *gin.Context, statusCode int, body []byte,
 	if message == "" {
 		message = openAIUpstreamClientErrorFallbackMessage
 	}
+	if code, diagnostic := openAIEncryptedRejectionFields(body); isOpenAIInvalidEncryptedContentError(code, diagnostic) {
+		message = "The upstream could not verify the encrypted history. " + openAIEncryptedHistoryRecoveryGuidance
+	}
 	errorPayload["message"] = sanitizeKiloBridgeClientErrorMessage(c, message)
 
 	c.JSON(statusCode, gin.H{"error": errorPayload})

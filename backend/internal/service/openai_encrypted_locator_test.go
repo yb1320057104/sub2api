@@ -15,6 +15,45 @@ import (
 const locatorA = "AAAA-synthetic-rejected-ZZZ1"
 const locatorB = "BBBB-synthetic-other-YYY2"
 
+func TestUnverifiedOpaqueHistoryRecoveryScope(t *testing.T) {
+	for _, tc := range []struct {
+		name, input, kind string
+		tool              bool
+	}{
+		{"agent envelope", `[{"type":"agent_message","encrypted_content":"fixture-opaque"}]`, "opaque_agent_message", false},
+		{"agent parts", `[{"type":"agent_message","content":[{"type":"encrypted_content","encrypted_content":"fixture-opaque"}]}]`, "opaque_agent_message", false},
+		{"compaction", `[{"type":"compaction","encrypted_content":"fixture-opaque"}]`, "opaque_compaction", false},
+		{"compaction summary", `[{"type":"compaction_summary","encrypted_content":"fixture-opaque"}]`, "opaque_compaction_summary", false},
+		{"object input", `{"type":"compaction","encrypted_content":"fixture-opaque"}`, "opaque_compaction", false},
+		{"custom tool result", `[{"type":"compaction","encrypted_content":"fixture-opaque"},{"type":"custom_tool_call_output","call_id":"fixture-call","output":"already done"}]`, "opaque_compaction", true},
+		{"function result", `[{"type":"compaction","encrypted_content":"fixture-opaque"},{"type":"function_call_output","call_id":"fixture-call","output":"already done"}]`, "opaque_compaction", true},
+		{"plain summary", `[{"type":"compaction_summary","summary":"keep all tasks"}]`, "", false},
+		{"empty ciphertext", `[{"type":"compaction","encrypted_content":""}]`, "", false},
+		{"reasoning", `[{"type":"reasoning","encrypted_content":"fixture-opaque"}]`, "", false},
+		{"text mentions", `[{"role":"user","content":"agent_message encrypted_content compaction"}]`, "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(`{"input":` + tc.input + `}`)
+			kind, tool := openAIOpaqueHistoryKind(body)
+			require.Equal(t, tc.kind, kind)
+			require.Equal(t, tc.tool, tool)
+			recovery, hasTool := OpenAIUnverifiedOpaqueHistoryRecovery(context.Background(), body)
+			if tc.kind == "" {
+				require.Nil(t, recovery)
+				return
+			}
+			require.Equal(t, tc.tool, hasTool)
+			require.Equal(t, http.StatusConflict, recovery.HTTPStatus())
+			require.Equal(t, "encrypted_history_recovery_unverified_owner", recovery.ClientCode())
+			require.Contains(t, recovery.ClientMessage(), "complete original plaintext history")
+			require.NotContains(t, recovery.ClientMessage(), "fixture-opaque")
+			ctx := context.WithValue(context.Background(), openAIAgentRecoveryContextKey{}, &openAIAgentRecoveryRequest{owner: &openAIAgentRecoveryBinding{accountID: 1}})
+			recovery, _ = OpenAIUnverifiedOpaqueHistoryRecovery(ctx, body)
+			require.Nil(t, recovery, "proven owners retain their existing compatibility checks")
+		})
+	}
+}
+
 func locatorFailure(locator string) string {
 	b, _ := json.Marshal(map[string]any{"error": map[string]any{"code": "invalid_encrypted_content", "message": "The encrypted content " + locator + " could not be verified. Reason: Encrypted content could not be decrypted or parsed."}})
 	return string(b)
@@ -62,6 +101,19 @@ func TestIssue494LocatorForward(t *testing.T) {
 				if !tc.recover {
 					require.Error(t, err)
 					require.Equal(t, 1, upstream.callCount)
+					if http400 && (tc.name == "agent protected" || tc.name == "compaction protected") {
+						events, exists := c.Get(OpsUpstreamErrorsKey)
+						require.True(t, exists)
+						found := false
+						for _, event := range events.([]*OpsUpstreamErrorEvent) {
+							if event.Kind == "recovery_skip" {
+								found = true
+								require.Contains(t, event.Reason, "opaque_")
+								require.NotContains(t, event.Message, locatorA)
+							}
+						}
+						require.True(t, found, "a safe reason must survive diagnostic redaction")
+					}
 					return
 				}
 				require.NoError(t, err)

@@ -69,6 +69,24 @@ func TestRateLimitService_HandleUpstreamError_ModelNotFoundUsesModelRateLimit(t 
 	require.WithinDuration(t, time.Now().Add(upstreamModelNotFoundCooldown), call.resetAt, 5*time.Second)
 }
 
+func TestRateLimitService_RelayModelRejectionCoolsOnlyMappedModel(t *testing.T) {
+	for _, body := range []string{
+		`{"error":{"type":"model_not_found","message":"Model \"provider-sol\" is not supported by any configured account in this group"}}`,
+		`{"error":{"message":"Model \"provider-sol\" is not supported by any configured account in this group"}}`,
+	} {
+		repo := &modelNotFoundAccountRepoStub{}
+		svc := &RateLimitService{accountRepo: repo}
+		account := openAIModelNotFoundTempAccount()
+		account.Credentials["model_mapping"] = map[string]any{"public-sol": "provider-sol", "other-model": "other-model"}
+		require.True(t, svc.HandleUpstreamModelNotFound(context.Background(), account, "public-sol", http.StatusNotFound, []byte(body)))
+		require.Zero(t, repo.tempCalls)
+		require.Len(t, repo.modelRateLimitCalls, 1)
+		require.Equal(t, "provider-sol", repo.modelRateLimitCalls[0].scope)
+		require.Equal(t, upstreamModelNotFoundReason, repo.modelRateLimitCalls[0].reason)
+		require.WithinDuration(t, time.Now().Add(upstreamModelNotFoundCooldown), repo.modelRateLimitCalls[0].resetAt, 5*time.Second)
+	}
+}
+
 func TestRateLimitService_HandleUpstreamError_APIKeyModel401UsesModelRateLimit(t *testing.T) {
 	repo := &modelNotFoundAccountRepoStub{}
 	svc := &RateLimitService{accountRepo: repo}

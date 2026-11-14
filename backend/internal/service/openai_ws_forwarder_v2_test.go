@@ -1,17 +1,114 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	coderws "github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
+
+func TestForwardOpenAIWSV2_OpaqueToolResultRetryBoundary(t *testing.T) {
+	for _, tc := range []struct {
+		name, failure, item string
+		wantRecovery        bool
+		wantDials, wantSent int32
+	}{
+		{"opaque read failure", "read", `{"type":"agent_message","encrypted_content":"fixture-opaque"}`, true, 1, 1},
+		{"opaque incomplete terminal", "terminal", `{"type":"compaction","encrypted_content":"fixture-opaque"}`, true, 1, 1},
+		{"opaque server error", "server", `{"type":"agent_message","encrypted_content":"fixture-opaque"}`, true, 1, 1},
+		{"opaque handshake recovery", "handshake", `{"type":"agent_message","encrypted_content":"fixture-opaque"}`, false, 2, 1},
+		{"ordinary reasoning unchanged", "read", `{"type":"reasoning","encrypted_content":"fixture-opaque","summary":[]}`, false, 2, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var dials, sent atomic.Int32
+			var mu sync.Mutex
+			var received [][]byte
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				dial := dials.Add(1)
+				if tc.failure == "handshake" && dial == 1 {
+					w.WriteHeader(http.StatusServiceUnavailable)
+					return
+				}
+				conn, err := coderws.Accept(w, r, nil)
+				if err != nil {
+					return
+				}
+				defer conn.CloseNow()
+				_, payload, err := conn.Read(r.Context())
+				if err != nil {
+					return
+				}
+				n := sent.Add(1)
+				mu.Lock()
+				received = append(received, append([]byte(nil), payload...))
+				mu.Unlock()
+				if n == 1 {
+					switch tc.failure {
+					case "read":
+						return
+					case "terminal":
+						_ = conn.Write(r.Context(), coderws.MessageText, []byte(`{"type":"response.completed"}`))
+						return
+					case "server":
+						_ = conn.Write(r.Context(), coderws.MessageText, []byte(`{"type":"error","error":{"type":"server_error","message":"fixture processing interrupted"}}`))
+						return
+					}
+				}
+				_ = conn.Write(r.Context(), coderws.MessageText, []byte(`{"type":"response.completed","response":{"id":"resp_fixture_retry","model":"gpt-5.5","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1}}}`))
+			}))
+			defer srv.Close()
+			cfg := newOpenAIWSV2TestConfig()
+			cfg.Security.URLAllowlist.Enabled = false
+			cfg.Security.URLAllowlist.AllowInsecureHTTP = true
+			cfg.Gateway.OpenAIWS.MaxConnsPerAccount = 1
+			cfg.Gateway.OpenAIWS.MinIdlePerAccount = 0
+			cfg.Gateway.OpenAIWS.MaxIdlePerAccount = 1
+			cfg.Gateway.OpenAIWS.ReadTimeoutSeconds = 3
+			cfg.Gateway.OpenAIWS.WriteTimeoutSeconds = 3
+			pool := newOpenAIWSConnPool(cfg)
+			defer pool.Close()
+			svc := &OpenAIGatewayService{cfg: cfg, httpUpstream: &httpUpstreamRecorder{}, cache: &stubGatewayCache{}, openaiWSResolver: NewOpenAIWSProtocolResolver(cfg), toolCorrector: NewCodexToolCorrector(), openaiWSPool: pool}
+			account := &Account{ID: 5885, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1, Credentials: map[string]any{"api_key": "fixture-key", "base_url": srv.URL}, Extra: map[string]any{"responses_websockets_v2_enabled": true}}
+			body := []byte(`{"model":"gpt-5.5","stream":false,"input":[` + tc.item + `,{"role":"user","content":"Preserve the existing ledger"},{"type":"function_call","name":"update_ledger","call_id":"fixture-once","arguments":"{}"},{"type":"function_call_output","call_id":"fixture-once","output":"already applied once"}]}`)
+			c, rec := newOpenAIUpstreamErrorTestContext(t)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			result, err := svc.Forward(ctx, c, account, body)
+			if tc.wantRecovery {
+				var recovery *OpenAIAgentRecoveryError
+				require.ErrorAs(t, err, &recovery)
+				require.Equal(t, "encrypted_history_recovery_unverified_owner", recovery.ClientCode())
+				require.Nil(t, result)
+				require.False(t, c.Writer.Written(), "the HTTP handler must serialize the typed recovery refusal")
+			} else {
+				require.NoError(t, err, rec.Body.String())
+				require.NotNil(t, result)
+				require.True(t, result.OpenAIWSMode)
+			}
+			require.Equal(t, tc.wantDials, dials.Load())
+			require.Equal(t, tc.wantSent, sent.Load())
+			mu.Lock()
+			defer mu.Unlock()
+			for _, payload := range received {
+				require.True(t, strings.Contains(string(payload), "already applied once"))
+				require.Contains(t, string(payload), "fixture-opaque")
+			}
+		})
+	}
+}
 
 // HTTP POST /v1/responses -> forwardOpenAIWSV2 keeps the canonical outbound
 // tier separate from response.completed.service_tier for usage-time billing.

@@ -1293,6 +1293,11 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 						h.handleFailoverExhausted(c, failoverErr, streamStarted)
 						return
 					}
+					historyRecoveryErr, historyHasToolResult := service.OpenAIUnverifiedOpaqueHistoryRecovery(c.Request.Context(), forwardBody)
+					if historyRecoveryErr != nil && historyHasToolResult {
+						h.handleOpenAIOpaqueHistoryFailover(c, failoverErr, historyRecoveryErr, streamStarted)
+						return
+					}
 					if !forbiddenBudget.canRetry(failoverErr, switchCount) {
 						h.handleFailoverExhausted(c, failoverErr, streamStarted)
 						return
@@ -1321,6 +1326,10 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 							}
 							continue
 						}
+					}
+					if historyRecoveryErr != nil {
+						h.handleOpenAIOpaqueHistoryFailover(c, failoverErr, historyRecoveryErr, streamStarted)
+						return
 					}
 					h.gatewayService.RecordOpenAIAccountSwitch()
 					failedAccountIDs[account.ID] = struct{}{}
@@ -2088,6 +2097,28 @@ func (h *OpenAIGatewayHandler) handleAnthropicFailoverExhausted(c *gin.Context, 
 	}
 	if failoverErr.IsOpenAIToolProtocolUnavailable() {
 		h.anthropicStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", service.OpenAIToolProtocolUnavailableMessage, streamStarted)
+		return
+	}
+	if failoverErr.IsOpenAIModelRouteUnavailable() {
+		if h.errorPassthroughService != nil {
+			if rule := h.errorPassthroughService.MatchRule("openai", failoverErr.StatusCode, failoverErr.ResponseBody); rule != nil {
+				status := failoverErr.StatusCode
+				if !rule.PassthroughCode && rule.ResponseCode != nil {
+					status = *rule.ResponseCode
+				}
+				message := service.ExtractUpstreamErrorMessage(failoverErr.ResponseBody)
+				if !rule.PassthroughBody && rule.CustomMessage != nil {
+					message = *rule.CustomMessage
+				}
+				if rule.SkipMonitoring {
+					c.Set(service.OpsSkipPassthroughKey, true)
+				}
+				h.anthropicStreamingAwareError(c, status, "upstream_error", message, streamStarted)
+				return
+			}
+		}
+		service.SetOpsUpstreamError(c, failoverErr.StatusCode, service.OpenAIModelRouteUnavailableMessage, "")
+		h.anthropicStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", service.OpenAIModelRouteUnavailableMessage, streamStarted, string(failoverErr.Reason))
 		return
 	}
 	if failoverErr != nil && failoverErr.IsCredentialFailure() {
@@ -4122,6 +4153,12 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 					wsFirstMessage = wsAttemptMessage
 					continue
 				}
+				if service.OpenAIWSAgentRecoveryCanRetry(ctx) {
+					if recovery, _ := service.OpenAIUnverifiedOpaqueHistoryRecovery(ctx, wsAttemptMessage); recovery != nil {
+						h.handleOpenAIWSAgentRecoveryError(ctx, wsConn, recovery)
+						return
+					}
+				}
 				if handleWSFailover(account, failoverErr) {
 					break
 				}
@@ -4417,6 +4454,14 @@ func (h *OpenAIGatewayHandler) handleFailoverExhausted(c *gin.Context, failoverE
 		return
 	}
 	copyFailoverRetryAfter(c, failoverErr.ResponseHeaders)
+	if failoverErr.IsOpenAIModelRouteUnavailable() {
+		if h.applyOpenAIFailoverPassthroughRule(c, failoverErr.StatusCode, failoverErr.ResponseBody, streamStarted) {
+			return
+		}
+		service.SetOpsUpstreamError(c, failoverErr.StatusCode, service.OpenAIModelRouteUnavailableMessage, "")
+		h.handleStreamingAwareErrorWithCode(c, http.StatusServiceUnavailable, "server_error", string(failoverErr.Reason), service.OpenAIModelRouteUnavailableMessage, streamStarted, false)
+		return
+	}
 	if failoverErr.IsOpenAIToolProtocolUnavailable() {
 		if h.applyOpenAIFailoverPassthroughRule(c, failoverErr.StatusCode, failoverErr.ResponseBody, streamStarted) {
 			return
