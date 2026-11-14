@@ -2,7 +2,7 @@
 
 ## PK-077 受限密钥外部导入回执
 
-状态：pk.63 集成源码，实际测试、制品、发行和上线结果另见本版复核记录。
+状态：pk.63 已正式发行并完成种菜及托管 Sub2API 更新，实际测试、同制品和上线核验见 [本版复核记录](docs/PK_SCOPED_IMPORT_PK63_REVIEW.md)。外部客户自建接收站仍须由其管理员升级并明确授权，详见 [客户升级说明](docs/PK_SCOPED_IMPORT_PK63_UPGRADE.md)；已有密钥不自动扩权。
 
 - 仅对受限管理密钥开放 `zhongcai-import-v1`：`GET/POST /api/v1/admin/accounts/import/zhongcai` 及 `GET /api/v1/admin/accounts/import/zhongcai/:source/:operation`。完整管理密钥继续使用既有账号接口。
 - 请求限制为 OpenAI OAuth 的明确字段，校验来源/操作 UUID、对应关联标识、身份、凭证、业务分组、代理及并发。凭证仅写入，不能扩大通用受限账号接口的字段许可。
