@@ -15,6 +15,40 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestGroupUltrafastMigrationDefaultsAndReplay(t *testing.T) {
+	ctx := context.Background()
+	tx := testTx(t)
+	schema := fmt.Sprintf("group_ultrafast_%d", time.Now().UnixNano())
+	_, err := tx.ExecContext(ctx, `CREATE SCHEMA `+schema)
+	require.NoError(t, err)
+	_, err = tx.ExecContext(ctx, `SET LOCAL search_path TO `+schema)
+	require.NoError(t, err)
+	_, err = tx.ExecContext(ctx, `
+CREATE TABLE groups (id BIGINT PRIMARY KEY, force_openai_fast BOOLEAN NOT NULL DEFAULT FALSE);
+INSERT INTO groups (id, force_openai_fast) VALUES (1, TRUE);`)
+	require.NoError(t, err)
+	migration, err := os.ReadFile(filepath.Join("..", "..", "migrations", "341_group_force_openai_ultrafast.sql"))
+	require.NoError(t, err)
+	_, err = tx.ExecContext(ctx, string(migration))
+	require.NoError(t, err)
+	var ultrafast, fast bool
+	require.NoError(t, tx.QueryRowContext(ctx, `SELECT force_openai_ultrafast, force_openai_fast FROM groups WHERE id=1`).Scan(&ultrafast, &fast))
+	require.False(t, ultrafast, "existing groups remain disabled")
+	require.True(t, fast, "existing Fast policy is unchanged")
+	_, err = tx.ExecContext(ctx, `INSERT INTO groups (id) VALUES (2)`)
+	require.NoError(t, err)
+	require.NoError(t, tx.QueryRowContext(ctx, `SELECT force_openai_ultrafast FROM groups WHERE id=2`).Scan(&ultrafast))
+	require.False(t, ultrafast, "old writers may omit the new column")
+	_, err = tx.ExecContext(ctx, `UPDATE groups SET force_openai_ultrafast=TRUE WHERE id=1`)
+	require.NoError(t, err)
+	_, err = tx.ExecContext(ctx, string(migration))
+	require.NoError(t, err)
+	_, err = tx.ExecContext(ctx, `UPDATE groups SET force_openai_fast=FALSE WHERE id=1`)
+	require.NoError(t, err)
+	require.NoError(t, tx.QueryRowContext(ctx, `SELECT force_openai_ultrafast FROM groups WHERE id=1`).Scan(&ultrafast))
+	require.True(t, ultrafast, "replayed migrations and old writers preserve an explicit setting")
+}
+
 func TestPKCyberMigrationDefaultsAndExistingBalancesUnchanged(t *testing.T) {
 	ctx := context.Background()
 	tx := testTx(t)
@@ -253,6 +287,8 @@ func TestMigrationsRunner_IsIdempotent_AndSchemaIsUpToDate(t *testing.T) {
 	// groups: OpenAI Live 与 Fast 强制策略都默认关闭，管理员显式开启后才生效。
 	requireColumn(t, tx, "groups", "allow_live", "boolean", 0, false)
 	requireColumn(t, tx, "groups", "force_openai_fast", "boolean", 0, false)
+	requireColumn(t, tx, "groups", "force_openai_ultrafast", "boolean", 0, false)
+	requireColumnDefaultContains(t, tx, "groups", "force_openai_ultrafast", "false")
 	requireColumn(t, tx, "groups", "stream_only", "boolean", 0, false)
 	requireColumn(t, tx, "groups", "free_openai_fast", "boolean", 0, false)
 

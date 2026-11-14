@@ -1,9 +1,13 @@
 import { defineComponent } from 'vue'
 import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { createPinia } from 'pinia'
 
 import type { AdminGroup } from '@/types'
 import GroupsView from '@/views/admin/GroupsView.vue'
+import NewFeatureBadge from '@/components/common/NewFeatureBadge.vue'
+import { NEW_FEATURE_NOTICES } from '@/constants/newFeatureNotices'
+import { useNewFeatureNoticeStore } from '@/stores/newFeatureNotices'
 
 const mocks = vi.hoisted(() => ({
   listGroups: vi.fn(),
@@ -36,9 +40,14 @@ vi.mock('@/api/admin', () => ({
   }
 }))
 vi.mock('@/stores/app', () => ({ useAppStore: () => ({ showSuccess: mocks.showSuccess, showError: mocks.showError }) }))
-vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ isSimpleMode: false }) }))
+vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ isSimpleMode: false, user: { id: 41 } }) }))
 vi.mock('@/stores/onboarding', () => ({
   useOnboardingStore: () => ({ isCurrentStep: vi.fn(() => false), nextStep: vi.fn() })
+}))
+vi.mock('@/api/admin/proxyGroups', () => ({
+  listGroupProxyPolicies: vi.fn().mockResolvedValue([]),
+  listProxyGroups: vi.fn().mockResolvedValue([]),
+  updateGroupProxyPolicy: vi.fn()
 }))
 vi.mock('vue-i18n', async () => {
   const actual = await vi.importActual<typeof import('vue-i18n')>('vue-i18n')
@@ -67,9 +76,10 @@ const DataTableStub = defineComponent({
   </div></div>`
 })
 
-function mountView() {
+function mountView(pinia = createPinia()) {
   return mount(GroupsView, {
     global: {
+      plugins: [pinia],
       stubs: {
         AppLayout: defineComponent({ template: '<main><slot /></main>' }),
         TablePageLayout: defineComponent({ template: '<section><slot name="filters" /><slot name="table" /><slot name="pagination" /></section>' }),
@@ -85,7 +95,7 @@ function mountView() {
 const buttonByText = (wrapper: ReturnType<typeof mountView>, text: string) =>
   wrapper.findAll('button').find((button) => button.text() === text)
 
-describe('GroupsView stream-only switch', () => {
+describe('GroupsView request policy switches', () => {
   beforeEach(() => {
     localStorage.clear()
     vi.spyOn(console, 'error').mockImplementation(() => {})
@@ -139,5 +149,168 @@ describe('GroupsView stream-only switch', () => {
 
     expect(mocks.updateGroup).toHaveBeenCalledWith(42, expect.objectContaining({ stream_only: false }))
     wrapper.unmount()
+  })
+
+  it('shows Ultrafast only for enabled OpenAI and composite groups', async () => {
+    mocks.listGroups.mockResolvedValue({ items: [
+      { ...baseGroup, id: 42, platform: 'openai', force_openai_ultrafast: true },
+      { ...baseGroup, id: 43, platform: 'composite', force_openai_ultrafast: true },
+      { ...baseGroup, id: 44, platform: 'anthropic', force_openai_ultrafast: true },
+      { ...baseGroup, id: 45, platform: 'openai' }
+    ], total: 4, page: 1, page_size: 20, pages: 1 })
+    const wrapper = mountView()
+    await flushPromises()
+    for (const id of [42, 43]) {
+      expect(wrapper.find(`[data-testid="group-row-${id}"] [data-testid="group-openai-ultrafast-badge"]`).exists()).toBe(true)
+    }
+    for (const id of [44, 45]) {
+      expect(wrapper.find(`[data-testid="group-row-${id}"] [data-testid="group-openai-ultrafast-badge"]`).exists()).toBe(false)
+    }
+    wrapper.unmount()
+  })
+
+  it('creates with Ultrafast, excludes Fast, preserves free Fast and resets for the next group', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    await buttonByText(wrapper, 'admin.groups.createGroup')!.trigger('click')
+    wrapper.findComponent('[data-tour="group-form-platform"]').vm.$emit('update:modelValue', 'openai')
+    await flushPromises()
+
+    const fast = wrapper.get('[data-testid="create-force-openai-fast"]')
+    const ultrafast = wrapper.get('[data-testid="create-force-openai-ultrafast"]')
+    expect(ultrafast.attributes('aria-checked')).toBe('false')
+    await fast.trigger('click')
+    await wrapper.get('[data-testid="create-free-openai-fast"]').trigger('click')
+    await ultrafast.trigger('click')
+    expect(fast.attributes('aria-checked')).toBe('false')
+    expect(ultrafast.attributes('aria-checked')).toBe('true')
+    await wrapper.get('#create-group-form input[type="text"]').setValue('Ultrafast')
+    await wrapper.get('#create-group-form').trigger('submit')
+    await flushPromises()
+    expect(mocks.createGroup).toHaveBeenCalledWith(expect.objectContaining({
+      platform: 'openai', force_openai_fast: false, force_openai_ultrafast: true, free_openai_fast: true
+    }))
+
+    await buttonByText(wrapper, 'admin.groups.createGroup')!.trigger('click')
+    wrapper.findComponent('[data-tour="group-form-platform"]').vm.$emit('update:modelValue', 'openai')
+    await flushPromises()
+    expect(wrapper.get('[data-testid="create-force-openai-ultrafast"]').attributes('aria-checked')).toBe('false')
+    wrapper.unmount()
+  })
+
+  it('clears the Ultrafast payload when creating on an unsupported platform', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    await buttonByText(wrapper, 'admin.groups.createGroup')!.trigger('click')
+    const platform = wrapper.findComponent('[data-tour="group-form-platform"]')
+    platform.vm.$emit('update:modelValue', 'openai')
+    await flushPromises()
+    await wrapper.get('[data-testid="create-force-openai-ultrafast"]').trigger('click')
+    platform.vm.$emit('update:modelValue', 'anthropic')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="create-force-openai-ultrafast"]').exists()).toBe(false)
+    await wrapper.get('#create-group-form input[type="text"]').setValue('Claude')
+    await wrapper.get('#create-group-form').trigger('submit')
+    await flushPromises()
+    expect(mocks.createGroup).toHaveBeenCalledWith(expect.objectContaining({
+      platform: 'anthropic', force_openai_fast: false, force_openai_ultrafast: false
+    }))
+    wrapper.unmount()
+  })
+
+  it.each([false, true])('loads and disables a saved Ultrafast value of %s', async (enabled) => {
+    const group = { ...baseGroup, platform: 'openai', ...(enabled ? { force_openai_ultrafast: true } : {}) }
+    mocks.listGroups.mockResolvedValue({ items: [group], total: 1, page: 1, page_size: 20, pages: 1 })
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.get('[data-testid="group-row-42"]').findAll('button').find((b) => b.text() === 'common.edit')!.trigger('click')
+    await flushPromises()
+    const toggle = wrapper.get('[data-testid="edit-force-openai-ultrafast"]')
+    expect(toggle.attributes('aria-checked')).toBe(String(enabled))
+    if (enabled) await toggle.trigger('click')
+    await wrapper.get('#edit-group-form').trigger('submit')
+    await flushPromises()
+    expect(mocks.updateGroup).toHaveBeenCalledWith(42, expect.objectContaining({ force_openai_ultrafast: false }))
+    wrapper.unmount()
+  })
+
+  it('truthfully displays and preserves an existing combined policy on an unrelated save', async () => {
+    mocks.listGroups.mockResolvedValue({ items: [
+      { ...baseGroup, platform: 'openai', force_openai_fast: true, force_openai_ultrafast: true }
+    ], total: 1, page: 1, page_size: 20, pages: 1 })
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.get('[data-testid="group-row-42"]').findAll('button').find((b) => b.text() === 'common.edit')!.trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-testid="edit-force-openai-fast"]').attributes('aria-checked')).toBe('true')
+    expect(wrapper.get('[data-testid="edit-force-openai-ultrafast"]').attributes('aria-checked')).toBe('true')
+    expect(wrapper.find('[data-testid="edit-openai-speed-combined-hint"]').exists()).toBe(true)
+    await wrapper.get('#edit-group-form').trigger('submit')
+    await flushPromises()
+    expect(mocks.updateGroup).toHaveBeenCalledWith(42, expect.objectContaining({
+      force_openai_fast: true, force_openai_ultrafast: true
+    }))
+    wrapper.unmount()
+  })
+
+  it('switches a saved Ultrafast policy to Fast when Fast is enabled', async () => {
+    mocks.listGroups.mockResolvedValue({ items: [
+      { ...baseGroup, platform: 'composite', force_openai_fast: false, force_openai_ultrafast: true }
+    ], total: 1, page: 1, page_size: 20, pages: 1 })
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.get('[data-testid="group-row-42"]').findAll('button').find((b) => b.text() === 'common.edit')!.trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-testid="edit-force-openai-fast"]').trigger('click')
+    expect(wrapper.get('[data-testid="edit-force-openai-ultrafast"]').attributes('aria-checked')).toBe('false')
+    await wrapper.get('#edit-group-form').trigger('submit')
+    await flushPromises()
+    expect(mocks.updateGroup).toHaveBeenCalledWith(42, expect.objectContaining({
+      force_openai_fast: true, force_openai_ultrafast: false
+    }))
+    wrapper.unmount()
+  })
+
+  it('shares the new Ultrafast notice across all entries and persists dismissal per administrator', async () => {
+    const pinia = createPinia()
+    const notices = useNewFeatureNoticeStore(pinia)
+    const noticeId = NEW_FEATURE_NOTICES.groupOpenAIUltrafast
+    notices.dismiss(41, NEW_FEATURE_NOTICES.protocolFeatureSwitches)
+    notices.dismiss(41, NEW_FEATURE_NOTICES.groupAntiDistillation)
+    expect(new Set(Object.values(NEW_FEATURE_NOTICES)).size).toBe(Object.values(NEW_FEATURE_NOTICES).length)
+    mocks.listGroups.mockResolvedValue({ items: [
+      { ...baseGroup, platform: 'openai', force_openai_ultrafast: true }
+    ], total: 1, page: 1, page_size: 20, pages: 1 })
+    const wrapper = mountView(pinia)
+    await flushPromises()
+    await buttonByText(wrapper, 'admin.groups.createGroup')!.trigger('click')
+    wrapper.findComponent('[data-tour="group-form-platform"]').vm.$emit('update:modelValue', 'openai')
+    await wrapper.get('[data-testid="group-row-42"]').findAll('button').find((b) => b.text() === 'common.edit')!.trigger('click')
+    await flushPromises()
+
+    const entries = wrapper.findAllComponents(NewFeatureBadge).filter(badge => badge.props('noticeId') === noticeId)
+    expect(entries).toHaveLength(3)
+    expect(entries.every(badge => badge.find('[data-testid="new-feature-badge"]').exists())).toBe(true)
+    await entries[1].get('[data-testid="new-feature-badge"]').trigger('click')
+    expect(entries.every(badge => !badge.find('[data-testid="new-feature-badge"]').exists())).toBe(true)
+    expect(mocks.createGroup).not.toHaveBeenCalled()
+    expect(mocks.updateGroup).not.toHaveBeenCalled()
+    wrapper.unmount()
+
+    const reloadedPinia = createPinia()
+    const reloaded = mountView(reloadedPinia)
+    await flushPromises()
+    const reloadedNotice = reloaded.findAllComponents(NewFeatureBadge).find(badge => badge.props('noticeId') === noticeId)!
+    expect(reloadedNotice.find('[data-testid="new-feature-badge"]').exists()).toBe(false)
+    const reloadedNotices = useNewFeatureNoticeStore(reloadedPinia)
+    expect(reloadedNotices.isDismissed(41, NEW_FEATURE_NOTICES.protocolFeatureSwitches)).toBe(true)
+    expect(reloadedNotices.isDismissed(41, NEW_FEATURE_NOTICES.groupAntiDistillation)).toBe(true)
+    const future = mount(NewFeatureBadge, { props: { noticeId: 'future-ultrafast-notice-test', userId: 41 }, global: { plugins: [reloadedPinia] } })
+    const otherAdmin = mount(NewFeatureBadge, { props: { noticeId, userId: 42 }, global: { plugins: [reloadedPinia] } })
+    expect(future.find('[data-testid="new-feature-badge"]').exists()).toBe(true)
+    expect(otherAdmin.find('[data-testid="new-feature-badge"]').exists()).toBe(true)
+    future.unmount()
+    otherAdmin.unmount()
+    reloaded.unmount()
   })
 })

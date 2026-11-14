@@ -1357,12 +1357,13 @@ func TestAdminService_CreateGroup_NormalizesForceOpenAIFastByPlatform(t *testing
 			svc := &adminServiceImpl{groupRepo: repo}
 
 			group, err := svc.CreateGroup(context.Background(), &CreateGroupInput{
-				Name: "fast-" + tt.name, Platform: tt.platform, RateMultiplier: 1, ForceOpenAIFast: true, FreeOpenAIFast: true,
+				Name: "fast-" + tt.name, Platform: tt.platform, RateMultiplier: 1, ForceOpenAIFast: true, ForceOpenAIUltrafast: true, FreeOpenAIFast: true,
 			})
 
 			require.NoError(t, err)
 			require.NotNil(t, group)
 			require.Equal(t, tt.want, repo.created.ForceOpenAIFast)
+			require.Equal(t, tt.want, repo.created.ForceOpenAIUltrafast)
 			require.Equal(t, tt.want, repo.created.FreeOpenAIFast)
 		})
 	}
@@ -1370,7 +1371,7 @@ func TestAdminService_CreateGroup_NormalizesForceOpenAIFastByPlatform(t *testing
 
 func TestAdminService_UpdateGroup_ClearsForceOpenAIFastWhenPlatformChanges(t *testing.T) {
 	existingGroup := &Group{
-		ID: 1, Name: "existing-fast", Platform: PlatformOpenAI, Status: StatusActive, ForceOpenAIFast: true, FreeOpenAIFast: true,
+		ID: 1, Name: "existing-fast", Platform: PlatformOpenAI, Status: StatusActive, ForceOpenAIFast: true, ForceOpenAIUltrafast: true, FreeOpenAIFast: true,
 	}
 	repo := &groupRepoStubForAdmin{getByID: existingGroup}
 	svc := &adminServiceImpl{groupRepo: repo}
@@ -1382,6 +1383,7 @@ func TestAdminService_UpdateGroup_ClearsForceOpenAIFastWhenPlatformChanges(t *te
 	require.NoError(t, err)
 	require.NotNil(t, group)
 	require.False(t, repo.updated.ForceOpenAIFast)
+	require.False(t, repo.updated.ForceOpenAIUltrafast)
 	require.False(t, repo.updated.FreeOpenAIFast)
 }
 
@@ -1404,6 +1406,36 @@ func TestAdminService_UpdateGroup_ForceOpenAIFastInvalidatesAuthCache(t *testing
 	require.True(t, repo.updated.ForceOpenAIFast)
 	require.True(t, repo.updated.FreeOpenAIFast)
 	require.Equal(t, []int64{existingGroup.ID}, invalidator.groupIDs)
+}
+
+func TestAdminService_UpdateGroup_UltrafastCompatibility(t *testing.T) {
+	enabled, disabled := true, false
+	for _, tt := range []struct {
+		name     string
+		existing bool
+		update   *bool
+		want     bool
+	}{
+		{name: "omitted preserves enabled", existing: true, want: true},
+		{name: "omitted preserves legacy default"},
+		{name: "explicitly enable", update: &enabled, want: true},
+		{name: "explicitly disable", existing: true, update: &disabled},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &groupRepoStubForAdmin{getByID: &Group{
+				ID: 8, Name: "ultrafast", Platform: PlatformOpenAI, Status: StatusActive,
+				ForceOpenAIUltrafast: tt.existing, ForceOpenAIFast: true, FreeOpenAIFast: true,
+			}}
+			invalidator := &authCacheInvalidatorStub{}
+			svc := &adminServiceImpl{groupRepo: repo, authCacheInvalidator: invalidator}
+			got, err := svc.UpdateGroup(context.Background(), 8, &UpdateGroupInput{ForceOpenAIUltrafast: tt.update})
+			require.NoError(t, err)
+			require.Equal(t, tt.want, got.ForceOpenAIUltrafast)
+			require.True(t, repo.updated.ForceOpenAIFast)
+			require.True(t, repo.updated.FreeOpenAIFast)
+			require.Equal(t, []int64{8}, invalidator.groupIDs)
+		})
+	}
 }
 
 func TestAdminService_UpdateCompositeGroupPreservesLive(t *testing.T) {

@@ -73,3 +73,65 @@ func TestAPIKeyGroupsOmitLegacySoftDeletedAdditionalBinding(t *testing.T) {
 	require.Equal(t, "saved-after-deletion", got.Name)
 	require.Equal(t, []int64{primary.ID, inactive.ID}, got.GroupIDs)
 }
+
+func TestAPIKeyGroupsHydrateUltrafastColumn(t *testing.T) {
+	repo, client := newAPIKeyRepoSQLite(t)
+	ctx := context.Background()
+	user := mustCreateAPIKeyRepoUser(t, ctx, client, "ultrafast@test.invalid")
+	primary, err := client.Group.Create().SetName("ultrafast-primary").SetPlatform(service.PlatformOpenAI).
+		SetForceOpenaiUltrafast(true).Save(ctx)
+	require.NoError(t, err)
+	secondary, err := client.Group.Create().SetName("ultrafast-secondary").SetPlatform(service.PlatformComposite).
+		SetForceOpenaiUltrafast(true).Save(ctx)
+	require.NoError(t, err)
+	legacy, err := client.Group.Create().SetName("ultrafast-legacy").SetPlatform(service.PlatformOpenAI).Save(ctx)
+	require.NoError(t, err)
+	key := &service.APIKey{UserID: user.ID, Key: "sk-ultrafast-groups", Name: "ultrafast", Status: service.StatusActive,
+		GroupID: &primary.ID, GroupIDs: []int64{primary.ID, secondary.ID, legacy.ID}}
+	require.NoError(t, repo.Create(ctx, key))
+	for _, lookup := range []struct {
+		name string
+		get  func() (*service.APIKey, error)
+	}{
+		{name: "auth", get: func() (*service.APIKey, error) { return repo.GetByKeyForAuth(ctx, key.Key) }},
+		{name: "key", get: func() (*service.APIKey, error) { return repo.GetByKey(ctx, key.Key) }},
+		{name: "id", get: func() (*service.APIKey, error) { return repo.GetByID(ctx, key.ID) }},
+	} {
+		t.Run(lookup.name, func(t *testing.T) {
+			got, err := lookup.get()
+			require.NoError(t, err)
+			require.True(t, got.Group.ForceOpenAIUltrafast)
+			require.Len(t, got.Groups, 3)
+			require.True(t, got.Groups[0].ForceOpenAIUltrafast)
+			require.True(t, got.Groups[1].ForceOpenAIUltrafast)
+			require.False(t, got.Groups[2].ForceOpenAIUltrafast)
+		})
+	}
+	page, _, err := repo.ListByUserID(ctx, user.ID, pagination.PaginationParams{Page: 1, PageSize: 10}, service.APIKeyListFilters{})
+	require.NoError(t, err)
+	require.Len(t, page, 1)
+	require.True(t, page[0].Group.ForceOpenAIUltrafast)
+	require.True(t, page[0].Groups[1].ForceOpenAIUltrafast)
+}
+
+func TestGroupUltrafastColumnCreateReadAndDisable(t *testing.T) {
+	_, client := newAPIKeyRepoSQLite(t)
+	ctx := context.Background()
+	repo := newGroupRepositoryWithSQL(client, nil)
+	group := &service.Group{Name: "ultrafast", Platform: service.PlatformOpenAI,
+		Status: service.StatusActive, SubscriptionType: service.SubscriptionTypeStandard,
+		RateMultiplier: 1, ForceOpenAIFast: true, ForceOpenAIUltrafast: true}
+	require.NoError(t, repo.Create(ctx, group))
+	stored, err := client.Group.Get(ctx, group.ID)
+	require.NoError(t, err)
+	require.True(t, stored.ForceOpenaiUltrafast)
+	got, err := repo.GetByIDLite(ctx, group.ID)
+	require.NoError(t, err)
+	require.True(t, got.ForceOpenAIUltrafast)
+	got.ForceOpenAIUltrafast = false
+	require.NoError(t, repo.Update(ctx, got))
+	stored, err = client.Group.Get(ctx, group.ID)
+	require.NoError(t, err)
+	require.False(t, stored.ForceOpenaiUltrafast)
+	require.True(t, stored.ForceOpenaiFast)
+}

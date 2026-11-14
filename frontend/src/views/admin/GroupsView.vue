@@ -160,6 +160,20 @@
               data-testid="group-stream-only-badge"
               >{{ t("admin.groups.form.streamOnlyBadge") }}</span
             >
+            <span
+              v-if="supportsGroupOpenAIFast(row.platform) && row.force_openai_ultrafast"
+              class="badge badge-warning ml-2"
+              :title="t('admin.groups.openaiFast.ultrafastHint')"
+              data-testid="group-openai-ultrafast-badge"
+              >{{ t("admin.groups.openaiFast.ultrafastBadge") }}</span
+            >
+            <NewFeatureBadge
+              v-if="supportsGroupOpenAIFast(row.platform) && row.force_openai_ultrafast && authStore.user?.id != null"
+              class="ml-1"
+              :notice-id="NEW_FEATURE_NOTICES.groupOpenAIUltrafast"
+              :user-id="authStore.user.id"
+              compact
+            />
           </template>
 
           <template #cell-id="{ value }">
@@ -1678,11 +1692,33 @@
             <Toggle
               data-testid="create-force-openai-fast"
               :aria-label="t('admin.groups.openaiFast.force')"
-              v-model="createForm.force_openai_fast"
+              :model-value="createForm.force_openai_fast"
+              @update:model-value="setGroupOpenAIForcedSpeed(createForm, 'force_openai_fast', $event)"
             />
           </div>
           <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
             {{ t("admin.groups.openaiFast.hint") }}
+          </p>
+          <div class="flex items-center justify-between gap-4 mt-4">
+            <div class="flex items-center gap-2">
+              <label class="text-sm text-gray-600 dark:text-gray-400">
+                {{ t("admin.groups.openaiFast.forceUltrafast") }}
+              </label>
+              <NewFeatureBadge
+                v-if="authStore.user?.id != null"
+                :notice-id="NEW_FEATURE_NOTICES.groupOpenAIUltrafast"
+                :user-id="authStore.user.id"
+              />
+            </div>
+            <Toggle
+              data-testid="create-force-openai-ultrafast"
+              :aria-label="t('admin.groups.openaiFast.forceUltrafast')"
+              :model-value="createForm.force_openai_ultrafast"
+              @update:model-value="setGroupOpenAIForcedSpeed(createForm, 'force_openai_ultrafast', $event)"
+            />
+          </div>
+          <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+            {{ t("admin.groups.openaiFast.ultrafastHint") }}
           </p>
           <div class="flex items-center justify-between gap-4 mt-4">
             <label class="text-sm text-gray-600 dark:text-gray-400">
@@ -3386,11 +3422,40 @@
             <Toggle
               data-testid="edit-force-openai-fast"
               :aria-label="t('admin.groups.openaiFast.force')"
-              v-model="editForm.force_openai_fast"
+              :model-value="editForm.force_openai_fast"
+              @update:model-value="setGroupOpenAIForcedSpeed(editForm, 'force_openai_fast', $event)"
             />
           </div>
           <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
             {{ t("admin.groups.openaiFast.hint") }}
+          </p>
+          <div class="flex items-center justify-between gap-4 mt-4">
+            <div class="flex items-center gap-2">
+              <label class="text-sm text-gray-600 dark:text-gray-400">
+                {{ t("admin.groups.openaiFast.forceUltrafast") }}
+              </label>
+              <NewFeatureBadge
+                v-if="authStore.user?.id != null"
+                :notice-id="NEW_FEATURE_NOTICES.groupOpenAIUltrafast"
+                :user-id="authStore.user.id"
+              />
+            </div>
+            <Toggle
+              data-testid="edit-force-openai-ultrafast"
+              :aria-label="t('admin.groups.openaiFast.forceUltrafast')"
+              :model-value="editForm.force_openai_ultrafast"
+              @update:model-value="setGroupOpenAIForcedSpeed(editForm, 'force_openai_ultrafast', $event)"
+            />
+          </div>
+          <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+            {{ t("admin.groups.openaiFast.ultrafastHint") }}
+          </p>
+          <p
+            v-if="editForm.force_openai_fast && editForm.force_openai_ultrafast"
+            class="text-xs text-amber-600 dark:text-amber-400 mt-1"
+            data-testid="edit-openai-speed-combined-hint"
+          >
+            {{ t("admin.groups.openaiFast.combinedHint") }}
           </p>
           <div class="flex items-center justify-between gap-4 mt-4">
             <label class="text-sm text-gray-600 dark:text-gray-400">
@@ -4515,6 +4580,7 @@ import {
 } from "./groupsMessagesDispatch";
 import {
   normalizeGroupOpenAIFast,
+  setGroupOpenAIForcedSpeed,
   supportsGroupOpenAIFast,
 } from "./groupsOpenAIFast";
 import {
@@ -5177,6 +5243,7 @@ const createForm = reactive({
   monthly_limit_usd: null as number | null,
   long_context_pricing_enabled: true,
   force_openai_fast: false,
+  force_openai_ultrafast: false,
   free_openai_fast: false,
   model_pricing: [] as PricingFormEntry[],
   // 图片生成计费配置
@@ -5548,6 +5615,7 @@ const editForm = reactive({
   monthly_limit_usd: null as number | null,
   long_context_pricing_enabled: true,
   force_openai_fast: false,
+  force_openai_ultrafast: false,
   free_openai_fast: false,
   model_pricing: [] as PricingFormEntry[],
   // 图片生成计费配置
@@ -6045,6 +6113,7 @@ const closeCreateModal = () => {
   createForm.video_model_prices = createVideoModelPricesForm();
   createForm.long_context_pricing_enabled = true;
   createForm.force_openai_fast = false;
+  createForm.force_openai_ultrafast = false;
   createForm.free_openai_fast = false;
   createForm.model_pricing = [];
   createForm.web_search_price_per_call = null;
@@ -6173,6 +6242,10 @@ const handleCreateGroup = async () => {
       force_openai_fast: normalizeGroupOpenAIFast(
         createForm.platform,
         createForm.force_openai_fast,
+      ),
+      force_openai_ultrafast: normalizeGroupOpenAIFast(
+        createForm.platform,
+        createForm.force_openai_ultrafast,
       ),
       free_openai_fast: normalizeGroupOpenAIFast(
         createForm.platform,
@@ -6323,6 +6396,7 @@ const handleEdit = async (group: AdminGroup) => {
   editForm.long_context_pricing_enabled =
     group.long_context_pricing_enabled ?? true;
   editForm.force_openai_fast = group.force_openai_fast ?? false;
+  editForm.force_openai_ultrafast = group.force_openai_ultrafast ?? false;
   editForm.free_openai_fast = group.free_openai_fast ?? false;
   editForm.model_pricing = groupPricingFromAPI(group.model_pricing);
   editForm.allow_image_generation = group.allow_image_generation ?? false;
@@ -6461,6 +6535,7 @@ const closeEditModal = () => {
   editForm.video_model_prices = createVideoModelPricesForm();
   editForm.long_context_pricing_enabled = true;
   editForm.force_openai_fast = false;
+  editForm.force_openai_ultrafast = false;
   editForm.free_openai_fast = false;
   editForm.model_pricing = [];
   editForm.web_search_price_per_call = null;
@@ -6520,6 +6595,10 @@ const handleUpdateGroup = async () => {
       force_openai_fast: normalizeGroupOpenAIFast(
         editForm.platform,
         editForm.force_openai_fast,
+      ),
+      force_openai_ultrafast: normalizeGroupOpenAIFast(
+        editForm.platform,
+        editForm.force_openai_ultrafast,
       ),
       free_openai_fast: normalizeGroupOpenAIFast(
         editForm.platform,

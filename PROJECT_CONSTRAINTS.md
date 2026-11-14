@@ -1,5 +1,7 @@
 # PK出版项目约束
 
+2026-11-15 pk.65：用户要求分组直接开启Ultrafast，新增默认关闭的组字段与兼容迁移341，保留原Fast、全局策略和现有计费。仅交付本轮源码与定向验证；未执行正式发行或生产更新。行为合同及未覆盖范围见 `docs/PK_GROUP_ULTRAFAST_PK65_REVIEW.md`，沿用PK-042/004/021/031，已发布pk.64版本身份不变。
+
 2026-11-14 pk.64 后验要求：上线完成后的残留错误须单独记录，区分HTTP配置恢复、上游模型名不支持及计费预约失败。既有模型别名可按实际源码语义核对；不得为了消除502擅自切换成不同模型或宣称全部故障消失。详细后验见 `docs/PK_DOWNSTREAM_PROTOCOL_RECOVERY_PK64_REVIEW.md`。
 
 2026-11-14 pk.64 交付补录：用户已明确授权发布、更新及使用现有HTTP直连上游，已完成固定公开仓库正式Release与托管HA逐节点更新。正式提交/标签为 `bdf9f7bb58e8d43a32acf68a7325b3267e77842f` / `v0.2.19-pk.64`；运行版本 `0.2.19-pk.64-ha.20261114.1794663522`、代次16。现有 `SECURITY_URL_ALLOWLIST_ALLOW_INSECURE_HTTP=true` 仅由经过精确Git来源校验的操作工具写入本次新API/worker容器，旧spec/receipt/回退输入不改，其他网络/TLS配置不改；应用源码及不可变正式标签不因该配置调整而重打。全部制品、HA生命周期、备份及生产终验已通过，secondary仍唯一writer/活动worker。历史强杀不沿用；后续操作继续逐节点排空、正常退出和失败停步。下方“当前范围/尚未授权”是源码阶段历史，已由本条用户后续授权和实证取代。细节见 `docs/PK_DOWNSTREAM_PROTOCOL_RECOVERY_PK64_REVIEW.md`。

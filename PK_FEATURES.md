@@ -1300,6 +1300,8 @@
 
 ## PK-042
 
+2026-11-15 pk.65 扩展：分组新增默认关闭的 `force_openai_ultrafast`，管理员新增/编辑/复制、Ent/迁移341、鉴权投影/候选组和v35快照完整接入。OpenAI/Composite的可信实际组仅对选中OpenAI账号、最终出站名为 `gpt-6-astra` / `gpt-6.1-sol` 的请求强制Ultrafast；共享账号通过其他组不受影响。三处既有HTTP/WS档位入口共用resolver，分组档位先于全局规则；全局过滤/拦截/改写仍优先，旧WS需重连。UI主动开关互斥，双true旧/API配置如实保留且目标模型Ultrafast优先、其余原Fast保持。默认/缺字段false，更新省略保留，旧版本快照重新加载；不改套餐权限、定价、免费Fast或历史账单。新管理员提示三入口共用独立ID；完整行为、验证范围和未上线边界见 [分组Ultrafast复核](docs/PK_GROUP_ULTRAFAST_PK65_REVIEW.md)。沿用PK-004/021/031，无新增ID。
+
 2026-11-14 pk.64 交叉保护：工具协议准入读取既有请求策略后的工具/推理事实及渠道 forward model，再应用账号映射；不修改 API Key 分组、权限、模型白名单、计费或原请求工具定义。实际三入口/两种流模式、映射别名、兼容账号顺序及拒绝后有界换号已定向验证，详见 pk.64 专项复核。
 
 2026-11-11 pk.61 扩展：`group_ids` 有序 JSON 继续是路由事实，新增上游关系表仅事务镜像，不能取无序关联覆盖最多20组/首组兼容/NULL与显式空语义。鉴权快照版本随新字段更新；Key 自身并发队列、等待租约、模型映射、推理强度和长上下文策略统一进入 HTTP/WS 每轮准入；排队后复验实际 Key/用户/组与防蒸馏保护，取消/终态只释放一次。Key 长上下文默认允许，显式关闭按服务端上下文证据校验；原始上下文门槛及 OAuth 豁免保持 PK-004，不能用改写后的 token 误计费。请求模型与映射目标权限同时校验，强度只映射一次，Kilo 原始强度规则独立。入口为 `api_key_request_policy.go`、`api_key_long_context_policy.go`、`api_key_queue.go`、`api_key_group_router.go`（service）、`gateway_helper.go`（handler）及 KeysView/UserApiKeysModal；账号兼容与 handler/server 定向结果见综合报告。
