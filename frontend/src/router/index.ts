@@ -1,3 +1,4 @@
+import { legacySmartOperationsLocation, SMART_OPERATIONS_PATH, SMART_OPERATIONS_ROUTE_NAME, smartOperationLocation, smartOperationTool } from '@/utils/smartOperations'
 import { settingsLocation } from '@/utils/settingsSearch'
 /**
  * Vue Router configuration for Sub2API frontend
@@ -287,7 +288,7 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/admin/lottery',
     name: 'AdminLottery',
-    component: () => import('@/views/admin/LotteryView.vue'),
+    redirect: to => legacySmartOperationsLocation(to),
     meta: { requiresAuth: true, requiresAdmin: true, title: 'Prize Draw Management', titleKey: 'lottery.adminTitle' }
   },
   {
@@ -504,19 +505,19 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/admin/radar',
     name: 'AdminRadar',
-    component: () => import('@/views/admin/RadarObservationView.vue'),
+    redirect: to => legacySmartOperationsLocation(to),
     meta: { requiresAuth: true, requiresAdmin: true, title: 'Radar Observatory', titleKey: 'radar.title', descriptionKey: 'radar.description' }
   },
   {
     path: '/admin/account-authorization',
     name: 'AdminAccountAuthorization',
-    component: () => import('@/views/admin/AccountAuthorizationView.vue'),
+    redirect: to => legacySmartOperationsLocation(to),
     meta: { requiresAuth: true, requiresAdmin: true, title: 'Account Authorization', titleKey: 'authorization.title', descriptionKey: 'authorization.description' }
   },
   {
     path: '/admin/request-captures',
     name: 'AdminRequestCaptures',
-    component: () => import('@/views/admin/RequestCaptureView.vue'),
+    redirect: to => legacySmartOperationsLocation(to),
     meta: { requiresAuth: true, requiresAdmin: true, requiresRequestCapture: true, titleKey: 'admin.requestCapture.title' }
   },
   {
@@ -630,23 +631,23 @@ const routes: RouteRecordRaw[] = [
       descriptionKey: 'admin.subscriptions.description'
     }
   },
-  { path: '/admin/priority-scheduling', name: 'AdminPriorityScheduling', component: () => import('@/views/admin/PrioritySchedulingView.vue'), meta: { requiresAuth: true, requiresAdmin: true, title: 'Priority scheduling', titleKey: 'priorityScheduling.title' } },
-  { path: '/admin/auto-config', name: 'AdminAutoConfig', component: () => import('@/views/admin/AutoConfigView.vue'), meta: { requiresAuth: true, requiresAdmin: true, title: 'Auto Configuration', titleKey: 'autoConfig.title' } },
-  { path: '/admin/group-cache-tests', name: 'AdminGroupCacheTests', component: () => import('@/views/admin/GroupCacheTestView.vue'), meta: { requiresAuth: true, requiresAdmin: true, title: 'Group cache test', titleKey: 'admin.groupCacheTest.title', descriptionKey: 'admin.groupCacheTest.description' } },
-  { path: '/admin/channel-operations', name: 'AdminChannelOperations', component: () => import('@/views/admin/UpstreamChannelOperationsView.vue'), meta: { requiresAuth: true, requiresAdmin: true, titleKey: 'channelOps.title', descriptionKey: 'channelOps.description' } },
+  { path: '/admin/priority-scheduling', name: 'AdminPriorityScheduling', redirect: to => legacySmartOperationsLocation(to), meta: { requiresAuth: true, requiresAdmin: true, title: 'Priority scheduling', titleKey: 'priorityScheduling.title' } },
+  { path: '/admin/auto-config', name: 'AdminAutoConfig', redirect: to => legacySmartOperationsLocation(to), meta: { requiresAuth: true, requiresAdmin: true, title: 'Auto Configuration', titleKey: 'autoConfig.title' } },
+  { path: '/admin/group-cache-tests', name: 'AdminGroupCacheTests', redirect: to => legacySmartOperationsLocation(to), meta: { requiresAuth: true, requiresAdmin: true, title: 'Group cache test', titleKey: 'admin.groupCacheTest.title', descriptionKey: 'admin.groupCacheTest.description' } },
+  { path: '/admin/channel-operations', name: 'AdminChannelOperations', redirect: to => legacySmartOperationsLocation(to), meta: { requiresAuth: true, requiresAdmin: true, titleKey: 'channelOps.title', descriptionKey: 'channelOps.description' } },
   { path: '/admin/upstream-channels', name: 'AdminUpstreamChannels', component: () => import('@/views/admin/UpstreamChannelsView.vue'), meta: { requiresAuth: true, requiresAdmin: true, titleKey: 'upstreamEntities.title', descriptionKey: 'upstreamEntities.history' } },
-  { path: '/admin/profit-operations', name: 'AdminProfitOperations', component: () => import('@/views/admin/ProfitOperationsView.vue'), meta: { requiresAuth: true, requiresAdmin: true, titleKey: 'profitOps.title', descriptionKey: 'profitOps.description' } },
-  { path: '/admin/smart-ops', redirect: '/admin/account-quality', meta: { requiresAuth: true, requiresAdmin: true } },
-  { path: '/admin/ai-ops', name: 'AdminAIOps', component: () => import('@/views/admin/AIOpsView.vue'), meta: { requiresAuth: true, requiresAdmin: true, title: 'AI operations', titleKey: 'aiOps.title', descriptionKey: 'aiOps.description' } },
-  { path: '/admin/controlled-experiments', name: 'AdminControlledExperiments', component: () => import('@/views/admin/ControlledExperimentsView.vue'), meta: { requiresAuth: true, requiresAdmin: true, title: 'Controlled experiments', titleKey: 'controlledExperiments.title', descriptionKey: 'controlledExperiments.description' } },
-  { path: '/admin/token-guard', name: 'AdminTokenGuard', component: () => import('@/views/admin/ops/TokenGuardView.vue'), meta: { requiresAuth: true, requiresAdmin: true, title: 'Credential Guard', titleKey: 'tokenGuard.title', descriptionKey: 'tokenGuard.description' } },
-  { path: '/admin/pelican-tests', name: 'AdminPelicanTests', component: () => import('@/views/admin/PelicanTestsView.vue'), meta: { requiresAuth: true, requiresAdmin: true, title: 'Pelican Showcase', titleKey: 'pelicanTests.title', descriptionKey: 'pelicanTests.description' } },
-  { path: '/admin/token-guard-v2', name: 'AdminTokenGuardV2', component: () => import('@/views/admin/ops/TokenGuardV2View.vue'), meta: { requiresAuth: true, requiresAdmin: true, title: 'Credential Operations', titleKey: 'tokenGuardV2.title', descriptionKey: 'tokenGuardV2.description' } },
-  { path: '/admin/account-ops', name: 'AdminAccountOps', component: () => import('@/views/admin/AccountOpsView.vue'), meta: { requiresAuth: true, requiresAdmin: true, title: 'Account operations', titleKey: 'accountOps.title', descriptionKey: 'accountOps.description' } },
+  { path: '/admin/profit-operations', name: 'AdminProfitOperations', redirect: to => legacySmartOperationsLocation(to), meta: { requiresAuth: true, requiresAdmin: true, titleKey: 'profitOps.title', descriptionKey: 'profitOps.description' } },
+  { path: SMART_OPERATIONS_PATH, name: SMART_OPERATIONS_ROUTE_NAME, component: () => import('@/views/admin/SmartOperationsView.vue'), meta: { requiresAuth: true, requiresAdmin: true, titleKey: 'accountOps.smartTitle' } },
+  { path: '/admin/ai-ops', name: 'AdminAIOps', redirect: to => legacySmartOperationsLocation(to), meta: { requiresAuth: true, requiresAdmin: true, title: 'AI operations', titleKey: 'aiOps.title', descriptionKey: 'aiOps.description' } },
+  { path: '/admin/controlled-experiments', name: 'AdminControlledExperiments', redirect: to => legacySmartOperationsLocation(to), meta: { requiresAuth: true, requiresAdmin: true, title: 'Controlled experiments', titleKey: 'controlledExperiments.title', descriptionKey: 'controlledExperiments.description' } },
+  { path: '/admin/token-guard', name: 'AdminTokenGuard', redirect: to => legacySmartOperationsLocation(to), meta: { requiresAuth: true, requiresAdmin: true, title: 'Credential Guard', titleKey: 'tokenGuard.title', descriptionKey: 'tokenGuard.description' } },
+  { path: '/admin/pelican-tests', name: 'AdminPelicanTests', redirect: to => legacySmartOperationsLocation(to), meta: { requiresAuth: true, requiresAdmin: true, title: 'Pelican Showcase', titleKey: 'pelicanTests.title', descriptionKey: 'pelicanTests.description' } },
+  { path: '/admin/token-guard-v2', name: 'AdminTokenGuardV2', redirect: to => legacySmartOperationsLocation(to), meta: { requiresAuth: true, requiresAdmin: true, title: 'Credential Operations', titleKey: 'tokenGuardV2.title', descriptionKey: 'tokenGuardV2.description' } },
+  { path: '/admin/account-ops', name: 'AdminAccountOps', redirect: to => legacySmartOperationsLocation(to), meta: { requiresAuth: true, requiresAdmin: true, title: 'Account operations', titleKey: 'accountOps.title', descriptionKey: 'accountOps.description' } },
   {
     path: '/admin/account-quality',
     name: 'AdminAccountQuality',
-    component: () => import('@/views/admin/AccountQualityView.vue'),
+    redirect: to => legacySmartOperationsLocation(to),
     meta: { requiresAuth: true, requiresAdmin: true, title: 'Account Quality Operations', titleKey: 'qualityOps.title', descriptionKey: 'qualityOps.description' }
   },
   {
@@ -665,7 +666,7 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/admin/harvest-flow',
     name: 'AdminHarvestFlow',
-    component: () => import('@/views/admin/HarvestFlowView.vue'),
+    redirect: to => legacySmartOperationsLocation(to),
     meta: {
       requiresAuth: true,
       requiresAdmin: true,
@@ -1136,7 +1137,20 @@ router.beforeEach(async (to, _from, next) => {
     }
   }
 
-  if (requiresAdmin && authStore.isAdmin && to.meta.requiresRequestCapture) {
+  const isSmartOperations = to.name === SMART_OPERATIONS_ROUTE_NAME
+  if (isSmartOperations) {
+    const tool = smartOperationTool(to.query.tool)
+    if (tool === 'radar' && (to.query.tab === 'authorization' || to.query.tab === 'emails')) {
+      next({ ...legacySmartOperationsLocation({ ...to, path: '/admin/radar' }), replace: true })
+      return
+    }
+    if (to.query.tool !== tool) {
+      next({ ...smartOperationLocation(tool, to.query, to.hash), replace: true })
+      return
+    }
+  }
+
+  if (requiresAdmin && authStore.isAdmin && (to.meta.requiresRequestCapture || (isSmartOperations && to.query.tool === 'captures'))) {
     await adminSettingsStore.fetch(true)
     if (!adminSettingsStore.requestCaptureEnabled) { next('/admin/settings'); return }
   }

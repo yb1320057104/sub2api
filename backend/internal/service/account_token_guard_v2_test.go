@@ -6,13 +6,365 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/DATA-DOG/go-sqlmock"
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/stretchr/testify/require"
 )
+
+func TestAccountTokenGuardV2BatchParsing(t *testing.T) {
+	rows, err := parseTokenGuardV2Batch("\n User@Example.com ---- password \r\nuser@example.com----second----bad\nempty@example.com----\nempty@example.com----replacement\nwrong@example.com----password----123456\ninvalid----password\nbad-line\nvalid@example.com----pass----jbswy3dpehpk3pxp")
+	require.NoError(t, err)
+	require.Len(t, rows, 8)
+	require.Equal(t, 2, rows[0].item.Line)
+	require.Equal(t, "user@example.com", rows[0].secret.Email)
+	require.Equal(t, " password ", rows[0].secret.Password)
+	require.Empty(t, rows[0].secret.TwoFA)
+	require.Equal(t, "duplicate_email", rows[1].item.Status)
+	require.Equal(t, "invalid_password", rows[2].item.Status)
+	require.Equal(t, "duplicate_email", rows[3].item.Status)
+	require.Equal(t, "invalid_twofa", rows[4].item.Status)
+	require.Equal(t, "invalid_email", rows[5].item.Status)
+	require.Equal(t, "invalid_format", rows[6].item.Status)
+	require.Equal(t, "JBSWY3DPEHPK3PXP", rows[7].secret.TwoFA)
+	for _, index := range []int{1, 2, 3, 4, 5, 6} {
+		require.Equal(t, AuthorizationSecret{}, rows[index].secret)
+	}
+	_, err = parseTokenGuardV2Batch(strings.Repeat("x@example.com----password\n", 201))
+	require.Error(t, err)
+	_, err = parseTokenGuardV2Batch(strings.Repeat("x", 2<<20+1))
+	require.Error(t, err)
+	_, err = parseTokenGuardV2Batch("\n  \r\n")
+	require.Error(t, err)
+}
+
+type tokenGuardV2HistoryTestEncryptor struct{}
+
+func (tokenGuardV2HistoryTestEncryptor) Encrypt(value string) (string, error) {
+	return "history:" + value, nil
+}
+func (tokenGuardV2HistoryTestEncryptor) Decrypt(value string) (string, error) {
+	if !strings.HasPrefix(value, "history:") {
+		return "", errors.New("private cipher diagnostic")
+	}
+	return strings.TrimPrefix(value, "history:"), nil
+}
+
+func tokenGuardV2EnrollmentTestService(t *testing.T) (*AccountTokenGuardV2Service, sqlmock.Sqlmock) {
+	t.Helper()
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	reauth, reader, _, _, _, _ := newReauthTestService("acct-1")
+	svc := NewAccountTokenGuardV2Service(&accountTokenGuardV2TestRepo{}, nil, reader, accountTokenGuardV2TestProber{}, reauth)
+	svc.ConfigureEnrollment(db, tokenGuardV2HistoryTestEncryptor{})
+	return svc, mock
+}
+
+func tokenGuardV2ExpectEnrollmentAccount(mock sqlmock.Sqlmock, busy bool, paused ...bool) {
+	isPaused := len(paused) > 0 && paused[0]
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT pg_advisory_xact_lock").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT .* FROM accounts a WHERE a.id").WithArgs(int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"email", "supported", "paused"}).AddRow("user@example.com", true, isPaused))
+	mock.ExpectQuery("SELECT COUNT").WithArgs("user@example.com").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	mock.ExpectQuery("SELECT EXISTS.*pk_authorization_jobs.*OR EXISTS.*openai_oauth_reauth_tasks").WithArgs(int64(42), "user@example.com").
+		WillReturnRows(sqlmock.NewRows([]string{"busy"}).AddRow(busy))
+}
+
+func tokenGuardV2ConfigTestRows() *sqlmock.Rows {
+	return sqlmock.NewRows([]string{"login_email", "credential_mode", "engine", "proxy_source", "proxy_id", "password", "totp", "otp", "updated_at"})
+}
+
+func TestAccountTokenGuardV2EnrollmentReencryptsHistory(t *testing.T) {
+	svc, mock := tokenGuardV2EnrollmentTestService(t)
+	tokenGuardV2ExpectEnrollmentAccount(mock, false)
+	mock.ExpectQuery("SELECT login_email.*FOR UPDATE").WithArgs(int64(42)).WillReturnRows(tokenGuardV2ConfigTestRows())
+	mock.ExpectQuery("SELECT secret_encrypted FROM").WithArgs("user@example.com").WillReturnRows(sqlmock.NewRows([]string{"secret"}).AddRow(
+		`history:{"email":"user@example.com","password":"historical-password","twofa":"JBSWY3DPEHPK3PXP"}`))
+	mock.ExpectExec("INSERT INTO openai_oauth_reauth_configs.*ON CONFLICT.*DO NOTHING").WithArgs(
+		int64(42), "user@example.com", OpenAIOAuthReauthModePasswordTOTP, OpenAIOAuthReauthEngineLocal, "random_managed", nil,
+		"encrypted:historical-password", "encrypted:JBSWY3DPEHPK3PXP", "").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO account_token_guard_v2_accounts.*ON CONFLICT.*DO NOTHING").WithArgs(int64(42), nil, nil).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	id, status, err := svc.enrollAccount(context.Background(), 42, nil, nil)
+	require.NoError(t, err)
+	require.Equal(t, int64(42), id)
+	require.Equal(t, "added", status)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestAccountTokenGuardV2EnrollmentPreservesManualConfigAndSwitches(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		mode     string
+		password string
+		totp     string
+		otp      string
+	}{
+		{"password", OpenAIOAuthReauthModePasswordTOTP, "manual-password", "manual-totp", ""},
+		{"cleared totp", OpenAIOAuthReauthModePasswordTOTP, "manual-password", "", ""},
+		{"cleared password", OpenAIOAuthReauthModePasswordTOTP, "", "manual-totp", ""},
+		{"mailbox", OpenAIOAuthReauthModeEmailOTPURL, "", "", "manual-mailbox"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, mock := tokenGuardV2EnrollmentTestService(t)
+			tokenGuardV2ExpectEnrollmentAccount(mock, false)
+			mock.ExpectQuery("SELECT login_email.*FOR UPDATE").WithArgs(int64(42)).WillReturnRows(tokenGuardV2ConfigTestRows().AddRow(
+				"user@example.com", tc.mode, OpenAIOAuthReauthEngineLocal, "account", nil, tc.password, tc.totp, tc.otp, time.Now()))
+			// No history read, configuration write, or switch UPDATE is allowed.
+			mock.ExpectExec("INSERT INTO account_token_guard_v2_accounts.*ON CONFLICT.*DO NOTHING").WithArgs(int64(42), nil, nil).WillReturnResult(sqlmock.NewResult(0, 0))
+			mock.ExpectCommit()
+			_, status, err := svc.enrollAccount(context.Background(), 42, nil, nil)
+			require.NoError(t, err)
+			if tc.password == "" && tc.otp == "" {
+				require.Equal(t, "missing_credentials", status)
+			} else {
+				require.Equal(t, "unchanged", status)
+			}
+			require.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}
+
+func TestAccountTokenGuardV2EnrollmentExplicitUpdateUsesCAS(t *testing.T) {
+	for _, affected := range []int64{0, 1} {
+		t.Run(fmt.Sprintf("rows_%d", affected), func(t *testing.T) {
+			svc, mock := tokenGuardV2EnrollmentTestService(t)
+			mock.ExpectBegin()
+			tx, err := svc.enrollment.db.BeginTx(context.Background(), nil)
+			require.NoError(t, err)
+			now := time.Now()
+			existing := &OpenAIOAuthReauthStoredConfig{AccountID: 42, LoginEmail: "user@example.com", CredentialMode: OpenAIOAuthReauthModePasswordTOTP,
+				Engine: OpenAIOAuthReauthEngineLocal, ProxySource: "account", PasswordCiphertext: "manual-password", TOTPSecretCiphertext: "manual-totp", UpdatedAt: now}
+			mock.ExpectExec(`UPDATE openai_oauth_reauth_configs.*WHERE account_id=\$1 AND updated_at=\$10`).WithArgs(
+				int64(42), "user@example.com", OpenAIOAuthReauthModePasswordTOTP, OpenAIOAuthReauthEngineLocal, "account", nil,
+				"encrypted:new-password", "manual-totp", "", now).WillReturnResult(sqlmock.NewResult(0, affected))
+			mock.ExpectRollback()
+			changed, err := svc.writeEnrollmentConfig(context.Background(), tx, 42,
+				&AuthorizationSecret{Email: "user@example.com", Password: "new-password"}, existing, &AccountTokenGuardV2BatchInput{})
+			if affected == 1 {
+				require.NoError(t, err)
+				require.True(t, changed)
+			} else {
+				require.Equal(t, "account_changed", tokenGuardV2EnrollmentError(err))
+			}
+			require.NoError(t, tx.Rollback())
+			require.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}
+
+func TestAccountTokenGuardV2EnrollmentBusyAndMissingMaterials(t *testing.T) {
+	t.Run("active task", func(t *testing.T) {
+		svc, mock := tokenGuardV2EnrollmentTestService(t)
+		tokenGuardV2ExpectEnrollmentAccount(mock, true)
+		mock.ExpectRollback()
+		_, status, err := svc.enrollAccount(context.Background(), 42, nil, nil)
+		require.NoError(t, err)
+		require.Equal(t, "busy", status)
+		require.NoError(t, mock.ExpectationsWereMet())
+	})
+	t.Run("no history still visible", func(t *testing.T) {
+		svc, mock := tokenGuardV2EnrollmentTestService(t)
+		tokenGuardV2ExpectEnrollmentAccount(mock, false)
+		mock.ExpectQuery("SELECT login_email.*FOR UPDATE").WithArgs(int64(42)).WillReturnRows(tokenGuardV2ConfigTestRows())
+		mock.ExpectQuery("SELECT secret_encrypted FROM").WithArgs("user@example.com").WillReturnRows(sqlmock.NewRows([]string{"secret"}))
+		mock.ExpectExec("INSERT INTO account_token_guard_v2_accounts").WithArgs(int64(42), nil, nil).WillReturnResult(sqlmock.NewResult(0, 1))
+		mock.ExpectCommit()
+		_, status, err := svc.enrollAccount(context.Background(), 42, nil, nil)
+		require.NoError(t, err)
+		require.Equal(t, "missing_credentials", status)
+		require.NoError(t, mock.ExpectationsWereMet())
+	})
+}
+
+func TestAccountTokenGuardV2EnrollmentRejectsWrongHistoryIdentity(t *testing.T) {
+	svc, _ := tokenGuardV2EnrollmentTestService(t)
+	_, err := svc.decodeEnrollmentHistory("user@example.com", `history:{"email":"other@example.com","password":"private-password"}`)
+	require.Error(t, err)
+	require.NotContains(t, err.Error(), "private-password")
+	require.NotContains(t, err.Error(), "other@example.com")
+	_, err = svc.decodeEnrollmentHistory("user@example.com", "wrong-key-ciphertext")
+	require.Error(t, err)
+	require.NotContains(t, err.Error(), "private cipher diagnostic")
+}
+
+func TestAccountTokenGuardV2BatchRejectsUnsafeMatchesWithoutMutation(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		rows   *sqlmock.Rows
+		status string
+	}{
+		{"missing", sqlmock.NewRows([]string{"id", "supported"}), "not_found"},
+		{"duplicate", sqlmock.NewRows([]string{"id", "supported"}).AddRow(42, true).AddRow(43, true), "ambiguous_email"},
+		{"unsupported", sqlmock.NewRows([]string{"id", "supported"}).AddRow(42, false), "unsupported_account"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, mock := tokenGuardV2EnrollmentTestService(t)
+			mock.ExpectBegin()
+			mock.ExpectExec("SELECT pg_advisory_xact_lock").WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectQuery("SELECT a.id,.*FOR UPDATE OF a").WithArgs("user@example.com").WillReturnRows(tc.rows)
+			mock.ExpectRollback()
+			input := &AccountTokenGuardV2BatchInput{Accounts: "user@example.com----private-batch-password"}
+			result, err := svc.BatchAddAccounts(context.Background(), input)
+			require.NoError(t, err)
+			require.Empty(t, input.Accounts)
+			require.Len(t, result.Items, 1)
+			require.Equal(t, tc.status, result.Items[0].Status)
+			require.Equal(t, 1, result.Failed)
+			raw, err := json.Marshal(result)
+			require.NoError(t, err)
+			require.NotContains(t, string(raw), "private-batch-password")
+			require.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}
+
+func TestAccountTokenGuardV2EnrollmentNewConfigConflictDoesNotOverwrite(t *testing.T) {
+	svc, mock := tokenGuardV2EnrollmentTestService(t)
+	mock.ExpectBegin()
+	tx, err := svc.enrollment.db.BeginTx(context.Background(), nil)
+	require.NoError(t, err)
+	mock.ExpectExec("INSERT INTO openai_oauth_reauth_configs.*ON CONFLICT.*DO NOTHING").WithArgs(
+		int64(42), "user@example.com", OpenAIOAuthReauthModePasswordTOTP, OpenAIOAuthReauthEngineLocal, "random_managed", nil, "encrypted:new-password", "", "").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectRollback()
+	changed, err := svc.writeEnrollmentConfig(context.Background(), tx, 42, &AuthorizationSecret{Email: "user@example.com", Password: "new-password"}, nil, nil)
+	require.False(t, changed)
+	require.Equal(t, "account_changed", tokenGuardV2EnrollmentError(err))
+	require.NoError(t, tx.Rollback())
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestAccountTokenGuardV2SyncCursorAndAutoEnrollmentDefault(t *testing.T) {
+	svc, mock := tokenGuardV2EnrollmentTestService(t)
+	// Old installations never start enrolling accounts merely on upgrade.
+	require.NoError(t, svc.runAutoEnrollment(context.Background()))
+	_, err := svc.SyncAccountsAfter(context.Background(), -1)
+	require.Error(t, err)
+	mock.ExpectQuery("SELECT a.id,.*ORDER BY a.id LIMIT").WithArgs(int64(41), tokenGuardV2BatchLimit).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "email"}))
+	result, err := svc.SyncAccountsAfter(context.Background(), 41)
+	require.NoError(t, err)
+	require.Empty(t, result.Items)
+	require.False(t, result.HasMore)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestAccountTokenGuardV2EnrollmentPreservesDisabledAndBannedAccounts(t *testing.T) {
+	for _, inserted := range []int64{0, 1} {
+		t.Run(fmt.Sprintf("inserted_%d", inserted), func(t *testing.T) {
+			svc, mock := tokenGuardV2EnrollmentTestService(t)
+			tokenGuardV2ExpectEnrollmentAccount(mock, false, true)
+			mock.ExpectQuery("SELECT login_email.*FOR UPDATE").WithArgs(int64(42)).WillReturnRows(tokenGuardV2ConfigTestRows())
+			mock.ExpectQuery("SELECT secret_encrypted FROM").WithArgs("user@example.com").WillReturnRows(sqlmock.NewRows([]string{"secret"}))
+			// Paused defaults apply only on INSERT. A pre-existing row is never
+			// updated, so its switches and exhausted budget are preserved.
+			mock.ExpectExec("INSERT INTO account_token_guard_v2_accounts.*ON CONFLICT.*DO NOTHING").
+				WithArgs(int64(42), false, false).WillReturnResult(sqlmock.NewResult(0, inserted))
+			mock.ExpectCommit()
+			_, status, err := svc.enrollAccount(context.Background(), 42, nil, nil)
+			require.NoError(t, err)
+			require.Equal(t, "missing_credentials", status)
+			require.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}
+
+func TestAccountTokenGuardV2CannotRemoveWhileAutoEnrollmentActive(t *testing.T) {
+	repo := &accountTokenGuardV2TestRepo{record: &AccountTokenGuardV2Record{AccountID: 42, AutoReloginExhausted: true}}
+	settings := &accountTokenGuardV2TestSettings{raw: `{"auto_enroll_enabled":true}`}
+	svc := NewAccountTokenGuardV2Service(repo, settings, nil, nil, nil)
+	err := svc.RemoveAccount(context.Background(), 42)
+	require.Equal(t, "TOKEN_GUARD_V2_AUTO_ENROLL_ACTIVE", infraerrors.Reason(err))
+	require.NotNil(t, repo.record)
+	require.True(t, repo.record.AutoReloginExhausted)
+	settings.raw = `{"auto_enroll_enabled":false}`
+	require.NoError(t, svc.RemoveAccount(context.Background(), 42))
+	require.Nil(t, repo.record)
+}
+
+func TestAccountTokenGuardV2DisableThenRemoveStopsStaleAutomaticBatch(t *testing.T) {
+	svc, mock := tokenGuardV2EnrollmentTestService(t)
+	// The outer worker snapshot still says enabled. The authoritative setting
+	// has already been disabled before the administrator removes membership.
+	svc.settings = &accountTokenGuardV2TestSettings{raw: `{"auto_enroll_enabled":true}`}
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT pg_advisory_xact_lock").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery(`SELECT value FROM settings WHERE key=\$1`).WithArgs(accountTokenGuardV2RulesSettingKey).
+		WillReturnRows(sqlmock.NewRows([]string{"value"}).AddRow(`{"auto_enroll_enabled":false}`))
+	mock.ExpectExec(`DELETE FROM account_token_guard_v2_accounts WHERE account_id=\$1`).WithArgs(int64(42)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	require.NoError(t, svc.RemoveAccount(context.Background(), 42))
+
+	// The account remains a candidate after its monitoring row was removed.
+	// No account/config lookup or INSERT may follow the per-row disabled check.
+	mock.ExpectQuery("SELECT a.id,.*ORDER BY a.id LIMIT").WithArgs(int64(0), tokenGuardV2BatchLimit).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "email"}).AddRow(42, "user@example.com"))
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT pg_advisory_xact_lock").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery(`SELECT value FROM settings WHERE key=\$1`).WithArgs(accountTokenGuardV2RulesSettingKey).
+		WillReturnRows(sqlmock.NewRows([]string{"value"}).AddRow(`{"auto_enroll_enabled":false}`))
+	mock.ExpectRollback()
+	require.NoError(t, svc.runAutoEnrollment(context.Background()))
+	require.Zero(t, svc.enrollment.afterID)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestAccountTokenGuardV2TransactionalRemovalUsesPersistedRules(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		rows       *sqlmock.Rows
+		wantReason string
+	}{
+		{"enabled", sqlmock.NewRows([]string{"value"}).AddRow(`{"auto_enroll_enabled":true}`), "TOKEN_GUARD_V2_AUTO_ENROLL_ACTIVE"},
+		{"malformed", sqlmock.NewRows([]string{"value"}).AddRow(`{"auto_enroll_enabled":"bad"}`), "TOKEN_GUARD_V2_RULES_READ_FAILED"},
+		{"missing defaults disabled", sqlmock.NewRows([]string{"value"}), ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, mock := tokenGuardV2EnrollmentTestService(t)
+			mock.ExpectBegin()
+			mock.ExpectExec("SELECT pg_advisory_xact_lock").WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectQuery(`SELECT value FROM settings WHERE key=\$1`).WithArgs(accountTokenGuardV2RulesSettingKey).WillReturnRows(tc.rows)
+			if tc.wantReason == "" {
+				// Deleting already-absent membership remains a successful no-op.
+				mock.ExpectExec(`DELETE FROM account_token_guard_v2_accounts WHERE account_id=\$1`).WithArgs(int64(42)).WillReturnResult(sqlmock.NewResult(0, 0))
+				mock.ExpectCommit()
+			} else {
+				mock.ExpectRollback()
+			}
+			err := svc.RemoveAccount(context.Background(), 42)
+			if tc.wantReason == "" {
+				require.NoError(t, err)
+			} else {
+				require.Equal(t, tc.wantReason, infraerrors.Reason(err))
+			}
+			require.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}
+
+func TestAccountTokenGuardV2AutomaticEnrollmentChecksPersistedSwitchBeforeAccount(t *testing.T) {
+	svc, mock := tokenGuardV2EnrollmentTestService(t)
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT pg_advisory_xact_lock").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery(`SELECT value FROM settings WHERE key=\$1`).WithArgs(accountTokenGuardV2RulesSettingKey).
+		WillReturnRows(sqlmock.NewRows([]string{"value"}).AddRow(`{"auto_enroll_enabled":true}`))
+	mock.ExpectQuery("SELECT .* FROM accounts a WHERE a.id").WithArgs(int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"email", "supported", "paused"}).AddRow("user@example.com", false, false))
+	mock.ExpectRollback()
+	_, status, err := svc.enrollAccountWithMode(context.Background(), 42, nil, nil, true)
+	require.NoError(t, err)
+	require.Equal(t, "unsupported_account", status)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
 
 type accountTokenGuardV2TestRepo struct {
 	mu          sync.Mutex

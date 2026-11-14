@@ -5,22 +5,27 @@
       <header class="page-heading">
         <div>
           <p class="eyebrow">{{ t('accountOps.smartTitle') }}</p>
-          <h2 class="flex items-center gap-2"><Icon name="credentialOps" size="lg" class="shrink-0" aria-hidden="true" />{{ t('tokenGuardV2.title') }}</h2>
+          <h2 class="flex flex-wrap items-center gap-2"><Icon name="credentialOps" size="lg" class="shrink-0" aria-hidden="true" />{{ t('tokenGuardV2.title') }}<NewFeatureBadge :notice-id="NEW_FEATURE_NOTICES.credentialOperationsUnified" :user-id="auth.user?.id" /></h2>
           <p class="subtitle">{{ t('tokenGuardV2.description') }}</p>
         </div>
         <div class="flex flex-wrap gap-2">
           <button class="btn btn-secondary inline-flex items-center gap-2" :disabled="loading || mutationBusy" @click="load()">
             <Icon name="refresh" size="sm" :class="{ 'animate-spin': loading }" />{{ t('tokenGuardV2.refresh') }}
           </button>
+          <button class="btn btn-secondary" :disabled="!encryptionReady || mutationBusy" :title="t('tokenGuardV2.syncActivationHint')" data-testid="guard-sync-history" @click="syncHistory">{{ t(syncing ? 'tokenGuardV2.syncingHistory' : syncHasMore ? 'tokenGuardV2.continueSyncHistory' : 'tokenGuardV2.syncHistory') }}</button>
+          <button class="btn btn-secondary" :disabled="!encryptionReady || mutationBusy" data-testid="guard-batch-add" @click="batchOpen = true">{{ t('tokenGuardV2.batchAdd') }}</button>
           <button class="btn btn-primary" :disabled="!encryptionReady || mutationBusy" @click="openCreate">{{ t('tokenGuardV2.addAccount') }}</button>
         </div>
       </header>
+      <p class="mb-5 text-xs leading-5 text-gray-500 dark:text-dark-400" data-testid="guard-sync-hint">{{ t('tokenGuardV2.syncActivationHint') }}</p>
 
       <p v-if="error && !editorOpen" role="alert" class="error-banner">{{ error }}</p>
       <p v-if="notice" role="status" class="success-banner">{{ notice }}</p>
+      <CredentialImportResults v-if="syncResult" :result="syncResult" class="mb-5 rounded-xl border border-gray-200 p-4 dark:border-dark-700" />
 
       <CredentialEncryptionSetup class="mb-5" @ready="encryptionReady = $event">
-        <div class="mt-4 border-t border-gray-200 pt-4 dark:border-dark-600" data-testid="credential-runtime-controls" :aria-busy="runtimeSaving">
+        <details class="mt-4 border-t border-gray-200 pt-4 dark:border-dark-600" data-testid="credential-runtime-controls" :aria-busy="runtimeSaving">
+          <summary class="mb-4 cursor-pointer text-sm font-medium">{{ t('tokenGuardV2.advancedRuntime') }}</summary>
           <div class="grid gap-4 sm:grid-cols-2">
             <label class="field-label">{{ t('tokenGuardV2.reloginEngine') }}
               <select id="token-guard-v2-engine" :value="runtimeDraft.engine" class="input w-full" :disabled="mutationBusy || loading || !runtimeLoaded" @change="changeRuntime('engine', $event)">
@@ -38,7 +43,7 @@
           <p class="mt-2 text-xs leading-5 text-gray-500 dark:text-gray-400">{{ t(runtimeDraft.engine === 'session_studio' ? 'tokenGuardV2.sessionStudioGlobalHint' : runtimeDraft.engine === 'local_worker' ? 'tokenGuardV2.localWorkerEngineHint' : 'tokenGuardV2.legacyEngineHint') }}</p>
           <p class="mt-1 text-xs leading-5 text-gray-500 dark:text-gray-400">{{ t('tokenGuardV2.workerConcurrencyHint') }}</p>
           <p v-if="runtimeSaving" role="status" class="mt-2 text-xs">{{ t('tokenGuardV2.saving') }}</p>
-        </div>
+        </details>
       </CredentialEncryptionSetup>
 
       <section v-if="status.worker" class="mb-5 rounded-xl border border-gray-200 p-4 dark:border-gray-700" data-testid="reauth-runtime-status" role="status">
@@ -55,12 +60,15 @@
         <article class="summary-card"><span>{{ t('tokenGuardV2.activeTasks') }}</span><strong>{{ activeTaskCount }}</strong><small>{{ t('tokenGuardV2.workerHint') }}</small></article>
       </section>
 
-      <nav class="section-tabs" :aria-label="t('tokenGuardV2.pageTabs')">
-        <button type="button" role="tab" data-testid="guard-tab-accounts" :aria-selected="activeSection === 'accounts'" :class="{ active: activeSection === 'accounts' }" @click="activeSection = 'accounts'">{{ t('tokenGuardV2.accountsTab') }}</button>
-        <button type="button" role="tab" data-testid="guard-tab-rules" :aria-selected="activeSection === 'rules'" :class="{ active: activeSection === 'rules' }" @click="activeSection = 'rules'">{{ t('tokenGuardV2.rulesTab') }}</button>
+      <nav class="section-tabs" role="tablist" :aria-label="t('tokenGuardV2.pageTabs')">
+        <div v-for="section in credentialOperationsSections" :key="section" class="inline-flex items-center gap-1">
+          <button :id="'guard-tab-' + section" type="button" role="tab" :data-testid="'guard-tab-' + section" :aria-selected="activeSection === section" :aria-controls="'guard-panel-' + section" :tabindex="activeSection === section ? 0 : -1" :class="{ active: activeSection === section }" @click="activeSection = section" @keydown.left.prevent="switchSection(-1)" @keydown.right.prevent="switchSection(1)">{{ t('tokenGuardV2.' + section + 'Tab') }}</button>
+          <NewFeatureBadge v-if="!['accounts', 'rules'].includes(section)" :notice-id="NEW_FEATURE_NOTICES.credentialOperationsUnified" :user-id="auth.user?.id" />
+        </div>
       </nav>
 
-      <section v-if="activeSection === 'accounts'" class="table-card">
+      <section v-if="activeSection === 'accounts'" id="guard-panel-accounts" role="tabpanel" aria-labelledby="guard-tab-accounts" class="table-card">
+        <p v-if="status.auto_enroll_enabled" class="border-b border-gray-100 px-4 py-3 text-xs leading-5 text-gray-500 dark:border-dark-800 dark:text-dark-400" data-testid="guard-remove-hint">{{ t('tokenGuardV2.removeAutoEnrollHint') }}</p>
         <div class="list-toolbar">
           <div class="filter-tabs" role="tablist" :aria-label="t('tokenGuardV2.statusFilter')">
             <button v-for="filter in accountFilters" :key="filter.value" type="button" role="tab" :aria-selected="accountFilter === filter.value" :data-filter="filter.value" :class="{ active: accountFilter === filter.value }" @click="accountFilter = filter.value">
@@ -111,7 +119,7 @@
                     <button class="link-btn" :disabled="mutationBusy" @click="relogin(item)">{{ t('tokenGuardV2.reloginNow') }}</button>
                     <button v-if="item.auto_relogin_exhausted" class="link-btn" :data-testid="'resume-budget-' + item.account_id" :disabled="mutationBusy || loading" @click="resumeBudget(item)">{{ t('tokenGuardV2.resumeReloginBudget') }}</button>
                     <OpenAITOTPDialog :account-id="item.account_id" :account-name="item.account_name" :configured="!!(item.login_config?.password_configured && item.login_config?.totp_configured)" />
-                    <button class="link-btn danger-text" :disabled="mutationBusy" @click="remove(item)">{{ t('tokenGuardV2.remove') }}</button>
+                    <button class="link-btn danger-text" :data-testid="'remove-guard-' + item.account_id" :disabled="mutationBusy || status.auto_enroll_enabled" :title="status.auto_enroll_enabled ? t('tokenGuardV2.removeAutoEnrollHint') : undefined" @click="remove(item)">{{ t('tokenGuardV2.remove') }}</button>
                   </div>
                 </td>
               </tr>
@@ -134,20 +142,30 @@
         />
       </section>
 
-      <section v-else class="rules-card">
+      <section v-else-if="activeSection === 'rules'" id="guard-panel-rules" role="tabpanel" aria-labelledby="guard-tab-rules" class="rules-card">
         <div class="rules-heading">
           <div><h3>{{ t('tokenGuardV2.rulesTitle') }}</h3><p>{{ t('tokenGuardV2.rulesDescription') }}</p></div>
           <span class="badge" :class="{ ok: !rulesDirty }">{{ t(rulesDirty ? 'tokenGuardV2.rulesUnsaved' : 'tokenGuardV2.rulesConfigurable') }}</span>
         </div>
         <form id="token-guard-v2-rules" class="rules-form" @submit.prevent="saveRulesConfig">
+          <div class="mt-5 rounded-xl border border-gray-200 p-4 dark:border-dark-700">
+            <div class="flex flex-wrap items-center gap-2"><label class="inline-flex items-center gap-3 text-sm font-medium"><input id="token-guard-v2-auto-enroll" v-model="rulesDraft.auto_enroll_enabled" type="checkbox" role="switch" class="automation-switch" :disabled="mutationBusy" @change="rulesDirty = true" />{{ t('tokenGuardV2.autoEnroll') }}</label><NewFeatureBadge :notice-id="NEW_FEATURE_NOTICES.credentialOperationsUnified" :user-id="auth.user?.id" /></div>
+            <p class="mt-2 text-xs leading-5 text-gray-500 dark:text-dark-400">{{ t('tokenGuardV2.autoEnrollHint') }}</p>
+            <p class="mt-2 text-xs leading-5 text-gray-500 dark:text-dark-400">{{ t('tokenGuardV2.syncActivationHint') }}</p>
+          </div>
           <div class="rule-metrics">
             <label><span>{{ t('tokenGuardV2.ruleProbeInterval') }}</span><input id="token-guard-v2-rule-probe" v-model.number="rulesDraft.probe_interval_minutes" class="input" type="number" min="1" max="1440" required :disabled="mutationBusy" @input="rulesDirty = true" /><small>{{ t('tokenGuardV2.minutes') }}</small></label>
             <label><span>{{ t('tokenGuardV2.ruleRetryInterval') }}</span><input id="token-guard-v2-rule-retry" v-model.number="rulesDraft.retry_interval_minutes" class="input" type="number" min="1" max="1440" required :disabled="mutationBusy" @input="rulesDirty = true" /><small>{{ t('tokenGuardV2.minutes') }}</small></label>
             <label><span>{{ t('tokenGuardV2.ruleFailureThreshold') }}</span><input id="token-guard-v2-rule-threshold" v-model.number="rulesDraft.fail_streak_threshold" class="input" type="number" min="1" max="10" required :disabled="mutationBusy" @input="rulesDirty = true" /><small>{{ t('tokenGuardV2.times') }}</small></label>
             <label><span>{{ t('tokenGuardV2.ruleCooldown') }}</span><input id="token-guard-v2-rule-cooldown" v-model.number="rulesDraft.relogin_cooldown_minutes" class="input" type="number" min="1" max="10080" required :disabled="mutationBusy" @input="rulesDirty = true" /><small>{{ t('tokenGuardV2.minutes') }}</small></label>
+          </div>
+          <details class="mt-4 rounded-xl border border-gray-200 p-4 dark:border-dark-700" data-testid="guard-advanced-rules">
+            <summary class="cursor-pointer text-sm font-medium">{{ t('tokenGuardV2.advancedRules') }}</summary>
+            <div class="rule-metrics">
             <label><span>{{ t('tokenGuardV2.ruleReloginBackoffMax') }}</span><input id="token-guard-v2-rule-backoff-max" v-model.number="rulesDraft.relogin_backoff_max_minutes" class="input" type="number" :min="rulesDraft.relogin_cooldown_minutes" max="10080" required :disabled="mutationBusy" @input="rulesDirty = true" /><small>{{ t('tokenGuardV2.minutes') }}</small></label>
             <label><span>{{ t('tokenGuardV2.ruleReloginMaxFailures') }}</span><input id="token-guard-v2-rule-max-failures" v-model.number="rulesDraft.relogin_max_failures" class="input" type="number" min="1" max="20" required :disabled="mutationBusy" @input="rulesDirty = true" /><small>{{ t('tokenGuardV2.reloginBudgetHint') }}</small></label>
-          </div>
+            </div>
+          </details>
           <div class="rules-actions"><button type="submit" class="btn btn-primary" :disabled="mutationBusy || !rulesDirty">{{ rulesSaving ? t('tokenGuardV2.saving') : t('tokenGuardV2.saveRules') }}</button></div>
         </form>
         <div class="rule-list">
@@ -158,6 +176,21 @@
           <article><span>5</span><div><strong>{{ t('tokenGuardV2.ruleReloginTitle') }}</strong><p>{{ t('tokenGuardV2.ruleReloginHint', { count: status.fail_streak_threshold }) }}</p></div></article>
         </div>
       </section>
+
+      <section v-else-if="activeSection === 'inspection'" id="guard-panel-inspection" role="tabpanel" aria-labelledby="guard-tab-inspection" class="space-y-5">
+        <p class="text-sm leading-6 text-gray-500 dark:text-gray-400">{{ t('tokenGuardV2.managedInspectionHint') }} <button type="button" class="font-medium text-primary-600 underline" @click="activeSection = 'rules'">{{ t('tokenGuardV2.openManagedRules') }}</button></p>
+        <AuthorizationRecords kind="accounts" :refresh-key="authorizationRefresh" />
+        <details class="rounded-xl border border-gray-200 p-4 dark:border-dark-700" data-testid="guard-legacy-inspection">
+          <summary class="cursor-pointer text-sm font-medium">{{ t('tokenGuardV2.legacyInspection') }}</summary>
+          <p class="my-3 text-xs leading-5 text-gray-500 dark:text-gray-400">{{ t('tokenGuardV2.legacyInspectionHint') }}</p>
+          <AuthorizationSchedule />
+        </details>
+      </section>
+      <section v-else :id="'guard-panel-' + activeSection" role="tabpanel" :aria-labelledby="'guard-tab-' + activeSection">
+        <AuthorizationWorkspace :section="activeSection" @saved="handleImportSaved" />
+      </section>
+
+      <TokenGuardV2BatchDialog :show="batchOpen" :proxies="proxies" :remote-engine="runtimeDraft.engine === 'session_studio'" :encryption-ready="encryptionReady" @close="batchOpen = false" @busy="batchSaving = $event" @saved="handleImportSaved" @workbench="activeSection = 'workbench'" />
 
       <BaseDialog :show="editorOpen" :title="editing ? t('tokenGuardV2.editTitle') : t('tokenGuardV2.addTitle')" width="wide" @close="closeEditor">
         <form id="token-guard-v2-editor" class="editor-form" @submit.prevent="save">
@@ -185,6 +218,7 @@
           <label class="field-label">{{ t('tokenGuardV2.loginEmail') }}<input v-model.trim="draft.login_email" class="input w-full" type="email" required /></label>
           <label class="field-label">{{ t('tokenGuardV2.loginProxy') }}
             <select id="token-guard-v2-proxy" v-model="proxyChoice" :disabled="editorEngine === 'session_studio'" class="input w-full">
+              <option value="random_managed">{{ t('tokenGuardV2.randomManagedProxy') }}</option>
               <option value="account">{{ t('tokenGuardV2.accountProxyDefault') }}</option>
               <option value="mihomo">{{ t('tokenGuardV2.mihomoManagedPool') }}</option>
               <option v-for="proxy in proxies" :key="proxy.id" :value="`proxy:${proxy.id}`">{{ proxyOptionLabel(proxy) }}</option>
@@ -217,8 +251,18 @@
 <script setup lang="ts">
 import CredentialOperationFailureView from '@/components/account/CredentialOperationFailure.vue'
 import { probeOperationFailure, taskOperationFailure, safeDiagnosticToken } from '@/utils/credentialOperationFailure'
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRoute, useRouter } from 'vue-router'
+import { useAuthStore } from '@/stores/auth'
+import NewFeatureBadge from '@/components/common/NewFeatureBadge.vue'
+import { NEW_FEATURE_NOTICES } from '@/constants/newFeatureNotices'
+import { credentialOperationsSection, credentialOperationsSections } from '@/utils/credentialOperations'
+import AuthorizationWorkspace from '@/components/admin/account/AuthorizationWorkspace.vue'
+import AuthorizationSchedule from '@/components/admin/account/AuthorizationSchedule.vue'
+import AuthorizationRecords from '@/components/admin/account/AuthorizationRecords.vue'
+import TokenGuardV2BatchDialog from '@/components/admin/account/TokenGuardV2BatchDialog.vue'
+import CredentialImportResults from '@/components/admin/account/CredentialImportResults.vue'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import CredentialEncryptionSetup from '@/components/account/CredentialEncryptionSetup.vue'
 import OpenAITOTPDialog from '@/components/account/OpenAITOTPDialog.vue'
@@ -232,6 +276,8 @@ import { openAIPlanTypeLabel } from '@/utils/planType'
 import type { AccountListItem, AdminGroup, Proxy } from '@/types'
 import {
   createTokenGuardV2Account,
+  syncTokenGuardV2Accounts,
+  type TokenGuardV2ImportResult,
   deleteTokenGuardV2Account,
   listTokenGuardV2Accounts,
   probeTokenGuardV2Account,
@@ -253,6 +299,9 @@ import {
 } from '@/api/admin/accountTokenGuardV2'
 
 const { t } = useI18n()
+const auth = useAuthStore()
+const route = useRoute()
+const router = useRouter()
 const encryptionReady = ref(false)
 const emptyStatus = (): TokenGuardV2Status => ({
   accounts: [],
@@ -269,7 +318,15 @@ const accountSearch = ref('')
 const proxies = ref<Proxy[]>([])
 const loading = ref(false), saving = ref(false), busyId = ref(0), editorOpen = ref(false)
 const editing = ref<TokenGuardV2Account | null>(null)
-const activeSection = ref<'accounts' | 'rules'>('accounts')
+const activeSection = ref(credentialOperationsSection(route?.query.tab))
+const batchOpen = ref(false)
+const batchSaving = ref(false)
+const syncing = ref(false)
+const syncResult = ref<TokenGuardV2ImportResult | null>(null)
+const syncHasMore = ref(false)
+const syncAfterId = ref(0)
+const authorizationRefresh = ref(0)
+let syncController: AbortController | null = null
 const accountFilter = ref<'all' | 'healthy' | 'attention' | 'paused'>('all')
 const searchQuery = ref('')
 const accountPage = ref(1)
@@ -279,7 +336,7 @@ const runtimeSaving = ref(false)
 const runtimeLoaded = ref(false)
 const rulesSaving = ref(false)
 const rulesDirty = ref(false)
-const mutationBusy = computed(() => saving.value || busyId.value !== 0 || runtimeSaving.value || rulesSaving.value)
+const mutationBusy = computed(() => saving.value || busyId.value !== 0 || runtimeSaving.value || rulesSaving.value || batchSaving.value || syncing.value)
 const error = ref(''), notice = ref('')
 let timer: ReturnType<typeof setInterval> | undefined
 let loadGeneration = 0
@@ -289,7 +346,7 @@ const blankDraft = (): SaveTokenGuardV2Account => ({
   account_id: 0,
   login_email: '',
   credential_mode: 'password_totp',
-  proxy_source: 'account',
+  proxy_source: 'random_managed',
   proxy_id: null,
   password: '',
   totp_secret: '',
@@ -298,6 +355,7 @@ const blankDraft = (): SaveTokenGuardV2Account => ({
 })
 const draft = reactive<SaveTokenGuardV2Account>(blankDraft())
 const rulesDraft = reactive({
+  auto_enroll_enabled: false,
   relogin_backoff_max_minutes: 60,
   relogin_max_failures: 3,
   probe_interval_minutes: 30,
@@ -413,6 +471,7 @@ const proxyChoice = computed({
 })
 const proxyOptionLabel = (proxy: Proxy) => `${proxy.protocol.toUpperCase()} · ${proxy.name} · ${proxy.host}:${proxy.port}`
 const proxyLabel = (source: TokenGuardV2ProxySource = 'account', proxyId?: number) => {
+  if (source === 'random_managed') return t('tokenGuardV2.randomManagedProxy')
   if (source === 'mihomo') return t('tokenGuardV2.mihomoManagedPool')
   if (source !== 'managed_proxy' || !proxyId) return t('tokenGuardV2.accountProxyDefault')
   const proxy = proxies.value.find(item => item.id === proxyId)
@@ -470,6 +529,7 @@ const configurationDetail = (item: TokenGuardV2Account) => {
 function resetDraft() { Object.assign(draft, blankDraft()) }
 function syncRulesDraft(rules: TokenGuardV2Rules) {
   Object.assign(rulesDraft, {
+    auto_enroll_enabled: rules.auto_enroll_enabled ?? false,
     relogin_backoff_max_minutes: Math.round((rules.relogin_backoff_max_seconds ?? Math.max(3600, rules.relogin_cooldown_seconds)) / 60),
     relogin_max_failures: rules.relogin_max_failures ?? 3,
     probe_interval_minutes: Math.round(rules.probe_interval_seconds / 60),
@@ -494,7 +554,8 @@ function openEdit(item: TokenGuardV2Account) {
   })
   editorOpen.value = true
 }
-function closeEditor() { if (!mutationBusy.value) editorOpen.value = false }
+function clearDraftSecrets() { draft.password = ''; draft.totp_secret = ''; draft.otp_url = '' }
+function closeEditor() { if (!mutationBusy.value) { editorOpen.value = false; clearDraftSecrets() } }
 
 async function load(silent = false, afterAction = false) {
   if ((!afterAction && (loading.value || mutationBusy.value)) || runtimeSaving.value) return
@@ -532,6 +593,7 @@ async function saveRulesConfig() {
   rulesSaving.value = true; error.value = ''; notice.value = ''
   try {
     const saved = await saveTokenGuardV2Rules({
+      auto_enroll_enabled: rulesDraft.auto_enroll_enabled,
       relogin_backoff_max_seconds: Math.max(rulesDraft.relogin_backoff_max_minutes, rulesDraft.relogin_cooldown_minutes) * 60,
       relogin_max_failures: rulesDraft.relogin_max_failures,
       probe_interval_seconds: rulesDraft.probe_interval_minutes * 60,
@@ -556,6 +618,7 @@ async function save() {
   saving.value = true; error.value = ''; notice.value = ''
   try {
     const payload = { ...draft }
+    clearDraftSecrets()
     if (editing.value) await updateTokenGuardV2Account(draft.account_id!, payload)
     else await createTokenGuardV2Account(payload)
     notice.value = t('tokenGuardV2.saved')
@@ -633,11 +696,56 @@ async function changeRuntime(field: keyof TokenGuardV2RuntimeSettings, event: Ev
 
 const remove = async (item: TokenGuardV2Account) => {
   if (mutationBusy.value) return
+  if (status.auto_enroll_enabled) { error.value = t('tokenGuardV2.removeAutoEnrollHint'); return }
   if (!window.confirm(t('tokenGuardV2.removeConfirm', { account: item.account_name }))) return
   await act(item, () => deleteTokenGuardV2Account(item.account_id), 'tokenGuardV2.removedNotice')
 }
 
 
+async function syncHistory() {
+  if (mutationBusy.value || !encryptionReady.value) return
+  const afterId = syncHasMore.value ? syncAfterId.value : 0
+  if (!syncHasMore.value) syncResult.value = null
+  syncing.value = true; error.value = ''; notice.value = ''
+  invalidateLoad()
+  const request = new AbortController()
+  syncController = request
+  try {
+    const result = await syncTokenGuardV2Accounts(afterId, request.signal)
+    if (!request.signal.aborted) {
+      const previous = syncResult.value
+      syncResult.value = previous ? {
+        ...result,
+        items: [...previous.items, ...result.items].slice(-1000),
+        succeeded: previous.succeeded + result.succeeded,
+        skipped: previous.skipped + result.skipped,
+        failed: previous.failed + result.failed
+      } : result
+      const next = result.next_after_id ?? 0
+      const canContinue = Number.isSafeInteger(next) && next > afterId
+      syncHasMore.value = result.has_more === true && canContinue
+      if (syncHasMore.value) { syncAfterId.value = next; notice.value = t('tokenGuardV2.syncMoreHint') }
+      else if (result.has_more) notice.value = t('tokenGuardV2.syncCursorStalled')
+      else notice.value = t('tokenGuardV2.syncComplete')
+    }
+  } catch (cause) {
+    if (!request.signal.aborted) { error.value = message(cause); notice.value = t(syncHasMore.value ? 'tokenGuardV2.syncResumeHint' : 'tokenGuardV2.importUnconfirmed') }
+  } finally {
+    syncing.value = false
+    if (!request.signal.aborted) { syncController = null; await handleImportSaved() }
+  }
+}
+async function handleImportSaved() { authorizationRefresh.value++; await nextTick(); await load(true, true) }
+async function switchSection(direction: number) {
+  activeSection.value = credentialOperationsSections[(credentialOperationsSections.indexOf(activeSection.value) + direction + credentialOperationsSections.length) % credentialOperationsSections.length]!
+  await nextTick()
+  document.getElementById('guard-tab-' + activeSection.value)?.focus()
+}
+function visibility() { if (document.hidden) clearDraftSecrets() }
+watch(activeSection, value => {
+  if (route && router && route.query.tab !== value) void router.replace({ query: { ...route.query, tab: value } })
+})
+watch(() => route?.query.tab, value => { activeSection.value = credentialOperationsSection(value) })
 watch([accountFilter, searchQuery], () => { accountPage.value = 1 })
 watch(() => filteredAccounts.value.length, (total) => {
   accountPage.value = Math.min(accountPage.value, Math.max(1, Math.ceil(total / accountPageSize.value)))
@@ -645,12 +753,13 @@ watch(() => filteredAccounts.value.length, (total) => {
 
 onMounted(() => {
   void load()
+  document.addEventListener('visibilitychange', visibility)
   timer = setInterval(() => {
     currentTime.value = Date.now()
-    if (document.visibilityState === 'visible' && !editorOpen.value) void load(true)
+    if (document.visibilityState === 'visible' && !editorOpen.value && !batchOpen.value) void load(true)
   }, 30_000)
 })
-onBeforeUnmount(() => { loadGeneration++; if (timer) clearInterval(timer) })
+onBeforeUnmount(() => { loadGeneration++; syncController?.abort(); clearDraftSecrets(); document.removeEventListener('visibilitychange', visibility); if (timer) clearInterval(timer) })
 </script>
 
 <style scoped>
@@ -665,7 +774,7 @@ onBeforeUnmount(() => { loadGeneration++; if (timer) clearInterval(timer) })
 .summary-card span { @apply block text-xs font-medium text-gray-400; }
 .summary-card strong { @apply mt-2 block text-2xl font-semibold tabular-nums; }
 .summary-card small { @apply mt-2 block truncate text-xs text-gray-400; }
-.section-tabs { @apply mb-4 flex w-fit gap-1 rounded-xl bg-gray-100 p-1 dark:bg-dark-800; }
+.section-tabs { @apply mb-4 flex w-fit max-w-full flex-wrap gap-1 rounded-xl bg-gray-100 p-1 dark:bg-dark-800; }
 .section-tabs button { @apply rounded-lg px-4 py-2 text-xs font-medium text-gray-500 transition-colors dark:text-gray-400; }
 .section-tabs button.active { @apply bg-white text-gray-900 shadow-sm dark:bg-dark-700 dark:text-white; }
 .list-toolbar { @apply flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 p-4 dark:border-dark-800; }

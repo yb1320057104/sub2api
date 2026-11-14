@@ -17,11 +17,17 @@ import (
 type excelReauthTestRepo struct {
 	mu sync.Mutex
 	*reauthTestRepo
-	ciphertext string
-	diagnosis  ExcelBPSCredentialState
-	replaceErr error
-	applied    bool
-	ids        []int64
+	ciphertext     string
+	diagnosis      ExcelBPSCredentialState
+	replaceErr     error
+	applied        bool
+	ids            []int64
+	automaticCalls int
+}
+
+func (r *excelReauthTestRepo) CreateAutomaticExcelTask(ctx context.Context, id int64, hash string) (*OpenAIOAuthReauthTaskRecord, error) {
+	r.automaticCalls++
+	return r.CreateExcelTask(ctx, id, hash)
 }
 
 func (r *excelReauthTestRepo) CreateExcelTask(ctx context.Context, id int64, hash string) (*OpenAIOAuthReauthTaskRecord, error) {
@@ -181,6 +187,7 @@ func TestExcelOAuthQueueExistingEnabledAccounts(t *testing.T) {
 	repo.ids = []int64{42}
 	require.NoError(t, svc.QueueMissingExcelAuthorizations(context.Background()))
 	require.Equal(t, 1, repo.createCalls)
+	require.Equal(t, 1, repo.automaticCalls)
 	require.Equal(t, "excel", repo.task.OAuthProfile)
 	repo.createErr = errors.New("busy")
 	require.NoError(t, svc.QueueMissingExcelAuthorizations(context.Background()))

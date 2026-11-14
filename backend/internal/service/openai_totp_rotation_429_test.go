@@ -31,6 +31,7 @@ func newTOTP429TestService(t *testing.T) (*OpenAIOAuthReauthService, *totp429Tes
 	require.True(t, ok)
 	account := reader.account
 	account.Status = StatusActive
+	account.Schedulable = true
 	account.Extra = map[string]any{OpenAITOTPRotateOn429ExtraKey: true}
 	svc.totpWorkerLastSeen.Store(time.Now().UnixNano())
 	repo.rotation.State, repo.rotation.Action = "queued", "rotate"
@@ -66,6 +67,7 @@ func TestTOTPRotationOn429RechecksOptInAndAccountStatus(t *testing.T) {
 		{"opt-out since scheduling", func(a *Account) { a.Extra[OpenAITOTPRotateOn429ExtraKey] = false }},
 		{"legacy account", func(a *Account) { a.Extra = nil }},
 		{"disabled account", func(a *Account) { a.Status = StatusDisabled }},
+		{"scheduling stopped", func(a *Account) { a.Schedulable = false }},
 		{"independent connection", func(a *Account) { a.AuthConnectionID = "connection" }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -77,6 +79,18 @@ func TestTOTPRotationOn429RechecksOptInAndAccountStatus(t *testing.T) {
 			require.Zero(t, repo.calls)
 		})
 	}
+}
+
+func TestTOTPRotationManualIgnoresAutomaticAccountPause(t *testing.T) {
+	svc, repo, account := newTOTP429TestService(t)
+	account.Status = StatusDisabled
+	account.Schedulable = false
+	account.Extra[OpenAITOTPRotateOn429ExtraKey] = false
+	task, err := svc.CreateTOTPRotation(t.Context(), account.ID)
+	require.NoError(t, err)
+	require.NotNil(t, task)
+	require.Equal(t, repo.rotation.TaskID, task.TaskID)
+	require.Zero(t, repo.calls, "manual rotation must not use the automatic gate")
 }
 
 func TestTOTPRotationOn429RequiresSavedCredentialsAndWorker(t *testing.T) {

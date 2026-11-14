@@ -101,21 +101,23 @@ describe('AppSidebar subscription feature flag', () => {
 })
 
 describe('AppSidebar smart operations group', () => {
-  const smartOpsBlock = componentSource.match(/path: '\/admin\/smart-ops'[\s\S]*?\n {4}\] \},/)?.[0] ?? ''
-  const pathsIn = (source: string) => [...source.matchAll(/path: '([^']+)'/g)].map(match => match[1])
-
-  it('nests request capture and the ticket harvest flow under 智能运维', () => {
-    expect(smartOpsBlock).not.toBe('')
-    expect(smartOpsBlock).toMatch(/path: '\/admin\/request-captures'[^\n]*featureFlag: \(\) => adminSettingsStore\.requestCaptureEnabled/)
-    expect(smartOpsBlock).toContain("path: '/admin/harvest-flow'")
-    // Each entry is declared once, so neither is still a top-level item.
-    expect(componentSource.match(/path: '\/admin\/request-captures'/g)).toHaveLength(1)
-    expect(componentSource.match(/path: '\/admin\/harvest-flow'/g)).toHaveLength(1)
+  it('has one direct workbench entry without duplicate radar or tool entries', () => {
+    const entry = componentSource.split('\n').find(line => line.includes("path: '/admin/smart-ops'"))!
+    expect(entry).toContain("label: t('accountOps.smartTitle')")
+    expect(entry).not.toContain('expandOnly')
+    expect(entry).not.toContain('children')
+    expect(componentSource.match(/path: '\/admin\/smart-ops'/g)).toHaveLength(1)
+    expect(componentSource).toContain('route.name === SMART_OPERATIONS_ROUTE_NAME')
+    for (const path of ['/admin/radar', '/admin/token-guard-v2', '/admin/request-captures', '/admin/harvest-flow']) {
+      expect(componentSource).not.toContain(`path: '${path}'`)
+    }
   })
 
-  it('keeps the group in the same order as the 智能运维 tab bar', () => {
+  it('keeps tool preferences in the workbench navigation and the mobile page title', () => {
     const navSource = readFileSync(resolve(dirname(componentPath), '../admin/operations/SmartOpsNav.vue'), 'utf8')
-    expect(pathsIn(smartOpsBlock).slice(1)).toEqual(pathsIn(navSource))
+    expect(navSource).toContain('adminSettingsStore.smartOpsHiddenMenuItems')
+    const headerSource = readFileSync(resolve(dirname(componentPath), 'AppHeader.vue'), 'utf8')
+    expect(headerSource).toContain("'AdminSmartOperations'")
   })
 })
 

@@ -118,3 +118,23 @@ func TestTOTPRotationRequiresCapableWorker(t *testing.T) {
 	_, err = svc.CreateTOTPRotation(context.Background(), 42)
 	require.NoError(t, err)
 }
+
+func TestTOTPRotationUsesRandomLoginProxyWithoutAccountBinding(t *testing.T) {
+	svc, repo := newRotationService(t)
+	repo.config.ProxySource = OpenAIOAuthReauthProxySourceRandomManaged
+	pool := svc.oauth.proxyRepo.(*reauthTestProxyRepo)
+	proxy := &Proxy{ID: 9, Protocol: "socks5h", Host: "203.0.113.9", Port: 1080, Status: StatusActive}
+	pool.pool = []Proxy{*proxy}
+	pool.reader.proxy = proxy
+	claim, err := svc.ClaimTOTPRotation(context.Background(), "worker-a")
+	require.NoError(t, err)
+	require.NotNil(t, claim)
+	require.Equal(t, proxy.URL(), claim.ProxyURL)
+	require.Nil(t, pool.reader.account.ProxyID)
+	require.Nil(t, repo.config.ProxyID)
+
+	pool.pool = nil
+	claim, err = svc.ClaimTOTPRotation(context.Background(), "worker-a")
+	require.Error(t, err)
+	require.Nil(t, claim, "an empty login proxy pool must not become direct access")
+}

@@ -183,3 +183,10 @@ func TestScopedAdminGroupModelsAreExplicitAndScoped(t *testing.T) {
 	require.False(t, RouteAllowed(p, "DELETE", "/api/v1/admin/groups/:id"))
 	require.Error(t, ValidatePolicy(Policy{GlobalPermissions: []string{"groups.models.write"}}))
 }
+
+func TestCredentialOperationsRequiresFullAdministrator(t *testing.T) {
+	policy := Policy{GlobalPermissions: []string{"accounts.create", "accounts.read", "accounts.update", "accounts.credentials", "accounts.network"}, Rules: []Rule{{Permissions: []string{"accounts.create", "accounts.read", "accounts.update", "accounts.credentials", "accounts.network"}, GroupIDs: []int64{1}, AccountTypes: []string{"oauth"}}}}
+	for _, path := range []string{"/api/v1/admin/account-ops/token-guard-v2/accounts/batch", "/api/v1/admin/account-ops/token-guard-v2/sync"} {
+		require.False(t, RouteAllowed(policy, "POST", path), path)
+	}
+}

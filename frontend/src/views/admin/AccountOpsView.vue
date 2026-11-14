@@ -1,7 +1,7 @@
 <template>
-  <AppLayout>
+  <component :is="embedded ? 'div' : AppLayout">
     <div class="account-ops space-y-5">
-      <SmartOpsNav />
+      <SmartOpsNav v-if="!embedded" />
       <div class="flex flex-wrap items-center justify-between gap-3 border-b border-gray-200 dark:border-dark-700">
         <div role="tablist" :aria-label="t('accountOps.pageSections')" class="flex gap-6">
           <button v-for="tab in tabs" :id="`ops-tab-${tab}`" :key="tab" type="button" role="tab" :aria-selected="activeTab === tab"
@@ -168,9 +168,10 @@
           @close="showGroupDialog = false" @saved="acceptGroupConfig" @error="app.showError" />
       </template>
     </div>
-  </AppLayout>
+  </component>
 </template>
 <script setup lang="ts">
+withDefaults(defineProps<{ embedded?: boolean }>(), { embedded: false })
 import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { storeToRefs } from 'pinia'

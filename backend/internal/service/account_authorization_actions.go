@@ -259,6 +259,9 @@ func (s *AccountAuthorizationService) enqueueAuthorizationAction(ctx context.Con
 	if err != nil {
 		return nil, err
 	}
+	if err = ensureNoManagedAuthorization(ctx, tx, email, accountID); err != nil {
+		return nil, err
+	}
 	out := &AuthorizationActionResult{BatchID: uuid.NewString()}
 	// Immediate/retry is an explicit manual action, independent of the auto-reauth switch.
 	err = tx.QueryRowContext(ctx, `INSERT INTO pk_authorization_jobs(batch_id,history_id,email,account_id,source,message,settings) VALUES($1,$2,$3,$4,'manual',$5,$6::jsonb||$7::jsonb||jsonb_build_object('manual_action',true,'retry_of_job_id',$8::bigint,'immediate_authorization',$9::boolean,'reauthorization_retry',$10::boolean)) ON CONFLICT(email) WHERE status IN ('queued','running') DO NOTHING RETURNING id`, out.BatchID, historyID, email, accountID, "管理员已提交，等待授权执行", string(raw), string(snapshot), retryOf, immediateAuthorization, reauthorizationRetry).Scan(&out.JobID)

@@ -5,6 +5,12 @@ vi.mock('@/api/admin/credentialEncryption', () => ({
 }))
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
+import { createPinia, setActivePinia } from 'pinia'
+import { credentialOperationsSection, legacyAuthorizationLocation } from '@/utils/credentialOperations'
+import TokenGuardV2BatchDialog from '@/components/admin/account/TokenGuardV2BatchDialog.vue'
+import AuthorizationWorkspace from '@/components/admin/account/AuthorizationWorkspace.vue'
+import { accountAuthorizationAPI, type AuthorizationConfig, type AuthorizationSubmission } from '@/api/admin/accountAuthorization'
+import { apiClient } from '@/api/client'
 
 import TokenGuardV2View from '../TokenGuardV2View.vue'
 import { getCredentialEncryption } from '@/api/admin/credentialEncryption'
@@ -13,6 +19,8 @@ import type { TokenGuardV2Rules, TokenGuardV2Status } from '@/api/admin/accountT
 const api = vi.hoisted(() => ({
   listGuard: vi.fn(),
   createGuard: vi.fn(),
+  batchCreate: vi.fn(),
+  syncHistory: vi.fn(),
   updateGuard: vi.fn(),
   deleteGuard: vi.fn(),
   probeGuard: vi.fn(),
@@ -29,6 +37,8 @@ const api = vi.hoisted(() => ({
 vi.mock('@/api/admin/accountTokenGuardV2', () => ({
   listTokenGuardV2Accounts: api.listGuard,
   createTokenGuardV2Account: api.createGuard,
+  batchCreateTokenGuardV2Accounts: api.batchCreate,
+  syncTokenGuardV2Accounts: api.syncHistory,
   updateTokenGuardV2Account: api.updateGuard,
   deleteTokenGuardV2Account: api.deleteGuard,
   probeTokenGuardV2Account: api.probeGuard,
@@ -37,6 +47,12 @@ vi.mock('@/api/admin/accountTokenGuardV2', () => ({
   saveTokenGuardV2Runtime: api.saveRuntime,
   updateTokenGuardV2Switches: api.updateSwitches,
   resumeTokenGuardV2Budget: api.resumeBudget,
+}))
+const navigation = vi.hoisted(() => ({ query: {} as Record<string, string>, replace: vi.fn() }))
+vi.mock('vue-router', async importOriginal => ({
+  ...await importOriginal<typeof import('vue-router')>(),
+  useRoute: () => ({ query: navigation.query }),
+  useRouter: () => ({ replace: navigation.replace })
 }))
 vi.mock('@/api/admin/accounts', () => ({ list: api.listAccounts, default: { list: api.listAccounts } }))
 vi.mock('@/api/admin/groups', () => ({ getByPlatform: api.listGroups, default: { getByPlatform: api.listGroups } }))
@@ -58,7 +74,11 @@ let wrapper: VueWrapper | undefined
 let restoreConfirmation: (() => void) | undefined
 
 beforeEach(() => {
+  setActivePinia(createPinia())
   vi.clearAllMocks()
+  navigation.query = {}
+  api.batchCreate.mockResolvedValue({ items: [], succeeded: 0, skipped: 0, failed: 0 })
+  api.syncHistory.mockResolvedValue({ items: [], succeeded: 0, skipped: 0, failed: 0 })
   vi.mocked(getCredentialEncryption).mockResolvedValue({ configured: true, source: 'server_config' })
   api.listGuard.mockResolvedValue({
     runtime_settings: { engine: 'local_worker', worker_concurrency: 3 },
@@ -354,6 +374,7 @@ describe('TokenGuardV2View', () => {
     await flushPromises()
 
     expect(api.saveRules).toHaveBeenCalledWith({
+      auto_enroll_enabled: false,
       relogin_backoff_max_seconds: 7200,
       relogin_max_failures: 3,
       probe_interval_seconds: 900,
@@ -830,5 +851,280 @@ describe('inspection recovery progress', () => {
     await view.findAll('button').find(button => button.text() === 'tokenGuardV2.refresh')!.trigger('click')
     await flushPromises()
     expect(view.get('[data-testid="automation-state-42"]').text()).toBe('tokenGuardV2.automationStates.healthy')
+  })
+})
+
+
+const unifiedStubs = {
+  AppLayout: { template: '<main><slot /></main>' },
+  SmartOpsNav: true,
+  Icon: true,
+  OpenAITOTPDialog: true,
+  AuthorizationSchedule: true,
+  AuthorizationRecords: true,
+  AuthorizationWorkspace: { props: ['section'], template: '<div data-testid="authorization-workspace">{{ section }}</div>' },
+  BaseDialog: { props: ['show'], template: '<section v-if="show"><slot /><footer><slot name="footer" /></footer></section>' }
+}
+
+async function openUnified() {
+  wrapper = mount(TokenGuardV2View, { global: { stubs: unifiedStubs } })
+  await flushPromises()
+  return wrapper
+}
+
+async function openBatch() {
+  wrapper = mount(TokenGuardV2BatchDialog, {
+    props: { show: true, proxies: [], remoteEngine: false, encryptionReady: true },
+    global: { stubs: { BaseDialog: unifiedStubs.BaseDialog } }
+  })
+  await flushPromises()
+  return wrapper
+}
+
+describe('unified credential operations', () => {
+  it('preserves former authorization tabs and defaults unknown destinations safely', () => {
+    expect(legacyAuthorizationLocation({ tab: 'history', search: 'account' })).toEqual({ path: '/admin/token-guard-v2', query: { tab: 'history', search: 'account' } })
+    expect(legacyAuthorizationLocation({ tab: 'proxies' }).query.tab).toBe('proxies')
+    expect(legacyAuthorizationLocation({}).query.tab).toBe('workbench')
+    expect(legacyAuthorizationLocation({ tab: 'bad' }).query.tab).toBe('workbench')
+    expect(credentialOperationsSection('inspection')).toBe('inspection')
+    expect(credentialOperationsSection(['history'])).toBe('accounts')
+  })
+
+  it('opens history directly and changes to the preserved initial-authorization workspace', async () => {
+    navigation.query = { tab: 'history' }
+    const view = await openUnified()
+    expect(view.get('[data-testid="authorization-workspace"]').text()).toBe('history')
+    await view.get('[data-testid="guard-tab-workbench"]').trigger('click')
+    expect(view.get('[data-testid="authorization-workspace"]').text()).toBe('workbench')
+    expect(navigation.replace).toHaveBeenLastCalledWith({ query: { tab: 'workbench' } })
+    await view.get('[data-testid="guard-tab-inspection"]').trigger('click')
+    expect(view.find('authorization-schedule-stub').exists()).toBe(true)
+    expect(view.find('authorization-workspace-stub').exists()).toBe(false)
+  })
+
+  it('defaults new accounts to random login egress without changing saved account choices', async () => {
+    const view = await openUnified()
+    await view.findAll('button').find(button => button.text() === 'tokenGuardV2.addAccount')!.trigger('click')
+    expect((view.get('#token-guard-v2-proxy').element as HTMLSelectElement).value).toBe('random_managed')
+  })
+
+  it('synchronizes on the server and displays pending material without revealing credentials', async () => {
+    api.syncHistory.mockResolvedValueOnce({ items: [{ line: 1, email: 'pending@example.com', account_id: 44, status: 'missing_credentials' }], succeeded: 0, skipped: 1, failed: 0 })
+    const view = await openUnified()
+    await view.get('[data-testid="guard-sync-history"]').trigger('click')
+    await flushPromises()
+    expect(api.syncHistory).toHaveBeenCalledOnce()
+    expect(api.syncHistory.mock.calls[0]?.[0]).toBe(0)
+    expect(api.syncHistory.mock.calls[0]?.[1]).toBeInstanceOf(AbortSignal)
+    expect(view.text()).toContain('tokenGuardV2.importStatuses.missing_credentials')
+    expect(view.text()).toContain('pending@example.com')
+    expect(api.listGuard).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps automatic inclusion off for older responses and saves an explicit opt-in', async () => {
+    const view = await openUnified()
+    await view.get('[data-testid="guard-tab-rules"]').trigger('click')
+    expect((view.get('#token-guard-v2-auto-enroll').element as HTMLInputElement).checked).toBe(false)
+    await view.get('#token-guard-v2-auto-enroll').setValue(true)
+    await view.get('#token-guard-v2-rules').trigger('submit')
+    await flushPromises()
+    expect(api.saveRules).toHaveBeenCalledWith(expect.objectContaining({ auto_enroll_enabled: true }))
+  })
+
+  it('explains automatic activation beside history sync and in the inclusion rules', async () => {
+    const view = await openUnified()
+    expect(view.get('[data-testid="guard-sync-hint"]').text()).toBe('tokenGuardV2.syncActivationHint')
+    expect(view.get('[data-testid="guard-sync-history"]').attributes('title')).toBe('tokenGuardV2.syncActivationHint')
+    await view.get('[data-testid="guard-tab-rules"]').trigger('click')
+    expect(view.get('#token-guard-v2-rules').text()).toContain('tokenGuardV2.syncActivationHint')
+  })
+
+  it('keeps removal disabled until automatic inclusion is saved as off, while allowing pause', async () => {
+    const data = await api.listGuard()
+    api.listGuard.mockResolvedValueOnce({ ...data, auto_enroll_enabled: true })
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    restoreConfirmation = () => confirm.mockRestore()
+    const view = await openUnified()
+    expect(view.get('[data-testid="remove-guard-42"]').attributes('disabled')).toBeDefined()
+    expect(view.get('[data-testid="remove-guard-42"]').attributes('title')).toBe('tokenGuardV2.removeAutoEnrollHint')
+    expect(view.get('[data-testid="guard-remove-hint"]').text()).toBe('tokenGuardV2.removeAutoEnrollHint')
+    expect(view.get('[data-testid="auto-inspect-42"]').attributes('disabled')).toBeUndefined()
+    await view.get('[data-testid="remove-guard-42"]').trigger('click')
+    expect(confirm).not.toHaveBeenCalled()
+    expect(api.deleteGuard).not.toHaveBeenCalled()
+    await view.get('[data-testid="guard-tab-rules"]').trigger('click')
+    await view.get('#token-guard-v2-auto-enroll').setValue(false)
+    await view.get('[data-testid="guard-tab-accounts"]').trigger('click')
+    expect(view.get('[data-testid="remove-guard-42"]').attributes('disabled')).toBeDefined()
+    await view.get('[data-testid="guard-tab-rules"]').trigger('click')
+    api.saveRules.mockResolvedValueOnce({ ...data, auto_enroll_enabled: false })
+    await view.get('#token-guard-v2-rules').trigger('submit'); await flushPromises()
+    await view.get('[data-testid="guard-tab-accounts"]').trigger('click')
+    expect(view.get('[data-testid="remove-guard-42"]').attributes('disabled')).toBeUndefined()
+    expect(view.find('[data-testid="guard-remove-hint"]').exists()).toBe(false)
+  })
+
+  it('preserves confirmed removal when automatic inclusion is off', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    restoreConfirmation = () => confirm.mockRestore()
+    const view = await openUnified()
+    await view.get('[data-testid="remove-guard-42"]').trigger('click')
+    expect(api.deleteGuard).not.toHaveBeenCalled()
+    confirm.mockReturnValue(true)
+    await view.get('[data-testid="remove-guard-42"]').trigger('click'); await flushPromises()
+    expect(api.deleteGuard).toHaveBeenCalledWith(42)
+  })
+
+  it('continues history import from its cursor, retains progress after failure, and totals completed pages', async () => {
+    api.syncHistory.mockResolvedValueOnce({ items: [{ line: 1, account_id: 8, status: 'added' }], succeeded: 1, skipped: 0, failed: 0, has_more: true, next_after_id: 8 })
+    const view = await openUnified()
+    await view.get('[data-testid="guard-sync-history"]').trigger('click'); await flushPromises()
+    expect(view.get('[data-testid="guard-sync-history"]').text()).toBe('tokenGuardV2.continueSyncHistory')
+    expect(view.text()).toContain('tokenGuardV2.syncMoreHint')
+    api.syncHistory.mockRejectedValueOnce(new Error('connection interrupted'))
+    await view.get('[data-testid="guard-sync-history"]').trigger('click'); await flushPromises()
+    expect(api.syncHistory.mock.calls[1]?.[0]).toBe(8)
+    expect(view.text()).toContain('tokenGuardV2.syncResumeHint')
+    expect(view.text()).toContain('tokenGuardV2.importStatuses.added')
+    api.syncHistory.mockResolvedValueOnce({ items: [{ line: 1, account_id: 9, status: 'updated' }], succeeded: 1, skipped: 0, failed: 0, has_more: false })
+    await view.get('[data-testid="guard-sync-history"]').trigger('click'); await flushPromises()
+    expect(api.syncHistory.mock.calls[2]?.[0]).toBe(8)
+    expect(view.text()).toContain('tokenGuardV2.importSummary 2 0 0')
+    expect(view.text()).toContain('tokenGuardV2.syncComplete')
+    expect(view.get('[data-testid="guard-sync-history"]').text()).toBe('tokenGuardV2.syncHistory')
+  })
+
+  it('stops a nonadvancing history cursor without issuing repeated requests', async () => {
+    api.syncHistory.mockResolvedValueOnce({ items: [], succeeded: 0, skipped: 0, failed: 0, has_more: true, next_after_id: 0 })
+    const view = await openUnified()
+    await view.get('[data-testid="guard-sync-history"]').trigger('click'); await flushPromises()
+    expect(view.text()).toContain('tokenGuardV2.syncCursorStalled')
+    expect(api.syncHistory).toHaveBeenCalledOnce()
+    expect(view.get('[data-testid="guard-sync-history"]').text()).toBe('tokenGuardV2.syncHistory')
+  })
+
+  it('sends a batch once, clears plaintext before completion, and uses random egress', async () => {
+    let complete!: (value: unknown) => void
+    let sent: Record<string, unknown> | undefined
+    api.batchCreate.mockImplementationOnce(input => { sent = { ...input }; return new Promise(resolve => { complete = resolve }) })
+    const view = await openBatch()
+    const plaintext = 'existing@example.com----private-password----JBSWY3DPEHPK3PXP'
+    const persist = vi.spyOn(Storage.prototype, 'setItem')
+    try {
+      await view.get('textarea').setValue(plaintext)
+      await view.get('#token-guard-v2-batch').trigger('submit')
+      expect(sent).toEqual({ accounts: plaintext, proxy_source: 'random_managed' })
+      expect((view.get('textarea').element as HTMLTextAreaElement).value).toBe('')
+      await view.get('#token-guard-v2-batch').trigger('submit')
+      expect(api.batchCreate).toHaveBeenCalledOnce()
+      expect(persist).not.toHaveBeenCalled()
+      complete({ items: [{ line: 1, email: 'existing@example.com', status: 'updated' }], succeeded: 1, skipped: 0, failed: 0 })
+      await flushPromises()
+      expect(view.text()).toContain('tokenGuardV2.importStatuses.updated')
+      expect(view.text()).not.toContain('private-password')
+      expect(view.emitted('saved')).toHaveLength(1)
+    } finally { persist.mockRestore() }
+  })
+
+  it('rejects oversized batches locally without submitting secrets', async () => {
+    const view = await openBatch()
+    await view.get('textarea').setValue(Array.from({ length: 201 }, (_, i) => `a${i}@example.com----secret`).join('\n'))
+    await view.get('#token-guard-v2-batch').trigger('submit')
+    expect(api.batchCreate).not.toHaveBeenCalled()
+    expect(view.text()).toContain('tokenGuardV2.batchLimit')
+  })
+
+  it('cancels pending saves, clears inputs, and ignores a late response after closing', async () => {
+    let complete!: (value: unknown) => void
+    let signal!: AbortSignal
+    api.batchCreate.mockImplementationOnce((_input, currentSignal) => { signal = currentSignal; return new Promise(resolve => { complete = resolve }) })
+    const view = await openBatch()
+    await view.get('textarea').setValue('account@example.com----secret')
+    await view.get('#token-guard-v2-batch').trigger('submit')
+    await view.findAll('button').find(button => button.text() === 'authorization.batchStop')!.trigger('click')
+    expect(signal.aborted).toBe(true)
+    expect(view.emitted('close')).toHaveLength(1)
+    complete({ items: [], succeeded: 1, skipped: 0, failed: 0 })
+    await flushPromises()
+    expect(view.find('[data-testid="credential-import-results"]').exists()).toBe(false)
+    expect((view.get('textarea').element as HTMLTextAreaElement).value).toBe('')
+  })
+
+  it('clears credentials when the page becomes hidden and safely explains unknown statuses', async () => {
+    const view = await openBatch()
+    await view.get('textarea').setValue('account@example.com----secret')
+    const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true)
+    try { document.dispatchEvent(new Event('visibilitychange')); await flushPromises() } finally { hidden.mockRestore() }
+    expect((view.get('textarea').element as HTMLTextAreaElement).value).toBe('')
+    expect(view.emitted('close')).toHaveLength(1)
+    api.batchCreate.mockResolvedValueOnce({ items: [{ line: 1, status: 'server-private-detail' }], succeeded: 0, skipped: 0, failed: 1 })
+    await view.get('textarea').setValue('account@example.com----secret')
+    await view.get('#token-guard-v2-batch').trigger('submit')
+    await flushPromises()
+    expect(view.text()).toContain('tokenGuardV2.importStatuses.unknown')
+    expect(view.text()).not.toContain('server-private-detail')
+  })
+})
+
+
+const authorizationConfig = {
+  intelligence_gate: true, workbench_revision: 'revision-1', workbench_authorization_concurrency: 3,
+  workbench_account_concurrency: 20, workbench_account_priority: 1,
+  account_proxy_mode: 'managed', max_accounts_per_proxy: 3, proxies_per_account: 2, proxy_concurrency: 3,
+  intelligence_group_rules: [], pass_group_ids: [1], fail_group_ids: [], intelligence_model: 'fixture-model', intelligence_effort: 'high',
+  inspection_enabled: false, reauth_enabled: false, inspection_concurrency: 3, authorization_concurrency: 3,
+  account_concurrency: 20, account_priority: 1, group_ids: [], reauth_status_codes: [401], revision: 1,
+  next_inspection_at: null, next_reauth_at: null, inspection_cron: '*/3 * * * *', reauth_cron: '*/10 * * * *',
+  browser_available: true, encryption_key_configured: true
+} as AuthorizationConfig
+
+async function openAuthorizationWorkspace() {
+  wrapper = mount(AuthorizationWorkspace, {
+    props: { section: 'workbench' },
+    global: { stubs: { AuthorizationRecords: true, AccountCandyTestSettings: true } }
+  })
+  await flushPromises()
+  return wrapper
+}
+
+describe('preserved initial authorization workspace', () => {
+  it('keeps the authorization, account proxy, group, and intelligence settings when extracted', async () => {
+    const config = vi.spyOn(accountAuthorizationAPI, 'config').mockResolvedValue(authorizationConfig)
+    const groups = vi.spyOn(apiClient, 'get').mockResolvedValue({ data: [{ id: 1, name: 'Main', platform: 'openai', status: 'active' }] })
+    let sent: AuthorizationSubmission | undefined
+    let complete!: (value: { batch_id: string }) => void
+    const submit = vi.spyOn(accountAuthorizationAPI, 'submit').mockImplementation(input => {
+      sent = { ...input, pass_group_ids: [...input.pass_group_ids] }
+      return new Promise(resolve => { complete = resolve })
+    })
+    try {
+      const view = await openAuthorizationWorkspace()
+      const plaintext = 'new@example.com----fixture-password----JBSWY3DPEHPK3PXP'
+      await view.get('textarea').setValue(plaintext)
+      await view.get('form').trigger('submit'); await flushPromises()
+      expect(sent).toMatchObject({ accounts: plaintext, intelligence_gate: true, workbench_revision: 'revision-1', authorization_concurrency: 3, account_concurrency: 20, account_proxy_mode: 'managed', proxies_per_account: 2, pass_group_ids: [1] })
+      expect((view.get('textarea').element as HTMLTextAreaElement).value).toBe('')
+      complete({ batch_id: 'fixture-batch' }); await flushPromises()
+      expect(view.emitted('saved')).toHaveLength(1)
+      expect(api.batchCreate).not.toHaveBeenCalled()
+    } finally { config.mockRestore(); groups.mockRestore(); submit.mockRestore() }
+  })
+
+  it('retains the settings revision guard and clears plaintext when leaving the workspace tab', async () => {
+    const config = vi.spyOn(accountAuthorizationAPI, 'config').mockResolvedValue({ ...authorizationConfig, workbench_revision: 'revision-2' }).mockResolvedValueOnce(authorizationConfig)
+    const groups = vi.spyOn(apiClient, 'get').mockResolvedValue({ data: [{ id: 1, name: 'Main', platform: 'openai', status: 'active' }] })
+    const submit = vi.spyOn(accountAuthorizationAPI, 'submit')
+    try {
+      const view = await openAuthorizationWorkspace()
+      await view.get('textarea').setValue('new@example.com----fixture-password----JBSWY3DPEHPK3PXP')
+      await view.get('form').trigger('submit'); await flushPromises()
+      expect(submit).not.toHaveBeenCalled()
+      expect(view.text()).toContain('authorization.workbenchChanged')
+      await view.setProps({ section: 'history' })
+      expect(view.get('authorization-records-stub').attributes('kind')).toBe('history')
+      await view.setProps({ section: 'workbench' })
+      expect((view.get('textarea').element as HTMLTextAreaElement).value).toBe('')
+    } finally { config.mockRestore(); groups.mockRestore(); submit.mockRestore() }
   })
 })

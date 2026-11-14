@@ -43,6 +43,7 @@ import supportTickets from './supportTickets'
 import requestTiming from './requestTiming'
 import latencyObservability from './latencyObservability'
 import autoConfig from './autoConfig'
+import smartOps from './smartOps'
 
 export default {
   adminAccessKeys,
@@ -73,6 +74,7 @@ export default {
   securityRecords,
   siwc,
   autoConfig,
+  smartOps,
   priorityScheduling,
   qualityOps,
   channelOps,

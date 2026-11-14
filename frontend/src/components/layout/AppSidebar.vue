@@ -86,15 +86,15 @@
                     :to="child.path"
                     class="sidebar-link mb-0.5 py-1.5 text-sm"
                     :class="{ 'sidebar-link-active': route.path === child.path }"
-                    :style="['/admin/ai-ops', '/admin/auto-config', '/admin/account-quality'].includes(child.path) ? { paddingRight: '3.5rem' } : undefined"
+                    :style="['/admin/ai-ops', '/admin/auto-config', '/admin/account-quality', '/admin/token-guard-v2'].includes(child.path) ? { paddingRight: '3.5rem' } : undefined"
                     @click="handleMenuItemClick(child.path)"
                   >
                     <component :is="child.icon" class="h-4 w-4 flex-shrink-0" />
                     <span>{{ child.label }}</span>
                   </router-link>
                   <NewFeatureBadge
-                    v-if="['/admin/ai-ops', '/admin/auto-config', '/admin/account-quality'].includes(child.path)"
-                    :notice-id="child.path === '/admin/account-quality' ? NEW_FEATURE_NOTICES.qualityRetestRest : child.path === '/admin/auto-config' ? NEW_FEATURE_NOTICES.oauthInitialModelSelection : NEW_FEATURE_NOTICES.aiOpsCodex"
+                    v-if="['/admin/ai-ops', '/admin/auto-config', '/admin/account-quality', '/admin/token-guard-v2'].includes(child.path)"
+                    :notice-id="child.path === '/admin/token-guard-v2' ? NEW_FEATURE_NOTICES.credentialOperationsUnified : child.path === '/admin/account-quality' ? NEW_FEATURE_NOTICES.qualityRetestRest : child.path === '/admin/auto-config' ? NEW_FEATURE_NOTICES.oauthInitialModelSelection : NEW_FEATURE_NOTICES.aiOpsCodex"
                     :user-id="authStore.user?.id"
                     class="absolute right-2 top-1/2 z-10 -translate-y-1/2"
                   />
@@ -246,8 +246,8 @@ import { resolveSiteBillingMode } from '@/utils/siteBillingMode'
 import { useBatchImageAccess } from '@/composables/useBatchImageAccess'
 import { useIntelligenceTestStore } from '@/stores/intelligenceTest'
 import { getCustomMenuLabel } from '@/utils/customMenu'
-import { filterSmartOpsSidebar } from '@/utils/smartOpsSidebar'
 import { NEW_FEATURE_NOTICES } from '@/constants/newFeatureNotices'
+import { SMART_OPERATIONS_PATH, SMART_OPERATIONS_ROUTE_NAME } from '@/utils/smartOperations'
 
 interface NavItem {
   path: string
@@ -322,14 +322,8 @@ const siteVersion = computed(() => appStore.siteVersion)
 const settingsLoaded = computed(() => appStore.publicSettingsLoaded)
 
 // SVG Icon Components
-const RequestCaptureIcon = { render: () => h(Icon, { name: 'requestCapture', size: 'sm' }) }
 const OpsMonitoringIcon = { render: () => h(Icon, { name: 'monitorPulse' }) }
 const SmartOpsIcon = { render: () => h(Icon, { name: 'cpu' }) }
-const QualityOpsIcon = { render: () => h(Icon, { name: 'badge', size: 'sm' }) }
-const AccountOpsIcon = { render: () => h(Icon, { name: 'userCog', size: 'sm' }) }
-const TokenGuardIcon = { render: () => h(Icon, { name: 'shieldKey', size: 'sm' }) }
-const CredentialOpsIcon = { render: () => h(Icon, { name: 'credentialOps', size: 'sm' }) }
-const PelicanTestsIcon = { render: () => h(Icon, { name: 'beaker', size: 'sm' }) }
 const SupportTicketIcon = { render: () => h(Icon, { name: 'chat' }) }
 const SupportTicketInboxIcon = { render: () => h(Icon, { name: 'inbox' }) }
 
@@ -528,10 +522,6 @@ const GlobeIcon = {
     )
 }
 
-const FlowIcon = {
-  render: () => h(Icon, { name: 'swap', size: 'sm' })
-}
-
 const ServerIcon = {
   render: () =>
     h(
@@ -549,10 +539,6 @@ const ServerIcon = {
 
 const PluginIcon = {
   render: () => h(Icon, { name: 'cube' })
-}
-
-const AuthorizationIcon = {
-  render: () => h(Icon, { name: 'badge' })
 }
 
 const BellIcon = {
@@ -883,8 +869,6 @@ const customMenuItemsForAdmin = computed(() => {
 const adminNavItems = computed((): NavItem[] => {
   const baseItems: NavItem[] = [
     { path: '/admin/dashboard', label: t('nav.dashboard'), icon: DashboardIcon },
-    { path: '/admin/radar', label: t('radar.title'), icon: SignalIcon },
-    { path: '/admin/account-authorization', label: t('authorization.title'), icon: AuthorizationIcon },
     { path: '/admin/ops', label: t('nav.ops'), icon: OpsMonitoringIcon, featureFlag: flagOpsMonitoring },
     { path: '/admin/users', label: t('nav.users'), icon: UsersIcon, hideInSimpleMode: true },
     { path: '/admin/groups', label: t('nav.groups'), icon: FolderIcon },
@@ -902,23 +886,7 @@ const adminNavItems = computed((): NavItem[] => {
     // 「仅充值」站点连管理端的「订阅管理」入口也一并收起（路由本身不拦截）。
     { path: '/admin/subscriptions', label: t('nav.subscriptions'), icon: CreditCardIcon, hideInSimpleMode: true, featureFlag: flagSubscription },
     { path: '/admin/accounts', label: t('nav.accounts'), icon: GlobeIcon },
-    { path: '/admin/smart-ops', label: t('accountOps.smartTitle'), icon: SmartOpsIcon, expandOnly: true, children: [
-      { path: '/admin/lottery', label: t('lottery.adminTitle'), icon: GiftIcon, hideInSimpleMode: true },
-      { path: '/admin/auto-config', label: t('autoConfig.title'), icon: AccountOpsIcon },
-      { path: '/admin/priority-scheduling', label: t('priorityScheduling.title'), icon: AccountOpsIcon },
-      { path: '/admin/channel-operations', label: t('channelOps.title'), icon: ChannelIcon },
-      { path: '/admin/profit-operations', label: t('profitOps.title'), icon: PriceTagIcon },
-      { path: '/admin/account-quality', label: t('qualityOps.title'), icon: QualityOpsIcon },
-      { path: '/admin/controlled-experiments', label: t('controlledExperiments.title'), icon: QualityOpsIcon },
-      { path: '/admin/account-ops', label: t('accountOps.title'), icon: AccountOpsIcon },
-      { path: '/admin/token-guard', label: t('tokenGuard.title'), icon: TokenGuardIcon },
-      { path: '/admin/token-guard-v2', label: t('tokenGuardV2.title'), icon: CredentialOpsIcon },
-      { path: '/admin/pelican-tests', label: t('pelicanTests.title'), icon: PelicanTestsIcon },
-      { path: '/admin/group-cache-tests', label: t('admin.groupCacheTest.title'), icon: QualityOpsIcon },
-      { path: '/admin/request-captures', label: t('admin.requestCapture.title'), icon: RequestCaptureIcon, featureFlag: () => adminSettingsStore.requestCaptureEnabled },
-      { path: '/admin/ai-ops', label: t('aiOps.title'), icon: SmartOpsIcon, featureFlag: () => authStore.isAdmin },
-      { path: '/admin/harvest-flow', label: t('nav.harvestFlow'), icon: FlowIcon },
-    ] },
+    { path: '/admin/smart-ops', label: t('accountOps.smartTitle'), icon: SmartOpsIcon },
     { path: '/admin/plugins', label: t('nav.plugins'), icon: PluginIcon, featureFlag: flagPluginManagement },
     { path: '/admin/announcements', label: t('nav.announcements'), icon: BellIcon },
     { path: '/admin/support-tickets', label: t('nav.supportTickets'), icon: SupportTicketInboxIcon, featureFlag: flagSupportTickets, badge: () => supportTicketStore.adminPending },
@@ -970,7 +938,7 @@ const adminNavItems = computed((): NavItem[] => {
     { path: '/admin/audit-logs', label: t('nav.auditLogs'), icon: ShieldIcon, hideInSimpleMode: true }
   ]
 
-  const visible = filterSmartOpsSidebar(applyFeatureFlags(baseItems), adminSettingsStore.smartOpsHiddenMenuItems)
+  const visible = applyFeatureFlags(baseItems)
 
   // 简单模式下，在系统设置前插入 API密钥
   if (authStore.isSimpleMode) {
@@ -1050,6 +1018,7 @@ function navBadgeText(item: NavItem): string {
 }
 
 function isActive(path: string): boolean {
+  if (path === SMART_OPERATIONS_PATH && route.name === SMART_OPERATIONS_ROUTE_NAME) return true
   return route.path === path || route.path.startsWith(path + '/')
 }
 

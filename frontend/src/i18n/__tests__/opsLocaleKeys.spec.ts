@@ -45,6 +45,22 @@ describe('ops locale key completeness', () => {
   }
 })
 
+describe('smart operations instructions', () => {
+  const tools = ['radar', 'credentials', 'notifications', 'quality', 'auto-config', 'priority', 'channels', 'profit', 'experiments', 'external-guard', 'pelican', 'cache-tests', 'captures', 'ai', 'harvest', 'lottery']
+
+  it.each([['en', en], ['zh', zh]] as const)('%s provides usable instructions for every workspace tool', (_locale, messages) => {
+    const guides = messages.smartOps.tools as Record<string, Record<string, string>>
+    expect(Object.keys(guides).sort()).toEqual([...tools].sort())
+    for (const tool of tools) {
+      for (const field of ['title', 'purpose', 'when', 'step1', 'step2', 'step3', 'step4', 'result', 'effects']) {
+        expect(guides[tool][field], `${tool}.${field}`).toBeTypeOf('string')
+        expect(guides[tool][field].trim().length, `${tool}.${field}`).toBeGreaterThan(0)
+      }
+    }
+    for (const label of Object.values(messages.smartOps.notifications)) expect(label.trim().length).toBeGreaterThan(0)
+  })
+})
+
 describe('groups locale key completeness', () => {
   it('en locale has admin.groups.failedToSave', () => {
     const enKeys = flattenKeys(en)

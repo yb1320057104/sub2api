@@ -1560,3 +1560,46 @@ func TestAccountTestService_AstraSourceProbeDoesNotChangeSchedulingState(t *test
 		})
 	}
 }
+
+func TestCredentialAuthorizationQueuesDoNotOverlap(t *testing.T) {
+	for _, target := range []string{"credential_operations", "legacy_authorization"} {
+		for _, outcome := range []string{"idle", "active", "storage_error"} {
+			t.Run(target+"/"+outcome, func(t *testing.T) {
+				db, mock, err := sqlmock.New()
+				require.NoError(t, err)
+				defer func() { _ = db.Close() }()
+				mock.ExpectBegin()
+				if target == "credential_operations" {
+					mock.ExpectExec("SELECT pg_advisory_xact_lock").WillReturnResult(sqlmock.NewResult(0, 1))
+				}
+				query := mock.ExpectQuery("SELECT EXISTS")
+				if target == "credential_operations" {
+					query.WithArgs(int64(42))
+				} else {
+					query.WithArgs(int64(42), "user@example.com")
+				}
+				if outcome == "storage_error" {
+					query.WillReturnError(fmt.Errorf("storage unavailable"))
+				} else {
+					query.WillReturnRows(sqlmock.NewRows([]string{"busy"}).AddRow(outcome == "active"))
+				}
+				mock.ExpectRollback()
+				tx, err := db.BeginTx(context.Background(), nil)
+				require.NoError(t, err)
+				if target == "credential_operations" {
+					err = LockCredentialAuthorizationQueue(context.Background(), tx, 42)
+				} else {
+					id := int64(42)
+					err = ensureNoManagedAuthorization(context.Background(), tx, "user@example.com", &id)
+				}
+				if outcome == "idle" {
+					require.NoError(t, err)
+				} else {
+					require.Error(t, err)
+				}
+				require.NoError(t, tx.Rollback())
+				require.NoError(t, mock.ExpectationsWereMet())
+			})
+		}
+	}
+}

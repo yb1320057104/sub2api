@@ -26,7 +26,15 @@ func (r *openAIOAuthReauthRepository) GetSIWCCredentials(ctx context.Context, id
 	return ciphertext, err
 }
 func (r *openAIOAuthReauthRepository) CreateSIWCTask(ctx context.Context, id int64, hash string) (*service.OpenAIOAuthReauthTaskRecord, error) {
-	row := r.db.QueryRowContext(ctx, `INSERT INTO openai_oauth_reauth_tasks(account_id,status,stage,expected_credentials_hash,oauth_profile)
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err = service.LockCredentialAuthorizationQueue(ctx, tx, id); err != nil {
+		return nil, err
+	}
+	row := tx.QueryRowContext(ctx, `INSERT INTO openai_oauth_reauth_tasks(account_id,status,stage,expected_credentials_hash,oauth_profile)
  VALUES($1,'queued','queued',$2,'siwc') RETURNING id,account_id,status,stage,COALESCE(worker_id,''),COALESCE(auth_session_id,''),expected_credentials_hash,
  COALESCE(error_message,''),attempt,created_at,updated_at,finished_at,oauth_profile`, id, hash)
 	record, err := scanOpenAIOAuthReauthTask(row)
@@ -34,7 +42,10 @@ func (r *openAIOAuthReauthRepository) CreateSIWCTask(ctx context.Context, id int
 	if errors.As(err, &pg) && pg.Code == "23505" {
 		return nil, infraerrors.Conflict("OPENAI_REAUTH_TASK_ALREADY_ACTIVE", "an authorization task is already active")
 	}
-	return record, err
+	if err != nil {
+		return nil, err
+	}
+	return record, tx.Commit()
 }
 
 // Account identity, rotating grant and task ownership are checked in one transaction.

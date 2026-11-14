@@ -11,7 +11,51 @@ import (
 )
 
 func (r *openAIOAuthReauthRepository) CreateExcelTask(ctx context.Context, accountID int64, hash string) (*service.OpenAIOAuthReauthTaskRecord, error) {
-	row := r.db.QueryRowContext(ctx, `
+	return r.createExcelTask(ctx, accountID, hash, false)
+}
+
+func (r *openAIOAuthReauthRepository) CreateAutomaticExcelTask(ctx context.Context, accountID int64, hash string) (*service.OpenAIOAuthReauthTaskRecord, error) {
+	return r.createExcelTask(ctx, accountID, hash, true)
+}
+
+func (r *openAIOAuthReauthRepository) createExcelTask(ctx context.Context, accountID int64, hash string, automatic bool) (*service.OpenAIOAuthReauthTaskRecord, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err = service.LockCredentialAuthorizationQueue(ctx, tx, accountID); err != nil {
+		return nil, err
+	}
+	if automatic {
+		// Recheck the bounded candidate snapshot after fencing legacy jobs and
+		// concurrent account/guard controls. Manual authorization stays explicit.
+		// Budget reconciliation locks guard before tasks, while callbacks lock
+		// tasks before accounts. Never wait while holding the reverse lock order.
+		var id int64
+		err = tx.QueryRowContext(ctx, `SELECT id FROM accounts WHERE id=$1 FOR UPDATE NOWAIT`, accountID).Scan(&id)
+		if errors.Is(err, sql.ErrNoRows) || excelAuthorizationLockBusy(err) {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		err = tx.QueryRowContext(ctx, `SELECT account_id FROM account_token_guard_v2_accounts WHERE account_id=$1 FOR UPDATE NOWAIT`, accountID).Scan(&id)
+		if excelAuthorizationLockBusy(err) {
+			return nil, nil
+		}
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return nil, err
+		}
+		err = tx.QueryRowContext(ctx, openAIExcelAuthorizationCandidatesSQL+` AND a.id=$1`, accountID).Scan(&id)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+	row := tx.QueryRowContext(ctx, `
  INSERT INTO openai_oauth_reauth_tasks(account_id,status,stage,expected_credentials_hash,oauth_profile)
  VALUES($1,'queued','queued',$2,'excel')
  RETURNING id,account_id,status,stage,COALESCE(worker_id,''),COALESCE(auth_session_id,''),
@@ -21,7 +65,15 @@ func (r *openAIOAuthReauthRepository) CreateExcelTask(ctx context.Context, accou
 	if errors.As(err, &pg) && pg.Code == "23505" {
 		return nil, infraerrors.Conflict("OPENAI_REAUTH_TASK_ALREADY_ACTIVE", "an authorization task is already active for this account")
 	}
-	return record, err
+	if err != nil {
+		return nil, err
+	}
+	return record, tx.Commit()
+}
+
+func excelAuthorizationLockBusy(err error) bool {
+	var pg *pq.Error
+	return errors.As(err, &pg) && pg.Code == "55P03"
 }
 
 func (r *openAIOAuthReauthRepository) GetExcelCredentials(ctx context.Context, id int64) (string, error) {
@@ -77,19 +129,29 @@ func (r *openAIOAuthReauthRepository) ReplaceExcelCredentials(ctx context.Contex
 	return r.mutateExcelGrant(ctx, id, expected, replacement, false, diagnosis)
 }
 
-func (r *openAIOAuthReauthRepository) ListMissingExcelAuthorizations(ctx context.Context, limit int) ([]int64, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT a.id FROM accounts a
+const openAIExcelAuthorizationCandidatesSQL = `SELECT a.id FROM accounts a
  JOIN openai_oauth_reauth_configs c ON c.account_id=a.id
  LEFT JOIN openai_excel_oauth_credentials e ON e.account_id=a.id
  WHERE a.deleted_at IS NULL AND a.platform='openai' AND a.type='oauth'
+ AND a.status<>'disabled' AND a.schedulable
+ AND NOT EXISTS(SELECT 1 FROM account_token_guard_v2_accounts guard WHERE guard.account_id=a.id
+ AND (NOT guard.enabled OR NOT guard.auto_relogin_enabled))
+ AND NOT EXISTS(SELECT 1 FROM pk_authorization_state st WHERE st.account_id=a.id
+ AND st.status='banned' AND st.credential_version=md5(a.credentials::text))
+ AND COALESCE((SELECT status FROM pk_authorization_jobs WHERE email=lower(trim(COALESCE(NULLIF(a.credentials->>'email',''),NULLIF(a.extra->>'email_address',''),NULLIF(a.extra->>'email',''),'')))
+ AND (status IN ('banned','completed') OR settings->>'authorization_completed'='true') ORDER BY id DESC LIMIT 1),'')<>'banned'
  AND a.parent_account_id IS NULL AND a.extra->'openai_excel_bps'='true'::jsonb
  AND COALESCE(lower(trim(a.credentials->>'plan_type')),'') <> 'free'
  AND COALESCE(a.credentials->>'client_id','') <> 'app_fnr0pYvVwwFDocDumLG3H2Bp'
  AND COALESCE(a.credentials->>'auth_mode','') NOT IN ('personalAccessToken','agent_identity')
  AND c.credential_mode='password_totp' AND COALESCE(c.password_ciphertext,'') <> '' AND e.account_id IS NULL
+ AND NOT EXISTS(SELECT 1 FROM pk_authorization_jobs legacy WHERE legacy.status IN ('queued','running')
+ AND (legacy.account_id=a.id OR legacy.email=lower(trim(COALESCE(NULLIF(a.credentials->>'email',''),NULLIF(a.extra->>'email_address',''),NULLIF(a.extra->>'email',''),'')))))
  AND NOT EXISTS(SELECT 1 FROM openai_oauth_reauth_tasks t WHERE t.account_id=a.id
- AND (t.status IN ('queued','running','callback_processing') OR (t.oauth_profile='excel' AND t.updated_at > NOW()-INTERVAL '30 minutes')))
- ORDER BY a.id LIMIT $1`, limit)
+ AND (t.status IN ('queued','running','callback_processing') OR (t.oauth_profile='excel' AND t.updated_at > NOW()-INTERVAL '30 minutes')))`
+
+func (r *openAIOAuthReauthRepository) ListMissingExcelAuthorizations(ctx context.Context, limit int) ([]int64, error) {
+	rows, err := r.db.QueryContext(ctx, openAIExcelAuthorizationCandidatesSQL+` ORDER BY a.id LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
 	}

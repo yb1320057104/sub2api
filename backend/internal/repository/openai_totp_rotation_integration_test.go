@@ -28,6 +28,84 @@ func totpRotationFixture(t *testing.T) (context.Context, *openAIOAuthReauthRepos
 	return ctx, repo, cfg
 }
 
+func TestTOTPRotationOn429HonorsCurrentAutomaticControls(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		disabled      bool
+		unschedulable bool
+		monitored     bool
+		enabled       bool
+		autoRelogin   bool
+		banned        bool
+		staleBan      bool
+		legacyStatus  []string
+		blocked       bool
+	}{
+		{name: "unmanaged account"},
+		{name: "disabled account", disabled: true, blocked: true},
+		{name: "scheduling stopped", unschedulable: true, blocked: true},
+		{name: "inspection paused", monitored: true, autoRelogin: true, blocked: true},
+		{name: "automatic login paused", monitored: true, enabled: true, blocked: true},
+		{name: "managed account enabled", monitored: true, enabled: true, autoRelogin: true},
+		{name: "current credentials confirmed banned", banned: true, blocked: true},
+		{name: "old credentials were banned", banned: true, staleBan: true},
+		{name: "latest legacy authorization banned", legacyStatus: []string{"banned"}, blocked: true},
+		{name: "legacy failure does not clear ban", legacyStatus: []string{"banned", "failed"}, blocked: true},
+		{name: "new successful authorization clears legacy ban", legacyStatus: []string{"banned", "completed"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, repo, cfg := totpRotationFixture(t)
+			status := service.StatusActive
+			if tc.disabled {
+				status = service.StatusDisabled
+			}
+			_, err := integrationDB.ExecContext(ctx, `UPDATE accounts SET status=$2,schedulable=$3 WHERE id=$1`, cfg.AccountID, status, !tc.unschedulable)
+			require.NoError(t, err)
+			if tc.monitored {
+				_, err = integrationDB.ExecContext(ctx, `INSERT INTO account_token_guard_v2_accounts(account_id,enabled,auto_relogin_enabled) VALUES($1,$2,$3)`, cfg.AccountID, tc.enabled, tc.autoRelogin)
+				require.NoError(t, err)
+			}
+			if tc.banned {
+				_, err = integrationDB.ExecContext(ctx, `INSERT INTO pk_authorization_state(account_id,credential_version,status) SELECT id,CASE WHEN $2 THEN 'old-version' ELSE md5(credentials::text) END,'banned' FROM accounts WHERE id=$1`, cfg.AccountID, tc.staleBan)
+				require.NoError(t, err)
+				t.Cleanup(func() {
+					_, cleanupErr := integrationDB.ExecContext(ctx, `DELETE FROM pk_authorization_state WHERE account_id=$1`, cfg.AccountID)
+					require.NoError(t, cleanupErr)
+				})
+			}
+			if len(tc.legacyStatus) > 0 {
+				var historyID int64
+				err = integrationDB.QueryRowContext(ctx, `INSERT INTO pk_authorization_history(email,secret_encrypted,has_twofa) VALUES('owner@example.test','enc:test',true) RETURNING id`).Scan(&historyID)
+				require.NoError(t, err)
+				t.Cleanup(func() {
+					_, cleanupErr := integrationDB.ExecContext(ctx, `DELETE FROM pk_authorization_jobs WHERE history_id=$1`, historyID)
+					require.NoError(t, cleanupErr)
+					_, cleanupErr = integrationDB.ExecContext(ctx, `DELETE FROM pk_authorization_history WHERE id=$1`, historyID)
+					require.NoError(t, cleanupErr)
+				})
+				for _, legacyStatus := range tc.legacyStatus {
+					_, err = integrationDB.ExecContext(ctx, `INSERT INTO pk_authorization_jobs(batch_id,history_id,email,account_id,source,status,settings) VALUES('totp-controls',$1,'owner@example.test',$2,'manual',$3,'{}'::jsonb)`, historyID, cfg.AccountID, legacyStatus)
+					require.NoError(t, err)
+				}
+			}
+			task, err := repo.CreateTOTPRotationOn429(ctx, cfg.AccountID, "snapshot", cfg.UpdatedAt)
+			require.NoError(t, err)
+			if !tc.blocked {
+				require.NotNil(t, task)
+				return
+			}
+			require.Nil(t, task)
+			var reservations int
+			err = integrationDB.QueryRowContext(ctx, `SELECT count(*) FROM openai_oauth_reauth_tasks WHERE account_id=$1`, cfg.AccountID).Scan(&reservations)
+			require.NoError(t, err)
+			require.Zero(t, reservations, "a rejected automatic rotation must not reserve the account")
+			task, err = repo.CreateTOTPRotation(ctx, cfg.AccountID, "snapshot", cfg.UpdatedAt)
+			require.NoError(t, err, "explicit manual rotation preserves its prior authorization semantics")
+			require.NotNil(t, task)
+		})
+	}
+}
+
 func TestTOTPRotationOn429ConcurrentCreationAndCooldown(t *testing.T) {
 	ctx, repo, cfg := totpRotationFixture(t)
 	type outcome struct {

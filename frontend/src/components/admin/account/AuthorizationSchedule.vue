@@ -2,7 +2,7 @@
   <section class="rounded-2xl border border-gray-200 bg-white p-5 dark:border-dark-700 dark:bg-dark-800">
     <div class="mb-5 flex flex-wrap items-start justify-between gap-3">
       <div><h2 class="font-semibold text-gray-900 dark:text-white">{{ t('authorization.schedule') }}</h2><p class="mt-1 text-xs leading-5 text-gray-500 dark:text-dark-400">{{ t('authorization.scheduleHint') }}</p></div>
-      <RouterLink to="/admin/account-authorization" class="text-sm font-medium text-primary-600 dark:text-primary-300">{{ t('authorization.openWorkbench') }} →</RouterLink>
+      <RouterLink to="/admin/token-guard-v2?tab=workbench" class="text-sm font-medium text-primary-600 dark:text-primary-300">{{ t('authorization.openWorkbench') }} →</RouterLink>
     </div>
     <form v-if="config" class="space-y-4" @submit.prevent="save">
       <fieldset :disabled="saving" class="grid gap-5 md:grid-cols-2">

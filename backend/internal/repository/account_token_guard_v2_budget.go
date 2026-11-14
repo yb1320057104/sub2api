@@ -92,6 +92,9 @@ func (r *accountTokenGuardV2Repository) CreateAutomaticRelogin(ctx context.Conte
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err = service.LockCredentialAuthorizationQueue(ctx, tx, id); err != nil {
+		return nil, err
+	}
 	record, err := lockReloginBudget(ctx, tx, id, owner)
 	if err != nil {
 		return nil, err

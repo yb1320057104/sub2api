@@ -401,6 +401,9 @@ func (s *AccountAuthorizationService) Submit(ctx context.Context, input *Authori
 		if err != nil {
 			return "", err
 		}
+		if err = ensureNoManagedAuthorization(ctx, tx, secret.Email, accountID); err != nil {
+			return "", err
+		}
 		jobSettings := settings
 		jobSettings.WorkbenchRevision = ""
 		if jobSettings.IntelligenceGate {

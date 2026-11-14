@@ -1,10 +1,17 @@
 package admin
 
 import (
+	"context"
+	"errors"
+	"io"
+	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/adminaccess"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
+	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 )
@@ -79,6 +86,7 @@ func (h *AccountTokenGuardV2Handler) List(c *gin.Context) {
 		return
 	}
 	response.Success(c, gin.H{
+		"auto_enroll_enabled":         rules.AutoEnrollEnabled,
 		"relogin_backoff_max_seconds": rules.ReloginBackoffMaxSeconds,
 		"relogin_max_failures":        rules.ReloginMaxFailures,
 		"runtime_settings":            runtimeSettings,
@@ -127,14 +135,21 @@ func (h *AccountTokenGuardV2Handler) UpdateSwitches(c *gin.Context) {
 }
 
 func (h *AccountTokenGuardV2Handler) SaveRules(c *gin.Context) {
-	var rules service.AccountTokenGuardV2Rules
-	if err := c.ShouldBindJSON(&rules); err != nil {
+	var req struct {
+		service.AccountTokenGuardV2Rules
+		AutoEnrollEnabled *bool `json:"auto_enroll_enabled"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request")
 		return
 	}
+	rules := req.AccountTokenGuardV2Rules
+	if req.AutoEnrollEnabled != nil {
+		rules.AutoEnrollEnabled = *req.AutoEnrollEnabled
+	}
 	// Old clients omit the two new fields. Preserve a previously configured
 	// budget; initial old settings still receive the documented safe defaults.
-	if rules.ReloginMaxFailures == 0 || rules.ReloginBackoffMaxSeconds == 0 {
+	if req.AutoEnrollEnabled == nil || rules.ReloginMaxFailures == 0 || rules.ReloginBackoffMaxSeconds == 0 {
 		current, err := h.service.GetRules(c.Request.Context())
 		if err != nil {
 			response.ErrorFrom(c, err)
@@ -142,6 +157,9 @@ func (h *AccountTokenGuardV2Handler) SaveRules(c *gin.Context) {
 		}
 		if rules.ReloginMaxFailures == 0 {
 			rules.ReloginMaxFailures = current.ReloginMaxFailures
+		}
+		if req.AutoEnrollEnabled == nil {
+			rules.AutoEnrollEnabled = current.AutoEnrollEnabled
 		}
 		if rules.ReloginBackoffMaxSeconds == 0 {
 			rules.ReloginBackoffMaxSeconds = max(current.ReloginBackoffMaxSeconds, rules.ReloginCooldownSeconds)
@@ -153,6 +171,66 @@ func (h *AccountTokenGuardV2Handler) SaveRules(c *gin.Context) {
 		return
 	}
 	response.Success(c, saved)
+}
+
+func (h *AccountTokenGuardV2Handler) BatchCreate(c *gin.Context) {
+	if !tokenGuardV2EnrollmentAdmin(c) {
+		return
+	}
+	// Bound the encoded body as well as the decoded 2 MiB credential payload.
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 3<<20)
+	var req service.AccountTokenGuardV2BatchInput
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid credential batch")
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 90*time.Second)
+	defer cancel()
+	result, err := h.service.BatchAddAccounts(ctx, &req)
+	req.Accounts = ""
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, result)
+}
+
+func (h *AccountTokenGuardV2Handler) Sync(c *gin.Context) {
+	if !tokenGuardV2EnrollmentAdmin(c) {
+		return
+	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1024)
+	var req struct {
+		AfterID int64 `json:"after_id"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) || req.AfterID < 0 {
+		response.BadRequest(c, "Invalid enrollment cursor")
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 90*time.Second)
+	defer cancel()
+	result, err := h.service.SyncAccountsAfter(ctx, req.AfterID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, result)
+}
+
+func tokenGuardV2EnrollmentAdmin(c *gin.Context) bool {
+	c.Header("Cache-Control", "no-store")
+	c.Header("Pragma", "no-cache")
+	subject, ok := middleware.GetAuthSubjectFromContext(c)
+	if !ok || subject.UserID <= 0 {
+		response.Unauthorized(c, "请先登录")
+		return false
+	}
+	role, ok := middleware.GetUserRoleFromContext(c)
+	if !ok || role != service.RoleAdmin || adminaccess.FromContext(c.Request.Context()) != nil {
+		response.Forbidden(c, "仅完整权限管理员可导入或复制登录凭证")
+		return false
+	}
+	return true
 }
 
 func (h *AccountTokenGuardV2Handler) Create(c *gin.Context) {

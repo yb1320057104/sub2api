@@ -4,6 +4,7 @@ package repository
 
 import (
 	"context"
+	"fmt"
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"strings"
 	"testing"
@@ -124,6 +125,149 @@ func TestExcelOAuthIntegrationQueueCoversExistingSwitchAndCooldown(t *testing.T)
 	ids, err = repo.ListMissingExcelAuthorizations(ctx, 50)
 	require.NoError(t, err)
 	require.NotContains(t, ids, cfg.AccountID)
+}
+
+func TestExcelOAuthIntegrationLegacyTasksDoNotConsumeCandidateLimit(t *testing.T) {
+	ctx, repo, byID := totpRotationFixture(t)
+	_, _, byEmail := totpRotationFixture(t)
+	_, _, ready := totpRotationFixture(t)
+	for i, id := range []int64{byID.AccountID, byEmail.AccountID, ready.AccountID} {
+		email := []string{"id-owner@example.test", " EMAIL-OWNER@example.test ", "ready-owner@example.test"}[i]
+		_, err := integrationDB.ExecContext(ctx, `UPDATE accounts SET credentials=credentials||jsonb_build_object('email',$2::text),extra=jsonb_build_object('openai_excel_bps',true) WHERE id=$1`, id, email)
+		require.NoError(t, err)
+	}
+	var historyIDs, jobIDs []int64
+	t.Cleanup(func() {
+		for _, id := range jobIDs {
+			_, err := integrationDB.ExecContext(context.Background(), `DELETE FROM pk_authorization_jobs WHERE id=$1`, id)
+			require.NoError(t, err)
+		}
+		for _, id := range historyIDs {
+			_, err := integrationDB.ExecContext(context.Background(), `DELETE FROM pk_authorization_history WHERE id=$1`, id)
+			require.NoError(t, err)
+		}
+	})
+	for i, email := range []string{"different-history@example.test", "email-owner@example.test"} {
+		var historyID, jobID int64
+		err := integrationDB.QueryRowContext(ctx, `INSERT INTO pk_authorization_history(email,secret_encrypted,has_twofa,source) VALUES($1,'synthetic-encrypted',true,'supplement') RETURNING id`, email).Scan(&historyID)
+		require.NoError(t, err)
+		historyIDs = append(historyIDs, historyID)
+		var accountID *int64
+		if i == 0 {
+			accountID = &byID.AccountID
+		}
+		err = integrationDB.QueryRowContext(ctx, `INSERT INTO pk_authorization_jobs(batch_id,history_id,email,account_id,source,status,settings) VALUES('excel-queue-test',$1,$2,$3,'manual','queued','{}'::jsonb) RETURNING id`, historyID, email, accountID).Scan(&jobID)
+		require.NoError(t, err)
+		jobIDs = append(jobIDs, jobID)
+	}
+	ids, err := repo.ListMissingExcelAuthorizations(ctx, 1)
+	require.NoError(t, err)
+	require.Equal(t, []int64{ready.AccountID}, ids, "busy lower IDs must be excluded before the bounded page is selected")
+	for _, id := range jobIDs {
+		_, err = integrationDB.ExecContext(ctx, `UPDATE pk_authorization_jobs SET status='completed' WHERE id=$1`, id)
+		require.NoError(t, err)
+	}
+	ids, err = repo.ListMissingExcelAuthorizations(ctx, 50)
+	require.NoError(t, err)
+	require.Contains(t, ids, byID.AccountID)
+	require.Contains(t, ids, byEmail.AccountID)
+}
+
+func TestExcelOAuthIntegrationAutomaticAuthorizationRespectsControls(t *testing.T) {
+	for _, scenario := range []string{"disabled", "unschedulable", "inspection paused", "relogin paused", "current ban", "stale ban", "job ban", "completed after ban", "enabled guard"} {
+		t.Run(scenario, func(t *testing.T) {
+			ctx, repo, cfg := totpRotationFixture(t)
+			email := fmt.Sprintf("excel-control-%d@example.test", cfg.AccountID)
+			_, err := integrationDB.ExecContext(ctx, `UPDATE accounts SET credentials=credentials||jsonb_build_object('email',$2::text),extra=jsonb_build_object('openai_excel_bps',true) WHERE id=$1`, cfg.AccountID, email)
+			require.NoError(t, err)
+			ids, err := repo.ListMissingExcelAuthorizations(ctx, 50)
+			require.NoError(t, err)
+			require.Contains(t, ids, cfg.AccountID)
+			allowed := false
+			switch scenario {
+			case "disabled":
+				_, err = integrationDB.ExecContext(ctx, `UPDATE accounts SET status='disabled' WHERE id=$1`, cfg.AccountID)
+			case "unschedulable":
+				_, err = integrationDB.ExecContext(ctx, `UPDATE accounts SET schedulable=false WHERE id=$1`, cfg.AccountID)
+			case "inspection paused", "relogin paused", "enabled guard":
+				_, err = integrationDB.ExecContext(ctx, `INSERT INTO account_token_guard_v2_accounts(account_id,enabled,auto_relogin_enabled) VALUES($1,$2,$3)`, cfg.AccountID, scenario != "inspection paused", scenario != "relogin paused")
+				allowed = scenario == "enabled guard"
+			case "current ban", "stale ban":
+				_, err = integrationDB.ExecContext(ctx, `INSERT INTO pk_authorization_state(account_id,status,credential_version) SELECT id,'banned',CASE WHEN $2 THEN md5(credentials::text) ELSE 'obsolete' END FROM accounts WHERE id=$1`, cfg.AccountID, scenario == "current ban")
+				allowed = scenario == "stale ban"
+				t.Cleanup(func() {
+					_, cleanupErr := integrationDB.ExecContext(context.Background(), `DELETE FROM pk_authorization_state WHERE account_id=$1`, cfg.AccountID)
+					require.NoError(t, cleanupErr)
+				})
+			case "job ban", "completed after ban":
+				var historyID int64
+				err = integrationDB.QueryRowContext(ctx, `INSERT INTO pk_authorization_history(email,secret_encrypted,has_twofa,source) VALUES($1,'synthetic-encrypted',true,'supplement') RETURNING id`, email).Scan(&historyID)
+				require.NoError(t, err)
+				t.Cleanup(func() {
+					_, cleanupErr := integrationDB.ExecContext(context.Background(), `DELETE FROM pk_authorization_jobs WHERE history_id=$1`, historyID)
+					require.NoError(t, cleanupErr)
+					_, cleanupErr = integrationDB.ExecContext(context.Background(), `DELETE FROM pk_authorization_history WHERE id=$1`, historyID)
+					require.NoError(t, cleanupErr)
+				})
+				_, err = integrationDB.ExecContext(ctx, `INSERT INTO pk_authorization_jobs(batch_id,history_id,email,account_id,source,status,settings) VALUES('excel-control',$1,$2,$3,'manual','banned','{}'::jsonb)`, historyID, email, cfg.AccountID)
+				require.NoError(t, err)
+				if scenario == "completed after ban" {
+					_, err = integrationDB.ExecContext(ctx, `INSERT INTO pk_authorization_jobs(batch_id,history_id,email,account_id,source,status,settings) VALUES('excel-control',$1,$2,$3,'manual','completed','{}'::jsonb)`, historyID, email, cfg.AccountID)
+					allowed = true
+				}
+			}
+			require.NoError(t, err)
+			ids, err = repo.ListMissingExcelAuthorizations(ctx, 50)
+			require.NoError(t, err)
+			if allowed {
+				require.Contains(t, ids, cfg.AccountID)
+			} else {
+				require.NotContains(t, ids, cfg.AccountID)
+			}
+			// Simulate the earlier candidate snapshot reaching insertion after
+			// controls changed. Automatic creation must recheck under locks.
+			task, err := repo.CreateAutomaticExcelTask(ctx, cfg.AccountID, "snapshot")
+			require.NoError(t, err)
+			if allowed {
+				require.NotNil(t, task)
+			} else {
+				require.Nil(t, task)
+				manual, err := repo.CreateExcelTask(ctx, cfg.AccountID, "snapshot")
+				require.NoError(t, err)
+				require.NotNil(t, manual, "explicit manual authorization retains its own semantics")
+			}
+		})
+	}
+}
+
+func TestExcelOAuthIntegrationAutomaticAuthorizationSkipsLockedControls(t *testing.T) {
+	for _, busy := range []string{"account", "guard"} {
+		t.Run(busy, func(t *testing.T) {
+			ctx, repo, cfg := totpRotationFixture(t)
+			_, err := integrationDB.ExecContext(ctx, `UPDATE accounts SET extra=jsonb_build_object('openai_excel_bps',true) WHERE id=$1`, cfg.AccountID)
+			require.NoError(t, err)
+			_, err = integrationDB.ExecContext(ctx, `INSERT INTO account_token_guard_v2_accounts(account_id) VALUES($1)`, cfg.AccountID)
+			require.NoError(t, err)
+			holder, err := integrationDB.BeginTx(ctx, nil)
+			require.NoError(t, err)
+			defer func() { _ = holder.Rollback() }()
+			query := `SELECT id FROM accounts WHERE id=$1 FOR UPDATE`
+			if busy == "guard" {
+				query = `SELECT account_id FROM account_token_guard_v2_accounts WHERE account_id=$1 FOR UPDATE`
+			}
+			var id int64
+			require.NoError(t, holder.QueryRowContext(ctx, query, cfg.AccountID).Scan(&id))
+			attemptCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			defer cancel()
+			task, err := repo.CreateAutomaticExcelTask(attemptCtx, cfg.AccountID, "snapshot")
+			require.NoError(t, err, "busy controls must skip without waiting for the context deadline")
+			require.Nil(t, task)
+			require.NoError(t, holder.Rollback())
+			task, err = repo.CreateAutomaticExcelTask(ctx, cfg.AccountID, "snapshot")
+			require.NoError(t, err)
+			require.NotNil(t, task)
+		})
+	}
 }
 
 func TestLatestExcelAuthorizationIgnoresNewerCodexTask(t *testing.T) {

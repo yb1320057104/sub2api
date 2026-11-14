@@ -408,3 +408,31 @@ func TestIPAuditRecoveryOperatorAuditsWithoutRequestBody(t *testing.T) {
 	require.Equal(t, "operator_review", repository.logs[0].Extra["reason_code"])
 	require.Equal(t, "released", repository.logs[0].Extra["result"])
 }
+
+func TestCredentialOperationsBatchOmitsPlaintextFromAudit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	repository := &auditCaptureRepository{}
+	auditService := service.NewAuditLogService(repository, nil)
+	auditService.Start()
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		c.Set(string(ContextKeyUser), AuthSubject{UserID: 77})
+		c.Set(string(ContextKeyUserRole), "admin")
+		c.Next()
+	})
+	router.Use(gin.HandlerFunc(NewAuditLogMiddleware(auditService)))
+	const path = "/api/v1/admin/account-ops/token-guard-v2/accounts/batch"
+	router.POST(path, func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"succeeded": 1}) })
+	request := httptest.NewRequest(http.MethodPost, path, bytes.NewBufferString(`{"accounts":"fixture@example.com----private-batch-canary----JBSWY3DPEHPK3PXP"}`))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	auditService.Stop()
+	require.Equal(t, http.StatusOK, recorder.Code)
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	require.Len(t, repository.logs, 1)
+	require.Equal(t, "admin.credential_operations.batch_add", repository.logs[0].Action)
+	require.Equal(t, "<credential-bearing body omitted>", repository.logs[0].RequestBody)
+	require.NotContains(t, repository.logs[0].RequestBody, "private-batch-canary")
+}

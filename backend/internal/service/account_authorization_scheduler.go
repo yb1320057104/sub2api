@@ -451,6 +451,8 @@ func (s *AccountAuthorizationService) queueReauthorization(ctx context.Context, 
    ORDER BY candidate.position LIMIT 1
  ) rule ON true
  WHERE a.deleted_at IS NULL AND a.platform='openai' AND `+authorizationSupportedSQL+`
+ AND NOT EXISTS(SELECT 1 FROM account_token_guard_v2_accounts managed WHERE managed.account_id=a.id)
+ AND NOT EXISTS(SELECT 1 FROM openai_oauth_reauth_tasks managed_task JOIN accounts managed_account ON managed_account.id=managed_task.account_id WHERE managed_task.status IN ('queued','running','callback_processing') AND (managed_task.account_id=a.id OR lower(trim(COALESCE(NULLIF(managed_account.credentials->>'email',''),NULLIF(managed_account.extra->>'email_address',''),NULLIF(managed_account.extra->>'email',''),'')))=`+authorizationEmailSQL+`))
  AND NOT (COALESCE(st.status='banned' AND st.credential_version=md5(a.credentials::text),false))
  AND COALESCE((SELECT status FROM pk_authorization_jobs WHERE email=`+authorizationEmailSQL+` AND (status IN ('banned','completed') OR settings->>'authorization_completed'='true') ORDER BY id DESC LIMIT 1),'')<>'banned'
  AND `+authorizationErrorSQL+`

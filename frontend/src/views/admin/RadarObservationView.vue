@@ -1,5 +1,6 @@
 <template>
   <AppLayout>
+    <SmartOpsNav />
     <div class="mx-auto max-w-[1600px] space-y-6">
       <div class="flex flex-wrap items-center justify-between gap-3 border-b border-gray-200 pb-4 dark:border-dark-700">
         <div class="inline-flex max-w-full flex-wrap rounded-2xl bg-primary-100/60 p-1 dark:bg-dark-800" role="tablist" :aria-label="t('radar.title')">
@@ -15,9 +16,9 @@
         <p v-if="groupError" class="text-sm text-red-600" role="alert">{{ groupError }} <button class="underline" @click="loadGroups">{{ t('accountCandy.retry') }}</button></p>
         <IntelligenceTestSettings :groups="testGroups" :groups-loaded="groupsLoaded" @saved="loadGroups" @keys-synced="loadGroups" />
       </section>
-      <section v-else-if="tab === 'authorization'" id="radar-panel-authorization" role="tabpanel" aria-labelledby="radar-tab-authorization" class="space-y-5"><AuthorizationSchedule /><AuthorizationRecords kind="accounts" /></section>
+      <section v-else-if="tab === 'authorization'" class="space-y-5"><RouterLink :to="smartOperationLocation('credentials', { tab: 'inspection' })" class="btn btn-primary">{{ t('tokenGuardV2.openInspection') }} →</RouterLink></section>
       <section v-else-if="tab === 'statistics'" id="radar-panel-statistics" role="tabpanel" aria-labelledby="radar-tab-statistics"><AccountHealthObservation /></section>
-      <section v-else-if="tab === 'emails'" id="radar-panel-emails" role="tabpanel" aria-labelledby="radar-tab-emails"><RadarEmailAlerts /></section>
+      <section v-else-if="tab === 'emails'"><RouterLink :to="smartOperationLocation('notifications', { notification: 'overview' })" class="btn btn-primary">{{ t('smartOps.notifications.title') }} →</RouterLink></section>
       <section v-else id="radar-panel-accounts" role="tabpanel" aria-labelledby="radar-tab-accounts" class="space-y-5">
         <div class="flex flex-wrap items-center justify-between gap-3">
           <div class="flex flex-wrap items-center gap-3">
@@ -107,6 +108,7 @@ import { useI18n } from 'vue-i18n'
 import { useIntervalFn } from '@vueuse/core'
 import { useRoute, useRouter } from 'vue-router'
 import AppLayout from '@/components/layout/AppLayout.vue'
+import SmartOpsNav from '@/components/admin/operations/SmartOpsNav.vue'
 import Select from '@/components/common/Select.vue'
 import Icon from '@/components/icons/Icon.vue'
 import PlatformTypeBadge from '@/components/common/PlatformTypeBadge.vue'
@@ -115,9 +117,7 @@ import IntelligenceTestSettings from '@/components/intelligenceTest/Intelligence
 import AccountCandyTestSettings from '@/components/admin/account/AccountCandyTestSettings.vue'
 import AccountCandyTestDetails from '@/components/admin/account/AccountCandyTestDetails.vue'
 import AccountHealthObservation from '@/components/admin/account/AccountHealthObservation.vue'
-import RadarEmailAlerts from '@/components/admin/account/RadarEmailAlerts.vue'
-import AuthorizationSchedule from '@/components/admin/account/AuthorizationSchedule.vue'
-import AuthorizationRecords from '@/components/admin/account/AuthorizationRecords.vue'
+import { legacySmartOperationsLocation, smartOperationLocation } from '@/utils/smartOperations'
 import { accountCandyAPI, getCandyMovedGroupIDs, type RadarObservation } from '@/api/admin/accountCandy'
 import { intelligenceTestAPI, type IntelligenceTestGroup } from '@/api/intelligenceTest'
 import { apiClient } from '@/api/client'
@@ -132,9 +132,10 @@ const { t } = useI18n()
 const app = useAppStore()
 const route = useRoute()
 const router = useRouter()
-const tabs = ['groups', 'accounts', 'authorization', 'statistics', 'emails'] as const
-const resolveTab = (value: unknown): typeof tabs[number] => tabs.find(item => item === value) ?? 'groups'
-const tab = ref<typeof tabs[number]>(resolveTab(route.query.tab))
+const tabs = ['groups', 'accounts', 'statistics'] as const
+type RadarTab = typeof tabs[number] | 'authorization' | 'emails'
+const resolveTab = (value: unknown): RadarTab => value === 'authorization' || value === 'emails' ? value : tabs.find(item => item === value) ?? 'groups'
+const tab = ref<RadarTab>(resolveTab(route.query.tab))
 const items = ref<RadarObservation[]>([])
 const groups = ref<AdminGroup[]>([])
 const testGroups = ref<IntelligenceTestGroup[]>([])
@@ -179,7 +180,7 @@ function goToPage(nextPage: number) {
   if (nextPage >= 1 && nextPage <= totalPages.value && nextPage !== page.value) page.value = nextPage
 }
 
-async function switchTab(event: KeyboardEvent) { const direction = event.key === 'ArrowLeft' ? -1 : 1; tab.value = tabs[(tabs.indexOf(tab.value) + direction + tabs.length) % tabs.length]!; await nextTick(); document.getElementById('radar-tab-' + tab.value)?.focus() }
+async function switchTab(event: KeyboardEvent) { const direction = event.key === 'ArrowLeft' ? -1 : 1; tab.value = tabs[(tabs.findIndex(value => value === tab.value) + direction + tabs.length) % tabs.length]!; await nextTick(); document.getElementById('radar-tab-' + tab.value)?.focus() }
 async function loadGroups() {
   try { const data = await intelligenceTestAPI.groups(); if (!disposed) { testGroups.value = data; groupsLoaded.value = true; groupError.value = '' } }
   catch (cause) { if (!disposed) groupError.value = extractApiErrorMessage(cause, t('accountCandy.loadFailed')) }
@@ -234,9 +235,21 @@ watch(filter, () => { items.value = []; if (page.value !== 1) page.value = 1; el
 watch(groupFilter, () => { items.value = []; if (page.value !== 1) page.value = 1; else void loadAccounts() })
 watch(page, () => { items.value = []; void loadAccounts() })
 watch(() => route.query.tab, value => { tab.value = resolveTab(value) })
-watch(tab, () => { if (route.query.tab !== tab.value) void router.replace({ query: { ...route.query, tab: tab.value } }); if (tab.value === 'accounts') void loadAccounts(); else { controller?.abort(); loading.value = false; if (tab.value === 'groups') void loadGroups() } })
+function redirectLegacyTab() {
+  if (tab.value !== 'authorization' && tab.value !== 'emails') return false
+  controller?.abort(); loading.value = false
+  void router.replace(legacySmartOperationsLocation({ path: '/admin/radar', query: { ...route.query, tab: tab.value }, hash: route.hash }))
+  return true
+}
+watch(tab, () => {
+  if (redirectLegacyTab()) return
+  if (route.query.tab !== tab.value) void router.replace({ query: { ...route.query, tab: tab.value } })
+  if (tab.value === 'accounts') void loadAccounts()
+  else { controller?.abort(); loading.value = false; if (tab.value === 'groups') void loadGroups() }
+})
 useIntervalFn(() => { if (!document.hidden && !showSettings.value) void loadAccounts(true) }, 5000)
 onMounted(async () => {
+  if (redirectLegacyTab()) return
   void loadAccounts(); void loadGroups()
   try { const response = await apiClient.get<AdminGroup[]>('/admin/groups/all'); if (!disposed) groups.value = response.data }
   catch (cause) { if (!disposed) error.value = extractApiErrorMessage(cause, t('accountCandy.loadFailed')) }

@@ -38,12 +38,13 @@ const (
 )
 
 type AccountTokenGuardV2Rules struct {
-	ReloginBackoffMaxSeconds int `json:"relogin_backoff_max_seconds"`
-	ReloginMaxFailures       int `json:"relogin_max_failures"`
-	ProbeIntervalSeconds     int `json:"probe_interval_seconds"`
-	RetryIntervalSeconds     int `json:"retry_interval_seconds"`
-	ReloginCooldownSeconds   int `json:"relogin_cooldown_seconds"`
-	FailStreakThreshold      int `json:"fail_streak_threshold"`
+	AutoEnrollEnabled        bool `json:"auto_enroll_enabled"`
+	ReloginBackoffMaxSeconds int  `json:"relogin_backoff_max_seconds"`
+	ReloginMaxFailures       int  `json:"relogin_max_failures"`
+	ProbeIntervalSeconds     int  `json:"probe_interval_seconds"`
+	RetryIntervalSeconds     int  `json:"retry_interval_seconds"`
+	ReloginCooldownSeconds   int  `json:"relogin_cooldown_seconds"`
+	FailStreakThreshold      int  `json:"fail_streak_threshold"`
 }
 
 func defaultAccountTokenGuardV2Rules() AccountTokenGuardV2Rules {
@@ -184,12 +185,13 @@ type AccountTokenGuardV2Account struct {
 }
 
 type AccountTokenGuardV2Service struct {
-	now      func() time.Time
-	repo     AccountTokenGuardV2Repository
-	settings AccountTokenGuardV2Settings
-	accounts AccountTokenGuardV2AccountReader
-	prober   AccountTokenGuardV2Prober
-	reauth   *OpenAIOAuthReauthService
+	now        func() time.Time
+	repo       AccountTokenGuardV2Repository
+	settings   AccountTokenGuardV2Settings
+	accounts   AccountTokenGuardV2AccountReader
+	prober     AccountTokenGuardV2Prober
+	reauth     *OpenAIOAuthReauthService
+	enrollment *accountTokenGuardV2Enrollment
 
 	leaseOwner string
 	runMu      sync.Mutex
@@ -266,6 +268,9 @@ func (s *AccountTokenGuardV2Service) Start() {
 			runCycle := func() {
 				ctx, cancel := context.WithTimeout(s.rootCtx, accountTokenGuardV2CycleDuration)
 				defer cancel()
+				if err := s.runAutoEnrollment(ctx); err != nil {
+					slog.Warn("account_token_guard_v2_enrollment_failed")
+				}
 				if rows, err := s.repo.ListAccounts(ctx); err == nil && len(rows) > 0 {
 					s.reauth.EnsureWorker()
 				}
@@ -342,6 +347,16 @@ func (s *AccountTokenGuardV2Service) SaveAccount(ctx context.Context, accountID 
 }
 
 func (s *AccountTokenGuardV2Service) RemoveAccount(ctx context.Context, accountID int64) error {
+	if s.enrollment != nil && s.enrollment.db != nil {
+		return s.removeEnrolledAccount(ctx, accountID)
+	}
+	rules, err := s.GetRules(ctx)
+	if err != nil {
+		return infraerrors.ServiceUnavailable("TOKEN_GUARD_V2_RULES_READ_FAILED", "failed to read automatic enrollment settings")
+	}
+	if rules.AutoEnrollEnabled {
+		return infraerrors.Conflict("TOKEN_GUARD_V2_AUTO_ENROLL_ACTIVE", "自动纳入已开启，请暂停该账号，或先关闭自动纳入再移除")
+	}
 	if err := s.repo.DeleteAccount(ctx, accountID); err != nil {
 		return infraerrors.New(http.StatusInternalServerError, "TOKEN_GUARD_V2_DELETE_FAILED", "failed to remove monitored account")
 	}

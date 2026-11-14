@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
@@ -10,6 +11,7 @@ import (
 	"fmt"
 	"github.com/Wei-Shaw/sub2api/internal/reauthruntime"
 	"log/slog"
+	"math/big"
 	"net/http"
 	"net/mail"
 	"net/url"
@@ -57,9 +59,10 @@ const (
 )
 
 const (
-	OpenAIOAuthReauthProxySourceAccount      = "account"
-	OpenAIOAuthReauthProxySourceManagedProxy = "managed_proxy"
-	OpenAIOAuthReauthProxySourceMihomo       = "mihomo"
+	OpenAIOAuthReauthProxySourceAccount       = "account"
+	OpenAIOAuthReauthProxySourceManagedProxy  = "managed_proxy"
+	OpenAIOAuthReauthProxySourceMihomo        = "mihomo"
+	OpenAIOAuthReauthProxySourceRandomManaged = "random_managed"
 )
 
 const (
@@ -273,7 +276,7 @@ func normalizeReauthProxySource(source string, proxyID *int64) (string, error) {
 		}
 	}
 	switch source {
-	case OpenAIOAuthReauthProxySourceAccount, OpenAIOAuthReauthProxySourceMihomo:
+	case OpenAIOAuthReauthProxySourceAccount, OpenAIOAuthReauthProxySourceMihomo, OpenAIOAuthReauthProxySourceRandomManaged:
 		if proxyID != nil {
 			return "", errors.New("proxy id is only valid for managed_proxy")
 		}
@@ -376,6 +379,51 @@ func (s *OpenAIOAuthReauthService) reauthProxyURL(ctx context.Context, proxyID *
 		return "", errors.New("proxy is unavailable")
 	}
 	return proxy.URL(), nil
+}
+
+// Pick one active static proxy for this login attempt. The resolved URL is
+// passed to both the worker and OAuth session; later edits to the pool cannot
+// move the token exchange to a different egress or silently enable direct I/O.
+func (s *OpenAIOAuthReauthService) randomManagedReauthProxyURL(ctx context.Context) (string, error) {
+	if s == nil || s.oauth == nil || s.oauth.proxyRepo == nil {
+		return "", errors.New("random managed proxy pool is unavailable")
+	}
+	proxies, err := s.oauth.proxyRepo.ListActive(ctx)
+	if err != nil {
+		return "", errors.New("random managed proxy pool is unavailable")
+	}
+	eligible := make([]int64, 0, len(proxies))
+	for i := range proxies {
+		if reauthRandomProxyEligible(&proxies[i], time.Now()) {
+			eligible = append(eligible, proxies[i].ID)
+		}
+	}
+	if len(eligible) == 0 {
+		return "", errors.New("random managed proxy pool has no available proxy")
+	}
+	index, err := rand.Int(rand.Reader, big.NewInt(int64(len(eligible))))
+	if err != nil {
+		return "", errors.New("random managed proxy selection failed")
+	}
+	id := eligible[index.Int64()]
+	proxy, err := s.oauth.proxyRepo.GetByID(ctx, id)
+	if err != nil || proxy == nil || proxy.ID != id || !reauthRandomProxyEligible(proxy, time.Now()) {
+		return "", errors.New("selected random managed proxy is unavailable")
+	}
+	return proxy.URL(), nil
+}
+
+func reauthRandomProxyEligible(proxy *Proxy, now time.Time) bool {
+	if proxy == nil || proxy.ID <= 0 || !proxy.IsActive() || proxy.IsExpired(now) ||
+		proxy.MihomoNodeID != "" || strings.TrimSpace(proxy.Host) == "" || proxy.Port < 1 || proxy.Port > 65535 {
+		return false
+	}
+	switch proxy.Protocol {
+	case "http", "https", "socks5", "socks5h":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *OpenAIOAuthReauthService) SaveConfig(ctx context.Context, accountID int64, loginEmail, otpURL string) (*OpenAIOAuthReauthConfig, error) {
@@ -669,7 +717,11 @@ func (s *OpenAIOAuthReauthService) createTaskForProfile(ctx context.Context, acc
 		if !ok {
 			return nil, infraerrors.ServiceUnavailable("OPENAI_REAUTH_EXCEL_UNAVAILABLE", "Excel authorization queue is unavailable")
 		}
-		record, err = excelRepo.CreateExcelTask(ctx, accountID, expectedCredentialsHash)
+		if creator != nil {
+			record, err = creator(ctx, accountID, expectedCredentialsHash)
+		} else {
+			record, err = excelRepo.CreateExcelTask(ctx, accountID, expectedCredentialsHash)
+		}
 	default:
 		if creator != nil {
 			record, err = creator(ctx, accountID, expectedCredentialsHash)
@@ -824,6 +876,9 @@ func (s *OpenAIOAuthReauthService) ClaimTaskWithEngines(ctx context.Context, wor
 			proxyURL, proxyErr = s.reauthProxyURL(ctx, proxyID)
 		case OpenAIOAuthReauthProxySourceManagedProxy:
 			proxyURL, proxyErr = s.reauthProxyURL(ctx, proxyID)
+		case OpenAIOAuthReauthProxySourceRandomManaged:
+			proxyError = "random managed proxy pool is unavailable"
+			proxyURL, proxyErr = s.randomManagedReauthProxyURL(ctx)
 		case OpenAIOAuthReauthProxySourceMihomo:
 			proxyError = "managed Mihomo proxy is unavailable"
 			if s.acquireMihomoProxy == nil {
@@ -869,7 +924,7 @@ func (s *OpenAIOAuthReauthService) ClaimTaskWithEngines(ctx context.Context, wor
 		}
 		var auth *OpenAIAuthURLResult
 		var authErr error
-		if proxySource == OpenAIOAuthReauthProxySourceMihomo {
+		if proxySource == OpenAIOAuthReauthProxySourceMihomo || proxySource == OpenAIOAuthReauthProxySourceRandomManaged {
 			auth, authErr = s.oauth.GenerateAuthURLWithProxyURL(ctx, proxyURL, "", PlatformOpenAI)
 		} else {
 			auth, authErr = s.oauth.GenerateAuthURL(ctx, proxyID, "", PlatformOpenAI)

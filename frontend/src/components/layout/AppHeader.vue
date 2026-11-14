@@ -305,7 +305,7 @@ const routeMetaKeys = computed(() => resolveRouteMetaKeys(route, {
 }))
 
 const showMobilePageTitle = computed(() =>
-  ['IntelligenceTest', 'AdminIntelligenceTest', 'AdminRadar', 'AdminAccountAuthorization'].includes(String(route.name))
+  ['IntelligenceTest', 'AdminIntelligenceTest', 'AdminRadar', 'AdminAccountAuthorization', 'AdminSmartOperations'].includes(String(route.name))
 )
 
 const pageTitle = computed(() => {

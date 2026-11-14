@@ -28,6 +28,10 @@ type OpenAIExcelOAuthRepository interface {
 	ListMissingExcelAuthorizations(context.Context, int) ([]int64, error)
 }
 
+type openAIExcelAutomaticOAuthRepository interface {
+	CreateAutomaticExcelTask(context.Context, int64, string) (*OpenAIOAuthReauthTaskRecord, error)
+}
+
 func reauthTaskProfile(record *OpenAIOAuthReauthTaskRecord) string {
 	if record.OAuthProfile == "siwc" {
 		return "siwc"
@@ -126,6 +130,10 @@ func (s *OpenAIOAuthReauthService) QueueMissingExcelAuthorizations(ctx context.C
 	if !ok {
 		return nil
 	}
+	automaticRepo, ok := s.repo.(openAIExcelAutomaticOAuthRepository)
+	if !ok {
+		return infraerrors.ServiceUnavailable("OPENAI_REAUTH_EXCEL_UNAVAILABLE", "Automatic Excel authorization queue is unavailable")
+	}
 	if s.settings != nil {
 		value, err := s.settings.GetValue(ctx, SettingKeyExcelBPSEnabled)
 		if err != nil && !errors.Is(err, ErrSettingNotFound) {
@@ -147,7 +155,7 @@ func (s *OpenAIOAuthReauthService) QueueMissingExcelAuthorizations(ctx context.C
 			return ctx.Err()
 		}
 		// A concurrent login/config edit is handled by task uniqueness and the CAS.
-		if _, err := s.CreateTaskForProfile(ctx, id, "excel"); err != nil {
+		if _, err := s.createTaskForProfile(ctx, id, "excel", automaticRepo.CreateAutomaticExcelTask); err != nil {
 			slog.Warn("openai_excel_authorization_queue_failed", "account_id", id, "reason", infraerrors.Reason(err))
 			continue
 		}

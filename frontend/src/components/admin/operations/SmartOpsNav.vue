@@ -1,22 +1,53 @@
 <template>
-  <nav :aria-label="t('accountOps.smartTitle')" class="mb-5 flex w-fit flex-wrap gap-1 rounded-xl border border-gray-200/70 bg-white/80 p-1 shadow-sm dark:border-dark-700 dark:bg-dark-900">
-    <div v-for="item in items" :key="item.path" class="flex items-center">
-      <RouterLink :to="item.path" v-slot="{ isActive }" class="rounded-lg px-4 py-2 text-sm transition-colors" :class="[route.path === item.path ? 'bg-gray-900 font-medium text-white dark:bg-gray-100 dark:text-gray-900' : 'text-gray-500 hover:bg-gray-100 dark:hover:bg-dark-800']"><span :aria-current="isActive ? 'page' : undefined">{{ t(item.label) }}</span></RouterLink>
-      <NewFeatureBadge v-if="item.noticeId" :notice-id="item.noticeId" :user-id="authStore.user?.id" class="mx-1" />
-    </div>
-  </nav>
+  <div class="mb-5 space-y-3">
+    <nav :aria-label="t('accountOps.smartTitle')" class="rounded-2xl border border-gray-200 bg-white p-3 dark:border-dark-700 dark:bg-dark-900">
+      <div class="flex flex-wrap items-center gap-1">
+        <span class="mr-2 px-2 text-xs font-medium text-gray-500">{{ t('smartOps.commonTools') }}</span>
+        <div v-for="item in commonItems" :key="item.id" class="flex items-center">
+          <RouterLink :to="smartOperationLocation(item.id)" :aria-current="activeTool === item.id ? 'page' : undefined" class="rounded-lg px-4 py-2 text-sm transition-colors" :class="linkClass(item.id)">{{ t(item.label) }}</RouterLink>
+          <NewFeatureBadge v-if="item.noticeId" :notice-id="item.noticeId" :user-id="authStore.user?.id" class="mx-1" />
+        </div>
+      </div>
+      <details v-if="advancedItems.length" :open="advancedOpen" class="mt-2 border-t border-gray-100 pt-2 dark:border-dark-800" @toggle="advancedOpen = ($event.target as HTMLDetailsElement).open">
+        <summary class="cursor-pointer rounded-lg px-2 py-2 text-xs font-medium text-gray-500">{{ t('smartOps.advancedTools') }}</summary>
+        <div class="mt-1 flex flex-wrap gap-1">
+          <div v-for="item in advancedItems" :key="item.id" class="flex items-center">
+            <RouterLink :to="smartOperationLocation(item.id)" :aria-current="activeTool === item.id ? 'page' : undefined" class="rounded-lg px-3 py-2 text-sm transition-colors" :class="linkClass(item.id)">{{ t(item.label) }}</RouterLink>
+            <NewFeatureBadge v-if="item.noticeId" :notice-id="item.noticeId" :user-id="authStore.user?.id" class="mx-1" />
+          </div>
+        </div>
+      </details>
+    </nav>
+    <SmartOpsGuide :tool="activeTool" />
+  </div>
 </template>
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useAdminSettingsStore } from '@/stores/adminSettings'
 import { useAuthStore } from '@/stores/auth'
 import NewFeatureBadge from '@/components/common/NewFeatureBadge.vue'
-import { NEW_FEATURE_NOTICES } from '@/constants/newFeatureNotices'
-const { t } = useI18n(), route = useRoute(), adminSettingsStore = useAdminSettingsStore()
+import SmartOpsGuide from './SmartOpsGuide.vue'
+import { smartOperationForRoute, smartOperationLocation, visibleSmartOperationTools, type SmartOperationTool } from '@/utils/smartOperations'
+const { t } = useI18n()
+const route = useRoute()
+const adminSettingsStore = useAdminSettingsStore()
 const authStore = useAuthStore()
-interface SmartOpsNavItem { path: string; label: string; noticeId?: string }
-// Keep the order in sync with the 智能运维 group in AppSidebar.vue.
-const items = computed((): SmartOpsNavItem[] => [{ path: '/admin/lottery', label: 'lottery.adminTitle' }, { path: '/admin/auto-config', label: 'autoConfig.title', noticeId: NEW_FEATURE_NOTICES.oauthInitialModelSelection }, { path: '/admin/priority-scheduling', label: 'priorityScheduling.title' }, { path: '/admin/channel-operations', label: 'channelOps.title' }, { path: '/admin/profit-operations', label: 'profitOps.title' }, { path: '/admin/account-quality', label: 'qualityOps.title', noticeId: NEW_FEATURE_NOTICES.qualityRetestRest }, { path: '/admin/controlled-experiments', label: 'controlledExperiments.title' }, { path: '/admin/account-ops', label: 'accountOps.title' }, { path: '/admin/token-guard', label: 'tokenGuard.title' }, { path: '/admin/token-guard-v2', label: 'tokenGuardV2.title' }, { path: '/admin/pelican-tests', label: 'pelicanTests.title' }, { path: '/admin/group-cache-tests', label: 'admin.groupCacheTest.title' }, ...(adminSettingsStore.requestCaptureEnabled ? [{ path: '/admin/request-captures', label: 'admin.requestCapture.title' }] : []), ...(authStore.isAdmin ? [{ path: '/admin/ai-ops', label: 'aiOps.title', noticeId: NEW_FEATURE_NOTICES.aiOpsCodex }] : []), { path: '/admin/harvest-flow', label: 'nav.harvestFlow' }])
+const activeTool = computed(() => smartOperationForRoute(route))
+const items = computed(() => visibleSmartOperationTools({
+  hiddenPaths: adminSettingsStore.smartOpsHiddenMenuItems ?? [],
+  requestCaptureEnabled: adminSettingsStore.requestCaptureEnabled,
+  isAdmin: authStore.isAdmin,
+  simpleMode: authStore.isSimpleMode,
+}))
+const commonItems = computed(() => items.value.filter(item => item.common))
+const advancedItems = computed(() => items.value.filter(item => !item.common))
+const advancedOpen = ref(false)
+watch(activeTool, tool => { advancedOpen.value = advancedItems.value.some(item => item.id === tool) }, { immediate: true })
+function linkClass(tool: SmartOperationTool) {
+  return activeTool.value === tool
+    ? 'bg-gray-900 font-medium text-white dark:bg-gray-100 dark:text-gray-900'
+    : 'text-gray-500 hover:bg-gray-100 dark:hover:bg-dark-800'
+}
 </script>

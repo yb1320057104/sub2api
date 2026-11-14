@@ -6,6 +6,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/adminaccess"
+	"github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -13,6 +15,76 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestAccountTokenGuardV2EnrollmentRequiresFullAdmin(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, path := range []string{"/batch", "/sync"} {
+		for _, tc := range []struct {
+			name       string
+			userID     int64
+			role       string
+			restricted bool
+			want       int
+		}{
+			{"anonymous", 0, "", false, 401},
+			{"ordinary", 7, service.RoleUser, false, 403},
+			{"restricted", 7, service.RoleAdmin, true, 403},
+		} {
+			t.Run(path+tc.name, func(t *testing.T) {
+				h := NewAccountTokenGuardV2Handler(nil)
+				router := gin.New()
+				router.Use(func(c *gin.Context) {
+					if tc.userID > 0 {
+						c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: tc.userID})
+						c.Set(string(middleware.ContextKeyUserRole), tc.role)
+					}
+					if tc.restricted {
+						c.Request = c.Request.WithContext(adminaccess.WithPrincipal(c.Request.Context(), &adminaccess.Principal{KeyID: "fixture"}))
+					}
+					c.Next()
+				})
+				router.POST("/batch", h.BatchCreate)
+				router.POST("/sync", h.Sync)
+				rec := httptest.NewRecorder()
+				router.ServeHTTP(rec, httptest.NewRequest("POST", path, strings.NewReader(`{"accounts":"private-password"}`)))
+				require.Equal(t, tc.want, rec.Code)
+				require.Equal(t, "no-store", rec.Header().Get("Cache-Control"))
+				require.NotContains(t, rec.Body.String(), "private-password")
+			})
+		}
+	}
+}
+
+type tokenGuardV2RulesHandlerRepo struct {
+	service.AccountTokenGuardV2Repository
+}
+
+func (tokenGuardV2RulesHandlerRepo) RescheduleEnabled(context.Context) error { return nil }
+
+func TestAccountTokenGuardV2RulesPreserveMissingAutoEnrollment(t *testing.T) {
+	for _, tc := range []struct {
+		name, extra string
+		want        bool
+	}{
+		{"old client", "", true},
+		{"explicit disable", `,"auto_enroll_enabled":false`, false},
+		{"explicit enable", `,"auto_enroll_enabled":true`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			settings := &opsHandlerWritableSettings{raw: `{"auto_enroll_enabled":true,"probe_interval_seconds":1800,"retry_interval_seconds":300,"relogin_cooldown_seconds":1800,"fail_streak_threshold":2}`}
+			svc := service.NewAccountTokenGuardV2Service(tokenGuardV2RulesHandlerRepo{}, settings, nil, nil, nil)
+			h := NewAccountTokenGuardV2Handler(svc)
+			router := gin.New()
+			router.PUT("/rules", h.SaveRules)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, httptest.NewRequest("PUT", "/rules", strings.NewReader(`{"probe_interval_seconds":1800,"retry_interval_seconds":300,"relogin_cooldown_seconds":1800,"fail_streak_threshold":2`+tc.extra+`}`)))
+			require.Equal(t, 200, rec.Code, rec.Body.String())
+			var saved service.AccountTokenGuardV2Rules
+			require.NoError(t, json.Unmarshal([]byte(settings.raw), &saved))
+			require.Equal(t, tc.want, saved.AutoEnrollEnabled)
+		})
+	}
+}
 
 type opsHandlerSettings struct{ service.SettingRepository }
 

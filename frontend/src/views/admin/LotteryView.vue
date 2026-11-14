@@ -1,6 +1,7 @@
 <template>
   <AppLayout>
     <div class="mx-auto max-w-7xl space-y-5 text-gray-900 dark:text-gray-100">
+      <SmartOpsNav />
       <header class="flex flex-wrap items-center justify-between gap-3">
         <h1 class="text-2xl font-semibold">{{ t('lottery.adminTitle') }}</h1>
         <div class="flex gap-2">
@@ -627,6 +628,7 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import AppLayout from '@/components/layout/AppLayout.vue'
+import SmartOpsNav from '@/components/admin/operations/SmartOpsNav.vue'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import Icon from '@/components/icons/Icon.vue'
 import Toggle from '@/components/common/Toggle.vue'

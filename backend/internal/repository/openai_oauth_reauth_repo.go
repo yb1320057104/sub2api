@@ -93,6 +93,9 @@ func (r *openAIOAuthReauthRepository) CreateTask(ctx context.Context, accountID 
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err = service.LockCredentialAuthorizationQueue(ctx, tx, accountID); err != nil {
+		return nil, err
+	}
 	// Manual Codex tasks serialize with budget recovery and automatic insertion.
 	// An account need not be monitored to receive an explicitly requested task.
 	var monitoredID int64

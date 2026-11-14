@@ -47,11 +47,23 @@ func (r *reauthTestAccountReader) GetProxy(context.Context, int64) (*Proxy, erro
 
 type reauthTestProxyRepo struct {
 	ProxyRepository
-	reader *reauthTestAccountReader
+	reader    *reauthTestAccountReader
+	pool      []Proxy
+	poolErr   error
+	poolCalls int
+	lookup    func(int64) (*Proxy, error)
 }
 
 func (r *reauthTestProxyRepo) GetByID(ctx context.Context, id int64) (*Proxy, error) {
+	if r.lookup != nil {
+		return r.lookup(id)
+	}
 	return r.reader.GetProxy(ctx, id)
+}
+
+func (r *reauthTestProxyRepo) ListActive(context.Context) ([]Proxy, error) {
+	r.poolCalls++
+	return r.pool, r.poolErr
 }
 
 type reauthTestOAuthClient struct {
@@ -516,6 +528,135 @@ func TestOpenAIOAuthReauthUsesMihomoProxyForWorkerAndTokenExchange(t *testing.T)
 	require.Equal(t, claim.ProxyURL, oauthClient.proxyURL)
 }
 
+func TestOpenAIOAuthReauthRandomProxyIsFixedForWorkerAndTokenExchange(t *testing.T) {
+	svc, reader, repo, _, oauthClient, _ := newReauthTestService("acct-1")
+	ctx := context.Background()
+	accountProxyID := int64(4)
+	reader.account.ProxyID = &accountProxyID
+	reader.proxy = &Proxy{ID: 9, Protocol: "socks5h", Host: "203.0.113.9", Port: 1080, Status: StatusActive}
+	pool := svc.oauth.proxyRepo.(*reauthTestProxyRepo)
+	pool.pool = []Proxy{*reader.proxy}
+
+	config, err := svc.SaveCredentialConfig(ctx, 42, OpenAIOAuthReauthConfigInput{
+		LoginEmail: "user@example.com", CredentialMode: OpenAIOAuthReauthModeEmailOTPURL,
+		ProxySource: OpenAIOAuthReauthProxySourceRandomManaged, OTPURL: "https://mail.example.com/code",
+	})
+	require.NoError(t, err)
+	require.Equal(t, OpenAIOAuthReauthProxySourceRandomManaged, config.ProxySource)
+	require.Nil(t, config.ProxyID)
+	require.Zero(t, pool.poolCalls, "saving a pool policy must not select or bind an egress")
+	_, err = svc.CreateTask(ctx, 42)
+	require.NoError(t, err)
+	claim, err := svc.ClaimTask(ctx, "worker-a")
+	require.NoError(t, err)
+	require.NotNil(t, claim)
+	require.Equal(t, "socks5h://203.0.113.9:1080", claim.ProxyURL)
+	require.Equal(t, 1, pool.poolCalls)
+	require.Equal(t, accountProxyID, *reader.account.ProxyID)
+	require.Nil(t, repo.config.ProxyID)
+
+	// A later pool edit must not change the egress of an existing OAuth session.
+	pool.pool, reader.proxy = nil, nil
+	state := reauthStateFromURL(t, claim.AuthURL)
+	_, err = svc.SubmitCallback(ctx, claim.TaskID, "worker-a", "http://localhost:1455/auth/callback?code=test-code&state="+url.QueryEscape(state))
+	require.NoError(t, err)
+	require.Equal(t, claim.ProxyURL, oauthClient.proxyURL)
+	require.Equal(t, 1, pool.poolCalls)
+	require.Equal(t, accountProxyID, *reader.account.ProxyID)
+}
+
+func TestOpenAIOAuthReauthRandomProxyFailsClosed(t *testing.T) {
+	expired := time.Now().Add(-time.Minute)
+	for _, tt := range []struct {
+		name   string
+		pool   []Proxy
+		err    error
+		lookup func(int64) (*Proxy, error)
+	}{
+		{name: "empty pool"},
+		{name: "list error", err: errors.New("private proxy credentials must not appear")},
+		{name: "inactive expired and dynamic excluded", pool: []Proxy{
+			{ID: 1, Protocol: "http", Host: "203.0.113.1", Port: 8080, Status: StatusDisabled},
+			{ID: 2, Protocol: "http", Host: "203.0.113.2", Port: 8080, Status: StatusActive, ExpiresAt: &expired},
+			{ID: 3, Protocol: "http", Host: "127.0.0.1", Port: 19001, Status: StatusActive, MihomoNodeID: "node-a"},
+			{ID: 4, Protocol: "direct", Host: "203.0.113.4", Port: 8080, Status: StatusActive},
+			{ID: 5, Protocol: "http", Host: "", Port: 8080, Status: StatusActive},
+		}},
+		{name: "deleted after listing", pool: []Proxy{{ID: 9, Protocol: "http", Host: "203.0.113.9", Port: 8080, Status: StatusActive}}, lookup: func(int64) (*Proxy, error) { return nil, ErrProxyNotFound }},
+		{name: "disabled after listing", pool: []Proxy{{ID: 9, Protocol: "http", Host: "203.0.113.9", Port: 8080, Status: StatusActive}}, lookup: func(int64) (*Proxy, error) {
+			return &Proxy{ID: 9, Protocol: "http", Host: "203.0.113.9", Port: 8080, Status: StatusDisabled}, nil
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, _, repo, _, oauthClient, _ := newReauthTestService("acct-1")
+			pool := svc.oauth.proxyRepo.(*reauthTestProxyRepo)
+			pool.pool, pool.poolErr, pool.lookup = tt.pool, tt.err, tt.lookup
+			_, err := svc.SaveCredentialConfig(context.Background(), 42, OpenAIOAuthReauthConfigInput{
+				LoginEmail: "user@example.com", CredentialMode: OpenAIOAuthReauthModePasswordTOTP,
+				ProxySource: OpenAIOAuthReauthProxySourceRandomManaged, Password: "password-secret",
+			})
+			require.NoError(t, err)
+			_, err = svc.CreateTask(context.Background(), 42)
+			require.NoError(t, err)
+			claim, err := svc.ClaimTask(context.Background(), "worker-a")
+			require.NoError(t, err)
+			require.Nil(t, claim)
+			require.Equal(t, OpenAIOAuthReauthStatusFailed, repo.task.Status)
+			require.Equal(t, "random managed proxy pool is unavailable", repo.task.Error)
+			require.Zero(t, oauthClient.exchanges)
+		})
+	}
+}
+
+func TestOpenAIOAuthReauthRandomProxySkipsIneligibleCandidates(t *testing.T) {
+	svc, reader, _, _, _, _ := newReauthTestService("acct-1")
+	reader.proxy = &Proxy{ID: 9, Protocol: "http", Host: "203.0.113.9", Port: 8080, Status: StatusActive}
+	pool := svc.oauth.proxyRepo.(*reauthTestProxyRepo)
+	pool.pool = []Proxy{
+		{ID: 8, Protocol: "http", Host: "203.0.113.8", Port: 8080, Status: StatusDisabled},
+		*reader.proxy,
+	}
+	for range 10 {
+		proxyURL, err := svc.randomManagedReauthProxyURL(context.Background())
+		require.NoError(t, err)
+		require.Equal(t, reader.proxy.URL(), proxyURL)
+	}
+}
+
+func TestOpenAIOAuthReauthRandomProxySelectsAgainForNextPasswordLogin(t *testing.T) {
+	svc, reader, repo, _, _, _ := newReauthTestService("acct-1")
+	ctx := context.Background()
+	pool := svc.oauth.proxyRepo.(*reauthTestProxyRepo)
+	reader.proxy = &Proxy{ID: 9, Protocol: "http", Host: "203.0.113.9", Port: 8080, Status: StatusActive}
+	pool.pool = []Proxy{*reader.proxy}
+	_, err := svc.SaveCredentialConfig(ctx, 42, OpenAIOAuthReauthConfigInput{
+		LoginEmail: "user@example.com", CredentialMode: OpenAIOAuthReauthModePasswordTOTP,
+		ProxySource: OpenAIOAuthReauthProxySourceRandomManaged, Password: "password-secret",
+	})
+	require.NoError(t, err)
+	_, err = svc.CreateTask(ctx, 42)
+	require.NoError(t, err)
+	first, err := svc.ClaimTask(ctx, "worker-a")
+	require.NoError(t, err)
+	require.NotNil(t, first)
+	require.Equal(t, reader.proxy.URL(), first.ProxyURL)
+	_, err = svc.SubmitCredentials(ctx, first.TaskID, "worker-a", directReauthCredentials("acct-1", "user-1", "user@example.com"), nil)
+	require.NoError(t, err)
+
+	reader.proxy = &Proxy{ID: 10, Protocol: "http", Host: "203.0.113.10", Port: 8080, Status: StatusActive}
+	pool.pool = []Proxy{*reader.proxy}
+	_, err = svc.CreateTask(ctx, 42)
+	require.NoError(t, err)
+	second, err := svc.ClaimTask(ctx, "worker-b")
+	require.NoError(t, err)
+	require.NotNil(t, second)
+	require.Equal(t, reader.proxy.URL(), second.ProxyURL)
+	require.NotEqual(t, first.ProxyURL, second.ProxyURL)
+	require.Equal(t, 2, pool.poolCalls)
+	require.Nil(t, reader.account.ProxyID)
+	require.Nil(t, repo.config.ProxyID)
+}
+
 func TestOpenAIOAuthReauthKeepsMihomoProxyUntilDirectCredentialsComplete(t *testing.T) {
 	svc, _, _, _, _, _ := newReauthTestService("acct-1")
 	ctx := context.Background()
@@ -570,6 +711,7 @@ func TestOpenAIOAuthReauthRejectsInvalidProxySourceCombinations(t *testing.T) {
 	}{
 		{name: "account with proxy id", source: OpenAIOAuthReauthProxySourceAccount, id: &proxyID},
 		{name: "mihomo with proxy id", source: OpenAIOAuthReauthProxySourceMihomo, id: &proxyID},
+		{name: "random pool with proxy id", source: OpenAIOAuthReauthProxySourceRandomManaged, id: &proxyID},
 		{name: "managed proxy without id", source: OpenAIOAuthReauthProxySourceManagedProxy},
 		{name: "unknown source", source: "other"},
 	} {

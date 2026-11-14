@@ -45,8 +45,17 @@ func (r *openAIOAuthReauthRepository) createTOTPRotation(ctx context.Context, ac
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err = service.LockCredentialAuthorizationQueue(ctx, tx, accountID); err != nil {
+		return nil, err
+	}
 	if _, err = tx.ExecContext(ctx, "SET LOCAL synchronous_commit = on"); err != nil {
 		return nil, err
+	}
+	if automatic {
+		eligible, eligibilityErr := lockAutomaticTOTPRotationEligibility(ctx, tx, accountID)
+		if eligibilityErr != nil || !eligible {
+			return nil, eligibilityErr
+		}
 	}
 	var current time.Time
 	if err = tx.QueryRowContext(ctx, `SELECT updated_at FROM openai_oauth_reauth_configs WHERE account_id=$1 FOR UPDATE`, accountID).Scan(&current); err != nil {
@@ -86,6 +95,52 @@ func (r *openAIOAuthReauthRepository) createTOTPRotation(ctx context.Context, ac
 		return nil, err
 	}
 	return r.GetTOTPRotation(ctx, accountID)
+}
+
+func lockAutomaticTOTPRotationEligibility(ctx context.Context, tx *sql.Tx, accountID int64) (bool, error) {
+	// Callbacks lock task before account, while budget reconciliation locks
+	// guard before task. Reject active logins before locking account to avoid
+	// introducing the reverse account -> guard -> task dependency. The shared
+	// history lock prevents a new login from being queued after this check.
+	var busy bool
+	err := tx.QueryRowContext(ctx, `SELECT EXISTS (
+ SELECT 1 FROM openai_oauth_reauth_tasks task WHERE task.account_id=$1
+ AND task.status IN ('queued','running','callback_processing')
+ AND NOT EXISTS(SELECT 1 FROM openai_totp_rotations rotation WHERE rotation.task_id=task.id))`, accountID).Scan(&busy)
+	if err != nil {
+		return false, err
+	}
+	if busy {
+		return false, infraerrors.Conflict("TOTP_ACCOUNT_BUSY", "A login or 2FA task is already active")
+	}
+	// Recheck automatic controls under account/guard locks before the existing
+	// config/rotation locks. A busy row skips this automatic attempt rather than
+	// waiting while holding another lock. Manual rotation keeps its semantics.
+	var lockedID int64
+	var lockErr *pq.Error
+	err = tx.QueryRowContext(ctx, `SELECT id FROM accounts WHERE id=$1 AND deleted_at IS NULL FOR UPDATE NOWAIT`, accountID).Scan(&lockedID)
+	if errors.Is(err, sql.ErrNoRows) || (errors.As(err, &lockErr) && lockErr.Code == "55P03") {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	err = tx.QueryRowContext(ctx, `SELECT account_id FROM account_token_guard_v2_accounts WHERE account_id=$1 FOR UPDATE NOWAIT`, accountID).Scan(&lockedID)
+	if errors.As(err, &lockErr) && lockErr.Code == "55P03" {
+		return false, nil
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return false, err
+	}
+	var eligible bool
+	err = tx.QueryRowContext(ctx, `SELECT EXISTS (
+ SELECT 1 FROM accounts a WHERE a.id=$1 AND a.deleted_at IS NULL
+ AND a.status<>'disabled' AND a.schedulable
+ AND NOT EXISTS(SELECT 1 FROM account_token_guard_v2_accounts guard WHERE guard.account_id=a.id AND (NOT guard.enabled OR NOT guard.auto_relogin_enabled))
+ AND NOT EXISTS(SELECT 1 FROM pk_authorization_state st WHERE st.account_id=a.id AND st.status='banned' AND st.credential_version=md5(a.credentials::text))
+ AND COALESCE((SELECT status FROM pk_authorization_jobs WHERE email=lower(trim(COALESCE(NULLIF(a.credentials->>'email',''),NULLIF(a.extra->>'email_address',''),NULLIF(a.extra->>'email',''),'')))
+   AND (status IN ('banned','completed') OR settings->>'authorization_completed'='true') ORDER BY id DESC LIMIT 1),'')<>'banned')`, accountID).Scan(&eligible)
+	return eligible, err
 }
 
 func (r *openAIOAuthReauthRepository) ClaimTOTPRotation(ctx context.Context, worker string) (*service.OpenAITOTPRotation, error) {

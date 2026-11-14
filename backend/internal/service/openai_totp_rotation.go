@@ -134,7 +134,7 @@ func (s *OpenAIOAuthReauthService) createTOTPRotation(ctx context.Context, id in
 		return nil, err
 	}
 	// Re-read the account instead of trusting the gateway's scheduling snapshot.
-	if automatic && (!openAITOTPRotateOn429Enabled(account) || !account.IsActive()) {
+	if automatic && (!openAITOTPRotateOn429Enabled(account) || !account.IsActive() || !account.Schedulable) {
 		return nil, nil
 	}
 	if err = s.checkWorkerMode(OpenAIOAuthReauthModePasswordTOTP); err != nil {
@@ -221,6 +221,8 @@ func (s *OpenAIOAuthReauthService) ClaimTOTPRotation(ctx context.Context, worker
 				claim.ProxyURL, err = s.reauthProxyURL(ctx, account.ProxyID)
 			case OpenAIOAuthReauthProxySourceManagedProxy:
 				claim.ProxyURL, err = s.reauthProxyURL(ctx, cfg.ProxyID)
+			case OpenAIOAuthReauthProxySourceRandomManaged:
+				claim.ProxyURL, err = s.randomManagedReauthProxyURL(ctx)
 			case OpenAIOAuthReauthProxySourceMihomo:
 				if s.acquireMihomoProxy == nil {
 					err = errors.New("proxy unavailable")

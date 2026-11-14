@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia } from 'pinia'
 import { reactive } from 'vue'
+import { createMemoryHistory, createRouter } from 'vue-router'
 import { flushPromises, mount } from '@vue/test-utils'
 import AccountOpsView from '../AccountOpsView.vue'
+import SmartNotificationsView from '../SmartNotificationsView.vue'
 import { useAppStore } from '@/stores/app'
 import { getAccountOpsSettings, getAccountOpsEvents, getAccountOpsThresholdAccounts, getAccountOpsThresholdGroups, saveAccountOpsGroups, saveAccountOpsNotificationSettings, saveAccountOpsRulesBatch, saveAccountOpsRuleGroups, testAccountOpsWebhook } from '@/api/admin/accountOps'
 const state = vi.hoisted(() => ({ auth: null as any }))
@@ -15,8 +17,39 @@ const config = { enabled: false, recipient: '', balance_low: true, weekly_quota:
 const settings = () => ({ config: { ...config }, smtp_configured: true, dropped_signals: 0, storage_failures: 0, encryption_key_configured: true })
 const deferred = <T>() => { let resolve!: (value: T) => void; const promise = new Promise<T>(yes => { resolve = yes }); return { promise, resolve } }
 const create = () => mount(AccountOpsView, { global: { plugins: [createPinia()], stubs: { teleport: true } } })
+
+describe('unified notifications', () => {
+  it('loads one notification workflow at a time and preserves the selected workspace tool', async () => {
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/admin/smart-ops', component: SmartNotificationsView }] })
+    await router.push('/admin/smart-ops?tool=notifications&notification=accounts&tab=records')
+    await router.isReady()
+    const wrapper = mount(SmartNotificationsView, { global: { plugins: [createPinia(), router], stubs: { AccountOpsView: true, RadarEmailAlerts: true } } })
+    expect(wrapper.find('account-ops-view-stub').exists()).toBe(true)
+    expect(wrapper.find('radar-email-alerts-stub').exists()).toBe(false)
+    expect(wrapper.findAll('main')).toHaveLength(1)
+    await wrapper.get('[data-testid="notification-tab-overview"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('account-ops-view-stub').exists()).toBe(false)
+    expect(wrapper.find('radar-email-alerts-stub').exists()).toBe(true)
+    expect(router.currentRoute.value.query).toMatchObject({ tool: 'notifications', notification: 'overview' })
+    expect(router.currentRoute.value.query.tab).toBeUndefined()
+    await wrapper.get('[data-testid="notification-tab-overview"]').trigger('keydown', { key: 'ArrowRight' })
+    await flushPromises()
+    expect(router.currentRoute.value.query.notification).toBe('accounts')
+    wrapper.unmount()
+  })
+})
 beforeEach(() => { vi.resetAllMocks(); state.auth = reactive({ user: { id: 1, role: 'admin' } }); vi.mocked(getAccountOpsSettings).mockResolvedValue(settings()); vi.mocked(getAccountOpsEvents).mockResolvedValue({ items: [], has_more: false }); vi.mocked(getAccountOpsThresholdAccounts).mockResolvedValue([]); vi.mocked(getAccountOpsThresholdGroups).mockResolvedValue([]); vi.mocked(saveAccountOpsGroups).mockResolvedValue(config); vi.mocked(saveAccountOpsRulesBatch).mockResolvedValue(config); vi.mocked(saveAccountOpsRuleGroups).mockResolvedValue(config); vi.mocked(testAccountOpsWebhook).mockResolvedValue({ ok: true }); vi.mocked(saveAccountOpsNotificationSettings).mockImplementation(async c => ({ ...config, ...c })) })
 describe('account operations tabs and independent saves', () => {
+  it('embeds account notifications without a second app layout or operations navigation', async () => {
+    const wrapper = mount(AccountOpsView, { props: { embedded: true }, global: { plugins: [createPinia()], stubs: { teleport: true } } })
+    await flushPromises()
+    expect(wrapper.find('main').exists()).toBe(false)
+    expect(wrapper.find('nav').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="account-ops-tab-settings"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
   it('initializes a dynamically opened dialog from saved recovery-only flags', async () => {
     vi.mocked(getAccountOpsSettings).mockResolvedValue({ ...settings(), config: { ...config, balance_thresholds: [{ account_id: 1, enabled: true, threshold: 5, unit: 'USD', notify_alert: false, notify_recovery: true }] } } as any)
     vi.mocked(getAccountOpsThresholdAccounts).mockResolvedValue([{ account_id: 1, account_name: 'key', type: 'apikey', platform: 'openai', balance: 3, unit: 'USD', balance_status: 'ok', received_at: null, usage_windows: [] }])

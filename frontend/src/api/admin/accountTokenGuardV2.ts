@@ -1,7 +1,7 @@
 import { apiClient } from '../client'
 
 export type TokenGuardV2CredentialMode = 'email_otp_url' | 'password_totp'
-export type TokenGuardV2ProxySource = 'account' | 'managed_proxy' | 'mihomo'
+export type TokenGuardV2ProxySource = 'account' | 'managed_proxy' | 'mihomo' | 'random_managed'
 export type TokenGuardV2Engine = 'local_worker' | 'session_studio'
 
 export interface CredentialOperationFailure {
@@ -66,6 +66,7 @@ export interface TokenGuardV2Account {
 }
 
 export interface TokenGuardV2Rules {
+  auto_enroll_enabled?: boolean
   relogin_backoff_max_seconds?: number
   relogin_max_failures?: number
   probe_interval_seconds: number
@@ -107,6 +108,38 @@ export interface SaveTokenGuardV2Account {
   clear_totp?: boolean
   enabled?: boolean
   auto_relogin_enabled?: boolean
+}
+
+export interface TokenGuardV2BatchInput {
+  accounts: string
+  proxy_source: TokenGuardV2ProxySource
+  proxy_id?: number
+  enabled?: boolean
+  auto_relogin_enabled?: boolean
+}
+
+export interface TokenGuardV2ImportItem {
+  line: number
+  email?: string
+  account_id?: number
+  status: string
+}
+
+export interface TokenGuardV2ImportResult {
+  items: TokenGuardV2ImportItem[]
+  succeeded: number
+  skipped: number
+  failed: number
+  has_more?: boolean
+  next_after_id?: number
+}
+
+export async function batchCreateTokenGuardV2Accounts(input: TokenGuardV2BatchInput, signal?: AbortSignal): Promise<TokenGuardV2ImportResult> {
+  return (await apiClient.post('/admin/account-ops/token-guard-v2/accounts/batch', input, { signal, timeout: 100000 })).data
+}
+
+export async function syncTokenGuardV2Accounts(afterId = 0, signal?: AbortSignal): Promise<TokenGuardV2ImportResult> {
+  return (await apiClient.post('/admin/account-ops/token-guard-v2/sync', { after_id: afterId }, { signal, timeout: 100000 })).data
 }
 
 export async function listTokenGuardV2Accounts(): Promise<TokenGuardV2Status> {

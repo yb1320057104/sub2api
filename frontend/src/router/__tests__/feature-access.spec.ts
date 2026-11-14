@@ -1,4 +1,6 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { SMART_OPERATION_TOOLS, SMART_OPERATIONS_ROUTE_NAME } from '@/utils/smartOperations'
+import type { RouteRecordRaw } from 'vue-router'
 
 type NavigationGuard = (
   to: Record<string, any>,
@@ -8,7 +10,7 @@ type NavigationGuard = (
 
 const routerHarness = vi.hoisted(() => ({
   guard: null as NavigationGuard | null,
-  routes: [] as Array<{ path: string; meta?: Record<string, unknown>; redirect?: unknown }>,
+  routes: [] as Array<{ path: string; name?: string; meta?: Record<string, unknown>; redirect?: unknown }>,
 }))
 
 const authStore = vi.hoisted(() => ({
@@ -35,6 +37,8 @@ const appStore = vi.hoisted(() => ({
   fetchPublicSettings: vi.fn(),
 }))
 
+const adminSettings = vi.hoisted(() => ({ customMenuItems: [], requestCaptureEnabled: false, fetch: vi.fn() }))
+
 vi.mock('vue-router', () => ({
   createWebHistory: vi.fn(() => ({})),
   createRouter: vi.fn((options: { routes: Array<{ path: string; meta?: Record<string, unknown>; redirect?: unknown }> }) => {
@@ -58,7 +62,7 @@ vi.mock('@/stores/app', () => ({
 }))
 
 vi.mock('@/stores/adminSettings', () => ({
-  useAdminSettingsStore: () => ({ customMenuItems: [] }),
+  useAdminSettingsStore: () => adminSettings,
 }))
 
 vi.mock('@/stores/adminCompliance', () => ({
@@ -93,7 +97,7 @@ function createDeferred<T>() {
   return { promise, resolve }
 }
 
-function runGuard(meta: Record<string, unknown>, path: string) {
+function runGuard(meta: Record<string, unknown>, path: string, query: Record<string, unknown> = {}, name: unknown = routerHarness.routes.find(route => route.path === path)?.name ?? 'FeatureRoute') {
   if (!routerHarness.guard) {
     throw new Error('router guard was not registered')
   }
@@ -103,8 +107,10 @@ function runGuard(meta: Record<string, unknown>, path: string) {
     {
       path,
       fullPath: path,
-      name: 'FeatureRoute',
+      name,
       params: {},
+      query,
+      hash: '',
       meta: { requiresAuth: true, ...meta },
     },
     {},
@@ -209,6 +215,97 @@ describe('feature route guard', () => {
   })
 })
 
+describe('unified smart operations access and bookmarks', () => {
+  beforeEach(() => {
+    authStore.isAuthenticated = true
+    authStore.isAdmin = true
+    authStore.isObserver = false
+    authStore.isSimpleMode = false
+    appStore.backendModeEnabled = false
+    adminSettings.fetch.mockReset().mockResolvedValue(undefined)
+    adminSettings.requestCaptureEnabled = false
+  })
+
+  it.each(SMART_OPERATION_TOOLS)('redirects the actual $path route with filters and hash intact', tool => {
+    const route = routerHarness.routes.find(item => item.path === tool.path)!
+    expect(route.meta?.requiresAdmin).toBe(true)
+    const redirect = route.redirect as (route: Record<string, unknown>) => Record<string, any>
+    const target = redirect({ path: tool.path, query: { search: 'account' }, hash: '#saved' })
+    expect(target.path).toBe('/admin/smart-ops')
+    expect(target.query).toMatchObject({ tool: tool.id, search: 'account' })
+    expect(target.hash).toBe('#saved')
+  })
+
+  it('keeps the canonical workbench restricted to admins', async () => {
+    const route = routerHarness.routes.find(item => item.path === '/admin/smart-ops')!
+    expect(route.meta).toMatchObject({ requiresAuth: true, requiresAdmin: true })
+    authStore.isAdmin = false
+    const { navigation, next } = runGuard(route.meta!, route.path, { tool: 'radar' })
+    await navigation
+    expect(next).toHaveBeenCalledWith('/dashboard')
+  })
+
+  it.each([false, true])('keeps the capture feature gate after redirect (enabled=%s)', async enabled => {
+    adminSettings.requestCaptureEnabled = enabled
+    const route = routerHarness.routes.find(item => item.path === '/admin/smart-ops')!
+    const { navigation, next } = runGuard(route.meta!, route.path, { tool: 'captures' })
+    await navigation
+    expect(adminSettings.fetch).toHaveBeenCalledWith(true)
+    if (enabled) expect(next).toHaveBeenCalledWith()
+    else expect(next).toHaveBeenCalledWith('/admin/settings')
+  })
+
+  it.each(['/admin/smart-ops/', '/ADMIN/SMART-OPS', '/ADMIN/SMART-OPS/'])('gates captures through the actual matched route for %s', async path => {
+    const actualRouter = await vi.importActual<typeof import('vue-router')>('vue-router')
+    const matcher = actualRouter.createRouter({ history: actualRouter.createMemoryHistory(), routes: routerHarness.routes as RouteRecordRaw[] })
+    const resolved = matcher.resolve({ path, query: { tool: 'captures' } })
+    expect(resolved.name).toBe(SMART_OPERATIONS_ROUTE_NAME)
+    expect(resolved.path).toBe(path)
+    const blocked = runGuard(resolved.meta, resolved.path, resolved.query, resolved.name)
+    await blocked.navigation
+    expect(adminSettings.fetch).toHaveBeenCalledWith(true)
+    expect(blocked.next).toHaveBeenCalledWith('/admin/settings')
+    adminSettings.requestCaptureEnabled = true
+    const enabled = runGuard(resolved.meta, resolved.path, resolved.query, resolved.name)
+    await enabled.navigation
+    expect(enabled.next).toHaveBeenCalledWith()
+    authStore.isAdmin = false
+    const denied = runGuard(resolved.meta, resolved.path, resolved.query, resolved.name)
+    await denied.navigation
+    expect(denied.next).toHaveBeenCalledWith('/dashboard')
+  })
+
+  it.each([
+    ['/admin/token-guard-v2/', 'history', 'credentials', 'history'],
+    ['/ADMIN/ACCOUNT-AUTHORIZATION/', 'history', 'credentials', 'history'],
+    ['/ADMIN/RADAR/', 'authorization', 'credentials', 'inspection'],
+    ['/admin/radar/', 'emails', 'notifications', undefined],
+    ['/ADMIN/REQUEST-CAPTURES/', 'details', 'captures', 'details'],
+  ])('maps matched legacy variant %s to its original tool', async (path, tab, tool, expectedTab) => {
+    const actualRouter = await vi.importActual<typeof import('vue-router')>('vue-router')
+    const matcher = actualRouter.createRouter({ history: actualRouter.createMemoryHistory(), routes: routerHarness.routes as RouteRecordRaw[] })
+    const resolved = matcher.resolve({ path, query: { tab, search: 'account' }, hash: '#saved' })
+    expect(resolved.matched).toHaveLength(1)
+    const redirect = resolved.matched[0]!.redirect as (to: unknown) => Record<string, any>
+    const target = redirect(resolved)
+    expect(target.path).toBe('/admin/smart-ops')
+    expect(target.query).toMatchObject({ tool, search: 'account' })
+    expect(target.query.tab).toBe(expectedTab)
+    expect(target.hash).toBe('#saved')
+    if (tool === 'notifications') expect(target.query.notification).toBe('overview')
+  })
+
+  it('normalizes the default tool and old radar tabs before mounting a page', async () => {
+    const route = routerHarness.routes.find(item => item.path === '/admin/smart-ops')!
+    const initial = runGuard(route.meta!, route.path)
+    await initial.navigation
+    expect(initial.next).toHaveBeenCalledWith({ path: route.path, query: { tool: 'radar' }, hash: '', replace: true })
+    const oldTab = runGuard(route.meta!, route.path, { tool: 'radar', tab: 'emails' })
+    await oldTab.navigation
+    expect(oldTab.next).toHaveBeenCalledWith({ path: route.path, query: { tool: 'notifications', notification: 'overview' }, hash: '', replace: true })
+  })
+})
+
 describe('PKSecurityPolicyRanking route access', () => {
   beforeEach(() => {
     appStore.backendModeEnabled = false
@@ -231,7 +328,8 @@ describe('PKSecurityPolicyRanking route access', () => {
     ['/admin/prompt-audit', 'prompt'],
   ])('opens the matching audit menu for the legacy URL %s', (path, section) => {
     const route = routerHarness.routes.find(item => item.path === path)
-    expect(route?.redirect).toEqual({ path: '/admin/audit-center', query: { section } })
+    const target = typeof route?.redirect === 'function' ? route.redirect({ path, query: {}, hash: '' }) : route?.redirect
+    expect(target).toMatchObject({ path: '/admin/audit-center', query: { section } })
   })
 
   it.each([false, true])('keeps the ranking accessible with risk control off and simple mode on (admin=%s)', async (admin) => {
