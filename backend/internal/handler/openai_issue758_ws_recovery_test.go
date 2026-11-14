@@ -30,12 +30,13 @@ func TestIssue758WSInitialRecoveryErrorCarriesWaitGuidance(t *testing.T) {
 	}{
 		{"owner_rate_limited", "rate_limit_error", http.StatusTooManyRequests, coderws.StatusTryAgainLater},
 		{"owner_overloaded", "server_error", http.StatusServiceUnavailable, coderws.StatusTryAgainLater},
+		{"store_unavailable", "server_error", http.StatusServiceUnavailable, coderws.StatusTryAgainLater},
 		{"route_changed", "invalid_request_error", http.StatusConflict, coderws.StatusPolicyViolation},
 		{"http_previous_response_unsupported", "invalid_request_error", http.StatusConflict, coderws.StatusPolicyViolation},
 	} {
 		t.Run(test.reason, func(t *testing.T) {
 			recovery := &service.OpenAIAgentRecoveryError{Reason: test.reason}
-			if test.closeStatus == coderws.StatusTryAgainLater {
+			if test.reason == "owner_overloaded" || test.reason == "owner_rate_limited" {
 				recovery.RetryAt = time.Now().UTC().Add(5 * time.Hour).Truncate(time.Second)
 			}
 			type serverResult struct {

@@ -1,12 +1,72 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"slices"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
+	"github.com/tidwall/gjson"
 )
+
+type openAIToolCallRoutingContextKey struct{}
+
+type openAIToolCallRouting struct {
+	inbound           string
+	tools             bool
+	reasoningDisabled bool
+}
+
+// Capture only routing facts, never the caller's tool definitions or history.
+// This is evaluated after key/group request policy and before account selection.
+func WithOpenAIToolCallRouting(ctx context.Context, body []byte, inbound string) context.Context {
+	facts := openAIToolCallRouting{inbound: inbound}
+	facts.tools = len(gjson.GetBytes(body, "tools").Array()) > 0 || len(gjson.GetBytes(body, "functions").Array()) > 0
+	if inbound == APIProtocolResponses || (inbound == APIProtocolChatCompletions && !gjson.GetBytes(body, "messages").Exists() && gjson.GetBytes(body, "input").Exists()) {
+		facts.inbound = APIProtocolResponses
+		gjson.GetBytes(body, "input").ForEach(func(_, item gjson.Result) bool {
+			facts.tools = facts.tools || len(item.Get("additional_tools").Array()) > 0
+			return !facts.tools
+		})
+	}
+	facts.reasoningDisabled = gjson.GetBytes(body, "reasoning_effort").String() == "none"
+	return context.WithValue(ctx, openAIToolCallRoutingContextKey{}, facts)
+}
+
+// Reject the same impossible raw-Chat routes as the forwarding guard, while
+// there is still time to select another authorized account. Use the mapped
+// upstream model: a public alias alone says nothing about protocol requirements.
+func openAIToolCallRouteAllowed(ctx context.Context, account *Account, requestedModel string) bool {
+	if ctx == nil || account == nil {
+		return true
+	}
+	facts, ok := ctx.Value(openAIToolCallRoutingContextKey{}).(openAIToolCallRouting)
+	if !ok || !facts.tools || account.Platform != PlatformOpenAI || account.Type != AccountTypeAPIKey || account.HasManagedOpenAIConnections() {
+		return true
+	}
+	model := requestedModel
+	if forward, ok := openAIForwardModelFromContext(ctx); ok && forward.model != "" {
+		model = forward.model
+	}
+	upstream := normalizeOpenAIModelForUpstream(account, resolveOpenAIForwardModel(account, model, ""))
+	if account.IsKiloBridgeEnabled() || account.IsCopilotSDKEnabled() || account.IsExcelBPSEnabledForModel(model) || account.IsPrismBrowserEnabledForModel(model) {
+		return true
+	}
+	// Model-routed providers also consult a live protocol catalog in forwarding.
+	// Only their explicitly pinned Chat route is conclusive without that catalog.
+	if account.routesByModel() && account.GetAPIProtocol() != APIProtocolChatCompletions {
+		return true
+	}
+	if resolveUpstreamProtocol(account, facts.inbound, upstream, nil) != APIProtocolChatCompletions {
+		return true
+	}
+	if openai.RequiresResponsesForToolCalls(upstream) {
+		return false
+	}
+	return facts.inbound != APIProtocolChatCompletions || facts.reasoningDisabled || !openai.IsGPT6SolOrLunaModelSpelling(upstream)
+}
 
 // resolveUpstreamProtocol 决定 OpenAI 网关本次请求发往上游的协议
 // （chat_completions / responses / anthropic），是 /v1/responses、

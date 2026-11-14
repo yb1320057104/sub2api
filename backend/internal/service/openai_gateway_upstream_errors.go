@@ -323,6 +323,9 @@ func (s *OpenAIGatewayService) shouldFailoverOpenAIUpstreamResponse(account *Acc
 	if isOpenAIContextWindowError(upstreamMsg, upstreamBody) {
 		return false
 	}
+	if s != nil && s.accountRepo != nil && account != nil && account.IsOpenAIApiKey() && isOpenAIToolProtocolRejection(statusCode, upstreamBody) {
+		return true
+	}
 	if isOpenAIHTTPUpstreamAccessStateError(statusCode, upstreamMsg, upstreamBody) {
 		return true
 	}
@@ -374,6 +377,36 @@ func IsOpenAICompatibleModelNotFound400(respBody []byte) bool {
 	return isOpenAICompatibleModelNotFound400(respBody)
 }
 
+const OpenAIToolProtocolUnavailableMessage = "No compatible upstream route is available for this model's tool calls. Please contact the administrator or retry later."
+const openAIToolProtocolUnavailableReason = GatewayFailureReason("openai_tool_protocol_unavailable")
+
+// Match the complete structured provider refusal, never echoed request fields
+// or a generic invalid-request message. This describes an account route, not a
+// malformed tool schema. It must not change the account-wide protocol probe.
+func isOpenAIToolProtocolRejection(status int, body []byte) bool {
+	if status != http.StatusBadRequest || !gjson.ValidBytes(body) {
+		return false
+	}
+	for _, field := range []string{"error.code", "error.type"} {
+		value := gjson.GetBytes(body, field).String()
+		if value != "" && value != "invalid_request_error" {
+			return false
+		}
+	}
+	model, detail, ok := strings.Cut(gjson.GetBytes(body, "error.message").String(), " requires Responses for tool calls")
+	if !ok || strings.ContainsAny(model, " \t\r\n") {
+		return false
+	}
+	if detail == "; this account only supports Chat Completions" {
+		return openai.RequiresResponsesForToolCalls(model)
+	}
+	return openai.IsGPT6SolOrLunaModelSpelling(model) && detail == " with reasoning; this account only supports Chat Completions. Use reasoning_effort=none or a Responses-capable account"
+}
+
+func (e *UpstreamFailoverError) IsOpenAIToolProtocolUnavailable() bool {
+	return e != nil && e.Reason == openAIToolProtocolUnavailableReason && isOpenAIToolProtocolRejection(e.StatusCode, e.ResponseBody)
+}
+
 // OpenAIRequestBodyTooLargeClientMessage is the fixed downstream message used
 // after all account-specific request body limit failovers are exhausted.
 const OpenAIRequestBodyTooLargeClientMessage = "Request payload is too large"
@@ -401,6 +434,15 @@ func newOpenAIUpstreamFailoverError(
 	}
 	if requestScopedCapacity {
 		failoverErr.SameAccountRetryDelay = openAIRequestScopedRetryDelay(responseHeaders, responseBody)
+	}
+	if isOpenAIToolProtocolRejection(statusCode, responseBody) {
+		failoverErr.RetryableOnSameAccount = false
+		failoverErr.RequestScopedTransient = false
+		failoverErr.Scope = GatewayFailureScopeAccount
+		failoverErr.Reason = openAIToolProtocolUnavailableReason
+		failoverErr.NextAccountAction = NextAccountRetry
+		failoverErr.ClientStatusCode = http.StatusServiceUnavailable
+		failoverErr.ClientMessage = OpenAIToolProtocolUnavailableMessage
 	}
 	if isOpenAIRequestBodyTooLargeError(statusCode, upstreamMsg, responseBody) {
 		failoverErr.RetryableOnSameAccount = false

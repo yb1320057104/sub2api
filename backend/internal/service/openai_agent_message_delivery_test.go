@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net/http"
 	"testing"
 	"time"
@@ -11,6 +12,71 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
+
+type pk64PendingBatch struct {
+	issue715BatchOwners
+	read func(context.Context, []string) ([]string, error)
+}
+
+func (c *pk64PendingBatch) GetOpenAIAgentRecoveries(ctx context.Context, keys []string) ([]string, error) {
+	return c.read(ctx, keys)
+}
+
+func TestPK64BatchedPendingCannotBecomeUnprovenOwnership(t *testing.T) {
+	for _, outcome := range []string{"complete", "missing", "failed", "conflict", "error", "short_batch", "cancel"} {
+		t.Run(outcome, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			route := encodeOpenAIAgentRecoveryBinding(openAIAgentRecoveryBinding{accountID: 1})
+			keys := [][32]byte{{1}, {2}}
+			calls := 0
+			cache := &pk64PendingBatch{read: func(_ context.Context, lookup []string) ([]string, error) {
+				calls++
+				if calls == 1 {
+					require.Equal(t, encodeOpenAIAgentRecoveryKeys(keys), lookup)
+					if outcome == "cancel" {
+						cancel()
+					}
+					return []string{route, "pending:fixture:" + route}, nil
+				}
+				require.Equal(t, encodeOpenAIAgentRecoveryKeys(keys[1:]), lookup, "only unresolved fences require another network read")
+				switch outcome {
+				case "missing":
+					return []string{""}, nil
+				case "failed", "conflict":
+					return []string{outcome}, nil
+				case "error":
+					return nil, errors.New("fixture store failure")
+				case "short_batch":
+					return nil, nil
+				default:
+					return []string{route}, nil
+				}
+			}}
+			svc := &OpenAIGatewayService{}
+			bindings, found, err := svc.awaitOpenAIAgentRecoveries(ctx, cache, &svc.agentMessageRecovery, keys)
+			switch outcome {
+			case "complete":
+				require.NoError(t, err)
+				require.Equal(t, []bool{true, true}, found)
+				require.Equal(t, int64(1), bindings[1].accountID)
+			case "conflict":
+				require.NoError(t, err)
+				require.True(t, bindings[1].conflicted, "caller must still reject the conflicting owner")
+			default:
+				var recovery *OpenAIAgentRecoveryError
+				require.ErrorAs(t, err, &recovery)
+				reason := "owner_unavailable"
+				if outcome == "error" || outcome == "short_batch" {
+					reason = "store_unavailable"
+				} else if outcome == "cancel" {
+					reason = "delivery_pending"
+				}
+				require.Equal(t, reason, recovery.Reason)
+			}
+		})
+	}
+}
 
 func issue715OutputAttempt(t *testing.T, svc *OpenAIGatewayService, parent context.Context) (context.Context, *gin.Context, func(bool)) {
 	t.Helper()

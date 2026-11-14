@@ -7,11 +7,43 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
+
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
+
+func TestPK64ToolCallSelectionSkipsIncompatibleChatAccounts(t *testing.T) {
+	for _, advanced := range []string{"true", "false"} {
+		for _, inbound := range []string{APIProtocolResponses, APIProtocolChatCompletions, APIProtocolAnthropic} {
+			t.Run(advanced+"/"+inbound, func(t *testing.T) {
+				chat := Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Priority: 0, GroupIDs: []int64{715}, Extra: map[string]any{"openai_responses_supported": false}, Credentials: map[string]any{"model_mapping": map[string]any{"public-agent": "gpt-6.1-sol"}}}
+				native := chat
+				native.ID, native.Priority, native.Extra = 2, 10, map[string]any{"openai_responses_supported": true}
+				svc := &OpenAIGatewayService{cfg: &config.Config{}, accountRepo: schedulerTestOpenAIAccountRepo{accounts: []Account{chat, native}}, rateLimitService: newOpenAIAdvancedSchedulerRateLimitService(advanced)}
+				ctx := WithOpenAIToolCallRouting(context.Background(), []byte(`{"tools":[{"type":"function","name":"fixture"}]}`), inbound)
+				selection, _, err := svc.SelectAccountWithSchedulerForCapability(ctx, int64Ptr(715), "", "", "public-agent", nil, OpenAIUpstreamTransportAny, OpenAIEndpointCapabilityChatCompletions, false, false, false)
+				require.NoError(t, err)
+				require.NotNil(t, selection)
+				require.Equal(t, int64(2), selection.Account.ID)
+				if selection.ReleaseFunc != nil {
+					selection.ReleaseFunc()
+				}
+				require.True(t, openAIToolCallRouteAllowed(WithOpenAIToolCallRouting(ctx, []byte(`{}`), inbound), &chat, "public-agent"), "plain requests keep their compatible Chat route")
+				chat.Credentials["model_mapping"] = map[string]any{"public-agent": "deepseek-chat"}
+				require.True(t, openAIToolCallRouteAllowed(ctx, &chat, "public-agent"), "apply the account's mapped model, not the public alias")
+			})
+		}
+	}
+	chat := routingTestAccount(PlatformOpenAI, AccountTypeAPIKey, nil, map[string]any{"openai_responses_supported": false})
+	for _, body := range []string{`{"functions":[{"name":"fixture"}]}`, `{"input":[{"additional_tools":[{"type":"function","name":"fixture"}]}]}`} {
+		require.False(t, openAIToolCallRouteAllowed(WithOpenAIToolCallRouting(context.Background(), []byte(body), APIProtocolResponses), chat, "gpt-6.1-sol"))
+	}
+	require.True(t, openAIToolCallRouteAllowed(WithOpenAIToolCallRouting(context.Background(), []byte(`{"tools":[{}],"reasoning_effort":"none"}`), APIProtocolChatCompletions), chat, "gpt-6-luna"))
+	require.False(t, openAIToolCallRouteAllowed(WithOpenAIToolCallRouting(context.Background(), []byte(`{"tools":[{}]}`), APIProtocolChatCompletions), chat, "gpt-6-luna"))
+}
 
 func routingTestAccount(platform, accountType string, credentials, extra map[string]any) *Account {
 	if credentials == nil {

@@ -89,20 +89,26 @@ func (s *OpenAIGatewayService) WithOpenAIAgentMessageRecovery(ctx context.Contex
 		request.toolResult = request.toolResult || isCodexToolCallOutputItemType(item.Get("type").String())
 		return !request.toolResult
 	})
+	seen := make(map[[32]byte]bool, len(request.items))
 	for _, item := range request.items {
-		request.keys = append(request.keys, request.itemKey(item))
+		key := request.itemKey(item)
+		if !seen[key] {
+			request.keys = append(request.keys, key)
+			seen[key] = true
+		}
 	}
 	state := &s.agentMessageRecovery
 	shared, _ := s.cache.(OpenAIAgentRecoveryCache)
 	storeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	for _, key := range request.keys {
-		binding, found, err := s.awaitOpenAIAgentRecovery(storeCtx, shared, state, key)
+	bindings, found, err := s.awaitOpenAIAgentRecoveries(storeCtx, shared, state, request.keys)
+	request.lookupErr = err
+	for i, key := range request.keys {
 		if err != nil {
-			request.lookupErr = err
 			break
 		}
-		if !found {
+		binding := bindings[i]
+		if !found[i] {
 			continue
 		}
 		if binding.conflicted || (request.owner != nil && !sameOpenAIAgentRecoveryRoute(*request.owner, binding)) {
@@ -331,12 +337,12 @@ func (s *OpenAIGatewayService) prepareOpenAIAgentRecoveryAttempt(ctx context.Con
 	if shared != nil {
 		storeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 		defer cancel()
-		for _, key := range request.keys {
-			raw, err := shared.GetOpenAIAgentRecovery(storeCtx, hex.EncodeToString(key[:]))
-			if err != nil {
-				return noop, openAIAgentRecoveryError("store_unavailable")
-			}
-			old, found, err := decodeOpenAIAgentRecoveryBinding(raw)
+		values, err := readOpenAIAgentRecoveryRecords(storeCtx, shared, request.keys)
+		if err != nil {
+			return noop, openAIAgentRecoveryError("store_unavailable")
+		}
+		for i, key := range request.keys {
+			old, found, err := decodeOpenAIAgentRecoveryBinding(values[i])
 			if err != nil {
 				return noop, openAIAgentRecoveryError("store_unavailable")
 			}
@@ -371,6 +377,12 @@ func (s *OpenAIGatewayService) prepareOpenAIAgentRecoveryAttempt(ctx context.Con
 		if shared != nil {
 			storeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 			defer cancel()
+			if batch, ok := shared.(OpenAIAgentRecoveryBatchCache); ok {
+				if err := batch.PublishOpenAIAgentRecoveries(storeCtx, encodeOpenAIAgentRecoveryKeys(keys), encodeOpenAIAgentRecoveryBinding(binding), time.Until(binding.expiresAt)); err != nil {
+					logger.L().Warn("openai.agent_recovery_publish_failed", zap.Int64("account_id", binding.accountID), zap.Error(err))
+				}
+				return
+			}
 			for _, key := range keys {
 				// After delivery a failed publication cannot be undone. It loses
 				// future availability; it never authorizes an unproven owner.

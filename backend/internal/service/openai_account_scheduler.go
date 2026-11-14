@@ -3043,6 +3043,9 @@ func accountSupportsOpenAICapabilities(ctx context.Context, account *Account, re
 }
 
 func accountSupportsOpenAICapabilitiesForRequest(ctx context.Context, account *Account, requestedModel string, requiredCapability OpenAIEndpointCapability, requiredImageCapability OpenAIImagesCapability) bool {
+	if !openAIToolCallRouteAllowed(ctx, account, requestedModel) {
+		return false
+	}
 	if openAIImageRequestRejection(ctx, account, requestedModel) != "" {
 		return false
 	}

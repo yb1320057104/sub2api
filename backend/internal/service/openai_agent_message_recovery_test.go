@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -12,6 +14,99 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/stretchr/testify/require"
 )
+
+type issue715BatchOwners struct {
+	issue715SharedOwners
+	reads, publishes, reserves, finishes, refreshes int
+	batchError                                      error
+}
+
+func (c *issue715BatchOwners) GetOpenAIAgentRecovery(context.Context, string) (string, error) {
+	return "", errors.New("single-item WAN read must not be used")
+}
+func (c *issue715BatchOwners) GetOpenAIAgentRecoveries(ctx context.Context, keys []string) ([]string, error) {
+	c.reads++
+	if c.batchError != nil {
+		return nil, c.batchError
+	}
+	values := make([]string, len(keys))
+	for i, key := range keys {
+		values[i] = c.values[key]
+	}
+	return values, nil
+}
+func (c *issue715BatchOwners) PublishOpenAIAgentRecoveries(ctx context.Context, keys []string, route string, ttl time.Duration) error {
+	c.publishes++
+	for _, key := range keys {
+		if err := c.issue715SharedOwners.PublishOpenAIAgentRecovery(ctx, key, route, ttl); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+func (c *issue715BatchOwners) RefreshOpenAIAgentRecoveries(ctx context.Context, keys []string, route string, ttl time.Duration) (bool, error) {
+	c.refreshes++
+	for _, key := range keys {
+		if c.values[key] != route {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+func (c *issue715BatchOwners) RefreshOpenAIAgentRecovery(context.Context, string, string, time.Duration) (bool, error) {
+	return false, errors.New("single-item WAN refresh must not be used")
+}
+func (c *issue715BatchOwners) ReserveOpenAIAgentRecoveries(context.Context, []string, string, string, time.Duration) error {
+	c.reserves++
+	return nil
+}
+func (c *issue715BatchOwners) FinishOpenAIAgentRecoveries(context.Context, map[string]bool, string, string, time.Duration) error {
+	c.finishes++
+	return nil
+}
+
+func TestPK64RecoveryLongHistoryUsesBatchesWithoutWeakeningOwnership(t *testing.T) {
+	cache := &issue715BatchOwners{}
+	svc := &OpenAIGatewayService{cache: cache, cfg: &config.Config{}}
+	account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+	items := make([]string, 600)
+	for i := range items {
+		items[i] = fmt.Sprintf(`{"type":"agent_message","encrypted_content":"fixture-%d"}`, i)
+	}
+	body := `{"model":"gpt-6-astra","input":[` + strings.Join(items, ",") + `]}`
+	issue715LearnRoute(t, svc, account, body)
+	require.Len(t, cache.values, 600)
+	require.Equal(t, 2, cache.reads, "initial lookup and pre-send revalidation both batch")
+	require.Equal(t, 1, cache.publishes)
+	c, _ := newTurnStateTestContext(t, 715, "fixture-session")
+	c.Set("api_key", &APIKey{ID: 715, GroupID: int64Ptr(715)})
+	ctx := svc.WithOpenAIAgentMessageRecovery(context.Background(), c, []byte(body), "fixture-session", "gpt-6-astra")
+	r := openAIAgentRecoveryFromContext(ctx)
+	require.NoError(t, r.lookupErr)
+	require.NotNil(t, r.owner)
+	require.Len(t, r.known, 600)
+	require.NoError(t, svc.retainOpenAIAgentRecovery(ctx, r, time.Hour))
+	require.Equal(t, 1, cache.refreshes)
+	delivery := newOpenAIAgentRecoveryDelivery(svc, ctx, r, *r.owner)
+	require.NoError(t, delivery.reserve(r.items))
+	require.NoError(t, delivery.reserve(r.items))
+	delivery.finish(false)
+	require.Equal(t, 1, cache.reserves)
+	require.Equal(t, 2, cache.finishes, "each delivery completes exactly once, including the learned request")
+	for key := range cache.values {
+		cache.values[key] = "conflict"
+		break
+	}
+	ctx = svc.WithOpenAIAgentMessageRecovery(context.Background(), c, []byte(body), "fixture-session", "gpt-6-astra")
+	require.True(t, openAIAgentRecoveryFromContext(ctx).conflict)
+	cache.batchError = errors.New("fixture Redis outage")
+	ctx = svc.WithOpenAIAgentMessageRecovery(context.Background(), c, []byte(body), "fixture-session", "gpt-6-astra")
+	var recovery *OpenAIAgentRecoveryError
+	require.ErrorAs(t, openAIAgentRecoveryFromContext(ctx).lookupErr, &recovery)
+	require.Equal(t, "store_unavailable", recovery.Reason)
+	require.Equal(t, http.StatusServiceUnavailable, recovery.HTTPStatus())
+	require.Equal(t, "server_error", recovery.ClientType())
+}
 
 const issue715OpaqueBody = `{"model":"gpt-6-astra","input":[{"type":"agent_message","author":"fixture-parent","recipient":"fixture-child","content":[{"type":"input_text","text":"fixture envelope"},{"type":"encrypted_content","encrypted_content":"fixture-opaque-reference"}]}]}`
 

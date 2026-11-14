@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"sort"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -153,3 +154,143 @@ func (c *gatewayCache) FinishOpenAIAgentRecovery(ctx context.Context, key, route
 }
 
 var _ service.OpenAIAgentRecoveryDeliveryCache = (*gatewayCache)(nil)
+
+const openAIAgentRecoveryBatchSize = 128
+
+func openAIAgentRecoveryKeys(keys []string) ([]string, error) {
+	encoded := make([]string, len(keys))
+	for i, key := range keys {
+		var err error
+		encoded[i], err = openAIAgentRecoveryKey(key)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return encoded, nil
+}
+
+// Pipeline independent GETs instead of MGET: ownership hashes intentionally
+// use different Redis Cluster slots. A missing key is distinct from any error.
+func (c *gatewayCache) GetOpenAIAgentRecoveries(ctx context.Context, keys []string) ([]string, error) {
+	encoded, err := openAIAgentRecoveryKeys(keys)
+	if err != nil {
+		return nil, err
+	}
+	values := make([]string, len(keys))
+	for start := 0; start < len(keys); start += openAIAgentRecoveryBatchSize {
+		end := min(start+openAIAgentRecoveryBatchSize, len(keys))
+		pipe := c.rdb.Pipeline()
+		commands := make([]*redis.StringCmd, end-start)
+		for i := start; i < end; i++ {
+			commands[i-start] = pipe.Get(ctx, encoded[i])
+		}
+		if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, redis.Nil) {
+			return nil, err
+		}
+		for i, cmd := range commands {
+			value, err := cmd.Result()
+			if err != nil && !errors.Is(err, redis.Nil) {
+				return nil, err
+			}
+			values[start+i] = value
+		}
+	}
+	return values, nil
+}
+
+// Every script still operates on one key atomically. EVAL (not EVALSHA) also
+// works after failover/SCRIPT FLUSH without a non-pipelined NOSCRIPT retry.
+func (c *gatewayCache) runOpenAIAgentRecoveryBatch(ctx context.Context, keys []string, script *redis.Script, args func(int) []any) (bool, error) {
+	encoded, err := openAIAgentRecoveryKeys(keys)
+	if err != nil {
+		return false, err
+	}
+	all := true
+	for start := 0; start < len(keys); start += openAIAgentRecoveryBatchSize {
+		end := min(start+openAIAgentRecoveryBatchSize, len(keys))
+		pipe := c.rdb.Pipeline()
+		commands := make([]*redis.Cmd, end-start)
+		for i := start; i < end; i++ {
+			commands[i-start] = script.Eval(ctx, pipe, []string{encoded[i]}, args(i)...)
+		}
+		if _, err := pipe.Exec(ctx); err != nil {
+			return false, err
+		}
+		for _, cmd := range commands {
+			result, err := cmd.Int()
+			if err != nil {
+				return false, err
+			}
+			all = all && result == 1
+		}
+	}
+	return all, nil
+}
+
+func (c *gatewayCache) PublishOpenAIAgentRecoveries(ctx context.Context, keys []string, route string, ttl time.Duration) error {
+	if len(keys) == 0 {
+		return nil
+	}
+	if route == "" || ttl.Milliseconds() <= 0 {
+		return errors.New("invalid encrypted agent ownership publication")
+	}
+	_, err := c.runOpenAIAgentRecoveryBatch(ctx, keys, publishOpenAIAgentRecoveryScript, func(int) []any {
+		return []any{route, ttl.Milliseconds()}
+	})
+	return err
+}
+
+func (c *gatewayCache) RefreshOpenAIAgentRecoveries(ctx context.Context, keys []string, route string, ttl time.Duration) (bool, error) {
+	if len(keys) == 0 {
+		return true, nil
+	}
+	if route == "" || ttl.Milliseconds() <= 0 {
+		return false, errors.New("invalid encrypted agent ownership refresh")
+	}
+	return c.runOpenAIAgentRecoveryBatch(ctx, keys, refreshOpenAIAgentRecoveryScript, func(int) []any {
+		return []any{route, ttl.Milliseconds()}
+	})
+}
+
+func (c *gatewayCache) ReserveOpenAIAgentRecoveries(ctx context.Context, keys []string, route, pending string, ttl time.Duration) error {
+	if len(keys) == 0 {
+		return nil
+	}
+	if route == "" || pending == "" || ttl.Milliseconds() <= 0 {
+		return errors.New("invalid encrypted agent reservation")
+	}
+	all, err := c.runOpenAIAgentRecoveryBatch(ctx, keys, reserveOpenAIAgentRecoveryScript, func(int) []any {
+		return []any{route, pending, ttl.Milliseconds()}
+	})
+	if err == nil && !all {
+		return errors.New("encrypted agent reservation conflict")
+	}
+	return err
+}
+
+func (c *gatewayCache) FinishOpenAIAgentRecoveries(ctx context.Context, completed map[string]bool, route, pending string, ttl time.Duration) error {
+	if len(completed) == 0 {
+		return nil
+	}
+	if route == "" || pending == "" || ttl.Milliseconds() <= 0 {
+		return errors.New("invalid encrypted agent commit")
+	}
+	keys := make([]string, 0, len(completed))
+	for key := range completed {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	all, err := c.runOpenAIAgentRecoveryBatch(ctx, keys, finishOpenAIAgentRecoveryScript, func(i int) []any {
+		flag := 0
+		if completed[keys[i]] {
+			flag = 1
+		}
+		return []any{route, pending, flag, ttl.Milliseconds()}
+	})
+	if err == nil && !all {
+		return errors.New("encrypted agent reservation no longer owned")
+	}
+	return err
+}
+
+var _ service.OpenAIAgentRecoveryBatchCache = (*gatewayCache)(nil)

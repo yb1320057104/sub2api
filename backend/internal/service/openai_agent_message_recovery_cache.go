@@ -17,6 +17,45 @@ type OpenAIAgentRecoveryCache interface {
 	PublishOpenAIAgentRecovery(ctx context.Context, key, route string, ttl time.Duration) error
 }
 
+// Optional batch operations preserve the per-item Redis CAS while avoiding one
+// network round trip for every historical item on a remote Redis writer.
+// Single-item adapters remain supported; production implements all operations.
+type OpenAIAgentRecoveryBatchCache interface {
+	GetOpenAIAgentRecoveries(context.Context, []string) ([]string, error)
+	PublishOpenAIAgentRecoveries(context.Context, []string, string, time.Duration) error
+	RefreshOpenAIAgentRecoveries(context.Context, []string, string, time.Duration) (bool, error)
+	ReserveOpenAIAgentRecoveries(context.Context, []string, string, string, time.Duration) error
+	FinishOpenAIAgentRecoveries(context.Context, map[string]bool, string, string, time.Duration) error
+}
+
+func readOpenAIAgentRecoveryRecords(ctx context.Context, cache OpenAIAgentRecoveryCache, keys [][32]byte) ([]string, error) {
+	encoded := encodeOpenAIAgentRecoveryKeys(keys)
+	if batch, ok := cache.(OpenAIAgentRecoveryBatchCache); ok {
+		values, err := batch.GetOpenAIAgentRecoveries(ctx, encoded)
+		if err == nil && len(values) != len(keys) {
+			err = errors.New("incomplete encrypted agent ownership batch")
+		}
+		return values, err
+	}
+	values := make([]string, len(keys))
+	for i, key := range encoded {
+		var err error
+		values[i], err = cache.GetOpenAIAgentRecovery(ctx, key)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return values, nil
+}
+
+func encodeOpenAIAgentRecoveryKeys(keys [][32]byte) []string {
+	encoded := make([]string, len(keys))
+	for i, key := range keys {
+		encoded[i] = hex.EncodeToString(key[:])
+	}
+	return encoded
+}
+
 func encodeOpenAIAgentRecoveryBinding(b openAIAgentRecoveryBinding) string {
 	value, _ := json.Marshal([]any{1, b.accountID, hex.EncodeToString(b.config[:]), hex.EncodeToString(b.wire[:])})
 	return string(value)

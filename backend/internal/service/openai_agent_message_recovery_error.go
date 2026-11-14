@@ -24,7 +24,7 @@ func (e *OpenAIAgentRecoveryError) HTTPStatus() int {
 	switch e.Reason {
 	case "owner_rate_limited":
 		return http.StatusTooManyRequests
-	case "owner_overloaded":
+	case "owner_overloaded", "store_unavailable":
 		return http.StatusServiceUnavailable
 	default:
 		return http.StatusConflict

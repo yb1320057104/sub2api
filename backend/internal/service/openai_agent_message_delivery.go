@@ -36,50 +36,76 @@ func newOpenAIAgentRecoveryDelivery(s *OpenAIGatewayService, ctx context.Context
 }
 
 func (s *OpenAIGatewayService) awaitOpenAIAgentRecovery(ctx context.Context, shared OpenAIAgentRecoveryCache, state *openAIAgentRecoveryState, key [32]byte) (openAIAgentRecoveryBinding, bool, error) {
-	observedPending := false
-	for {
-		var b openAIAgentRecoveryBinding
-		var found bool
-		var err error
+	bindings, found, err := s.awaitOpenAIAgentRecoveries(ctx, shared, state, [][32]byte{key})
+	if err != nil {
+		return openAIAgentRecoveryBinding{}, false, err
+	}
+	return bindings[0], found[0], err
+}
+
+func (s *OpenAIGatewayService) awaitOpenAIAgentRecoveries(ctx context.Context, shared OpenAIAgentRecoveryCache, state *openAIAgentRecoveryState, keys [][32]byte) ([]openAIAgentRecoveryBinding, []bool, error) {
+	bindings := make([]openAIAgentRecoveryBinding, len(keys))
+	found := make([]bool, len(keys))
+	observedPending := make([]bool, len(keys))
+	remaining := make([]int, len(keys))
+	for i := range keys {
+		remaining[i] = i
+	}
+	for len(remaining) > 0 {
+		lookup := make([][32]byte, len(remaining))
+		for i, index := range remaining {
+			lookup[i] = keys[index]
+		}
+		var values []string
+		var readErr error
 		if shared != nil {
-			var raw string
-			raw, err = shared.GetOpenAIAgentRecovery(ctx, hex.EncodeToString(key[:]))
-			if err == nil {
-				b, found, err = decodeOpenAIAgentRecoveryBinding(raw)
+			values, readErr = readOpenAIAgentRecoveryRecords(ctx, shared, lookup)
+		}
+		next := make([]int, 0, len(remaining))
+		for i, index := range remaining {
+			b := openAIAgentRecoveryBinding{}
+			present := false
+			err := readErr
+			if shared != nil && err == nil {
+				b, present, err = decodeOpenAIAgentRecoveryBinding(values[i])
+			} else if shared == nil {
+				state.mu.Lock()
+				b, present = state.bindings[keys[index]]
+				state.mu.Unlock()
+				present = present && time.Now().Before(b.expiresAt)
 			}
-		} else {
-			state.mu.Lock()
-			b, found = state.bindings[key]
-			state.mu.Unlock()
-			found = found && time.Now().Before(b.expiresAt)
-		}
-		if err != nil {
-			if observedPending && ctx.Err() != nil {
-				return b, false, openAIAgentRecoveryError("delivery_pending")
+			bindings[index], found[index] = b, present
+			if err != nil {
+				reason := "store_unavailable"
+				if observedPending[index] && ctx.Err() != nil {
+					reason = "delivery_pending"
+				}
+				return bindings, found, openAIAgentRecoveryError(reason)
 			}
-			return b, false, openAIAgentRecoveryError("store_unavailable")
+			if b.conflicted || (!present && !observedPending[index]) {
+				continue
+			}
+			if b.failed || (!present && observedPending[index]) {
+				return bindings, found, openAIAgentRecoveryError("owner_unavailable")
+			}
+			if b.pending != "" {
+				observedPending[index] = true
+				next = append(next, index)
+			}
 		}
-		if !found && !observedPending {
-			return openAIAgentRecoveryBinding{}, false, nil
+		remaining = next
+		if len(remaining) == 0 {
+			break
 		}
-		if b.conflicted {
-			return b, found, nil
-		}
-		if b.failed || (!found && observedPending) {
-			return b, false, openAIAgentRecoveryError("owner_unavailable")
-		}
-		if b.pending == "" {
-			return b, found, nil
-		}
-		observedPending = true
 		timer := time.NewTimer(5 * time.Millisecond)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return b, false, openAIAgentRecoveryError("delivery_pending")
+			return bindings, found, openAIAgentRecoveryError("delivery_pending")
 		case <-timer.C:
 		}
 	}
+	return bindings, found, nil
 }
 
 func (d *openAIAgentRecoveryDelivery) reserve(items [][32]byte) error {
@@ -88,6 +114,22 @@ func (d *openAIAgentRecoveryDelivery) reserve(items [][32]byte) error {
 	}
 	ctx, cancel := context.WithTimeout(d.ctx, 3*time.Second)
 	defer cancel()
+	if batch, ok := d.service.cache.(OpenAIAgentRecoveryBatchCache); ok {
+		keys := make([][32]byte, 0, len(items))
+		for _, item := range items {
+			key := d.request.itemKey(item)
+			if !d.keys[key] {
+				d.keys[key] = true // Track ambiguous writes for token-CAS cleanup.
+				keys = append(keys, key)
+			}
+		}
+		if len(keys) > 0 {
+			if err := batch.ReserveOpenAIAgentRecoveries(ctx, encodeOpenAIAgentRecoveryKeys(keys), encodeOpenAIAgentRecoveryBinding(d.binding), d.pending, d.service.openAIWSSessionStickyTTL()); err != nil {
+				return openAIAgentRecoveryError("store_unavailable")
+			}
+		}
+		return nil
+	}
 	for _, item := range items {
 		key := d.request.itemKey(item)
 		if d.keys[key] {
@@ -151,6 +193,16 @@ func (d *openAIAgentRecoveryDelivery) finish(completed bool) {
 		// Canceled requests must still revoke their pending exposure fences.
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(d.ctx), 3*time.Second)
 		defer cancel()
+		if batch, ok := d.service.cache.(OpenAIAgentRecoveryBatchCache); ok {
+			keys := make(map[string]bool, len(d.keys))
+			for key := range d.keys {
+				keys[hex.EncodeToString(key[:])] = final[key]
+			}
+			if err := batch.FinishOpenAIAgentRecoveries(ctx, keys, encodeOpenAIAgentRecoveryBinding(d.binding), d.pending, d.service.openAIWSSessionStickyTTL()); err != nil {
+				logger.L().Warn("openai.agent_recovery_commit_failed", zap.Int64("account_id", d.binding.accountID), zap.Error(err))
+			}
+			return
+		}
 		for key := range d.keys {
 			commit := final[key]
 			ttl := d.service.openAIWSSessionStickyTTL()

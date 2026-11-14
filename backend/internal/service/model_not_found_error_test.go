@@ -1,9 +1,52 @@
 package service
 
 import (
+	"context"
+	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"testing"
+
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
 )
+
+func TestPK64ProviderToolProtocolRejectionUsesAnotherAccount(t *testing.T) {
+	message := "gpt-6.1-sol requires Responses for tool calls; this account only supports Chat Completions"
+	account := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+	svc := &OpenAIGatewayService{accountRepo: schedulerTestOpenAIAccountRepo{}}
+	for _, test := range []struct {
+		name, message, code, typ string
+		want                     bool
+	}{
+		{name: "explicit", message: message, typ: "invalid_request_error", want: true},
+		{name: "reasoning", message: "gpt-6-luna requires Responses for tool calls with reasoning; this account only supports Chat Completions. Use reasoning_effort=none or a Responses-capable account", want: true},
+		{name: "unrelated schema", message: "Invalid schema for function: " + message},
+		{name: "wrong code", message: message, code: "invalid_encrypted_content"},
+		{name: "wrong type", message: message, typ: "authentication_error"},
+		{name: "trailing echo", message: message + " in user input"},
+		{name: "unrelated model", message: "deepseek-chat requires Responses for tool calls; this account only supports Chat Completions"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			body, err := json.Marshal(map[string]any{"error": map[string]string{"message": test.message, "code": test.code, "type": test.typ}})
+			require.NoError(t, err)
+			require.Equal(t, test.want, svc.shouldFailoverOpenAIUpstreamResponse(account, 400, test.message, body))
+			if !test.want {
+				return
+			}
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			failure := svc.failoverOpenAIUpstreamHTTPError(context.Background(), c, account, &http.Response{StatusCode: 400, Header: http.Header{}}, body, test.message, "gpt-6.1-sol")
+			require.NotNil(t, failure)
+			require.False(t, c.Writer.Written(), "a fresh compatible selection must remain possible")
+			require.True(t, failure.IsOpenAIToolProtocolUnavailable())
+			require.False(t, failure.RetryableOnSameAccount)
+			require.Equal(t, http.StatusServiceUnavailable, failure.ClientStatusCode)
+			require.Empty(t, account.Extra, "a model-specific refusal must not poison the global Responses capability")
+			direct := &OpenAIGatewayService{}
+			require.False(t, direct.shouldFailoverOpenAIUpstreamResponse(account, 400, test.message, body), "direct callers have no scheduler to consume a failover")
+		})
+	}
+}
 
 func TestIsUpstreamModelNotFoundError(t *testing.T) {
 	tests := []struct {

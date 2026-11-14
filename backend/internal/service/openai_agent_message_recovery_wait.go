@@ -111,6 +111,20 @@ func (s *OpenAIGatewayService) retainOpenAIAgentRecovery(ctx context.Context, re
 		if !ok {
 			return openAIAgentRecoveryError("store_unavailable")
 		}
+		if batch, ok := cache.(OpenAIAgentRecoveryBatchCache); ok {
+			keys := make([][32]byte, 0, len(request.known))
+			for key := range request.known {
+				keys = append(keys, key)
+			}
+			retained, err := batch.RefreshOpenAIAgentRecoveries(ctx, encodeOpenAIAgentRecoveryKeys(keys), encodeOpenAIAgentRecoveryBinding(*request.owner), ttl)
+			if err != nil {
+				return openAIAgentRecoveryError("store_unavailable")
+			}
+			if !retained {
+				return openAIAgentRecoveryError("owner_unavailable")
+			}
+			return nil
+		}
 		for key := range request.known {
 			retained, err := cache.RefreshOpenAIAgentRecovery(ctx, hex.EncodeToString(key[:]), encodeOpenAIAgentRecoveryBinding(*request.owner), ttl)
 			if err != nil {

@@ -71,6 +71,9 @@ func (u *issue715Upstream) Do(req *http.Request, _ string, accountID int64, _ in
 	if mode == "pool_failure" {
 		return response(520, "application/json", `{"error":{"type":"server_error","message":"fixture result submission interrupted"}}`)
 	}
+	if mode == "tool_protocol_failure" {
+		return response(400, "application/json", `{"error":{"type":"invalid_request_error","message":"gpt-6.1-sol requires Responses for tool calls; this account only supports Chat Completions"}}`)
+	}
 	if mode == "partial" {
 		return response(200, "text/event-stream", "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"started existing task\"}\n\nevent: error\ndata: {\"type\":\"error\",\"code\":\"unsupported_encrypted_agent_message\",\"message\":\"fixture failure after output\"}\n\n")
 	}
@@ -389,8 +392,12 @@ func TestIssue715RecoveryErrorCommittedSSEEnvelope(t *testing.T) {
 					payload, errorPath = data[0], "response.error"
 					require.Equal(t, "failed", gjson.Get(payload, "response.status").String())
 				} else {
-					require.Equal(t, http.StatusConflict, rec.Code)
-					require.Equal(t, "invalid_request_error", gjson.Get(payload, errorPath+".type").String())
+					wantStatus, wantType := http.StatusConflict, "invalid_request_error"
+					if test.reason == "store_unavailable" {
+						wantStatus, wantType = http.StatusServiceUnavailable, "server_error"
+					}
+					require.Equal(t, wantStatus, rec.Code)
+					require.Equal(t, wantType, gjson.Get(payload, errorPath+".type").String())
 				}
 				require.Equal(t, "encrypted_agent_recovery_"+test.reason, gjson.Get(payload, errorPath+".code").String())
 				message := gjson.Get(payload, errorPath+".message").String()
@@ -483,12 +490,12 @@ func TestIssue715HTTPConcurrentToolResultsKeepContextWithoutReplay(t *testing.T)
 
 func TestIssue715HTTPInterruptedToolResultDoesNotReplay(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	for _, failure := range []string{"error", "cancel", "pool_failure"} {
+	for _, failure := range []string{"error", "cancel", "pool_failure", "tool_protocol_failure"} {
 		t.Run(failure, func(t *testing.T) {
 			accounts := issue715Accounts()
-			if failure == "pool_failure" {
+			if failure == "pool_failure" || failure == "tool_protocol_failure" {
 				accounts[0].Type = service.AccountTypeAPIKey
-				accounts[0].Credentials = map[string]any{"api_key": "fixture-key", "pool_mode": true, "pool_mode_retry_count": 2, "pool_mode_retry_status_codes": []any{520}}
+				accounts[0].Credentials = map[string]any{"api_key": "fixture-key", "pool_mode": true, "pool_mode_retry_count": 2, "pool_mode_retry_status_codes": []any{400, 520}}
 			}
 			upstream := &issue715Upstream{}
 			handler := newOpenAIResponsesFailoverTestHandler(t, upstream, accounts...)
@@ -500,9 +507,12 @@ func TestIssue715HTTPInterruptedToolResultDoesNotReplay(t *testing.T) {
 			toolExecutions++
 			balance += int(gjson.Get(call.Get("arguments").String(), "add").Int())
 			require.Equal(t, 18, balance)
-			if failure == "pool_failure" {
-				upstream.mode = "pool_failure"
-				issue715Request(t, handler, issue715Body(true, false), 99, "fixture-715-thread", false)
+			if failure == "pool_failure" || failure == "tool_protocol_failure" {
+				upstream.mode = failure
+				status, answer = issue715Request(t, handler, issue715Body(true, false), 99, "fixture-715-thread", false)
+				if failure == "tool_protocol_failure" {
+					require.Equal(t, http.StatusServiceUnavailable, status, answer)
+				}
 			} else {
 				c, _ := newIssue715Context(t, issue715Body(true, false))
 				c.Request.Header.Set("session_id", "fixture-715-thread")

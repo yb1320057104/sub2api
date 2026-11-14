@@ -975,6 +975,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	// 复用前置权限与并发阶段在未修改 body 上确认的显式生图意图，避免大 tools 请求重复扫描。
 	// 该判断已排除 Codex 被动 image_gen namespace，避免 CC-only 账号被误过滤（#4476）。
 	needsResponses := nativeV2 || legacyCompact
+	c.Request = c.Request.WithContext(service.WithOpenAIToolCallRouting(c.Request.Context(), body, service.APIProtocolResponses))
 	requiredCapability := openAIResponsesRequiredCapabilityForRequest(imageIntent, needsResponses, requestPlatform)
 	// Codex native remote compaction v2 允许由 chat 桥承接：这类账号没有原生
 	// Responses 能力，但压缩回合会被改写并在回程合成 compaction item。仅放宽
@@ -1706,6 +1707,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 	effectiveMappedModel := preferredMappedModel
 
 	// 分组利润控制：Messages 文本入口同样请求级装门并固定 pricingAt。
+	c.Request = c.Request.WithContext(service.WithOpenAIToolCallRouting(c.Request.Context(), body, service.APIProtocolAnthropic))
 	msgPricingCtx, pricingAt := h.gatewayService.WithOpenAIRequestPricingContext(c.Request.Context(), apiKey.GroupID)
 	c.Request = c.Request.WithContext(msgPricingCtx)
 
@@ -2083,6 +2085,10 @@ func (h *OpenAIGatewayHandler) anthropicStreamingAwareError(c *gin.Context, stat
 func (h *OpenAIGatewayHandler) handleAnthropicFailoverExhausted(c *gin.Context, failoverErr *service.UpstreamFailoverError, streamStarted bool) {
 	if failoverErr != nil {
 		copyFailoverRetryAfter(c, failoverErr.ResponseHeaders)
+	}
+	if failoverErr.IsOpenAIToolProtocolUnavailable() {
+		h.anthropicStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", service.OpenAIToolProtocolUnavailableMessage, streamStarted)
+		return
 	}
 	if failoverErr != nil && failoverErr.IsCredentialFailure() {
 		status, message := credentialFailoverClientResponse(failoverErr)
@@ -3438,6 +3444,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 	// 建连时刻只用于选号/准入，不作为任何 turn 的计费定价时刻。
 	wsPricingCtx, _ := h.gatewayService.WithOpenAIRequestPricingContext(ctx, apiKey.GroupID)
 	ctx = service.WithOpenAIEncryptedReasoningAffinity(wsPricingCtx, firstMessage)
+	ctx = service.WithOpenAIToolCallRouting(ctx, firstMessage, service.APIProtocolResponses)
 
 	for {
 		if !service.OpenAIWSIngressCanFailover(ctx, c) {
@@ -4410,6 +4417,13 @@ func (h *OpenAIGatewayHandler) handleFailoverExhausted(c *gin.Context, failoverE
 		return
 	}
 	copyFailoverRetryAfter(c, failoverErr.ResponseHeaders)
+	if failoverErr.IsOpenAIToolProtocolUnavailable() {
+		if h.applyOpenAIFailoverPassthroughRule(c, failoverErr.StatusCode, failoverErr.ResponseBody, streamStarted) {
+			return
+		}
+		h.handleStreamingAwareErrorWithCode(c, http.StatusServiceUnavailable, "server_error", string(failoverErr.Reason), service.OpenAIToolProtocolUnavailableMessage, streamStarted, false)
+		return
+	}
 	// Local BPS image admission rejection: nothing reached the upstream, so
 	// keep the fixed code and message of the image relay limit.
 	if failoverErr.IsExcelBPSImageAdmissionRejection() {

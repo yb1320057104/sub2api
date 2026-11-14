@@ -130,14 +130,75 @@ func newPoolCapacityRouter(t *testing.T, repo *poolCapacityRepo, upstream servic
 		service.NewAPIKeyService(nil, nil, nil, nil, nil, nil, cfg), nil, nil, nil, nil, cfg)
 	groupID := int64(99)
 	apiKey := &service.APIKey{ID: 100, GroupID: &groupID, User: &service.User{ID: 101, Status: service.StatusActive},
-		Group: &service.Group{ID: groupID, Platform: service.PlatformOpenAI, Status: service.StatusActive}}
+		Group: &service.Group{ID: groupID, Platform: service.PlatformOpenAI, Status: service.StatusActive, AllowMessagesDispatch: true}}
 	router := gin.New()
 	router.Use(func(c *gin.Context) {
 		c.Set(string(middleware.ContextKeyAPIKey), apiKey)
 		c.Set(string(middleware.ContextKeyUser), middleware.AuthSubject{UserID: apiKey.User.ID})
 	})
 	router.POST("/v1/responses", h.Responses)
+	router.POST("/v1/chat/completions", h.ChatCompletions)
+	router.POST("/v1/messages", h.Messages)
 	return router
+}
+
+func TestPK64ToolProtocolRoutingAndProviderFailoverOnWire(t *testing.T) {
+	for _, endpoint := range []string{"responses", "chat/completions", "messages"} {
+		for _, stream := range []bool{false, true} {
+			for _, mode := range []string{"known_chat", "provider_refusal", "all_refused"} {
+				t.Run(fmt.Sprintf("%s/stream=%t/%s", endpoint, stream, mode), func(t *testing.T) {
+					repo := &poolCapacityRepo{openAIWSFailoverHandlerAccountRepoStub: openAIWSFailoverHandlerAccountRepoStub{accounts: []service.Account{poolCapacityAccount(11, 1, true), poolCapacityAccount(12, 2, true)}}}
+					for i := range repo.accounts {
+						repo.accounts[i].Extra["openai_passthrough"] = false
+						repo.accounts[i].Extra["openai_responses_supported"] = true
+						repo.accounts[i].Credentials["model_mapping"] = map[string]any{"public-agent": "gpt-6.1-sol"}
+					}
+					if mode == "known_chat" {
+						repo.accounts[0].Extra["openai_responses_supported"] = false
+					}
+					upstream := &poolCapacityTransport{reply: func(req *http.Request, id int64) *http.Response {
+						body, err := io.ReadAll(req.Body)
+						require.NoError(t, err)
+						require.Equal(t, "/v1/responses", req.URL.Path)
+						require.Equal(t, "gpt-6.1-sol", gjson.GetBytes(body, "model").String())
+						require.NotEmpty(t, gjson.GetBytes(body, "tools").Array(), "retry must preserve tool definitions")
+						if id == 11 || mode == "all_refused" {
+							return poolCapacityResponse(400, "application/json", `{"error":{"type":"invalid_request_error","message":"gpt-6.1-sol requires Responses for tool calls; this account only supports Chat Completions"}}`, "")
+						}
+						payload := strings.Replace(poolCapacityCompleted, `"output":[]`, `"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}]`, 1)
+						if gjson.GetBytes(body, "stream").Bool() {
+							return poolCapacityResponse(200, "text/event-stream", "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":"+payload+"}\n\ndata: [DONE]\n\n", "")
+						}
+						return poolCapacityResponse(200, "application/json", payload, "")
+					}}
+					router := newPoolCapacityRouter(t, repo, upstream)
+					input := `"input":"hello","tools":[{"type":"function","name":"fixture","parameters":{"type":"object","properties":{}}}]`
+					if endpoint == "chat/completions" {
+						input = `"messages":[{"role":"user","content":"hello"}],"tools":[{"type":"function","function":{"name":"fixture","parameters":{"type":"object","properties":{}}}}]`
+					} else if endpoint == "messages" {
+						input = `"messages":[{"role":"user","content":"hello"}],"max_tokens":64,"tools":[{"name":"fixture","input_schema":{"type":"object","properties":{}}}]`
+					}
+					rec := httptest.NewRecorder()
+					req := httptest.NewRequest(http.MethodPost, "/v1/"+endpoint, strings.NewReader(fmt.Sprintf(`{"model":"public-agent","stream":%t,%s}`, stream, input)))
+					req.Header.Set("Content-Type", "application/json")
+					router.ServeHTTP(rec, req)
+					if mode == "known_chat" {
+						require.Equal(t, []int64{12}, upstream.hits, rec.Body.String())
+					} else {
+						require.Equal(t, []int64{11, 12}, upstream.hits, "do not retry the same incompatible account: %s", rec.Body.String())
+					}
+					if mode == "all_refused" {
+						require.Equal(t, http.StatusServiceUnavailable, rec.Code, rec.Body.String())
+						require.Contains(t, rec.Body.String(), service.OpenAIToolProtocolUnavailableMessage)
+					} else {
+						require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+					}
+					require.Zero(t, repo.modelWrites)
+					require.Empty(t, repo.rateLimitedIDs)
+				})
+			}
+		}
+	}
 }
 
 func servePoolCapacity(router *gin.Engine, stream bool) *httptest.ResponseRecorder {

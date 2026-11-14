@@ -41,6 +41,9 @@ func (h *OpenAIGatewayHandler) handleOpenAIWSAgentRecoveryError(ctx context.Cont
 	defer cancel()
 	_ = conn.Write(writeCtx, coderws.MessageText, payload)
 	status, reason := coderws.StatusPolicyViolation, recovery.ClientCode()
+	if recovery.Reason == "store_unavailable" {
+		status = coderws.StatusTryAgainLater
+	}
 	if !recovery.RetryAt.IsZero() {
 		status = coderws.StatusTryAgainLater
 		reason += "; retry after " + recovery.RetryAt.UTC().Format(time.RFC3339)
