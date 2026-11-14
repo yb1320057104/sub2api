@@ -1,5 +1,9 @@
 # PK出版二开功能清单
 
+2026-11-14 pk.64 后验边界：HTTP直连恢复已由真实usage验证；截至北京时间22:33:53前累计9次上游模型名拒绝的502及3次计费预约503。gpt-6已按既有Astra别名修正账号映射并核实共享调度缓存；另5次502对应上游不支持的gpt-5.2/gpt-5.3-codex-spark，计费503底层原因尚未确证。不能将制品/HA终验通过写成所有业务错误清零。完整记录见 [pk.64复核](docs/PK_DOWNSTREAM_PROTOCOL_RECOVERY_PK64_REVIEW.md)。
+
+2026-11-14 pk.64 交付状态：沿用PK-006/021/042/045/047/058的工具协议与会话恢复修复已正式发布并完成托管HA更新（代次16）。PK-047现网按用户确认将既有HTTP上游开关写入本次新API/worker容器，并保持逐节点排空、secondary单writer/单活动worker和旧回退输入；不新增功能ID或修改账务语义。普通制品、混合计费、204顶层HA定向、9生命周期、8备份检查及13生产终验均通过。记录与短窗真实HTTP上游验证边界见 [pk.64复核](docs/PK_DOWNSTREAM_PROTOCOL_RECOVERY_PK64_REVIEW.md)。
+
 ## PK-077 受限密钥外部导入回执
 
 状态：pk.63 已正式发行并完成种菜及托管 Sub2API 更新，实际测试、同制品和上线核验见 [本版复核记录](docs/PK_SCOPED_IMPORT_PK63_REVIEW.md)。外部客户自建接收站仍须由其管理员升级并明确授权，详见 [客户升级说明](docs/PK_SCOPED_IMPORT_PK63_UPGRADE.md)；已有密钥不自动扩权。
