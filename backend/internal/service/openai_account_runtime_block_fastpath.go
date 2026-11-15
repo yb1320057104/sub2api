@@ -108,6 +108,11 @@ func (s *OpenAIGatewayService) handleOpenAIAccountUpstreamError(ctx context.Cont
 	if isOpenAIRequestScoped403(account, statusCode, responseBody) {
 		return false
 	}
+	if isOpenAIPoolRelayWebSocketHandshakeError(account, statusCode, responseBody) {
+		slog.Warn("openai_pool_relay_websocket_handshake_failed", "account_id", account.ID,
+			"upstream_status", statusCode, "block_scope", "request")
+		return false
+	}
 	if account != nil && account.AuthConnectionID != "" && !isOpenAIHTTPUpstreamAccessStateError(statusCode, "", responseBody) && statusCode != http.StatusTooManyRequests {
 		if (statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden || statusCode >= 500) && s != nil && s.excelOAuthReauth != nil {
 			stateCtx, cancel := openAIAccountStateContext(ctx)

@@ -125,3 +125,122 @@ func TestOpenAIRequestScoped403KeepsOtherPlatformsAndStatuses(t *testing.T) {
 	}
 	require.False(t, isOpenAIRequestScoped403(nil, http.StatusForbidden, []byte(relayContentPolicy403)))
 }
+
+func TestOpenAIPoolRelayWebSocketHandshake502KeepsPoolAvailable(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		codes     []any
+		wantRetry bool
+	}{
+		{name: "default", wantRetry: true},
+		{name: "explicit_empty", codes: []any{}},
+		{name: "explicit_inner_403_only", codes: []any{float64(http.StatusForbidden)}},
+		{name: "explicit_outer_502", codes: []any{float64(http.StatusBadGateway)}, wantRetry: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newOpenAI403TestHarness(t, 605, 1, 2, 3, 4, 5)
+			h.account.Type = AccountTypeAPIKey
+			h.account.Credentials = map[string]any{
+				"pool_mode":                  true,
+				"temp_unschedulable_enabled": true,
+				"temp_unschedulable_rules": []any{map[string]any{
+					"error_code": float64(http.StatusBadGateway), "keywords": []any{"error"},
+					"duration_minutes": float64(10), "scope": TempUnschedScopeAccount,
+				}},
+			}
+			if tc.codes != nil {
+				h.account.Credentials["pool_mode_retry_status_codes"] = tc.codes
+			}
+			gateway := &OpenAIGatewayService{rateLimitService: h.svc, cfg: &config.Config{}}
+			for range 4 {
+				require.Equal(t, ErrorPolicySkipped, h.svc.CheckErrorPolicy(
+					context.Background(), h.account, http.StatusBadGateway, []byte(relayWebSocket403), "test-model",
+				))
+				require.False(t, h.svc.HandleUpstreamError(
+					context.Background(), h.account, http.StatusBadGateway, nil, []byte(relayWebSocket403), "test-model",
+				))
+				failover := gateway.failoverOpenAIUpstreamHTTPError(context.Background(), nil, h.account,
+					newOpenAIUpstreamErrorResponse(http.StatusBadGateway, relayWebSocket403), []byte(relayWebSocket403), "", "test-model")
+				require.NotNil(t, failover)
+				require.Equal(t, tc.wantRetry, failover.RetryableOnSameAccount)
+				require.True(t, failover.RequestScopedTransient)
+				require.Equal(t, openAIPoolRelayWebSocketHandshakeReason, failover.Reason)
+				require.False(t, failover.SafeToFailoverAfterWrite)
+				require.False(t, failover.IsCredentialFailure())
+				require.False(t, failover.IsOpenAICapacityShed())
+			}
+			h.requireNoAccountPenalty(t)
+			require.Zero(t, h.repo.rateLimitedCalls)
+			require.False(t, gateway.isOpenAIAccountRuntimeBlocked(h.account))
+			require.False(t, gateway.isOpenAIAccountModelRuntimeBlocked(h.account, "test-model"))
+			// A separate, explicit disable decision must not be undone by retry classification.
+			failure := gateway.newOpenAIAccountFailoverError(h.account, http.StatusBadGateway, nil, []byte(relayWebSocket403), "", true, false)
+			require.False(t, failure.RetryableOnSameAccount)
+			require.False(t, failure.RequestScopedTransient)
+		})
+	}
+}
+
+func TestOpenAIPoolRelayWebSocketHandshake502RequiresExactErrorEnvelope(t *testing.T) {
+	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"pool_mode": true}}
+	for name, body := range map[string]string{
+		"plain":               relayWebSocket403,
+		"code_and_request_id": `{"error":{"code":"upstream_error","type":"upstream_error","message":"` + openAIRelayWebSocket403Message + `","param":null},"request_id":"synthetic"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			require.True(t, isOpenAIPoolRelayWebSocketHandshakeError(account, http.StatusBadGateway, []byte(body)))
+		})
+	}
+	for name, body := range map[string]string{
+		"credential_code":             `{"error":{"code":"account_deactivated","type":"upstream_error","message":"` + openAIRelayWebSocket403Message + `"}}`,
+		"quota_code":                  `{"error":{"code":"insufficient_quota","type":"upstream_error","message":"` + openAIRelayWebSocket403Message + `"}}`,
+		"wrong_type":                  `{"error":{"type":"permission_error","message":"` + openAIRelayWebSocket403Message + `"}}`,
+		"content_policy":              relayContentPolicy403,
+		"message_only":                `{"message":"` + openAIRelayWebSocket403Message + `"}`,
+		"echoed_input":                `{"input":` + relayWebSocket403 + `}`,
+		"output":                      `{"output":[{"type":"function_call"}],"error":{"type":"upstream_error","message":"` + openAIRelayWebSocket403Message + `"}}`,
+		"terminal_response":           `{"response":` + relayWebSocket403 + `}`,
+		"trailing_event":              relayWebSocket403 + "\nevent: response.failed\n",
+		"trailing_object":             relayWebSocket403 + relayWebSocket403,
+		"truncated":                   `{"error":{"type":"upstream_error"`,
+		"different_status_in_message": `{"error":{"type":"upstream_error","message":"failed to WebSocket dial: expected handshake response status code 101 but got 401"}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			require.False(t, isOpenAIPoolRelayWebSocketHandshakeError(account, http.StatusBadGateway, []byte(body)))
+		})
+	}
+	for _, status := range []int{200, 400, 401, 403, 429, 500, 503, 504} {
+		require.False(t, isOpenAIPoolRelayWebSocketHandshakeError(account, status, []byte(relayWebSocket403)))
+	}
+	for _, other := range []*Account{
+		nil,
+		{Platform: PlatformOpenAI, Type: AccountTypeAPIKey},
+		{Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: account.Credentials},
+		{Platform: PlatformGrok, Type: AccountTypeAPIKey, Credentials: account.Credentials},
+	} {
+		require.False(t, isOpenAIPoolRelayWebSocketHandshakeError(other, http.StatusBadGateway, []byte(relayWebSocket403)))
+	}
+}
+
+func TestOpenAIPoolRelayWebSocketHandshake502PreservesOther5xxCooldown(t *testing.T) {
+	for _, status := range []int{http.StatusBadGateway, http.StatusServiceUnavailable} {
+		repo := &errorPolicyRepoStub{}
+		gateway := &OpenAIGatewayService{rateLimitService: NewRateLimitService(repo, nil, &config.Config{}, nil, nil)}
+		account := &Account{ID: 606, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"pool_mode": true}}
+		for range 2 {
+			require.False(t, gateway.handleOpenAIAccountUpstreamError(context.Background(), account, status, nil,
+				[]byte(`{"error":{"type":"upstream_error","message":"upstream unavailable"}}`), "test-model"))
+		}
+		require.True(t, gateway.isOpenAIAccountModelRuntimeBlocked(account, "test-model"))
+	}
+}
+
+func TestOpenAIPoolRelayWebSocketHandshake502DoesNotEnableStreamTerminalRetry(t *testing.T) {
+	account := &Account{ID: 607, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"pool_mode": true}}
+	gateway := &OpenAIGatewayService{}
+	failure := gateway.newOpenAIStreamFailoverErrorWithModel(nil, account, false, "", []byte(relayWebSocket403), openAIRelayWebSocket403Message, "test-model")
+	require.False(t, failure.RetryableOnSameAccount)
+	require.False(t, failure.RequestScopedTransient)
+	require.False(t, failure.SafeToFailoverAfterWrite)
+	require.NotEqual(t, openAIPoolRelayWebSocketHandshakeReason, failure.Reason)
+}

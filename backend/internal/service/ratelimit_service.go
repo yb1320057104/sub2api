@@ -314,7 +314,7 @@ func (s *RateLimitService) CheckErrorPolicy(ctx context.Context, account *Accoun
 	if account.IsOpenAICompatible() && isOpenAIUpstreamSessionBlocked(responseBody) {
 		return ErrorPolicySkipped
 	}
-	if isOpenAIRequestScoped403(account, statusCode, responseBody) {
+	if isOpenAIRequestScoped403(account, statusCode, responseBody) || isOpenAIPoolRelayWebSocketHandshakeError(account, statusCode, responseBody) {
 		return ErrorPolicySkipped
 	}
 	ctx = withTempUnschedulableModel(ctx, requestedModel)
@@ -377,7 +377,7 @@ func (s *RateLimitService) handleUpstreamErrorAfterStreakReset(ctx context.Conte
 	}
 	// Relay content refusals and upstream WebSocket handshake failures must not
 	// reach custom account policies or the escalating account-wide 403 counter.
-	if isOpenAIRequestScoped403(account, statusCode, responseBody) {
+	if isOpenAIRequestScoped403(account, statusCode, responseBody) || isOpenAIPoolRelayWebSocketHandshakeError(account, statusCode, responseBody) {
 		return false
 	}
 	// An upstream group's image permission says nothing about text credentials.

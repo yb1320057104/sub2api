@@ -500,7 +500,20 @@ func (s *OpenAIGatewayService) newOpenAIAccountFailoverError(
 	shouldDisable bool,
 	retryableOnSameAccount bool,
 ) *UpstreamFailoverError {
-	return s.newOpenAIAccountFailoverErrorWithClassificationHeaders(account, statusCode, responseHeaders, responseHeaders, responseBody, upstreamMsg, shouldDisable, retryableOnSameAccount)
+	poolRelayHandshake := !shouldDisable && isOpenAIPoolRelayWebSocketHandshakeError(account, statusCode, responseBody)
+	// The default pool policy already retries backend 403s. Extend only this
+	// exact relay-wrapped handshake failure; an explicit status list (including
+	// an empty one) still controls the outer HTTP status, and retry counts remain
+	// bounded by the existing handler. Keep this out of the stream-terminal
+	// constructor below, and do not grant post-output replay safety.
+	poolRelayRetry := poolRelayHandshake && account.GetPoolModeRetryStatusCodes() == nil
+	failoverErr := s.newOpenAIAccountFailoverErrorWithClassificationHeaders(account, statusCode, responseHeaders, responseHeaders, responseBody, upstreamMsg, shouldDisable, retryableOnSameAccount || poolRelayRetry)
+	if poolRelayHandshake {
+		failoverErr.RequestScopedTransient = true
+		failoverErr.Scope = GatewayFailureScopeRequest
+		failoverErr.Reason = openAIPoolRelayWebSocketHandshakeReason
+	}
+	return failoverErr
 }
 
 func (s *OpenAIGatewayService) newOpenAIAccountFailoverErrorWithClassificationHeaders(

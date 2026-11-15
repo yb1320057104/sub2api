@@ -36,6 +36,23 @@ func TestOpenAIForwardMayFailoverOnlyAfterNonSemanticWrite(t *testing.T) {
 	require.False(t, openAIForwardMayFailover(c, before, &service.UpstreamFailoverError{}))
 }
 
+func TestPoolRelayWebSocketHandshakeRetryDoesNotBypassWrittenOutput(t *testing.T) {
+	for _, output := range []string{
+		`data: {"type":"response.output_text.delta","delta":"started"}` + "\n\n",
+		`data: {"type":"response.output_item.added","item":{"type":"function_call","name":"external_action"}}` + "\n\n",
+	} {
+		rec := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(rec)
+		before := service.OpenAICompactKeepaliveAdjustedWrittenSize(c)
+		failure := &service.UpstreamFailoverError{StatusCode: http.StatusBadGateway, RetryableOnSameAccount: true, RequestScopedTransient: true}
+		require.True(t, openAIForwardMayFailover(c, before, failure))
+		_, err := c.Writer.Write([]byte(output))
+		require.NoError(t, err)
+		c.Writer.Flush()
+		require.False(t, openAIForwardMayFailover(c, before, failure))
+	}
+}
+
 func TestOpenAIFirstOutputFailoverStopsAfterOneAccountSwitch(t *testing.T) {
 	failoverErr := &service.UpstreamFailoverError{SafeToFailoverAfterWrite: true}
 	count := 0
