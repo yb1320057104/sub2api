@@ -237,7 +237,7 @@
       "path": "backend/internal/service/billing_cache_service_test.go"
     },
     {
-      "after_sha256": "aec79f74a7e4f6365b6fe9c2c9724cced65d6da27db3df55dc64948e9dd30076",
+      "after_sha256": "ffc0ec13d385aa7e842cd8d474ffb40e8d76b8b5248cfc1198554b47aa276f98",
       "before_sha256": "8433113a0e5622f6e06e341ecacc00328cdbe4063a6b0850e2bf118c9837693f",
       "path": "backend/internal/service/billing_inflight_reservation.go"
     },
@@ -302,7 +302,7 @@
       "path": "backend/internal/service/gateway_usage_billing.go"
     },
     {
-      "after_sha256": "5bdb1225be127067adc465fb5f2366531eb5073c9974001ef36b91db71ff5c13",
+      "after_sha256": "02a68ec05b84e75b733023cedabeee3e243e67c028ee6731a480c499d5dee737",
       "before_sha256": null,
       "path": "backend/internal/service/ha_billing_concurrency_test.go"
     },
@@ -484,7 +484,7 @@
   ],
   "parent_profile_sha256": "893195ab2831389ff5239930f3dded01c06b79a4d93c069698018119ad056b53",
   "patch": "adaptation.patch",
-  "patch_sha256": "e5463771ed6f36e5b93b54980ab3b36ac57ec2cf547e9f25578cebc38839987d",
-  "profile": "pk68-billing-cache-miss-writer-r1",
+  "patch_sha256": "31c29f730120c66e59fb82121cca3423d554bc80e2ae08fcac527f294eb7026b",
+  "profile": "pk68-billing-cache-miss-writer-r2",
   "schema": 1
 }

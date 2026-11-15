@@ -4783,7 +4783,7 @@ diff --git a/backend/internal/service/billing_inflight_reservation.go b/backend/
  	}
  	if res == nil {
  		ttl := defaultInflightReservationTTL
-@@ -285,39 +297,179 @@
+@@ -285,41 +297,187 @@
  		res = &InflightReservation{userID: userID, requestID: uuid.NewString(), amount: amount, ttl: ttl}
  		res.refs.Store(1)
  	}
@@ -4965,8 +4965,16 @@ diff --git a/backend/internal/service/billing_inflight_reservation.go b/backend/
 +		}
  		logger.LegacyPrintf("service.billing_cache", "Warning: inflight reservation balance read failed for user %d (fail-open): %v", user.ID, err)
  		return nil, nil
++	}
++	// Fixed charges require full coverage on this fresh read too. Their earlier
++	// precheck may have preceded another committed debit and cache invalidation.
++	// Token estimates keep the existing first-request positive-balance rule.
++	if !capped && balance < estimate {
++		return nil, ErrInsufficientBalance
  	}
-@@ -327,10 +479,19 @@
+ 
+ 	ttl := defaultInflightReservationTTL
+@@ -327,10 +485,19 @@
  		ttl = time.Duration(cfg.TTLSeconds) * time.Second
  	}
  	requestID := uuid.NewString()
@@ -4986,7 +4994,7 @@ diff --git a/backend/internal/service/billing_inflight_reservation.go b/backend/
  		logger.LegacyPrintf("service.billing_cache", "Warning: inflight reservation failed for user %d (fail-open): %v", user.ID, err)
  		return nil, nil
  	}
-@@ -460,6 +621,10 @@
+@@ -460,6 +627,10 @@
  	if groupID != nil {
  		gid = *groupID
  	}
@@ -6059,7 +6067,7 @@ diff --git a/backend/internal/service/ha_billing_concurrency_test.go b/backend/i
 new file mode 100644
 --- /dev/null
 +++ b/backend/internal/service/ha_billing_concurrency_test.go
-@@ -0,0 +1,726 @@
+@@ -0,0 +1,782 @@
 +//go:build unit
 +
 +package service
@@ -6728,6 +6736,62 @@ new file mode 100644
 +	require.Nil(t, res)
 +	require.Equal(t, int32(2), repo.reads.Load())
 +	require.Zero(t, cache.reserves.Load())
++}
++
++type haInvalidateAfterBalanceHitCache struct {
++	*haBalanceMissCache
++	service     *BillingCacheService
++	invalidated atomic.Bool
++}
++
++func (c *haInvalidateAfterBalanceHitCache) GetUserBalance(ctx context.Context, id int64) (float64, error) {
++	balance, err := c.haBalanceMissCache.GetUserBalance(ctx, id)
++	if err == nil && c.invalidated.CompareAndSwap(false, true) {
++		// Model a different committed debit after the caller has observed the
++		// first cached balance. The second read sees the real invalidation.
++		if err = invalidateDurableUsageBilling(ctx, &UsageBillingRecovery{
++			NeedsCache: true, Event: UsageBillingEvent{Command: UsageBillingCommand{UserID: id, BalanceCost: 5}},
++		}, c.service, nil); err != nil {
++			return 0, err
++		}
++	}
++	return balance, err
++}
++
++func TestSharedStateFixedChargeDatabaseFallbackRequiresFreshCoverage(t *testing.T) {
++	t.Setenv("SUB2API_SHARED_STATE_REQUIRED", "true")
++	cache := &haInvalidateAfterBalanceHitCache{
++		haBalanceMissCache: &haBalanceMissCache{memInflightCache: newMemInflightCache(10)},
++	}
++	cache.ready.Store(true)
++	svc := newInflightSvc(t, cache, 60)
++	cache.service = svc
++	repo := &haBalanceUserRepo{load: func(context.Context, int64) (*User, error) {
++		return &User{ID: 1, Balance: 5, Status: StatusActive}, nil
++	}}
++	svc.userRepo = repo
++	res, err := svc.ReserveFixedCharge(context.Background(), &User{ID: 1, Balance: 10}, nil, nil, nil, 8)
++	if res != nil {
++		t.Cleanup(res.Release)
++	}
++	require.Same(t, ErrInsufficientBalance, err, "fixed charge 8 cannot use the first 10 after a debit leaves 5")
++	require.Nil(t, res)
++	require.Equal(t, int32(2), cache.reads.Load())
++	require.Equal(t, int32(1), cache.invalidations.Load())
++	require.Equal(t, int32(1), repo.reads.Load())
++	require.Zero(t, cache.reserves.Load(), "reject before Lua's first-request estimate allowance")
++	require.Zero(t, cache.count())
++	// The same current positive balance remains eligible for a first token
++	// estimate of 8. Only fixed-charge coverage is stricter.
++	res, err = svc.ReserveInflight(context.Background(), &User{ID: 1}, nil, nil, 8)
++	require.NoError(t, err)
++	require.NotNil(t, res)
++	require.Equal(t, int32(1), cache.reserves.Load())
++	require.Equal(t, 5.0, math.Float64frombits(cache.reservedBalance.Load()))
++	res.HandlerDone()
++	svc.Stop()
++	require.Zero(t, cache.sets.Load())
++	require.Zero(t, cache.count())
 +}
 +
 +type haAutoCreditCalls struct {
