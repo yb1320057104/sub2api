@@ -32,6 +32,7 @@ from tools.openai_oauth_reauth_worker import (
     validate_otp_url,
     main,
     terminate_worker,
+    terminate_orphan_worker,
 )
 
 
@@ -73,9 +74,10 @@ class OpenAIOAuthReauthWorkerTest(unittest.TestCase):
                 self.assertEqual("use browser authorization" in result, reason in {"browser_interaction_required", "security_check"})
 
     def test_parent_death_terminates_managed_protocol_descendants(self):
-        with patch("os.getpgrp", return_value=123), patch("os.getpid", return_value=123), patch("os.killpg") as kill:
+        with patch("os.getpgrp", return_value=123, create=True), patch("os.getpid", return_value=123), \
+             patch("signal.SIGKILL", 9, create=True), patch("os.killpg", create=True) as kill:
             with self.assertRaises(SystemExit):
-                terminate_worker(15, None)
+                terminate_orphan_worker(10, None)
             kill.assert_called_once_with(123, 9)
 
     def test_siwc_runner_reports_browser_handoff_after_successful_mfa_without_exposing_output(self):
@@ -98,9 +100,16 @@ class OpenAIOAuthReauthWorkerTest(unittest.TestCase):
         self.assertEqual(runner.call_args.kwargs["timeout"], 600)
 
     def test_external_worker_does_not_signal_unrelated_process_group(self):
-        with patch("os.getpgrp", return_value=100), patch("os.getpid", return_value=123), patch("os.killpg") as kill:
+        with patch("os.getpgrp", return_value=100, create=True), patch("os.getpid", return_value=123), patch("os.killpg", create=True) as kill:
             with self.assertRaises(SystemExit):
-                terminate_worker(15, None)
+                terminate_orphan_worker(10, None)
+            kill.assert_not_called()
+
+    def test_normal_termination_only_requests_graceful_drain(self):
+        stop = threading.Event()
+        with patch("tools.openai_oauth_reauth_worker.SHUTDOWN_REQUESTED", stop), patch("os.killpg", create=True) as kill:
+            terminate_worker(15, None)
+            self.assertTrue(stop.is_set())
             kill.assert_not_called()
 
     def test_password_only_config_does_not_require_email_protocol(self):

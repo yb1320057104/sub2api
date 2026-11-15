@@ -32,7 +32,9 @@ import urllib.parse
 import urllib.request
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "jenkins"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import control
+import reauth_release
 import startup_guard_publication as startup_guard
 
 REPOSITORY = control.REPOSITORY
@@ -163,6 +165,7 @@ def validate(directory: Path) -> tuple[dict, list[Asset]]:
     names = [data["binary_archive"], data["image_archive"], "checksums.txt",
              "manifest.json", "artifact-validation.json"]
     names.extend(control.corresponding_source.assets(data))
+    names.extend(reauth_release.assets(directory, data, Path(__file__).resolve().parents[1]))
     if data.get("schema_version") == 2:
         names.extend([control.dependencies.REPORT, *control.dependencies.FILES.values()])
     for name in OPTIONAL_EVIDENCE:

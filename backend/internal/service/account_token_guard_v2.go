@@ -263,6 +263,8 @@ func (s *AccountTokenGuardV2Service) Start() {
 	s.startOnce.Do(func() {
 		go func() {
 			defer close(s.doneCh)
+			statusDone := s.reauth.startWorkerStatusReporting(s.rootCtx)
+			defer func() { <-statusDone }()
 			ticker := time.NewTicker(time.Minute)
 			defer ticker.Stop()
 			runCycle := func() {
@@ -301,8 +303,8 @@ func (s *AccountTokenGuardV2Service) Stop() {
 	if s == nil {
 		return
 	}
-	s.reauth.stopWorker()
 	s.cancel()
+	s.reauth.stopWorker()
 	s.startOnce.Do(func() { close(s.doneCh) })
 	select {
 	case <-s.doneCh:
@@ -697,6 +699,6 @@ func (s *AccountTokenGuardV2Service) probeAccount(ctx context.Context, account *
 }
 
 // WorkerStatus separates saved login credentials from execution availability.
-func (s *AccountTokenGuardV2Service) WorkerStatus() reauthruntime.Status {
-	return s.reauth.WorkerStatus()
+func (s *AccountTokenGuardV2Service) WorkerStatus(ctx context.Context) reauthruntime.Status {
+	return s.reauth.OperationalWorkerStatus(ctx)
 }

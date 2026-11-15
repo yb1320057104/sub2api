@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
@@ -87,7 +88,7 @@ func (s *OpenAIOAuthReauthService) WorkerStatus() reauthruntime.Status {
 }
 
 func (s *OpenAIOAuthReauthService) EnsureWorker() {
-	if s != nil && s.worker != nil {
+	if s != nil && s.worker != nil && !reauthBackgroundDisabled() {
 		s.worker.Ensure()
 	}
 }
@@ -115,7 +116,7 @@ func (s *OpenAIOAuthReauthService) checkWorkerMode(mode string) error {
 		return infraerrors.ServiceUnavailable("OPENAI_REAUTH_MODE_UNAVAILABLE", "Email OTP re-login is unavailable in the built-in runtime")
 	}
 	s.EnsureWorker()
-	if s.WorkerStatus().State == "unavailable" {
+	if s.OperationalWorkerStatus(context.Background()).State == "unavailable" {
 		return infraerrors.ServiceUnavailable("OPENAI_REAUTH_WORKER_UNAVAILABLE", "Re-login service is unavailable; see Credential Operations status")
 	}
 	return nil

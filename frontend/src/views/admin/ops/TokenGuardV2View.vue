@@ -50,6 +50,7 @@
         <strong>{{ t('tokenGuardV2.runtimeTitle') }}</strong>
         <p>{{ t(`tokenGuardV2.runtimeStates.${runtimeState}`) }}</p>
         <p v-if="runtimeReason">{{ t(`tokenGuardV2.runtimeReasons.${runtimeReason}`) }}</p>
+        <p v-if="queuedTaskSummary.count" data-testid="reauth-queue-wait">{{ t('tokenGuardV2.runtimeQueueWait', queuedTaskSummary) }}</p>
         <small>{{ t(status.worker.mode === 'external' ? 'tokenGuardV2.runtimeExternal' : 'tokenGuardV2.runtimeManaged') }}</small>
       </section>
 
@@ -378,13 +379,19 @@ const accountGroupNames = (account: AccountListItem) => groups.value
   .join(' ')
 const runtimeReason = computed(() => {
   const reason = status.worker?.reason || ''
-  return ['unsupported_platform', 'release_required', 'runtime_install_failed', 'worker_start_failed', 'worker_exited', 'external_not_configured', 'external_offline', 'api_unreachable'].includes(reason) ? reason : ''
+  return ['unsupported_platform', 'release_required', 'runtime_install_failed', 'runtime_not_configured', 'runtime_release_invalid', 'runtime_checksum_mismatch', 'runtime_download_failed', 'runtime_cache_invalid', 'runtime_archive_invalid', 'runtime_self_check_failed', 'worker_start_failed', 'worker_exited', 'external_not_configured', 'external_offline', 'api_unreachable', 'background_offline', 'status_unavailable'].includes(reason) ? reason : ''
 })
 const runtimeState = computed(() => {
   const state = status.worker?.state || 'idle'
   return ['idle', 'preparing', 'running', 'unavailable', 'stopped'].includes(state) ? state : 'unavailable'
 })
 const accounts = computed(() => status.accounts)
+const queuedTaskSummary = computed(() => {
+  const queued = accounts.value.filter(item => item.latest_task?.status === 'queued')
+  const times = queued.map(item => Date.parse(item.latest_task!.created_at)).filter(Number.isFinite)
+  const minutes = times.length ? Math.max(0, Math.floor((currentTime.value - Math.min(...times)) / 60000)) : 0
+  return { count: queued.length, minutes }
+})
 const enabledCount = computed(() => accounts.value.filter(item => item.enabled).length)
 const healthyCount = computed(() => accounts.value.filter(item => item.probe_state === 'ok').length)
 const issueCount = computed(() => accounts.value.filter(item => item.probe_state === 'auth' || item.blocked_reason).length)

@@ -206,23 +206,33 @@ sessionExport: {
   localWorkerEngineHint: '在自己的 Worker 中完成登录，使用所选账号代理。',
   sessionStudioEngineHint: '将此账号的邮箱、密码和 TOTP 密钥发送到凭证守护中配置的重登服务。仅支持密码 / TOTP，使用服务端出口，不使用账号代理；失败不会自动切换引擎。需先升级 Worker。',
   runtimeTitle: '自动重登服务',
-  runtimeManaged: '由程序自动准备和管理，账密 / 2FA 无需额外配置。',
+  runtimeManaged: '由活动后台进程自动准备和管理，使用已保存的账密 / 2FA。',
   runtimeExternal: '当前使用已有的独立重登服务。',
+  runtimeQueueWait: '当前列表有 {count} 个授权任务等待执行，最长已等待 {minutes} 分钟。',
   runtimeReasons: {
     unsupported_platform: '此平台暂不支持内置重登运行环境。',
     release_required: '此开发构建没有对应的已发布运行环境。',
     runtime_install_failed: '运行环境下载、校验或准备失败，稍后会自动重试。',
+    runtime_not_configured: '此版本没有绑定配套授权运行包，需要更新完整发行版本。',
+    runtime_release_invalid: '配套授权运行包的版本、架构或校验信息无效，需要管理员检查发行配置。',
+    runtime_checksum_mismatch: '授权运行包校验失败，已停止使用该文件，需要管理员更换为完整的配套包。',
+    runtime_download_failed: '配套授权运行包下载失败，请检查后台网络和发行文件是否可用。',
+    runtime_cache_invalid: '本地授权运行环境校验失败，需要管理员修复配套运行包。',
+    runtime_archive_invalid: '授权运行包格式无效，已停止安装，需要管理员更换配套包。',
+    runtime_self_check_failed: '授权运行环境自检失败，请检查运行依赖及配套包。',
     worker_start_failed: '重登进程启动失败，稍后会自动重试。',
     worker_exited: '重登进程意外退出，稍后会自动恢复。',
     external_not_configured: '已有独立重登服务的连接配置无效。',
     external_offline: '尚未收到独立重登服务的连接。',
-    api_unreachable: '重登进程尚未连接到本机服务。'
+    api_unreachable: '重登进程尚未连接到本机服务。',
+    background_offline: '未收到活动后台的有效状态，请检查后台进程；排队任务尚不能确认有服务接收。',
+    status_unavailable: '暂时无法读取活动后台状态，请检查共享状态服务后重试。'
   },
   runtimeStates: {
     idle: '将在首次使用时自动准备',
     preparing: '正在准备运行环境，任务会在准备完成后执行',
     running: '已就绪，正在处理重登队列',
-    unavailable: '暂时不可用，程序会自动重试',
+    unavailable: '授权服务暂不可用，请查看下方原因',
     stopped: '服务正在停止'
   },
   reauthErrors: {

@@ -3,8 +3,23 @@
 `build.sh` 生成 release 使用的便携 Python / Node / toSub2 运行包。构建验证覆盖 Alpine 和 Ubuntu 24.04；Ubuntu 中经 `current` 符号链接启动 Node → Python → curl_cffi，以及 Python → Node 加密恢复日志，防止仅在构建容器中可用。
 
 ```bash
-VERSION=0.0.0-test ARCH=amd64 bash tools/reauth-runtime/build.sh
+VERSION=0.2.19-pk.66 ARCH=amd64 SOURCE_COMMIT=<完整已审阅提交> bash tools/reauth-runtime/build.sh
 ```
+
+正式发行必须先构建此包，再用同一包的 SHA256 编译普通和 HA 主程序。构建参数为
+`-X github.com/Wei-Shaw/sub2api/internal/reauthruntime.ReleaseVersion=<正式版本>`、
+`-X github.com/Wei-Shaw/sub2api/internal/reauthruntime.ArchiveSHA256=<包的SHA256>`、
+`-X github.com/Wei-Shaw/sub2api/internal/reauthruntime.ArchiveArchitecture=<amd64或arm64>`。
+主程序版本即使附加 HA 后缀，也使用上述显式运行包版本。缺少绑定时不会尝试下载或执行运行包。
+
+运行包必须作为固定仓库 `yb1320057104/sub2api` 同版本 Release 资产发布。
+可在更新前将同一包预置于 `<DATA_DIR>/credential-worker/packages/`；包名保持
+`sub2api-reauth_<正式版本>_linux_<架构>.tar.gz`。预置包存在但校验失败时停止准备，不自动换源。
+下载后也会保留已校验的归档，用于每次进程启动核对已安装脚本及全部动态库。
+`manifest.json` 和 `integrity.json` 记录版本、来源提交与文件摘要；包自身摘要由发行流程外部记录，避免循环哈希。
+
+正常停止使用 SIGTERM：主管进程停止领取，等待所有在途授权及回调完成后退出。
+托管进程意外失去父进程使用独立 SIGUSR1 清理其进程组。HA 必须先停止授权生产者、等待该进程退出，再关闭内部回调 HTTP 服务。
 
 ## 本地 API 与数据库验收
 

@@ -483,5 +483,58 @@ class RepositoryVisibilityTests(unittest.TestCase):
                 local.control.prepare()
 
 
+class CredentialRuntimePublicationTests(unittest.TestCase):
+    def test_new_release_requires_runtime_and_preserves_old_packages(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.assertEqual([], local.reauth_release.assets(root, {"version": "0.2.19-pk.65"}, root))
+            with self.assertRaisesRegex(RuntimeError, "binding_missing"):
+                local.reauth_release.assets(root, {"version": "0.2.19-pk.66"}, root)
+
+    def test_linker_binding_rejects_wrong_release_and_injection(self):
+        value = {"version": "0.2.19-pk.66", "architecture": "amd64",
+                 "archive": "sub2api-reauth_0.2.19-pk.66_linux_amd64.tar.gz", "sha256": "a" * 64}
+        flags = local.reauth_release.linker_flags(value, "0.2.19-pk.66")
+        self.assertIn("ReleaseVersion=0.2.19-pk.66", flags)
+        self.assertIn("ArchiveSHA256=" + "a" * 64, flags)
+        for change in ({"version": "0.2.19-pk.65"}, {"sha256": "a" * 64 + " -X unsafe=1"},
+                       {"archive": "../payload"}, {"architecture": "arm64"}):
+            with self.subTest(change=change), self.assertRaises(RuntimeError):
+                local.reauth_release.linker_flags(dict(value, **change), "0.2.19-pk.66")
+
+    def test_runtime_assets_require_actual_bytes_source_and_complete_checks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            raw = b"synthetic-runtime-archive"
+            value = {"version": "0.2.19-pk.66", "architecture": "amd64",
+                     "archive": "sub2api-reauth_0.2.19-pk.66_linux_amd64.tar.gz",
+                     "sha256": hashlib.sha256(raw).hexdigest()}
+            (root / value["archive"]).write_bytes(raw)
+            manifest = {"version": value["version"], "commit": "a" * 40, "tree": "b" * 40,
+                        "binary_sha256": "c" * 64, "reauth_runtime": value}
+            common = {"schema": 1, "repository": local.REPOSITORY, "source_commit": manifest["commit"],
+                      "source_tree": manifest["tree"], "runtime": value}
+            source_hash = hashlib.sha256(b"source").hexdigest()
+            descriptor = dict(common, source_files={name: source_hash for name in local.reauth_release.REQUIRED_INPUTS})
+            (root / local.reauth_release.DESCRIPTOR).write_text(json.dumps(descriptor))
+            proof = dict(common, binary_sha256=manifest["binary_sha256"], isolated=True,
+                         production_credentials_used=False,
+                         checks={name: True for name in local.reauth_release.CHECKS})
+            def save():
+                (root / local.reauth_release.EVIDENCE).write_text(json.dumps(proof))
+            save()
+            with patch.object(local.reauth_release.subprocess, "check_output", return_value=b"source"):
+                self.assertEqual(3, len(local.reauth_release.assets(root, manifest, root)))
+                proof["checks"]["isolated_excel_authorization"] = False
+                save()
+                with self.assertRaisesRegex(RuntimeError, "verification_incomplete"):
+                    local.reauth_release.assets(root, manifest, root)
+                proof["checks"]["isolated_excel_authorization"] = True
+                save()
+                (root / value["archive"]).write_bytes(b"changed")
+                with self.assertRaisesRegex(RuntimeError, "archive_changed"):
+                    local.reauth_release.assets(root, manifest, root)
+
+
 if __name__ == "__main__":
     unittest.main()

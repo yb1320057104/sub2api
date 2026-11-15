@@ -183,7 +183,19 @@ def resolve_target(config, baseline):
     comparison = request(config, API + '/compare/' + BASE_COMMIT + '...' + commit)
     need(comparison.get('status') in ('ahead', 'identical') or
          (baseline == '0.2.19-pk.58' and commit == BASE_RELEASE_COMMIT), 'release_before_cluster_base')
-    return {"baseline": baseline, "tag": tag, "commit": commit}
+    result = {"baseline": baseline, "tag": tag, "commit": commit}
+    parts = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)-pk\.(\d+)", baseline)
+    if parts and tuple(map(int, parts.groups())) >= (0, 2, 19, 66):
+        name = "sub2api-reauth_" + baseline + "_linux_amd64.tar.gz"
+        matches = [item for item in release.get("assets", []) if item.get("name") == name]
+        need(len(matches) == 1, "credential_runtime_release_asset_missing")
+        runtime = matches[0]
+        sha = str(runtime.get("digest", "")).removeprefix("sha256:")
+        need(runtime.get("state") == "uploaded" and DIGEST.fullmatch(sha)
+             and type(runtime.get("size")) is int and 0 < runtime["size"] <= MAX_ARCHIVE,
+             "credential_runtime_release_asset_invalid")
+        result["reauth_runtime"] = {"version": baseline, "architecture": "amd64", "archive": name, "sha256": sha}
+    return result
 
 
 def extract_source(archive, destination):
@@ -767,6 +779,19 @@ def build_tail(config, actual, job, logs, overlay_sha, migration_files, report, 
     version = actual["baseline"] + "-ha." + now.strftime("%Y%m%d") + "." + str(int(now.timestamp()))
     flags = ("-s -w -X main.Version=" + version + " -X main.Commit=" + actual["commit"]
              + "+cluster-ha-r4 -X main.Date=" + now.isoformat() + " -X main.BuildType=cluster-ha")
+    runtime_binding = actual.get("reauth_runtime")
+    parts = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)-pk\.(\d+)", actual["baseline"])
+    if parts and tuple(map(int, parts.groups())) >= (0, 2, 19, 66):
+        need(isinstance(runtime_binding, dict), "credential_runtime_build_binding_missing")
+    if runtime_binding is not None:
+        need(runtime_binding.get("version") == actual["baseline"]
+             and runtime_binding.get("architecture") == "amd64"
+             and runtime_binding.get("archive") == "sub2api-reauth_" + actual["baseline"] + "_linux_amd64.tar.gz"
+             and DIGEST.fullmatch(str(runtime_binding.get("sha256", ""))), "credential_runtime_build_binding_invalid")
+        prefix = "github.com/Wei-Shaw/sub2api/internal/reauthruntime."
+        flags += " -X " + prefix + "ReleaseVersion=" + runtime_binding["version"]
+        flags += " -X " + prefix + "ArchiveSHA256=" + runtime_binding["sha256"]
+        flags += " -X " + prefix + "ArchiveArchitecture=amd64"
     report("building_binary")
     run_logged(docker_command(go_image, source, caches, ["go", "build", "-trimpath", "-buildvcs=false", "-mod=readonly",
                                                        "-p", "1", "-tags", "embed", "-ldflags=" + flags,
@@ -787,6 +812,8 @@ def build_tail(config, actual, job, logs, overlay_sha, migration_files, report, 
                 "version": version, "baseline": actual["baseline"], "commit": actual["commit"],
                 "role": "cluster", "build_type": "cluster-ha", "capabilities": ["ha-r4"], "overlay_sha256": overlay_sha,
                 "source_sha256": digest(archive), "tests": tests, "migration_files": migration_files}
+    if runtime_binding is not None:
+        artifact["reauth_runtime"] = runtime_binding
     if migration_receipt is not None:
         artifact["migration_compatibility_receipt"] = migration_receipt
     json_write(logs / "manifest.json", artifact)

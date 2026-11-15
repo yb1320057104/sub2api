@@ -24,6 +24,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -37,6 +38,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
 LOGGER = logging.getLogger("openai_reauth_worker")
+SHUTDOWN_REQUESTED = threading.Event()
 MAX_RESPONSE_BYTES = 1_048_576
 SESSION_STUDIO_PHASE_REASONS = {
     "http_request": {"http_rejected", "transport_error"},
@@ -1692,8 +1694,14 @@ def safe_worker_failure(exc: BaseException) -> str:
 
 
 def terminate_worker(_signum: int, _frame: Any) -> None:
-    # The managed launcher makes us a process-group leader. On API death its
-    # parent-death SIGTERM must also terminate Node/TLS descendants.
+    # A normal API drain leaves callback endpoints alive while current slots
+    # finish. Signal handlers must not kill their Node/TLS descendants.
+    SHUTDOWN_REQUESTED.set()
+
+
+def terminate_orphan_worker(_signum: int, _frame: Any) -> None:
+    # The managed launcher reserves SIGUSR1 for actual parent death, which is
+    # different from a requested graceful SIGTERM. Avoid orphan credential work.
     if hasattr(os, "getpgrp") and os.getpgrp() == os.getpid():
         try:
             os.killpg(os.getpgrp(), signal.SIGKILL)
@@ -1707,10 +1715,10 @@ def _worker_loop(config: WorkerConfig, stop: Any = None) -> None:
     protocol = load_protocol(config.protocol_root) if config.protocol_root is not None else None
     api = WorkerAPI(config)
     LOGGER.info("worker=%s ready", config.worker_id)
-    while stop is None or not stop.is_set():
+    while not SHUTDOWN_REQUESTED.is_set() and (stop is None or not stop.is_set()):
         if not run_once(api, protocol):
             if stop is None:
-                time.sleep(config.poll_seconds)
+                SHUTDOWN_REQUESTED.wait(config.poll_seconds)
             else:
                 stop.wait(config.poll_seconds)
 
@@ -1741,14 +1749,15 @@ def reconcile_worker_pool(context: Any, children: dict, config: WorkerConfig, ta
             children[slot] = (child, stop)
 
 
-def run_worker_pool(config: WorkerConfig) -> None:
+def run_worker_pool(config: WorkerConfig, stop: Any = None) -> None:
+    shutdown = SHUTDOWN_REQUESTED if stop is None else stop
     context = multiprocessing.get_context("fork" if sys.platform.startswith("linux") else "spawn")
     children = {}
     api = WorkerAPI(config)
     target = config.concurrency
     next_poll = 0.0
     try:
-        while True:
+        while not shutdown.is_set():
             now = time.monotonic()
             if now >= next_poll:
                 try:
@@ -1758,20 +1767,21 @@ def run_worker_pool(config: WorkerConfig) -> None:
                     # working count; they never interrupt active credentials.
                     pass
                 next_poll = now + 5
+            if shutdown.is_set():
+                break
             reconcile_worker_pool(context, children, config, target)
             time.sleep(0.25)
     finally:
+        for _child, child_stop in children.values():
+            child_stop.set()
         for child, _stop in children.values():
-            if child.is_alive():
-                child.terminate()
-        for child, _stop in children.values():
-            child.join(timeout=5)
-            if child.is_alive():
-                child.kill()
-                child.join()
+            # Each login protocol already has its own bounded task timeout.
+            # Finish its callback before the API closes the private listener.
+            child.join()
 
 
 def main() -> int:
+    SHUTDOWN_REQUESTED.clear()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--once", action="store_true", help="claim at most one task, then exit")
     parser.add_argument("--check", action="store_true", help="validate local configuration without claiming a task")
@@ -1792,6 +1802,8 @@ def main() -> int:
         LOGGER.info("worker configuration valid (password_totp=%s email_otp_url=%s)", config.tosub2_root is not None, protocol is not None)
         return 0
     signal.signal(signal.SIGTERM, terminate_worker)
+    if hasattr(signal, "SIGUSR1"):
+        signal.signal(signal.SIGUSR1, terminate_orphan_worker)
     LOGGER.info("worker=%s concurrency=%s ready", config.worker_id, config.concurrency)
     try:
         if not args.once:

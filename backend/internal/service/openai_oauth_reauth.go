@@ -193,6 +193,7 @@ type OpenAIOAuthReauthAccountReader interface {
 type OpenAIOAuthReauthService struct {
 	settings                AccountTokenGuardV2Settings
 	worker                  *reauthruntime.Manager
+	workerStatusReporter    *reauthWorkerStatusReporter
 	workerToken             string
 	workerLastSeen          atomic.Int64
 	totpWorkerLastSeen      atomic.Int64

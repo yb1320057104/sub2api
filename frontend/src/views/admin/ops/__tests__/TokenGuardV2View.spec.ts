@@ -141,6 +141,21 @@ afterEach(() => {
 })
 
 describe('TokenGuardV2View', () => {
+  it.each(['runtime_download_failed', 'background_offline', 'status_unavailable'])('shows active worker failure %s and queued wait time', async reason => {
+    const response = await api.listGuard() as TokenGuardV2Status
+    response.worker = { mode: 'managed', state: 'unavailable', reason }
+    const created = new Date(Date.now() - 65 * 60000).toISOString()
+    response.accounts[0].latest_task = { id: 1, account_id: 42, status: 'queued', stage: 'queued', attempt: 0, created_at: created, updated_at: created }
+    api.listGuard.mockResolvedValue(response)
+    wrapper = mount(TokenGuardV2View, {
+      global: { stubs: { AppLayout: { template: '<main><slot /></main>' }, SmartOpsNav: true, Icon: true, BaseDialog: true } },
+    })
+    await flushPromises()
+    expect(wrapper.get('[data-testid="reauth-runtime-status"]').text()).toContain(`tokenGuardV2.runtimeReasons.${reason}`)
+    expect(wrapper.get('[data-testid="reauth-queue-wait"]').text()).toContain('tokenGuardV2.runtimeQueueWait 1 65')
+    expect(wrapper.get('[data-testid="reauth-runtime-status"]').text()).not.toContain('tokenGuardV2.runtimeStates.idle')
+  })
+
   it('supports both per-account login modes without echoing saved secrets', async () => {
     wrapper = mount(TokenGuardV2View, {
       global: {

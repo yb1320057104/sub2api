@@ -1,5 +1,7 @@
 """Collect a relocatable runtime and glibc loader without archive symlinks."""
 import json
+import hashlib
+import os
 from pathlib import Path
 import platform
 import shutil
@@ -58,8 +60,19 @@ for name, binary in (("python", "python-root/bin/python3"), ("node", "node.bin")
         f'exec "$root/lib/{loader.name}" --library-path "$root/lib" "$root/{binary}" "$@"\n'
     )
     script.chmod(0o755)
-manifest = {"tosub2_commit": "8548397e89bf80e508eda64a87e0d556d43abc84",
+manifest = {"release_version": os.environ.get("REAUTH_RELEASE_VERSION", ""),
+            "source_commit": os.environ.get("REAUTH_SOURCE_COMMIT", ""),
+            "tosub2_commit": "8548397e89bf80e508eda64a87e0d556d43abc84",
             "architecture": platform.machine(), "python": platform.python_version(),
             "node": subprocess.check_output(["node", "--version"], text=True).strip(),
             "python_packages": subprocess.check_output([sys.executable, "-m", "pip", "freeze"], text=True).splitlines()}
 (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+integrity = {"schema_version": 1, "release_version": manifest["release_version"],
+             "source_commit": manifest["source_commit"], "files": {}}
+for path in sorted(out.rglob("*")):
+    if path.is_file():
+        integrity["files"][path.relative_to(out).as_posix()] = {
+            "size": path.stat().st_size,
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        }
+(out / "integrity.json").write_text(json.dumps(integrity, indent=2, sort_keys=True) + "\n")

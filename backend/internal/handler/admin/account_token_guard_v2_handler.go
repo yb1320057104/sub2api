@@ -91,7 +91,7 @@ func (h *AccountTokenGuardV2Handler) List(c *gin.Context) {
 		"relogin_max_failures":        rules.ReloginMaxFailures,
 		"runtime_settings":            runtimeSettings,
 		"accounts":                    accounts,
-		"worker":                      h.service.WorkerStatus(),
+		"worker":                      h.service.WorkerStatus(c.Request.Context()),
 		"probe_interval_seconds":      rules.ProbeIntervalSeconds,
 		"retry_interval_seconds":      rules.RetryIntervalSeconds,
 		"relogin_cooldown_seconds":    rules.ReloginCooldownSeconds,

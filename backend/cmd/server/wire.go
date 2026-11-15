@@ -29,11 +29,12 @@ import (
 )
 
 type Application struct {
-	Lifecycle     *server.Lifecycle
-	Server        *http.Server
-	PromptAudit   *securityaudit.PromptService
-	PluginManager *service.PluginManager
-	Cleanup       func()
+	Lifecycle       *server.Lifecycle
+	Server          *http.Server
+	PromptAudit     *securityaudit.PromptService
+	PluginManager   *service.PluginManager
+	CredentialGuard *service.AccountTokenGuardV2Service
+	Cleanup         func()
 }
 
 func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
@@ -65,7 +66,7 @@ func initializeApplication(buildInfo handler.BuildInfo) (*Application, error) {
 		provideCleanup,
 
 		// Application struct
-		wire.Struct(new(Application), "Server", "PromptAudit", "PluginManager", "Lifecycle", "Cleanup"),
+		wire.Struct(new(Application), "Server", "PromptAudit", "PluginManager", "CredentialGuard", "Lifecycle", "Cleanup"),
 	)
 	return nil, nil
 }

@@ -231,6 +231,11 @@ func runMainServer() {
 
 	log.Println("Shutting down server...")
 
+	if app.CredentialGuard != nil {
+		// Login callbacks must finish before their authenticated HTTP endpoint
+		// or database is closed. Stop new scheduling and join the login worker.
+		app.CredentialGuard.Stop()
+	}
 	app.Lifecycle.BeginDrain()
 	if delay := time.Duration(cfg.Server.ShutdownDrainDelay) * time.Second; delay > 0 {
 		time.Sleep(delay)

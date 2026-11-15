@@ -2,6 +2,9 @@
 FROM node:22.22.2-bookworm-slim AS node
 FROM python:3.12.12-slim-bookworm AS runtime
 ARG TOSUB2_COMMIT=8548397e89bf80e508eda64a87e0d556d43abc84
+ARG RELEASE_VERSION
+ARG SOURCE_COMMIT
+ENV REAUTH_RELEASE_VERSION=$RELEASE_VERSION REAUTH_SOURCE_COMMIT=$SOURCE_COMMIT
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libstdc++6 curl \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=node /usr/local/bin/node /usr/local/bin/node

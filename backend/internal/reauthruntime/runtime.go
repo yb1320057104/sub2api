@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -16,13 +15,38 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
-	"strings"
 	"sync"
 	"time"
 )
 
 const maxArchive = 256 << 20
 const maxExtracted = 768 << 20
+
+// These values are set together by the release build. The application version
+// may contain an HA suffix, but the independently packaged runtime always uses
+// this explicit release binding. An unbound binary cannot install executable
+// code from the network.
+var (
+	ReleaseVersion      string
+	ArchiveSHA256       string
+	ArchiveArchitecture string
+)
+
+const runtimeRepository = "yb1320057104/sub2api"
+
+type preparationError struct{ reason string }
+
+func (e preparationError) Error() string { return e.reason }
+
+func preparationFailure(reason string) error { return preparationError{reason: reason} }
+
+func preparationReason(err error) string {
+	var failure preparationError
+	if errors.As(err, &failure) {
+		return failure.reason
+	}
+	return "runtime_install_failed"
+}
 
 type Status struct {
 	StartedAt int64  `json:"-"`
@@ -35,18 +59,21 @@ type Manager struct {
 	mu                            sync.Mutex
 	status                        Status
 	root, version, baseURL, token string
+	digest, architecture          string
 	ctx                           context.Context
 	cancel                        context.CancelFunc
 	done                          chan struct{}
 	started                       bool
+	stopping                      bool
+	process                       *exec.Cmd
 	retryAt                       time.Time
 	client                        *http.Client
 }
 
-func New(root, version, baseURL, token string) *Manager {
+func New(root, _ string, baseURL, token string) *Manager {
 	root, _ = filepath.Abs(root)
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Manager{root: root, version: strings.TrimPrefix(version, "v"), baseURL: baseURL, token: token,
+	return &Manager{root: root, version: ReleaseVersion, digest: ArchiveSHA256, architecture: ArchiveArchitecture, baseURL: baseURL, token: token,
 		ctx: ctx, cancel: cancel, client: &http.Client{Timeout: 5 * time.Minute},
 		status: Status{Mode: "managed", State: "idle"}}
 }
@@ -67,7 +94,7 @@ func (m *Manager) set(state, reason string) {
 func (m *Manager) Ensure() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.started || m.ctx.Err() != nil || time.Now().Before(m.retryAt) {
+	if m.started || m.stopping || m.ctx.Err() != nil || time.Now().Before(m.retryAt) {
 		return
 	}
 	if runtime.GOOS != "linux" || (runtime.GOARCH != "amd64" && runtime.GOARCH != "arm64") {
@@ -75,9 +102,9 @@ func (m *Manager) Ensure() {
 		m.status.Reason = "unsupported_platform"
 		return
 	}
-	if !regexp.MustCompile(`^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$`).MatchString(m.version) {
+	if err := m.validateBinding(); err != nil {
 		m.status.State = "unavailable"
-		m.status.Reason = "release_required"
+		m.status.Reason = preparationReason(err)
 		return
 	}
 	m.started = true
@@ -88,13 +115,23 @@ func (m *Manager) Ensure() {
 }
 
 func (m *Manager) Stop() {
-	m.cancel()
 	m.mu.Lock()
+	m.stopping = true
 	done := m.done
+	process := m.process
+	if process == nil {
+		m.cancel() // Preparation has no claimed task and can be interrupted.
+	}
 	m.mu.Unlock()
+	if process != nil {
+		// The Python supervisor stops claiming and waits for its active slots.
+		// Keep its callback HTTP server and command context alive until then.
+		_ = stopProcess(process)
+	}
 	if done != nil {
 		<-done
 	}
+	m.cancel()
 }
 
 func (m *Manager) run() {
@@ -109,7 +146,11 @@ func (m *Manager) run() {
 	dir, err := m.prepare(prepareCtx)
 	prepareCancel()
 	if err != nil {
-		m.set("unavailable", "runtime_install_failed")
+		if m.ctx.Err() != nil {
+			m.set("stopped", "")
+		} else {
+			m.set("unavailable", preparationReason(err))
+		}
 		return
 	}
 	cmd := exec.CommandContext(m.ctx, filepath.Join(dir, "python"), filepath.Join(dir, "worker.py"))
@@ -128,13 +169,26 @@ func (m *Manager) run() {
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 	configureProcess(cmd)
+	m.mu.Lock()
+	if m.stopping || m.ctx.Err() != nil {
+		m.mu.Unlock()
+		m.set("stopped", "")
+		return
+	}
 	if err := cmd.Start(); err != nil {
+		m.mu.Unlock()
 		m.set("unavailable", "worker_start_failed")
 		return
 	}
+	m.process = cmd
+	m.mu.Unlock()
 	m.set("running", "")
 	_ = cmd.Wait()
-	if m.ctx.Err() != nil {
+	m.mu.Lock()
+	m.process = nil
+	stopping := m.stopping
+	m.mu.Unlock()
+	if stopping || m.ctx.Err() != nil {
 		m.set("stopped", "")
 	} else {
 		m.set("unavailable", "worker_exited")
@@ -143,50 +197,150 @@ func (m *Manager) run() {
 
 func randomID() string { return fmt.Sprintf("%d-%d", os.Getpid(), time.Now().UnixNano()) }
 
+func (m *Manager) validateBinding() error {
+	if m.version == "" || m.digest == "" || m.architecture == "" {
+		return preparationFailure("runtime_not_configured")
+	}
+	if !regexp.MustCompile(`^\d+\.\d+\.\d+-pk\.[1-9][0-9]*$`).MatchString(m.version) ||
+		!regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(m.digest) ||
+		m.architecture != runtime.GOARCH || (m.architecture != "amd64" && m.architecture != "arm64") {
+		return preparationFailure("runtime_release_invalid")
+	}
+	return nil
+}
+
+func (m *Manager) archiveName() string {
+	return "sub2api-reauth_" + m.version + "_linux_" + m.architecture + ".tar.gz"
+}
+
+// A ready marker belongs to a specific immutable archive. Older markers that
+// only asserted existence must not make a new binary run a different runtime.
+func (m *Manager) installed(dir string) (bool, error) {
+	info, err := os.Lstat(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return false, preparationFailure("runtime_cache_invalid")
+	}
+	for _, name := range []string{"ready", "python", "node", "worker.py"} {
+		info, err = os.Lstat(filepath.Join(dir, name))
+		if err != nil || !info.Mode().IsRegular() || (name == "ready" && info.Size() != 64) {
+			return false, preparationFailure("runtime_cache_invalid")
+		}
+		if (name == "python" || name == "node") && info.Mode().Perm()&0100 == 0 {
+			return false, preparationFailure("runtime_cache_invalid")
+		}
+	}
+	marker, err := os.ReadFile(filepath.Join(dir, "ready"))
+	if err != nil || string(marker) != m.digest {
+		return false, preparationFailure("runtime_cache_invalid")
+	}
+	return true, nil
+}
+
+func (m *Manager) loadArchive(ctx context.Context) ([]byte, error) {
+	name := m.archiveName()
+	local := filepath.Join(m.root, "packages", name)
+	info, err := os.Lstat(local)
+	var archive []byte
+	fetched := false
+	if err == nil {
+		// A staged but invalid archive is a deployment error. Do not hide it by
+		// falling back to a network download or following a local link.
+		parent, parentErr := os.Lstat(filepath.Dir(local))
+		if parentErr != nil || !parent.IsDir() || parent.Mode()&os.ModeSymlink != 0 ||
+			!info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > maxArchive {
+			return nil, preparationFailure("runtime_cache_invalid")
+		}
+		f, openErr := os.Open(local)
+		if openErr != nil {
+			return nil, preparationFailure("runtime_cache_invalid")
+		}
+		archive, err = io.ReadAll(io.LimitReader(f, maxArchive+1))
+		closeErr := f.Close()
+		if err != nil || closeErr != nil || int64(len(archive)) > maxArchive {
+			return nil, preparationFailure("runtime_cache_invalid")
+		}
+	} else if errors.Is(err, os.ErrNotExist) {
+		fetched = true
+		archive, err = m.get(ctx, "https://github.com/"+runtimeRepository+"/releases/download/v"+m.version+"/"+name, maxArchive)
+		if err != nil {
+			return nil, preparationFailure("runtime_download_failed")
+		}
+	} else {
+		return nil, preparationFailure("runtime_cache_invalid")
+	}
+	hash := sha256.Sum256(archive)
+	if hex.EncodeToString(hash[:]) != m.digest {
+		return nil, preparationFailure("runtime_checksum_mismatch")
+	}
+	if fetched {
+		if err := m.cacheArchive(local, archive); err != nil {
+			return nil, err
+		}
+	}
+	return archive, nil
+}
+
+func (m *Manager) cacheArchive(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return preparationFailure("runtime_cache_invalid")
+	}
+	info, err := os.Lstat(dir)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return preparationFailure("runtime_cache_invalid")
+	}
+	tmp, err := os.CreateTemp(dir, ".download-")
+	if err != nil {
+		return preparationFailure("runtime_cache_invalid")
+	}
+	defer func() { _ = os.Remove(tmp.Name()) }()
+	_, writeErr := tmp.Write(data)
+	closeErr := tmp.Close()
+	if writeErr != nil || closeErr != nil {
+		return preparationFailure("runtime_cache_invalid")
+	}
+	// Link commits only to a previously absent path; never replace a staged
+	// archive. A concurrent installer is accepted only after checking its bytes.
+	if err := os.Link(tmp.Name(), path); err != nil {
+		info, statErr := os.Lstat(path)
+		if statErr != nil || !info.Mode().IsRegular() || info.Size() != int64(len(data)) {
+			return preparationFailure("runtime_cache_invalid")
+		}
+		existing, readErr := os.ReadFile(path)
+		hash := sha256.Sum256(existing)
+		if readErr != nil || hex.EncodeToString(hash[:]) != m.digest {
+			return preparationFailure("runtime_cache_invalid")
+		}
+	}
+	return nil
+}
+
 func (m *Manager) prepare(ctx context.Context) (string, error) {
-	dir := filepath.Join(m.root, m.version+"-linux-"+runtime.GOARCH)
-	if info, err := os.Stat(filepath.Join(dir, "ready")); err == nil && info.Mode().IsRegular() {
+	if err := m.validateBinding(); err != nil {
+		return "", err
+	}
+	dir := filepath.Join(m.root, m.version+"-linux-"+m.architecture)
+	if ready, err := m.installed(dir); err != nil {
+		return "", err
+	} else if ready {
+		archive, err := m.loadArchive(ctx)
+		if err != nil {
+			return "", err
+		}
+		if err := verifyInstalledArchive(ctx, archive, dir); err != nil {
+			return "", preparationFailure("runtime_cache_invalid")
+		}
 		return dir, nil
 	}
 	if err := os.MkdirAll(m.root, 0700); err != nil {
 		return "", err
 	}
-	// A release digest from the owner repository is required; never execute an
-	// unverified download or follow an arbitrary manifest download URL.
-	name := "sub2api-reauth_" + m.version + "_linux_" + runtime.GOARCH + ".tar.gz"
-	url := "https://api.github.com/repos/ranxi2001/sub2api/releases/tags/v" + m.version
-	body, err := m.get(ctx, url, 4<<20)
+	archive, err := m.loadArchive(ctx)
 	if err != nil {
 		return "", err
-	}
-	var release struct {
-		Assets []struct {
-			Name   string
-			Digest string
-		}
-	}
-	if err := json.Unmarshal(body, &release); err != nil {
-		return "", err
-	}
-	var digest string
-	for _, a := range release.Assets {
-		if a.Name == name {
-			digest = strings.TrimPrefix(a.Digest, "sha256:")
-		}
-	}
-	if len(digest) != 64 {
-		return "", errors.New("missing runtime digest")
-	}
-	if _, err := hex.DecodeString(digest); err != nil {
-		return "", errors.New("invalid runtime digest")
-	}
-	archive, err := m.get(ctx, "https://github.com/ranxi2001/sub2api/releases/download/v"+m.version+"/"+name, maxArchive)
-	if err != nil {
-		return "", err
-	}
-	hash := sha256.Sum256(archive)
-	if hex.EncodeToString(hash[:]) != digest {
-		return "", errors.New("runtime checksum mismatch")
 	}
 	tmp, err := os.MkdirTemp(m.root, ".prepare-")
 	if err != nil {
@@ -194,7 +348,7 @@ func (m *Manager) prepare(ctx context.Context) (string, error) {
 	}
 	defer func() { _ = os.RemoveAll(tmp) }()
 	if err := extract(archive, tmp); err != nil {
-		return "", err
+		return "", preparationFailure("runtime_archive_invalid")
 	}
 	check := exec.CommandContext(ctx, filepath.Join(tmp, "python"), filepath.Join(tmp, "worker.py"), "--check")
 	check.Env = []string{"PATH=/usr/bin:/bin", "LANG=C.UTF-8", "OPENAI_REAUTH_WORKER_TOKEN=" + m.token,
@@ -202,15 +356,21 @@ func (m *Manager) prepare(ctx context.Context) (string, error) {
 		"PYTHONDONTWRITEBYTECODE=1"}
 	configureProcess(check)
 	if err := check.Run(); err != nil {
-		return "", errors.New("runtime self-check failed")
+		return "", preparationFailure("runtime_self_check_failed")
 	}
-	if err := os.WriteFile(filepath.Join(tmp, "ready"), []byte(digest), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(tmp, "ready"), []byte(m.digest), 0600); err != nil {
+		return "", err
+	}
+	if _, err := m.installed(tmp); err != nil {
 		return "", err
 	}
 	if err := os.Rename(tmp, dir); err != nil {
 		// Another instance sharing the data directory can finish first.
-		if _, otherErr := os.Stat(filepath.Join(dir, "ready")); otherErr != nil {
+		if ready, otherErr := m.installed(dir); otherErr != nil || !ready {
 			return "", err
+		}
+		if err := verifyInstalledArchive(ctx, archive, dir); err != nil {
+			return "", preparationFailure("runtime_cache_invalid")
 		}
 	}
 	return dir, nil

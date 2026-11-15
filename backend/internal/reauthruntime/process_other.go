@@ -2,6 +2,11 @@
 
 package reauthruntime
 
-import "os/exec"
+import (
+	"os"
+	"os/exec"
+)
 
 func configureProcess(cmd *exec.Cmd) {}
+
+func stopProcess(cmd *exec.Cmd) error { return cmd.Process.Signal(os.Interrupt) }

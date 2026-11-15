@@ -542,6 +542,8 @@
 
 ## PK-017
 
+2026-11-15 pk.66：正式发行增加独立凭证运行包及源码/同制品验证描述，程序通过编译参数固定版本、架构和SHA256；运行时只接受本项目配套包，HA版本单独映射到正式包。新发布缺配套证据拒绝，旧封存包原规则保留。见 `docs/PK_BPS_AUTHORIZATION_PK66_REVIEW.md`。
+
 2026-11-11 pk.61 HA 发行准入：普通发布保持 `production-primary`/schema 1；可信 publisher 仅在显式 `PK_STARTUP_GUARD_TARGET=production-ha` 时走 schema 2，并用 `PK_HA_PUBLICATION_REVIEW_SHA256` 绑定已审阅的 HA 事实。要求两 API ready、唯一 worker 对应 PostgreSQL writer、epoch 稳定，且准备/校验不重启、不替换二进制、不改变运行授权；回执 purpose 为 `ha-source-release-admission`，不伪造普通守卫 hash。6 项新合同用例通过；当前实际私有 hook 仍准备中，未据此宣称已调用 prepare/check、发行或上线。沿用 PK-047，现网旧 ordinary 容器已退出，旧 hook 的 container_not_healthy 拒绝必须保留为事实。
 
 2026-11-11 pk.61 对应源码分发：合并 BEpusdt 后，正式包必须附 `sub2api_0.2.19-pk.61_source.tar.gz`，manifest 同时绑定 `source_archive`、`source_archive_sha256` 与 `source_archive_tar_sha256`。归档来自同一 commit 的完整 `git archive --format=tar --prefix=sub2api_0.2.19-pk.61/` 原始 tar，固定 `core.autocrlf=false`/`core.eol=lf`，gzip mtime=0；包含第三方完整维护源码、LICENSE/THIRD_PARTY_NOTICES 与构建说明，不夹带私有运行文件。`corresponding_source.py`/control 校验来源声明、双哈希，并从实际目录、blob 和执行位重建完整 Git tree，拒绝 `export-ignore`/`export-subst` 引起的遗漏或改写；local publisher 另与私库同 commit 实时 git archive 逐字节核对。原 publisher、源码门禁及 HA schema 2 合计 20 项定向通过（corresponding-source-independent-review-attempt3.log）；首次换行转换失败及第二轮错误文案断言失败日志保留。该结果不代表最终同制品验收、正式构建、Release 发布或生产更新已完成。
@@ -1453,6 +1455,8 @@ pk.50追加PK-036联动：账号授权“入库账号出口”可设置每账号
 
 ## PK-047 独立站点与存储高可用部署
 
+2026-11-15 pk.66：独立HA适配增加仅回环凭证协议HTTP允许列表，保留token/任务归属及单活动worker；普通与HA均在关闭HTTP前停止凭证领取并等待现有授权回调，发布停止预算须覆盖真实任务超时。旧pk65适配/制品不改。见 `docs/PK_BPS_AUTHORIZATION_PK66_REVIEW.md`。
+
 2026-11-15 pk.65：三个配额缓存回填分支从50ms调整为独立250ms上限，保留TTL、限额判断与回写语义。独立pk65 HA profile增加计费预约stage/cause/elapsed_ms分类日志，保留外部503和缓存故障拒绝放行，不增加数据库余额覆盖或未知结果预约重试。适配从已核验pk64 HA与当前源码三方合并，保留两处provider启动门、审计Drain、凭证接线与单writer/worker。旧profile和封存制品不变；定向源码结果及未部署边界见调用失败复核。
 
 2026-11-14 pk.64 共享会话热路径修复：生产只读采样确认双 API 到 Redis writer 的往返存在明显差异，长历史逐项访问会累积超过3秒存储预算；按 PK-006 改为128项 pipeline，仍使用逐键脚本，避免跨 Redis Cluster slot 的多键脚本或 MGET。旧格式可混合读取，失败不放行为本地缓存命中。未切换 Redis/PostgreSQL writer、修改 worker 或重启服务；正式制品和生产更新另行验收。
@@ -1528,6 +1532,8 @@ pk.50追加PK-036联动：账号授权“入库账号出口”可设置每账号
 
 ## PK-050 OpenAI 多授权连接与安全重授权操作
 
+2026-11-15 pk.66：修复内置授权运行包来源和HA回连断链，正常SIGTERM停止领取并等待在途操作完成；意外父进程死亡清理保持。授权身份、凭据加密、独立Excel grant与既有授权范围保持。见 `docs/PK_BPS_AUTHORIZATION_PK66_REVIEW.md`。
+
 2026-11-15 pk.65：凭证运营增加 `random_managed` 登录出口，每次从有效静态原生代理中选择，整次登录及 OAuth 兑换固定出口，不改变业务代理绑定；池空或失效明确失败。迁移342仅扩展出口约束。新旧授权队列覆盖 Codex、Excel/BPS、SIWC 与 TOTP 入队互斥；自动任务遵守账号及凭证运营暂停，手动入口仍保留原权限与校验。Session 导出和独立手动多授权连接不宣称已共用队列。详见 `docs/PK_CREDENTIAL_OPERATIONS_PK65_REVIEW.md`。
 
 2026-11-11 pk.62 增量：合入固定上游 `8545bf9ffac5a870ade18fbe7c4b61a48755c8db` 的入口能力桥接。未投影的托管母账号按实际 Responses 入口与发送前连接能力一致选号；BPS 原生 responses 可参与普通回合/原生压缩，但不错误进入旧 compact 或 Chat 入口。非托管/已投影账号及 PK 利润、分组、代理边界保持。
@@ -1541,6 +1547,8 @@ pk.50追加PK-036联动：账号授权“入库账号出口”可设置每账号
 - 已知边界：未执行真实账号登录、2FA 轮换或 Session 导出；浏览器依赖可用不等于账号授权完成。
 
 ## PK-051 账号凭证守护与持久重登预算
+
+2026-11-15 pk.66：API副本只读取活动后台的限时共享状态，不为展示/排队启动竞争凭证进程；固定失败原因与真实排队时间对管理员可见。共享状态按owner续期/清理，故障只影响诊断，不重置账号或持久预算。见 `docs/PK_BPS_AUTHORIZATION_PK66_REVIEW.md`。
 
 2026-11-15 pk.65 工作台扩展：作为常用凭证工具，提供用途与步骤；授权巡检默认显示状态和记录，旧巡检配置移至“未纳管账号”高级区，worker并发及预算/退避参数折叠。统一入口不改变凭证加密、持久预算、人工暂停与显式清除语义。见 `docs/PK_SMART_OPERATIONS_PK65_REVIEW.md`。
 
@@ -1651,6 +1659,8 @@ pk.50追加PK-036联动：账号授权“入库账号出口”可设置每账号
 - 已知边界：外置内核是否安装、订阅可达性和出口 IP 需部署验收；动态代理不能解除全局物理容量。
 
 ## PK-061 BPS OAuth、网关与工具任务
+
+2026-11-15 pk.66：修复自动Excel授权任务无消费者的部署链路；BPS仍按已保存开关和资格自动入队，停调、封禁、缺凭据及队列互斥规则保持。运行包与HTTP恢复不代表所有真实账号都能通过上游安全验证。见 `docs/PK_BPS_AUTHORIZATION_PK66_REVIEW.md`。
 
 2026-11-15 pk.65：自动补充 Excel/BPS 授权候选在分页前排除旧授权队列占用，避免前排账号阻塞后续候选；入队继续在原短事务锁内复查占用和自动授权资格，遵守账号停用/停调、确认封禁及凭证运营暂停。保留显式 BPS 开关、独立授权、网关和账务语义。详见 `docs/PK_CREDENTIAL_OPERATIONS_PK65_REVIEW.md`。
 

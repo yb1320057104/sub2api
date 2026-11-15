@@ -206,23 +206,33 @@ sessionExport: {
   localWorkerEngineHint: 'Sign in using your own Worker and the selected account proxy.',
   sessionStudioEngineHint: 'Sends this account’s email, password and TOTP secret to the re-login service configured in Credential Guard. Password / TOTP only; uses the service’s egress instead of the account proxy. No automatic engine fallback. Upgrade the Worker first.',
   runtimeTitle: 'Automatic re-login service',
-  runtimeManaged: 'Prepared and managed by the application. Password / 2FA needs no extra setup.',
+  runtimeManaged: 'Prepared and managed by the active background process, using saved password / 2FA credentials.',
   runtimeExternal: 'Using the existing external re-login service.',
+  runtimeQueueWait: '{count} authorization tasks in this list are queued; the longest wait is {minutes} minutes.',
   runtimeReasons: {
     unsupported_platform: 'This platform does not support the built-in runtime yet.',
     release_required: 'No published runtime matches this development build.',
     runtime_install_failed: 'Runtime download, verification or preparation failed; it will retry.',
+    runtime_not_configured: 'This build has no matching authorization runtime binding. Install a complete release.',
+    runtime_release_invalid: 'The authorization runtime version, architecture or checksum binding is invalid. Check the release configuration.',
+    runtime_checksum_mismatch: 'The authorization runtime checksum did not match. Replace it with the verified matching package.',
+    runtime_download_failed: 'The matching authorization runtime could not be downloaded. Check background network access and release files.',
+    runtime_cache_invalid: 'The installed authorization runtime failed verification. Repair the matching runtime package.',
+    runtime_archive_invalid: 'The authorization package has an invalid format. Replace it with the matching release package.',
+    runtime_self_check_failed: 'The authorization runtime failed its self-check. Check its dependencies and matching package.',
     worker_start_failed: 'The re-login process could not start; it will retry.',
     worker_exited: 'The re-login process exited; it will be restarted.',
     external_not_configured: 'The existing external service connection is invalid.',
     external_offline: 'The external re-login service has not connected.',
-    api_unreachable: 'The re-login process has not connected to the local API.'
+    api_unreachable: 'The re-login process has not connected to the local API.',
+    background_offline: 'No current status was received from the active background process. Check it before expecting queued tasks to run.',
+    status_unavailable: 'The active background status could not be read. Check the shared status service and retry.'
   },
   runtimeStates: {
     idle: 'Will be prepared automatically on first use',
     preparing: 'Preparing the runtime; queued tasks will start when ready',
     running: 'Ready and processing re-login tasks',
-    unavailable: 'Temporarily unavailable; the application will retry automatically',
+    unavailable: 'Authorization is unavailable; see the reason below',
     stopped: 'Service is stopping'
   },
   reauthErrors: {

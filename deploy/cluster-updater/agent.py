@@ -727,13 +727,14 @@ class Agent:
             text = text.replace(old_probe, bounded_probe, 1)
         else:
             need(text.count(bounded_probe) == 1, 'supervisor_probe_timeout_anchor')
-        old_grace = "5 <= config['stop_grace_seconds'] <= 60, 'invalid_stop_grace')"
-        reviewed_grace = "5 <= config['stop_grace_seconds'] <= 900, 'invalid_stop_grace')"
-        if old_grace in text:
-            need(text.count(old_grace) == 1 and reviewed_grace not in text, 'supervisor_stop_grace_anchor')
-            text = text.replace(old_grace, reviewed_grace, 1)
-        else:
-            need(text.count(reviewed_grace) == 1, 'supervisor_stop_grace_anchor')
+        reviewed_grace = "5 <= config['stop_grace_seconds'] <= 1800, 'invalid_stop_grace')"
+        grace_anchors = ["5 <= config['stop_grace_seconds'] <= " + str(limit) + ", 'invalid_stop_grace')"
+                         for limit in (60, 900, 1800)]
+        need(sum(text.count(anchor) for anchor in grace_anchors) == 1, 'supervisor_stop_grace_anchor')
+        for anchor in grace_anchors:
+            if anchor in text:
+                text = text.replace(anchor, reviewed_grace, 1)
+                break
         compile(text, 'supervisor.py', 'exec')
         return text.encode()
 
@@ -756,10 +757,10 @@ class Agent:
         units = {'us': .000001, 'ms': .001, 's': 1, 'min': 60, 'h': 3600, 'd': 86400}
         parts = re.findall(r'(\d+(?:\.\d+)?)(us|ms|min|s|h|d)', stop_timeout)
         finite = (bool(parts) and ''.join(number + unit for number, unit in parts) == re.sub(r'\s+', '', stop_timeout)
-                  and sum(float(number) * units[unit] for number, unit in parts) >= 900)
+                  and sum(float(number) * units[unit] for number, unit in parts) >= 1800)
         need(stop_timeout == 'infinity' or finite, 'worker_service_shutdown_budget_too_short')
 
-    def worker_stopped(self, module, value, seconds=900):
+    def worker_stopped(self, module, value, seconds=1800):
         until = time.monotonic() + seconds
         while True:
             state = module.Docker(value).inspect()
@@ -769,8 +770,8 @@ class Agent:
             need(time.monotonic() < until, 'worker_shutdown_pending')
             time.sleep(.5)
 
-    def stop_worker_orderly(self, module, value, seconds=900):
-        # Scheduled probes may take twelve minutes plus result persistence. The
+    def stop_worker_orderly(self, module, value, seconds=1800):
+        # Credential authorization may take twenty-five minutes plus persistence. The
         # supervisor sends TERM and joins the worker; the budget is shared by
         # systemd's stop and the container exit check, never a Docker KILL timer.
         until = time.monotonic() + seconds
@@ -812,7 +813,7 @@ class Agent:
         spec = json.loads(read(specpath))
         newconfig.update({'revision': new['revision'], 'container_name': new['name'], 'container_id': new['id'],
                           'image_id': spec['Image'], 'spec_file': str(specpath), 'spec_sha256': new['spec_sha256'],
-                          'binary_sha256': new['binary_sha256'], 'stop_grace_seconds': 900})
+                          'binary_sha256': new['binary_sha256'], 'stop_grace_seconds': 1800})
         code = self.generic_supervisor(read(self.worker_root / 'supervisor.py'))
         put(self.job / 'next-supervisor.py', code)
         module = load(self.job / 'next-supervisor.py', 'next_worker')

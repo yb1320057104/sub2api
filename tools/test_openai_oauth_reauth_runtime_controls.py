@@ -1,4 +1,6 @@
 import multiprocessing
+import os
+import signal
 import tempfile
 import threading
 import time
@@ -20,7 +22,19 @@ def drain_probe(config, stop):
     (root / (config.worker_id + '.finished')).touch()
 
 
+def run_graceful_pool_probe(root):
+    worker.SHUTDOWN_REQUESTED.clear()
+    signal.signal(signal.SIGTERM, worker.terminate_worker)
+    config = worker.WorkerConfig(root, 'synthetic-token', 'probe', None, concurrency=2)
+    with patch.object(worker, '_worker_loop', drain_probe), \
+         patch.object(worker.WorkerAPI, 'runtime_concurrency', return_value=2):
+        worker.run_worker_pool(config)
+
+
 class RuntimeControlsTest(unittest.TestCase):
+    def setUp(self):
+        worker.SHUTDOWN_REQUESTED.clear()
+
     def config(self, root='http://127.0.0.1'):
         return worker.WorkerConfig(root, 'synthetic-token', 'probe', None, concurrency=2)
 
@@ -90,6 +104,39 @@ class RuntimeControlsTest(unittest.TestCase):
             with self.assertRaises(KeyboardInterrupt):
                 worker.run_worker_pool(cfg)
         self.assertEqual(reconcile.call_args.args[-1], 2)
+
+    @unittest.skipUnless(os.name == 'posix', 'POSIX termination signals')
+    def test_supervisor_sigterm_keeps_active_slots_until_their_callbacks_finish(self):
+        context = multiprocessing.get_context('fork')
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            supervisor = context.Process(target=run_graceful_pool_probe, args=(directory,))
+            supervisor.start()
+            try:
+                deadline = time.monotonic() + 10
+                while len(list(root.glob('*.started'))) < 2 and time.monotonic() < deadline:
+                    time.sleep(.02)
+                self.assertEqual(len(list(root.glob('*.started'))), 2)
+                os.kill(supervisor.pid, signal.SIGTERM)
+                deadline = time.monotonic() + 5
+                while len(list(root.glob('*.draining'))) < 2 and time.monotonic() < deadline:
+                    time.sleep(.02)
+                self.assertEqual(len(list(root.glob('*.draining'))), 2)
+                self.assertTrue(supervisor.is_alive())
+                self.assertEqual(len(list(root.glob('*.finished'))), 0)
+                (root / 'release').touch()
+                supervisor.join(timeout=5)
+                self.assertFalse(supervisor.is_alive())
+                self.assertEqual(supervisor.exitcode, 0)
+                self.assertEqual(len(list(root.glob('*.finished'))), 2)
+            finally:
+                (root / 'release').touch()
+                if supervisor.is_alive():
+                    os.kill(supervisor.pid, signal.SIGTERM)
+                    supervisor.join(timeout=5)
+                if supervisor.is_alive():
+                    supervisor.kill()
+                    supervisor.join()
 
 if __name__ == '__main__':
     unittest.main()
