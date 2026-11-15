@@ -15,7 +15,7 @@ func TestAPIKeyAuthSnapshotGroupForceOpenAIFastRoundtrip(t *testing.T) {
 		User: &User{ID: 40, Status: StatusActive},
 		Group: &Group{
 			ID: groupID, Name: "fast-roundtrip", Platform: PlatformOpenAI, Status: StatusActive,
-			Hydrated: true, ForceOpenAIFast: true, ForceOpenAIUltrafast: true, FreeOpenAIFast: true,
+			Hydrated: true, ForceOpenAIFast: true, ForceOpenAIUltrafast: true, FreeOpenAIFast: true, FreeOpenAIUltrafast: true,
 		},
 	}
 	svc := &APIKeyService{}
@@ -33,13 +33,14 @@ func TestAPIKeyAuthSnapshotGroupForceOpenAIFastRoundtrip(t *testing.T) {
 	require.True(t, materialized.Group.ForceOpenAIFast)
 	require.True(t, materialized.Group.ForceOpenAIUltrafast)
 	require.True(t, materialized.Group.FreeOpenAIFast)
+	require.True(t, materialized.Group.FreeOpenAIUltrafast)
 	require.Equal(t, apiKeyAuthSnapshotVersion, cached.Snapshot.Version)
 }
 
 func TestAPIKeyAuthSnapshotUltrafastCandidateGroupsAndLegacyDefault(t *testing.T) {
 	primaryID := int64(51)
 	primary := &Group{ID: primaryID, Platform: PlatformOpenAI, Status: StatusActive, Hydrated: true, ForceOpenAIUltrafast: true}
-	secondary := &Group{ID: 52, Platform: PlatformComposite, Status: StatusActive, Hydrated: true}
+	secondary := &Group{ID: 52, Platform: PlatformComposite, Status: StatusActive, Hydrated: true, FreeOpenAIUltrafast: true}
 	apiKey := &APIKey{
 		ID: 83, UserID: 41, GroupID: &primaryID, GroupIDs: []int64{primaryID, secondary.ID},
 		Key: "sk-ultrafast-candidates", Status: StatusActive, User: &User{ID: 41, Status: StatusActive},
@@ -57,15 +58,20 @@ func TestAPIKeyAuthSnapshotUltrafastCandidateGroupsAndLegacyDefault(t *testing.T
 	require.Len(t, materialized.Groups, 2)
 	require.True(t, materialized.Groups[0].ForceOpenAIUltrafast)
 	require.False(t, materialized.Groups[1].ForceOpenAIUltrafast)
+	require.False(t, materialized.Groups[0].FreeOpenAIUltrafast)
+	require.True(t, materialized.Groups[1].FreeOpenAIUltrafast)
+	require.False(t, materialized.Groups[1].FreeOpenAIFast)
 
-	// Missing fields decode as false; pre-Ultrafast cache versions must reload
+	// Missing fields decode as false; older cache versions must reload
 	// the database rather than silently using that default for an enabled group.
 	var legacy APIKeyAuthGroupSnapshot
 	require.NoError(t, json.Unmarshal([]byte(`{"id":51,"platform":"openai","force_openai_fast":true}`), &legacy))
 	require.False(t, legacy.ForceOpenAIUltrafast)
+	require.False(t, legacy.FreeOpenAIUltrafast)
 	require.True(t, legacy.ForceOpenAIFast)
 	require.False(t, authSnapshotToGroup(&legacy).ForceOpenAIUltrafast)
-	legacyEntry := &APIKeyAuthCacheEntry{Snapshot: &APIKeyAuthSnapshot{Version: 34, Group: &legacy}}
+	require.False(t, authSnapshotToGroup(&legacy).FreeOpenAIUltrafast)
+	legacyEntry := &APIKeyAuthCacheEntry{Snapshot: &APIKeyAuthSnapshot{Version: 35, Group: &legacy}}
 	materialized, used, err = svc.applyAuthCacheEntry(apiKey.Key, legacyEntry)
 	require.NoError(t, err)
 	require.False(t, used)

@@ -169,7 +169,28 @@ describe('GroupsView request policy switches', () => {
     wrapper.unmount()
   })
 
-  it('creates with Ultrafast, excludes Fast, preserves free Fast and resets for the next group', async () => {
+  it('shows the free Ultrafast badge independently of the forced tier on supported groups', async () => {
+    mocks.listGroups.mockResolvedValue({ items: [
+      { ...baseGroup, id: 42, platform: 'openai', free_openai_ultrafast: true },
+      { ...baseGroup, id: 43, platform: 'composite', free_openai_ultrafast: true },
+      { ...baseGroup, id: 44, platform: 'anthropic', free_openai_ultrafast: true },
+      { ...baseGroup, id: 45, platform: 'openai', force_openai_ultrafast: true }
+    ], total: 4, page: 1, page_size: 20, pages: 1 })
+    const wrapper = mountView()
+    await flushPromises()
+    for (const id of [42, 43]) {
+      const badge = wrapper.get(`[data-testid="group-row-${id}"] [data-testid="group-free-openai-ultrafast-badge"]`)
+      expect(badge.text()).toBe('admin.groups.openaiFast.freeUltrafastBadge')
+      expect(badge.attributes('title')).toBe('admin.groups.openaiFast.freeUltrafastHint')
+      expect(wrapper.find(`[data-testid="group-row-${id}"] [data-testid="group-openai-ultrafast-badge"]`).exists()).toBe(false)
+    }
+    for (const id of [44, 45]) {
+      expect(wrapper.find(`[data-testid="group-row-${id}"] [data-testid="group-free-openai-ultrafast-badge"]`).exists()).toBe(false)
+    }
+    wrapper.unmount()
+  })
+
+  it('creates with Ultrafast, excludes Fast, preserves both free switches and resets for the next group', async () => {
     const wrapper = mountView()
     await flushPromises()
     await buttonByText(wrapper, 'admin.groups.createGroup')!.trigger('click')
@@ -179,8 +200,10 @@ describe('GroupsView request policy switches', () => {
     const fast = wrapper.get('[data-testid="create-force-openai-fast"]')
     const ultrafast = wrapper.get('[data-testid="create-force-openai-ultrafast"]')
     expect(ultrafast.attributes('aria-checked')).toBe('false')
+    expect(wrapper.get('[data-testid="create-free-openai-ultrafast"]').attributes('aria-checked')).toBe('false')
     await fast.trigger('click')
     await wrapper.get('[data-testid="create-free-openai-fast"]').trigger('click')
+    await wrapper.get('[data-testid="create-free-openai-ultrafast"]').trigger('click')
     await ultrafast.trigger('click')
     expect(fast.attributes('aria-checked')).toBe('false')
     expect(ultrafast.attributes('aria-checked')).toBe('true')
@@ -188,13 +211,36 @@ describe('GroupsView request policy switches', () => {
     await wrapper.get('#create-group-form').trigger('submit')
     await flushPromises()
     expect(mocks.createGroup).toHaveBeenCalledWith(expect.objectContaining({
-      platform: 'openai', force_openai_fast: false, force_openai_ultrafast: true, free_openai_fast: true
+      platform: 'openai', force_openai_fast: false, force_openai_ultrafast: true,
+      free_openai_fast: true, free_openai_ultrafast: true
     }))
 
     await buttonByText(wrapper, 'admin.groups.createGroup')!.trigger('click')
     wrapper.findComponent('[data-tour="group-form-platform"]').vm.$emit('update:modelValue', 'openai')
     await flushPromises()
     expect(wrapper.get('[data-testid="create-force-openai-ultrafast"]').attributes('aria-checked')).toBe('false')
+    expect(wrapper.get('[data-testid="create-free-openai-fast"]').attributes('aria-checked')).toBe('false')
+    expect(wrapper.get('[data-testid="create-free-openai-ultrafast"]').attributes('aria-checked')).toBe('false')
+    wrapper.unmount()
+  })
+
+  it.each(['openai', 'composite'])('creates free Ultrafast independently without forcing a tier for %s', async (platform) => {
+    const wrapper = mountView()
+    await flushPromises()
+    await buttonByText(wrapper, 'admin.groups.createGroup')!.trigger('click')
+    wrapper.findComponent('[data-tour="group-form-platform"]').vm.$emit('update:modelValue', platform)
+    await flushPromises()
+    await wrapper.get('[data-testid="create-free-openai-ultrafast"]').trigger('click')
+    expect(wrapper.get('[data-testid="create-force-openai-fast"]').attributes('aria-checked')).toBe('false')
+    expect(wrapper.get('[data-testid="create-force-openai-ultrafast"]').attributes('aria-checked')).toBe('false')
+    expect(wrapper.get('[data-testid="create-free-openai-fast"]').attributes('aria-checked')).toBe('false')
+    await wrapper.get('#create-group-form input[type="text"]').setValue('Tier pricing')
+    await wrapper.get('#create-group-form').trigger('submit')
+    await flushPromises()
+    expect(mocks.createGroup).toHaveBeenCalledWith(expect.objectContaining({
+      platform, force_openai_fast: false, force_openai_ultrafast: false,
+      free_openai_fast: false, free_openai_ultrafast: true
+    }))
     wrapper.unmount()
   })
 
@@ -206,14 +252,18 @@ describe('GroupsView request policy switches', () => {
     platform.vm.$emit('update:modelValue', 'openai')
     await flushPromises()
     await wrapper.get('[data-testid="create-force-openai-ultrafast"]').trigger('click')
+    await wrapper.get('[data-testid="create-free-openai-fast"]').trigger('click')
+    await wrapper.get('[data-testid="create-free-openai-ultrafast"]').trigger('click')
     platform.vm.$emit('update:modelValue', 'anthropic')
     await flushPromises()
     expect(wrapper.find('[data-testid="create-force-openai-ultrafast"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="create-free-openai-ultrafast"]').exists()).toBe(false)
     await wrapper.get('#create-group-form input[type="text"]').setValue('Claude')
     await wrapper.get('#create-group-form').trigger('submit')
     await flushPromises()
     expect(mocks.createGroup).toHaveBeenCalledWith(expect.objectContaining({
-      platform: 'anthropic', force_openai_fast: false, force_openai_ultrafast: false
+      platform: 'anthropic', force_openai_fast: false, force_openai_ultrafast: false,
+      free_openai_fast: false, free_openai_ultrafast: false
     }))
     wrapper.unmount()
   })
@@ -231,6 +281,59 @@ describe('GroupsView request policy switches', () => {
     await wrapper.get('#edit-group-form').trigger('submit')
     await flushPromises()
     expect(mocks.updateGroup).toHaveBeenCalledWith(42, expect.objectContaining({ force_openai_ultrafast: false }))
+    wrapper.unmount()
+  })
+
+  it.each([undefined, false, true])('loads and saves free Ultrafast %s without changing other tier policies', async (enabled) => {
+    const group = {
+      ...baseGroup, platform: 'openai', force_openai_fast: true, free_openai_fast: true,
+      ...(enabled === undefined ? {} : { free_openai_ultrafast: enabled })
+    }
+    mocks.listGroups.mockResolvedValue({ items: [group], total: 1, page: 1, page_size: 20, pages: 1 })
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.get('[data-testid="group-row-42"]').findAll('button').find((b) => b.text() === 'common.edit')!.trigger('click')
+    await flushPromises()
+    const toggle = wrapper.get('[data-testid="edit-free-openai-ultrafast"]')
+    expect(toggle.attributes('aria-checked')).toBe(String(enabled ?? false))
+    await toggle.trigger('click')
+    await wrapper.get('#edit-group-form').trigger('submit')
+    await flushPromises()
+    expect(mocks.updateGroup).toHaveBeenCalledWith(42, expect.objectContaining({
+      force_openai_fast: true, force_openai_ultrafast: false,
+      free_openai_fast: true, free_openai_ultrafast: !enabled
+    }))
+    wrapper.unmount()
+  })
+
+  it('discards a free Ultrafast draft when reopening the editor', async () => {
+    const group = { ...baseGroup, platform: 'openai' }
+    mocks.listGroups.mockResolvedValue({ items: [group], total: 1, page: 1, page_size: 20, pages: 1 })
+    const wrapper = mountView()
+    await flushPromises()
+    const edit = wrapper.get('[data-testid="group-row-42"]').findAll('button').find((b) => b.text() === 'common.edit')!
+    await edit.trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-testid="edit-free-openai-ultrafast"]').trigger('click')
+    await buttonByText(wrapper, 'common.cancel')!.trigger('click')
+    await edit.trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-testid="edit-free-openai-ultrafast"]').attributes('aria-checked')).toBe('false')
+    expect(mocks.updateGroup).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('clears stale free Ultrafast when saving an unsupported platform', async () => {
+    const group = { ...baseGroup, free_openai_ultrafast: true }
+    mocks.listGroups.mockResolvedValue({ items: [group], total: 1, page: 1, page_size: 20, pages: 1 })
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.get('[data-testid="group-row-42"]').findAll('button').find((b) => b.text() === 'common.edit')!.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="edit-free-openai-ultrafast"]').exists()).toBe(false)
+    await wrapper.get('#edit-group-form').trigger('submit')
+    await flushPromises()
+    expect(mocks.updateGroup).toHaveBeenCalledWith(42, expect.objectContaining({ free_openai_ultrafast: false }))
     wrapper.unmount()
   })
 

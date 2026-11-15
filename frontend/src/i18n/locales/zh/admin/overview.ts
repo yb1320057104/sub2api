@@ -1317,14 +1317,18 @@ export default {
           },
     openaiFast: {
             title: 'OpenAI Fast / Ultrafast 模式',
+            policyHint: '强制开关控制请求档位，免费开关只控制对应档位的下游计价，两者独立。开启免费不会自动启用对应档位。',
             force: '强制使用 Fast（priority）',
             hint: '开启后，此分组的 OpenAI 请求会强制写入 service_tier=priority；全局 Fast/Flex 策略仍可过滤或拦截。保存后新请求立即生效，已建立的 WebSocket 会话需重连。',
             forceUltrafast: '强制使用 Ultrafast',
             ultrafastBadge: 'Ultrafast 已启用',
-            ultrafastHint: '仅对映射后的 gpt-6-astra、gpt-6.1-sol 强制使用 Ultrafast，其他模型保持原行为。上游模型和账号须支持此档位（如具备资格的 Pro500 账号）。8 倍指套餐额度消耗，不保证 8 倍速度。全局策略仍可过滤、拦截或改写。保存后新请求生效，已有 WebSocket 会话需重连。',
+            ultrafastHint: '仅对映射后的 gpt-6-astra、gpt-6.1-sol 强制使用 Ultrafast，其他模型保持原行为。上游模型和账号须支持此档位（如具备资格的 Pro500 账号）。实际速度取决于上游，不保证固定倍速；档位计费由平台定价配置决定。全局策略仍可过滤、拦截或改写。保存后新请求生效，已有 WebSocket 会话需重连。',
             combinedHint: '现有配置同时启用了两项策略：上述两个模型优先使用 Ultrafast，其他模型仍使用 Fast。直接保存会保留此配置；操作开关可改为单一策略。',
             free: '免费 Fast',
-            freeHint: '该分组的 Fast 请求仍使用 priority 档位，但客户实际费用按同一请求的 Standard 价格计算。'
+            freeHint: '只免除 priority（Fast）向下游收取的档位附加费，仍按 Standard 模型价及分组等既有倍率计费；不影响 Ultrafast 计价或上游额度消耗。',
+            freeUltrafast: '免费 Ultrafast',
+            freeUltrafastBadge: 'Ultrafast 免附加费',
+            freeUltrafastHint: '只免除该分组 Ultrafast 请求向下游收取的档位附加费，仍按 Standard 模型价及分组等既有倍率计费，并非请求全免；不改变请求档位，也不减少上游额度消耗。'
           },
     invalidRequestFallback: {
             title: '无效请求兜底分组',

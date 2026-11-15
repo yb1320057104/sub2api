@@ -240,9 +240,26 @@ func TestOpenAIFastBillingMultiplier_2xAnd25x(t *testing.T) {
 			CacheReadInputTokenCost:         0.5e-6,
 			CacheReadInputTokenCostPriority: 1e-6,
 		},
+		// A stale 1.5x catalog must not replace the model's 2x Fast policy.
+		"gpt-6.1-sol": {
+			InputCostPerToken:               2e-6,
+			InputCostPerTokenPriority:       3e-6,
+			OutputCostPerToken:              10e-6,
+			OutputCostPerTokenPriority:      15e-6,
+			CacheReadInputTokenCost:         0.2e-6,
+			CacheReadInputTokenCostPriority: 0.3e-6,
+		},
+		"gpt-6-astra": {
+			InputCostPerToken:               10e-6,
+			InputCostPerTokenPriority:       15e-6,
+			OutputCostPerToken:              50e-6,
+			OutputCostPerTokenPriority:      75e-6,
+			CacheReadInputTokenCost:         1e-6,
+			CacheReadInputTokenCostPriority: 1.5e-6,
+		},
 	}
 	billing := NewBillingService(&config.Config{}, &PricingService{pricingData: catalog})
-	tokens := UsageTokens{InputTokens: 1_000_000, OutputTokens: 1_000_000}
+	tokens := UsageTokens{InputTokens: 1_000_000, OutputTokens: 1_000_000, CacheCreationTokens: 1000, CacheReadTokens: 2000}
 
 	standard := func(model string) *CostBreakdown {
 		cost, err := billing.CalculateCost(model, tokens, 1)
@@ -264,6 +281,9 @@ func TestOpenAIFastBillingMultiplier_2xAnd25x(t *testing.T) {
 		{model: "gpt-5.6-sol", ratio: 2.0},
 		{model: "gpt-5.6-terra", ratio: 2.0},
 		{model: "gpt-5.6-luna", ratio: 2.0},
+		{model: "gpt-6.1-sol", ratio: 2.0},
+		{model: "gpt-6.1-terra", ratio: 2.0},
+		{model: "gpt-6-astra", ratio: 2.0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.model+"/fast", func(t *testing.T) {
@@ -271,6 +291,17 @@ func TestOpenAIFastBillingMultiplier_2xAnd25x(t *testing.T) {
 			fastCost := fast(tt.model, "fast")
 			require.InDelta(t, base.TotalCost*tt.ratio, fastCost.TotalCost, 1e-9,
 				"fast total must be %.1fx standard", tt.ratio)
+			require.InDelta(t, base.InputCost*tt.ratio, fastCost.InputCost, 1e-9)
+			require.InDelta(t, base.OutputCost*tt.ratio, fastCost.OutputCost, 1e-9)
+			require.InDelta(t, base.CacheCreationCost*tt.ratio, fastCost.CacheCreationCost, 1e-9)
+			require.InDelta(t, base.CacheReadCost*tt.ratio, fastCost.CacheReadCost, 1e-9)
+		})
+		t.Run(tt.model+"/group_multiplier_is_separate", func(t *testing.T) {
+			cost, err := billing.CalculateCostWithServiceTier(tt.model, tokens, 0.75, "priority")
+			require.NoError(t, err)
+			require.InDelta(t, standard(tt.model).TotalCost*tt.ratio, cost.TotalCost, 1e-9)
+			require.InDelta(t, cost.TotalCost*0.75, cost.ActualCost, 1e-9,
+				"a 0.75 group multiplier does not change the Fast tier's own ratio")
 		})
 		t.Run(tt.model+"/priority_alias", func(t *testing.T) {
 			fastCost := fast(tt.model, "fast")

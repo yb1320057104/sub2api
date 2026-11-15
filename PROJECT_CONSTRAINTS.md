@@ -1,5 +1,7 @@
 # PK出版项目约束
 
+2026-11-16 pk.69：新增 `free_openai_ultrafast`，默认false、更新省略保留、显式false关闭；OpenAI/Composite 分组的最终 Ultrafast 档只按 Standard 重算客户 ActualCost。Free Fast 与 Free Ultrafast 各管对应档位，不自动启用加速、不改变上游额度；原始 TotalCost、service_tier、账号成本、其他倍率和长上下文规则保持。新增迁移343和缓存v36，不重写旧迁移或历史账单。Fast Sol/Astra 默认2倍与 GPT-5.5 默认2.5倍、显式渠道倍率分别保留；不得把长上下文输出1.5倍改成 Fast2倍。仅当前源码交付与定向验证，未授权本次新生产配置变更或部署；记录见 `docs/PK_FREE_ULTRAFAST_PK69_REVIEW.md`。
+
 2026-11-15 pk.68 续修范围：修复 pk.67 后验仍存在的下游 503。HA 只对 Redis 明确 Nil 使用有界 writer DB 只读余额回源，重新校验 active/有限余额/原最低余额资格；不写回快照、不重复授信、不重放预约 Lua。普通侧只抑制严格结构化池内流未完成 502 的通用模型冷却，不新增请求恢复权限，不扩大其他 5xx 或真实限流豁免。使用新独立 profile 与唯一版本，按实际阶段记录验证、正式发行、逐节点部署和真实流量，不复用旧通过结论。详见 `docs/PK_DOWNSTREAM_503_PK68_REVIEW.md`。
 
 2026-11-15 pk.67 后验：上线后首个约 3 分 17 秒窗口仍有 25 条 503（路由 13、余额缓存持续 miss 7、真实模型限流 5）及 8 条流未完成 502。健康验收仅证明运行状态；本轮用户要求的业务修复仍需继续。不得通过放松计费、限流或重放保护消除报错；后续使用新版本和独立 profile，旧标签/制品不可变。准确窗口与限制见 `docs/PK_DOWNSTREAM_503_PK67_REVIEW.md`。

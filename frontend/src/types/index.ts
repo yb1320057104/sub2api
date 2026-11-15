@@ -669,6 +669,7 @@ export interface AdminGroup extends Group {
   // Older servers omit this admin-only request policy; treat omission as false.
   force_openai_ultrafast?: boolean
   free_openai_fast: boolean
+  free_openai_ultrafast?: boolean
   // 仅允许流式请求（管理端请求策略，用户侧分组不返回）
   stream_only: boolean
   codex_cli_only?: boolean
@@ -871,6 +872,7 @@ export interface CreateGroupRequest {
   force_openai_fast?: boolean
   force_openai_ultrafast?: boolean
   free_openai_fast?: boolean
+  free_openai_ultrafast?: boolean
   stream_only?: boolean
   codex_cli_only?: boolean
   block_subagents?: boolean
@@ -943,6 +945,7 @@ export interface UpdateGroupRequest {
   force_openai_fast?: boolean
   force_openai_ultrafast?: boolean
   free_openai_fast?: boolean
+  free_openai_ultrafast?: boolean
   stream_only?: boolean
   codex_cli_only?: boolean
   block_subagents?: boolean

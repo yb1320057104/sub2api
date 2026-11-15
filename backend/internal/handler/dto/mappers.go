@@ -172,6 +172,7 @@ func GroupFromServiceAdmin(g *service.Group) *AdminGroup {
 		ForceOpenAIFast:             g.ForceOpenAIFast,
 		ForceOpenAIUltrafast:        g.ForceOpenAIUltrafast,
 		FreeOpenAIFast:              g.FreeOpenAIFast,
+		FreeOpenAIUltrafast:         g.FreeOpenAIUltrafast,
 		StreamOnly:                  g.StreamOnly,
 		CodexCLIOnly:                g.CodexCLIOnly,
 		BlockSubagents:              g.BlockSubagents,

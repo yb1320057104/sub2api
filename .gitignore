@@ -182,6 +182,7 @@ docs/*
 !docs/PK_UPSTREAM_0.2.18_REVIEW.md
 !docs/PK_BILLING_HEARTBEAT_0.2.18_REVIEW.md
 !docs/PK_GROUP_ANTI_DISTILLATION_PK59_REVIEW.md
+!docs/PK_FREE_ULTRAFAST_PK69_REVIEW.md
 !docs/quality-bps-observation.md
 !docs/modeltrace-tests.md
 !docs/cyber-session-blocking.md

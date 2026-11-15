@@ -158,6 +158,16 @@ func groupBillsOpenAIFastAtStandard(apiKey *APIKey, account *Account, serviceTie
 	}
 }
 
+func groupBillsOpenAIUltrafastAtStandard(apiKey *APIKey, account *Account, serviceTier string) bool {
+	if apiKey == nil || apiKey.Group == nil || !apiKey.Group.FreeOpenAIUltrafast {
+		return false
+	}
+	if account == nil || !account.IsOpenAI() || !groupSupportsOpenAIFast(apiKey.Group.Platform) {
+		return false
+	}
+	return normalizeBillingServiceTier(serviceTier) == OpenAIFastTierUltrafast
+}
+
 // RecordUsage records usage and deducts balance
 func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRecordUsageInput) error {
 	if input == nil {
@@ -223,7 +233,7 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 	// a multiplier below one would turn removed cache tokens into regular input.
 	tokens, cacheConversionErr := convertOpenAICacheCreationToRead(account, rawTokens)
 
-	// Keep candidate fallback, response-model selection and Free Fast on one policy snapshot.
+	// Keep candidate fallback, response-model selection and free service tiers on one policy snapshot.
 	ctx = withModelBillingConfig(ctx, s.settingService)
 	// Get rate multiplier
 	multiplier := 1.0
@@ -366,10 +376,11 @@ func (s *OpenAIGatewayService) RecordUsage(ctx context.Context, input *OpenAIRec
 		}
 	}
 
-	// Free Fast changes only the customer charge. Keep priority TotalCost and
-	// service_tier for upstream accounting, but evaluate ActualCost once more at
-	// the Standard tier using the same channel, peak, and long-context policy.
-	if cacheConversionErr == nil && groupBillsOpenAIFastAtStandard(apiKey, billingAccount, serviceTier) {
+	// Free Fast and free Ultrafast each apply only to their final billing tier.
+	// Keep the accelerated TotalCost and service_tier for account statistics;
+	// reprice only ActualCost at Standard with the same channel, peak and context policy.
+	if cacheConversionErr == nil && (groupBillsOpenAIFastAtStandard(apiKey, billingAccount, serviceTier) ||
+		groupBillsOpenAIUltrafastAtStandard(apiKey, billingAccount, serviceTier)) {
 		standardCost, standardErr := s.calculateOpenAIRecordUsageCost(
 			customerBillingCtx,
 			customerBillingResult,

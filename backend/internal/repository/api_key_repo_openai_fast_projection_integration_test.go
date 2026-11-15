@@ -17,7 +17,7 @@ func TestGetByKeyForAuthCarriesGroupForceOpenAIFast(t *testing.T) {
 	suffix := time.Now().UnixNano()
 	group := mustCreateGroup(t, integrationEntClient, &service.Group{
 		Name: fmt.Sprintf("fast-proj-group-%d", suffix), Platform: service.PlatformOpenAI,
-		RateMultiplier: 1, ForceOpenAIFast: true, ForceOpenAIUltrafast: true, FreeOpenAIFast: true,
+		RateMultiplier: 1, ForceOpenAIFast: true, ForceOpenAIUltrafast: true, FreeOpenAIFast: true, FreeOpenAIUltrafast: true,
 	})
 	user := mustCreateUser(t, integrationEntClient, &service.User{
 		Email: fmt.Sprintf("fast-proj-%d@example.com", suffix), Concurrency: 5,
@@ -44,4 +44,48 @@ func TestGetByKeyForAuthCarriesGroupForceOpenAIFast(t *testing.T) {
 	require.True(t, got.Group.ForceOpenAIFast)
 	require.True(t, got.Group.ForceOpenAIUltrafast)
 	require.True(t, got.Group.FreeOpenAIFast)
+	require.True(t, got.Group.FreeOpenAIUltrafast)
+
+	groupRepo := NewGroupRepository(integrationEntClient, integrationDB)
+	got.Group.FreeOpenAIUltrafast = false
+	require.NoError(t, groupRepo.Update(ctx, got.Group))
+	got, err = apiKeyRepo.GetByKeyForAuth(ctx, keyValue)
+	require.NoError(t, err)
+	require.False(t, got.Group.FreeOpenAIUltrafast)
+	require.True(t, got.Group.ForceOpenAIUltrafast)
+	require.True(t, got.Group.FreeOpenAIFast)
+}
+
+func TestGroupRepositoryFreeOpenAIUltrafastRoundtrip(t *testing.T) {
+	ctx := context.Background()
+	repo := NewGroupRepository(integrationEntClient, integrationDB)
+	for _, enabled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("enabled=%t", enabled), func(t *testing.T) {
+			group := &service.Group{
+				Name:     fmt.Sprintf("free-ultrafast-%t-%d", enabled, time.Now().UnixNano()),
+				Platform: service.PlatformOpenAI, Status: service.StatusActive,
+				RateMultiplier: 1, SubscriptionType: service.SubscriptionTypeStandard,
+				FreeOpenAIUltrafast: enabled,
+			}
+			require.NoError(t, repo.Create(ctx, group))
+			t.Cleanup(func() {
+				_, err := integrationDB.ExecContext(ctx, "DELETE FROM groups WHERE id = $1", group.ID)
+				require.NoError(t, err)
+			})
+
+			got, err := repo.GetByID(ctx, group.ID)
+			require.NoError(t, err)
+			require.Equal(t, enabled, got.FreeOpenAIUltrafast)
+			require.False(t, got.FreeOpenAIFast)
+			require.False(t, got.ForceOpenAIUltrafast)
+
+			got.FreeOpenAIUltrafast = !enabled
+			require.NoError(t, repo.Update(ctx, got))
+			updated, err := repo.GetByID(ctx, group.ID)
+			require.NoError(t, err)
+			require.Equal(t, !enabled, updated.FreeOpenAIUltrafast)
+			require.False(t, updated.FreeOpenAIFast)
+			require.False(t, updated.ForceOpenAIUltrafast)
+		})
+	}
 }

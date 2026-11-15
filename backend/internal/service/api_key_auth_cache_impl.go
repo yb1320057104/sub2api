@@ -15,7 +15,7 @@ import (
 	"github.com/dgraph-io/ristretto"
 )
 
-const apiKeyAuthSnapshotVersion = 35 // v35: group Ultrafast policy
+const apiKeyAuthSnapshotVersion = 36 // v36: independent group free Ultrafast policy
 
 // Local-only generation wrapper. Old entries remain bounded by existing TTL
 // and capacity, but cannot authorize after a subscription recovery checkpoint.
@@ -540,6 +540,7 @@ func groupToAuthSnapshot(group *Group) *APIKeyAuthGroupSnapshot {
 		ForceOpenAIFast:                 group.ForceOpenAIFast,
 		ForceOpenAIUltrafast:            group.ForceOpenAIUltrafast,
 		FreeOpenAIFast:                  group.FreeOpenAIFast,
+		FreeOpenAIUltrafast:             group.FreeOpenAIUltrafast,
 		DefaultMappedModel:              group.DefaultMappedModel,
 		MessagesDispatchModelConfig:     group.MessagesDispatchModelConfig,
 		ModelAllowlist:                  group.ModelAllowlist,
@@ -612,6 +613,7 @@ func authSnapshotToGroup(snapshot *APIKeyAuthGroupSnapshot) *Group {
 		ForceOpenAIFast:                 snapshot.ForceOpenAIFast,
 		ForceOpenAIUltrafast:            snapshot.ForceOpenAIUltrafast,
 		FreeOpenAIFast:                  snapshot.FreeOpenAIFast,
+		FreeOpenAIUltrafast:             snapshot.FreeOpenAIUltrafast,
 		DefaultMappedModel:              snapshot.DefaultMappedModel,
 		MessagesDispatchModelConfig:     snapshot.MessagesDispatchModelConfig,
 		ModelAllowlist:                  snapshot.ModelAllowlist,

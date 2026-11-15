@@ -1318,14 +1318,18 @@ export default {
           },
     openaiFast: {
             title: 'OpenAI Fast / Ultrafast mode',
+            policyHint: 'Force switches control the requested tier; free switches independently control downstream pricing for that tier. Enabling a free switch does not select the tier.',
             force: 'Force Fast (priority)',
             hint: 'Forces service_tier=priority on OpenAI requests in this group. The global Fast/Flex policy can still filter or block it. New requests update immediately after saving; existing WebSocket sessions must reconnect.',
             forceUltrafast: 'Force Ultrafast',
             ultrafastBadge: 'Ultrafast enabled',
-            ultrafastHint: 'Forces Ultrafast only when the mapped model is gpt-6-astra or gpt-6.1-sol; other models retain their existing behavior. The upstream model and account must support this tier (such as an eligible Pro500 account). 8× refers to included-plan consumption, not guaranteed 8× speed. Global policies can still filter, block, or override it. Saving applies to new requests; existing WebSocket sessions must reconnect.',
+            ultrafastHint: 'Forces Ultrafast only when the mapped model is gpt-6-astra or gpt-6.1-sol; other models retain their existing behavior. The upstream model and account must support this tier (such as an eligible Pro500 account). Actual speed depends on the upstream, with no fixed speed increase guaranteed; tier charges follow the platform pricing configuration. Global policies can still filter, block, or override it. Saving applies to new requests; existing WebSocket sessions must reconnect.',
             combinedHint: 'Both policies are currently configured: these two models use Ultrafast first, while other models still use Fast. Saving preserves this configuration; use the switches to select a single policy.',
             free: 'Free Fast',
-            freeHint: 'Fast requests in this group still use the priority tier, but customers are charged the equivalent Standard price.'
+            freeHint: 'Waives only the downstream priority (Fast) tier surcharge. Standard model prices and existing group and other multipliers still apply. Ultrafast pricing and upstream quota consumption are unchanged.',
+            freeUltrafast: 'Free Ultrafast',
+            freeUltrafastBadge: 'Ultrafast surcharge waived',
+            freeUltrafastHint: 'Waives only the downstream Ultrafast tier surcharge for this group. Standard model prices and existing group and other multipliers still apply; the request is not free. This does not change the requested tier or reduce upstream quota consumption.'
           },
     invalidRequestFallback: {
             title: 'Invalid Request Fallback Group',

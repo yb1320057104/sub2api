@@ -3384,48 +3384,54 @@ func TestOpenAIGatewayServiceRecordUsage_FreeOpenAIFastChargesStandard(t *testin
 }
 
 func TestOpenAIGatewayServiceRecordUsage_FreeOpenAIFastMissingPricingRecordsZeroCostUsageLog(t *testing.T) {
-	usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
-	svc := newOpenAIRecordUsageServiceForTest(
-		usageRepo,
-		&openAIRecordUsageUserRepoStub{},
-		&openAIRecordUsageSubRepoStub{},
-		nil,
-	)
-	svc.resolver = NewModelPricingResolver(nil, svc.billingService)
-	groupID := int64(78)
-	serviceTier := "priority"
-	apiKey := &APIKey{
-		ID:      1021,
-		GroupID: &groupID,
-		Group: &Group{
-			ID: groupID, Platform: PlatformOpenAI, Status: StatusActive,
-			Hydrated: true, RateMultiplier: 1, FreeOpenAIFast: true,
-		},
+	for _, tier := range []string{"priority", "ultrafast"} {
+		t.Run(tier, func(t *testing.T) {
+			usageRepo := &openAIRecordUsageLogRepoStub{inserted: true}
+			userRepo := &openAIRecordUsageUserRepoStub{}
+			svc := newOpenAIRecordUsageServiceForTest(
+				usageRepo,
+				userRepo,
+				&openAIRecordUsageSubRepoStub{},
+				nil,
+			)
+			svc.resolver = NewModelPricingResolver(nil, svc.billingService)
+			groupID := int64(78)
+			serviceTier := tier
+			apiKey := &APIKey{
+				ID:      1021,
+				GroupID: &groupID,
+				Group: &Group{
+					ID: groupID, Platform: PlatformOpenAI, Status: StatusActive,
+					Hydrated: true, RateMultiplier: 1, FreeOpenAIFast: tier == "priority", FreeOpenAIUltrafast: tier == "ultrafast",
+				},
+			}
+
+			err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
+				Result: &OpenAIForwardResult{
+					RequestID:   "resp_free_fast_missing_pricing",
+					ServiceTier: &serviceTier,
+					Usage:       OpenAIUsage{InputTokens: 1200, OutputTokens: 300},
+					Model:       "pricing-missing-test-model",
+					Duration:    time.Second,
+				},
+				APIKey:  apiKey,
+				User:    &User{ID: 2021},
+				Account: &Account{ID: 3021, Platform: PlatformOpenAI, Type: AccountTypeAPIKey},
+			})
+
+			require.NoError(t, err)
+			require.Equal(t, 1, usageRepo.calls)
+			require.NotNil(t, usageRepo.lastLog)
+			require.Equal(t, "resp_free_fast_missing_pricing", usageRepo.lastLog.RequestID)
+			require.Equal(t, 1200, usageRepo.lastLog.InputTokens)
+			require.Equal(t, 300, usageRepo.lastLog.OutputTokens)
+			require.NotNil(t, usageRepo.lastLog.ServiceTier)
+			require.Equal(t, tier, *usageRepo.lastLog.ServiceTier)
+			require.Zero(t, usageRepo.lastLog.TotalCost)
+			require.Zero(t, usageRepo.lastLog.ActualCost)
+			require.Zero(t, userRepo.deductCalls)
+		})
 	}
-
-	err := svc.RecordUsage(context.Background(), &OpenAIRecordUsageInput{
-		Result: &OpenAIForwardResult{
-			RequestID:   "resp_free_fast_missing_pricing",
-			ServiceTier: &serviceTier,
-			Usage:       OpenAIUsage{InputTokens: 1200, OutputTokens: 300},
-			Model:       "pricing-missing-test-model",
-			Duration:    time.Second,
-		},
-		APIKey:  apiKey,
-		User:    &User{ID: 2021},
-		Account: &Account{ID: 3021, Platform: PlatformOpenAI, Type: AccountTypeAPIKey},
-	})
-
-	require.NoError(t, err)
-	require.Equal(t, 1, usageRepo.calls)
-	require.NotNil(t, usageRepo.lastLog)
-	require.Equal(t, "resp_free_fast_missing_pricing", usageRepo.lastLog.RequestID)
-	require.Equal(t, 1200, usageRepo.lastLog.InputTokens)
-	require.Equal(t, 300, usageRepo.lastLog.OutputTokens)
-	require.NotNil(t, usageRepo.lastLog.ServiceTier)
-	require.Equal(t, "priority", *usageRepo.lastLog.ServiceTier)
-	require.Zero(t, usageRepo.lastLog.TotalCost)
-	require.Zero(t, usageRepo.lastLog.ActualCost)
 }
 
 func TestGroupBillsOpenAIFastAtStandardRequiresOpenAIAccount(t *testing.T) {
@@ -3441,6 +3447,104 @@ func TestGroupBillsOpenAIFastAtStandardRequiresOpenAIAccount(t *testing.T) {
 		&Account{Platform: PlatformGrok, Type: AccountTypeAPIKey},
 		"priority",
 	))
+}
+
+func TestOpenAIGatewayServiceRecordUsage_FreeServiceTiersFollowFinalBillingTier(t *testing.T) {
+	for _, tt := range []struct {
+		name                        string
+		freeFast, freeUltrafast     bool
+		requested, observed, billed string
+		responseBilling, oauth, ws  bool
+		totalFactor, chargedFactor  float64
+	}{
+		{name: "disabled", requested: "ultrafast", billed: "ultrafast", totalFactor: 6, chargedFactor: 6},
+		{name: "free ultrafast", freeUltrafast: true, requested: "ultrafast", billed: "ultrafast", totalFactor: 6, chargedFactor: 1},
+		{name: "free ultrafast websocket", freeUltrafast: true, requested: "ultrafast", billed: "ultrafast", ws: true, totalFactor: 6, chargedFactor: 1},
+		{name: "free fast does not waive ultrafast", freeFast: true, requested: "ultrafast", billed: "ultrafast", totalFactor: 6, chargedFactor: 6},
+		{name: "free ultrafast does not waive priority", freeUltrafast: true, requested: "priority", billed: "priority", totalFactor: 3, chargedFactor: 3},
+		{name: "both flags ultrafast", freeFast: true, freeUltrafast: true, requested: "ultrafast", billed: "ultrafast", totalFactor: 6, chargedFactor: 1},
+		{name: "both flags priority", freeFast: true, freeUltrafast: true, requested: "priority", billed: "priority", totalFactor: 3, chargedFactor: 1},
+		{name: "downgrade loses ultrafast waiver", freeUltrafast: true, requested: "ultrafast", observed: "priority", billed: "priority", totalFactor: 3, chargedFactor: 3},
+		{name: "downgrade gains fast waiver", freeFast: true, requested: "ultrafast", observed: "priority", billed: "priority", totalFactor: 3, chargedFactor: 1},
+		{name: "opted in upgrade gains ultrafast waiver", freeUltrafast: true, requested: "priority", observed: "ultrafast", billed: "ultrafast", responseBilling: true, totalFactor: 6, chargedFactor: 1},
+		{name: "opted in upgrade loses fast waiver", freeFast: true, requested: "priority", observed: "ultrafast", billed: "ultrafast", responseBilling: true, totalFactor: 6, chargedFactor: 6},
+		{name: "untrusted upgrade keeps priority charge", freeUltrafast: true, requested: "priority", observed: "ultrafast", billed: "priority", totalFactor: 3, chargedFactor: 3},
+		{name: "api key standard downgrade", freeUltrafast: true, requested: "ultrafast", observed: "default", billed: "default", totalFactor: 1, chargedFactor: 1},
+		{name: "oauth default keeps ultrafast", freeUltrafast: true, requested: "ultrafast", observed: "default", billed: "ultrafast", oauth: true, totalFactor: 6, chargedFactor: 1},
+		{name: "missing opted in response keeps ultrafast", freeUltrafast: true, requested: "ultrafast", billed: "ultrafast", responseBilling: true, totalFactor: 6, chargedFactor: 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			logs := &openAIRecordUsageLogRepoStub{inserted: true}
+			billing := &openAIRecordUsageBillingRepoStub{result: &UsageBillingApplyResult{Applied: false}}
+			userRate, accountGroupRate, accountRate := .4, 1.25, .8
+			svc := newOpenAIRecordUsageServiceWithBillingRepoForTest(logs, billing, nil, nil, &openAIUserGroupRateRepoStub{rate: &userRate})
+			svc.resolver = NewModelPricingResolver(nil, svc.billingService)
+			inputPrice, outputPrice, cacheWritePrice, cacheReadPrice, fastMultiplier := .001, .002, .0006, .0002, 3.0
+			key := &APIKey{ID: 1, GroupID: i64p(77), Quota: 100, RateLimit5h: 100, Group: &Group{
+				ID: 77, Platform: PlatformOpenAI, Status: StatusActive, Hydrated: true, RateMultiplier: .7,
+				FreeOpenAIFast: tt.freeFast, FreeOpenAIUltrafast: tt.freeUltrafast,
+				ModelPricing: []ChannelModelPricing{{Models: []string{"gpt-6.1-sol"}, BillingMode: BillingModeToken,
+					InputPrice: &inputPrice, OutputPrice: &outputPrice, CacheWritePrice: &cacheWritePrice, CacheReadPrice: &cacheReadPrice, FastMultiplier: &fastMultiplier}},
+			}}
+			account := &Account{ID: 3, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+				GroupRateMultiplier: &accountGroupRate, RateMultiplier: &accountRate,
+				Extra: map[string]any{OpenAIResponseTierBillingEnabledKey: tt.responseBilling, "quota_limit": 100.0}}
+			if tt.oauth {
+				account.Type = AccountTypeOAuth
+			}
+			tier := tt.requested
+			err := svc.RecordUsage(t.Context(), &OpenAIRecordUsageInput{
+				Result: &OpenAIForwardResult{RequestID: "free-tier-" + tt.name, Model: "gpt-6.1-sol",
+					ServiceTier: &tier, UpstreamResponseServiceTier: tt.observed, OpenAIWSMode: tt.ws,
+					Usage: OpenAIUsage{InputTokens: 140, OutputTokens: 50, CacheCreationInputTokens: 10, CacheReadInputTokens: 30}, Duration: time.Second},
+				APIKey: key, User: &User{ID: 2}, Account: account, APIKeyService: &openAIRecordUsageAPIKeyQuotaStub{},
+			})
+			require.NoError(t, err)
+			require.Equal(t, 1, logs.calls)
+			require.Equal(t, 1, billing.calls)
+			require.NotNil(t, logs.lastLog)
+			require.NotNil(t, billing.lastCmd)
+			standard := 100*inputPrice + 50*outputPrice + 10*cacheWritePrice + 30*cacheReadPrice
+			charged := QuantizeUsageBillingAmount(standard * userRate * accountGroupRate * tt.chargedFactor)
+			require.InDelta(t, standard*tt.totalFactor, logs.lastLog.TotalCost, 1e-12)
+			require.InDelta(t, charged, logs.lastLog.ActualCost, 1e-12)
+			require.InDelta(t, userRate*accountGroupRate, logs.lastLog.RateMultiplier, 1e-12)
+			require.Equal(t, tt.billed, *logs.lastLog.ServiceTier)
+			require.Equal(t, tt.ws, logs.lastLog.OpenAIWSMode)
+			require.Equal(t, 100, logs.lastLog.InputTokens)
+			require.Equal(t, 50, logs.lastLog.OutputTokens)
+			require.Equal(t, 10, logs.lastLog.CacheCreationTokens)
+			require.Equal(t, 30, logs.lastLog.CacheReadTokens)
+			require.Equal(t, tt.billed, billing.lastCmd.ServiceTier)
+			require.InDelta(t, charged, billing.lastCmd.BalanceCost, 1e-12)
+			require.InDelta(t, charged, billing.lastCmd.APIKeyQuotaCost, 1e-12)
+			require.InDelta(t, charged, billing.lastCmd.APIKeyRateLimitCost, 1e-12)
+			require.InDelta(t, charged, billing.lastCmd.PlatformQuotaCost, 1e-12)
+			require.InDelta(t, charged, *billing.lastCmd.QuotedActualCost, 1e-12)
+			require.Zero(t, billing.lastCmd.SubscriptionCost)
+			if tt.oauth {
+				require.Zero(t, billing.lastCmd.AccountQuotaCost)
+			} else {
+				require.InDelta(t, QuantizeUsageBillingAmount(standard*tt.totalFactor*accountRate), billing.lastCmd.AccountQuotaCost, 1e-12)
+			}
+		})
+	}
+}
+
+func TestGroupBillsOpenAIUltrafastAtStandardScope(t *testing.T) {
+	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+	key := &APIKey{Group: &Group{Platform: PlatformComposite, FreeOpenAIUltrafast: true}}
+	for _, tier := range []string{"ultrafast", " ULTRAFAST "} {
+		require.True(t, groupBillsOpenAIUltrafastAtStandard(key, account, tier))
+	}
+	for _, tier := range []string{"priority", "fast", "default", "flex", "", "unknown"} {
+		require.False(t, groupBillsOpenAIUltrafastAtStandard(key, account, tier))
+	}
+	for _, invalid := range []*APIKey{nil, {}, {Group: &Group{Platform: PlatformOpenAI}}, {Group: &Group{Platform: PlatformGrok, FreeOpenAIUltrafast: true}}} {
+		require.False(t, groupBillsOpenAIUltrafastAtStandard(invalid, account, "ultrafast"))
+	}
+	require.False(t, groupBillsOpenAIUltrafastAtStandard(key, nil, "ultrafast"))
+	require.False(t, groupBillsOpenAIUltrafastAtStandard(key, &Account{Platform: PlatformGrok, Type: AccountTypeAPIKey}, "ultrafast"))
 }
 
 func TestOpenAIGatewayServiceRecordUsage_ServiceTierNeverRaisedByUpstreamResponse(t *testing.T) {

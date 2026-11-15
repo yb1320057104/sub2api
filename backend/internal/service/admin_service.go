@@ -321,6 +321,7 @@ type CreateGroupInput struct {
 	ForceOpenAIFast             bool
 	ForceOpenAIUltrafast        bool
 	FreeOpenAIFast              bool
+	FreeOpenAIUltrafast         bool
 	DefaultMappedModel          string
 	RequireOAuthOnly            bool
 	RequirePrivacySet           bool
@@ -408,6 +409,7 @@ type UpdateGroupInput struct {
 	ForceOpenAIFast             *bool
 	ForceOpenAIUltrafast        *bool
 	FreeOpenAIFast              *bool
+	FreeOpenAIUltrafast         *bool
 	DefaultMappedModel          *string
 	RequireOAuthOnly            *bool
 	RequirePrivacySet           *bool

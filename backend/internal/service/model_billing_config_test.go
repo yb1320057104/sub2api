@@ -209,45 +209,63 @@ func TestModelBillingUsesPricedFallbackAndPreservesSearchSurcharge(t *testing.T)
 }
 
 func TestModelBillingFreeFastChargesOnceAndBillsAtomicCommand(t *testing.T) {
-	for _, subscription := range []bool{false, true} {
-		logs := &openAIRecordUsageLogRepoStub{inserted: true}
-		billing := &openAIRecordUsageBillingRepoStub{result: &UsageBillingApplyResult{Applied: false}}
-		svc := newOpenAIRecordUsageServiceWithBillingRepoForTest(logs, billing, nil, nil, nil)
-		svc.StopOpenAICodexTicketHarvester() // Billing fixtures must not run background ticket work.
-		cfg := DefaultModelBillingConfig()
-		cfg.Enabled = true
-		svc.settingService = modelBillingSettings(t, cfg)
-		svc.resolver = NewModelPricingResolver(nil, svc.billingService)
-		inputPrice, outputPrice, fastMultiplier := .001, .002, 3.0
-		groupID := int64(77)
-		key := &APIKey{ID: 1, GroupID: &groupID, Quota: 100, Group: &Group{
-			ID: groupID, Platform: PlatformOpenAI, Status: StatusActive, Hydrated: true,
-			RateMultiplier: .2, FreeOpenAIFast: true,
-			ModelPricing: []ChannelModelPricing{{Models: []string{"gpt-6-luna"}, BillingMode: BillingModeToken, InputPrice: &inputPrice, OutputPrice: &outputPrice, FastMultiplier: &fastMultiplier}},
-		}}
-		tier := "priority"
-		input := &OpenAIRecordUsageInput{
-			Result: &OpenAIForwardResult{RequestID: "model-billing-free-fast", Model: "gpt-6-luna", ServiceTier: &tier, Usage: OpenAIUsage{InputTokens: 100, OutputTokens: 50}, Duration: time.Second},
-			APIKey: key, User: &User{ID: 2}, Account: &Account{ID: 3, Platform: PlatformOpenAI, Type: AccountTypeOAuth},
-			APIKeyService: &openAIRecordUsageAPIKeyQuotaStub{},
-		}
-		if subscription {
-			key.Group.SubscriptionType = SubscriptionTypeSubscription
-			input.Subscription = &UserSubscription{ID: 9}
-		}
-		require.NoError(t, svc.RecordUsage(t.Context(), input))
-		standard := 100*inputPrice + 50*outputPrice
-		require.InDelta(t, standard*fastMultiplier, logs.lastLog.TotalCost, 1e-12)
-		require.InDelta(t, standard*.2*10, logs.lastLog.ActualCost, 1e-12)
-		require.Equal(t, 2.0, logs.lastLog.RateMultiplier)
-		require.NotNil(t, billing.lastCmd)
-		require.InDelta(t, standard*.2*10, billing.lastCmd.APIKeyQuotaCost, 1e-12)
-		if subscription {
-			require.InDelta(t, standard*.2*10, billing.lastCmd.SubscriptionCost, 1e-12)
-			require.Zero(t, billing.lastCmd.BalanceCost)
-		} else {
-			require.InDelta(t, standard*.2*10, billing.lastCmd.BalanceCost, 1e-12)
-			require.Zero(t, billing.lastCmd.SubscriptionCost)
+	for _, tierCase := range []struct {
+		tier       string
+		multiplier float64
+	}{{"priority", 3}, {"ultrafast", 6}} {
+		for _, billingType := range []string{"balance", "subscription"} {
+			t.Run(tierCase.tier+"/"+billingType, func(t *testing.T) {
+				logs := &openAIRecordUsageLogRepoStub{inserted: true}
+				billing := &openAIRecordUsageBillingRepoStub{result: &UsageBillingApplyResult{Applied: false}}
+				svc := newOpenAIRecordUsageServiceWithBillingRepoForTest(logs, billing, nil, nil, nil)
+				svc.StopOpenAICodexTicketHarvester() // Billing fixtures must not run background ticket work.
+				cfg := DefaultModelBillingConfig()
+				cfg.Enabled = true
+				svc.settingService = modelBillingSettings(t, cfg)
+				svc.resolver = NewModelPricingResolver(nil, svc.billingService)
+				inputPrice, outputPrice, fastMultiplier := .001, .002, 3.0
+				groupID := int64(77)
+				key := &APIKey{ID: 1, GroupID: &groupID, Quota: 100, RateLimit5h: 100, Group: &Group{
+					ID: groupID, Platform: PlatformOpenAI, Status: StatusActive, Hydrated: true,
+					RateMultiplier: .2, FreeOpenAIFast: tierCase.tier == "priority", FreeOpenAIUltrafast: tierCase.tier == "ultrafast",
+					ModelPricing: []ChannelModelPricing{{Models: []string{"gpt-6-luna"}, BillingMode: BillingModeToken, InputPrice: &inputPrice, OutputPrice: &outputPrice, FastMultiplier: &fastMultiplier}},
+				}}
+				tier := tierCase.tier
+				input := &OpenAIRecordUsageInput{
+					Result: &OpenAIForwardResult{RequestID: "model-billing-free-fast", Model: "gpt-6-luna", ServiceTier: &tier, Usage: OpenAIUsage{InputTokens: 100, OutputTokens: 50}, Duration: time.Second},
+					APIKey: key, User: &User{ID: 2}, Account: &Account{ID: 3, Platform: PlatformOpenAI, Type: AccountTypeOAuth},
+					APIKeyService: &openAIRecordUsageAPIKeyQuotaStub{},
+					PricingAt:     time.Date(2026, 6, 29, 15, 30, 0, 0, time.UTC),
+				}
+				chargedRate := .2 * 10
+				if billingType == "subscription" {
+					key.Group.SubscriptionType = SubscriptionTypeSubscription
+					key.Group.PeakRateEnabled = true
+					key.Group.PeakStart = "14:00"
+					key.Group.PeakEnd = "18:00"
+					key.Group.PeakRateMultiplier = 1.5
+					chargedRate *= 1.5
+					input.Subscription = &UserSubscription{ID: 9}
+				}
+				require.NoError(t, svc.RecordUsage(t.Context(), input))
+				standard := 100*inputPrice + 50*outputPrice
+				require.Equal(t, 1, logs.calls)
+				require.Equal(t, 1, billing.calls)
+				require.InDelta(t, standard*tierCase.multiplier, logs.lastLog.TotalCost, 1e-12)
+				require.InDelta(t, standard*chargedRate, logs.lastLog.ActualCost, 1e-12)
+				require.InDelta(t, chargedRate, logs.lastLog.RateMultiplier, 1e-12)
+				require.Equal(t, tierCase.tier, *logs.lastLog.ServiceTier)
+				require.NotNil(t, billing.lastCmd)
+				require.InDelta(t, standard*chargedRate, billing.lastCmd.APIKeyQuotaCost, 1e-12)
+				require.InDelta(t, standard*chargedRate, billing.lastCmd.APIKeyRateLimitCost, 1e-12)
+				if billingType == "subscription" {
+					require.InDelta(t, standard*chargedRate, billing.lastCmd.SubscriptionCost, 1e-12)
+					require.Zero(t, billing.lastCmd.BalanceCost)
+				} else {
+					require.InDelta(t, standard*chargedRate, billing.lastCmd.BalanceCost, 1e-12)
+					require.Zero(t, billing.lastCmd.SubscriptionCost)
+				}
+			})
 		}
 	}
 }
