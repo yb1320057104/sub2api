@@ -1328,6 +1328,8 @@
 
 ## PK-042
 
+pk.69 发布阶段：独立HA profile继承pk68现有语义，新增免费档位字段与结算实现从本次源码进入派生程序；只新增迁移343，不因部署自动开启分组免费或强制档位。正式制品、迁移与实际上线结果分别验收记录。
+
 2026-11-16 pk.69 扩展：分组管理员 API/DTO、创建/编辑/复制、Ent/仓储鉴权投影和缓存v36完整接入独立 `free_openai_ultrafast`。迁移343追加非空默认false列，更新省略保留、显式false关闭，非OpenAI/Composite归一为false，普通用户DTO不公开管理员配置。前端创建/编辑/列表独立展示；强制Fast、强制Ultrafast选择规则保持，两个免费开关彼此独立，也不自动打开对应强制档位。移除未经证实的固定8倍速度/额度暗示，明确计价与速度不同。详见 `docs/PK_FREE_ULTRAFAST_PK69_REVIEW.md`。
 
 2026-11-15 pk.65 扩展：分组新增默认关闭的 `force_openai_ultrafast`，管理员新增/编辑/复制、Ent/迁移341、鉴权投影/候选组和v35快照完整接入。OpenAI/Composite的可信实际组仅对选中OpenAI账号、最终出站名为 `gpt-6-astra` / `gpt-6.1-sol` 的请求强制Ultrafast；共享账号通过其他组不受影响。三处既有HTTP/WS档位入口共用resolver，分组档位先于全局规则；全局过滤/拦截/改写仍优先，旧WS需重连。UI主动开关互斥，双true旧/API配置如实保留且目标模型Ultrafast优先、其余原Fast保持。默认/缺字段false，更新省略保留，旧版本快照重新加载；不改套餐权限、定价、免费Fast或历史账单。新管理员提示三入口共用独立ID；完整行为、验证范围和未上线边界见 [分组Ultrafast复核](docs/PK_GROUP_ULTRAFAST_PK65_REVIEW.md)。沿用PK-004/021/031，无新增ID。
