@@ -13,6 +13,122 @@ import (
 
 const relayContentPolicy403 = `{"error":{"message":"内容审计命中风险规则，请调整输入后重试","type":"content_policy_violation"}}`
 const relayWebSocket403 = `{"error":{"message":"failed to WebSocket dial: expected handshake response status code 101 but got 403","type":"upstream_error"}}`
+const relayStreamIncomplete502 = `{"error":{"code":"upstream_stream_incomplete","message":"Upstream response stream ended before completion","type":"upstream_error"}}`
+
+func TestOpenAIPoolRelayStreamIncompleteRequiresExactEnvelope(t *testing.T) {
+	account := &Account{Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"pool_mode": true}}
+	for _, body := range []string{relayStreamIncomplete502,
+		" \n" + `{"error":{"type":"upstream_error","message":"Upstream response stream ended before completion","code":"upstream_stream_incomplete"}}` + "\t"} {
+		require.True(t, isOpenAIPoolRelayStreamIncompleteError(account, http.StatusBadGateway, []byte(body)))
+	}
+	for name, body := range map[string]string{
+		"missing_code":      `{"error":{"type":"upstream_error","message":"Upstream response stream ended before completion"}}`,
+		"credential_code":   `{"error":{"code":"account_deactivated","type":"upstream_error","message":"Upstream response stream ended before completion"}}`,
+		"quota_code":        `{"error":{"code":"insufficient_quota","type":"upstream_error","message":"Upstream response stream ended before completion"}}`,
+		"wrong_type":        `{"error":{"code":"upstream_stream_incomplete","type":"permission_error","message":"Upstream response stream ended before completion"}}`,
+		"wrong_message":     `{"error":{"code":"upstream_stream_incomplete","type":"upstream_error","message":"Upstream temporarily unavailable"}}`,
+		"echoed_input":      `{"input":` + relayStreamIncomplete502 + `}`,
+		"output":            `{"output":[],"error":{"code":"upstream_stream_incomplete","type":"upstream_error","message":"Upstream response stream ended before completion"}}`,
+		"terminal_response": `{"response":` + relayStreamIncomplete502 + `}`,
+		"extra_error_field": `{"error":{"code":"upstream_stream_incomplete","type":"upstream_error","message":"Upstream response stream ended before completion","output":"partial"}}`,
+		"uppercase_field":   `{"ERROR":{"code":"upstream_stream_incomplete","type":"upstream_error","message":"Upstream response stream ended before completion"}}`,
+		"trailing_event":    relayStreamIncomplete502 + "\nevent: response.failed\n",
+		"trailing_object":   relayStreamIncomplete502 + relayStreamIncomplete502,
+		"truncated":         `{"error":{"code":"upstream_stream_incomplete"`,
+		"null":              `{"error":null}`,
+		"array":             `[` + relayStreamIncomplete502 + `]`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			require.False(t, isOpenAIPoolRelayStreamIncompleteError(account, http.StatusBadGateway, []byte(body)))
+		})
+	}
+	for _, status := range []int{200, 400, 401, 403, 429, 500, 503, 504, 529} {
+		require.False(t, isOpenAIPoolRelayStreamIncompleteError(account, status, []byte(relayStreamIncomplete502)))
+	}
+	for _, other := range []*Account{nil,
+		{Platform: PlatformOpenAI, Type: AccountTypeAPIKey},
+		{Platform: PlatformOpenAI, Type: AccountTypeOAuth, Credentials: account.Credentials},
+		{Platform: PlatformGrok, Type: AccountTypeAPIKey, Credentials: account.Credentials}} {
+		require.False(t, isOpenAIPoolRelayStreamIncompleteError(other, http.StatusBadGateway, []byte(relayStreamIncomplete502)))
+	}
+}
+
+func TestOpenAIPoolRelayStreamIncompleteKeepsRetryPolicyAndPool(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		codes     []any
+		wantRetry bool
+	}{
+		{name: "default"},
+		{name: "explicit_empty", codes: []any{}},
+		{name: "explicit_403", codes: []any{float64(403)}},
+		{name: "explicit_502", codes: []any{float64(502)}, wantRetry: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &errorPolicyRepoStub{}
+			gateway := &OpenAIGatewayService{rateLimitService: NewRateLimitService(repo, nil, &config.Config{}, nil, nil), cfg: &config.Config{}}
+			account := &Account{ID: 608, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"pool_mode": true}}
+			if tc.codes != nil {
+				account.Credentials["pool_mode_retry_status_codes"] = tc.codes
+			}
+			for range 4 {
+				failure := gateway.failoverOpenAIUpstreamHTTPError(context.Background(), nil, account,
+					newOpenAIUpstreamErrorResponse(http.StatusBadGateway, relayStreamIncomplete502), []byte(relayStreamIncomplete502), "", "gpt-6-astra")
+				require.Equal(t, http.StatusBadGateway, failure.StatusCode)
+				require.Equal(t, tc.wantRetry, failure.RetryableOnSameAccount)
+				require.False(t, failure.RequestScopedTransient)
+				require.False(t, failure.SafeToFailoverAfterWrite)
+				require.NotEqual(t, openAIPoolRelayWebSocketHandshakeReason, failure.Reason)
+			}
+			require.False(t, gateway.isOpenAIAccountRequestRuntimeBlocked(account, "gpt-6-astra", false))
+			require.Zero(t, repo.tempCalls)
+			require.Zero(t, repo.setErrCalls)
+			require.Empty(t, repo.modelRateLimitCalls)
+		})
+	}
+}
+
+func TestOpenAIPoolRelayStreamIncompletePreservesOtherCooldowns(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		pool   bool
+		status int
+		body   string
+	}{
+		{"non_pool", false, 502, relayStreamIncomplete502},
+		{"ordinary_502", true, 502, `{"error":{"type":"upstream_error","message":"upstream unavailable"}}`},
+		{"ordinary_503", true, 503, relayStreamIncomplete502},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			gateway := &OpenAIGatewayService{rateLimitService: NewRateLimitService(&errorPolicyRepoStub{}, nil, &config.Config{}, nil, nil)}
+			account := &Account{ID: 609, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{"pool_mode": tc.pool}}
+			for range 2 {
+				gateway.handleOpenAIAccountUpstreamError(context.Background(), account, tc.status, nil, []byte(tc.body), "gpt-6-astra")
+			}
+			require.True(t, gateway.isOpenAIAccountModelRuntimeBlocked(account, "gpt-6-astra"))
+			// A subsequent pool-stream error must not clear a block installed by another cause.
+			account.Credentials["pool_mode"] = true
+			gateway.handleOpenAIAccountUpstreamError(context.Background(), account, 502, nil, []byte(relayStreamIncomplete502), "gpt-6-astra")
+			require.True(t, gateway.isOpenAIAccountModelRuntimeBlocked(account, "gpt-6-astra"))
+		})
+	}
+	for _, scope := range []string{TempUnschedScopeAccount, TempUnschedScopeModel} {
+		t.Run("explicit_"+scope, func(t *testing.T) {
+			repo := &errorPolicyRepoStub{}
+			gateway := &OpenAIGatewayService{rateLimitService: NewRateLimitService(repo, nil, &config.Config{}, nil, nil)}
+			account := &Account{ID: 610, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{
+				"pool_mode": true, "temp_unschedulable_enabled": true,
+				"temp_unschedulable_rules": []any{map[string]any{"error_code": float64(502), "keywords": []any{"upstream_stream_incomplete"}, "duration_minutes": float64(10), "scope": scope}},
+			}}
+			require.True(t, gateway.handleOpenAIAccountUpstreamError(context.Background(), account, 502, nil, []byte(relayStreamIncomplete502), "gpt-6-astra"))
+			if scope == TempUnschedScopeModel {
+				require.Len(t, repo.modelRateLimitCalls, 1)
+			} else {
+				require.Equal(t, 1, repo.tempCalls)
+			}
+		})
+	}
+}
 
 func TestOpenAIRequestScoped403NeverPenalizesCredential(t *testing.T) {
 	bodies := map[string]string{

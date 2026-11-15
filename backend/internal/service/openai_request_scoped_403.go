@@ -75,3 +75,21 @@ func isOpenAIPoolRelayWebSocketHandshakeError(account *Account, statusCode int, 
 		(code == "" || code == "upstream_error") &&
 		strings.EqualFold(strings.TrimSpace(payload.Error.Message), openAIRelayWebSocket403Message)
 }
+
+// A completed error envelope from a relay describes one interrupted backend
+// stream, not the health of every backend behind its pool credential. This
+// classification only suppresses the generic model cooldown: the request may
+// already have executed, so it must not grant any additional retry permission.
+func isOpenAIPoolRelayStreamIncompleteError(account *Account, statusCode int, body []byte) bool {
+	if account == nil || account.Platform != PlatformOpenAI || account.Type != AccountTypeAPIKey ||
+		!account.IsPoolMode() || statusCode != http.StatusBadGateway {
+		return false
+	}
+	var payload map[string]map[string]string
+	if err := json.Unmarshal(body, &payload); err != nil || len(payload) != 1 {
+		return false
+	}
+	err := payload["error"]
+	return len(err) == 3 && err["type"] == "upstream_error" &&
+		err["code"] == OpenAIWSSSEIncompleteCode && err["message"] == openAIWSSSEIncompleteMessage
+}

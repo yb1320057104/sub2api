@@ -272,6 +272,80 @@ func servePoolCapacity(router *gin.Engine, stream bool) *httptest.ResponseRecord
 const poolCapacityCompleted = `{"id":"resp_mock","object":"response","status":"completed","model":"gpt-6.1-sol","output":[],"usage":{"input_tokens":0,"output_tokens":0}}`
 
 const poolRelayWebSocketHandshake502 = `{"error":{"type":"upstream_error","code":"upstream_error","message":"failed to WebSocket dial: expected handshake response status code 101 but got 403"}}`
+const poolRelayStreamIncomplete502 = `{"error":{"code":"upstream_stream_incomplete","message":"Upstream response stream ended before completion","type":"upstream_error"}}`
+
+func TestPoolRelayStreamIncompleteKeepsNextRequestAvailableOnWire(t *testing.T) {
+	for _, endpoint := range []string{"responses", "chat/completions", "messages"} {
+		for _, passthrough := range []bool{false, true} {
+			for _, stream := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/passthrough=%t/stream=%t", endpoint, passthrough, stream), func(t *testing.T) {
+					account := poolCapacityAccount(11, 1, true)
+					account.Credentials["pool_mode_retry_count"] = float64(3)
+					account.Extra["openai_passthrough"] = passthrough
+					account.Extra["openai_responses_mode"] = "force_responses"
+					account.Extra["openai_apikey_responses_websockets_v2_mode"] = "off"
+					repo := &poolCapacityRepo{openAIWSFailoverHandlerAccountRepoStub: openAIWSFailoverHandlerAccountRepoStub{accounts: []service.Account{account}}}
+					recovered := false
+					upstream := &poolCapacityTransport{reply: func(req *http.Request, _ int64) *http.Response {
+						body, err := io.ReadAll(req.Body)
+						require.NoError(t, err)
+						require.Equal(t, "/v1/responses", req.URL.Path)
+						if recovered {
+							payload := strings.Replace(poolCapacityCompleted, `"output":[]`, `"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}]`, 1)
+							if gjson.GetBytes(body, "stream").Bool() {
+								return poolCapacityResponse(200, "text/event-stream", "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":"+payload+"}\n\ndata: [DONE]\n\n", "")
+							}
+							return poolCapacityResponse(200, "application/json", payload, "")
+						}
+						return poolCapacityResponse(502, "application/json", poolRelayStreamIncomplete502, "")
+					}}
+					router := newPoolCapacityRouter(t, repo, upstream)
+					for request := 1; request <= 3; request++ {
+						input := `"input":"hello"`
+						if endpoint != "responses" {
+							input = `"messages":[{"role":"user","content":"hello"}],"max_tokens":64`
+						}
+						// Recover the upstream only between independent requests.
+						recovered = request == 3
+						rec := httptest.NewRecorder()
+						req := httptest.NewRequest(http.MethodPost, "/v1/"+endpoint, strings.NewReader(fmt.Sprintf(`{"model":"gpt-6.1-sol","stream":%t,%s}`, stream, input)))
+						req.Header.Set("Content-Type", "application/json")
+						router.ServeHTTP(rec, req)
+						want := http.StatusBadGateway
+						if request == 3 {
+							want = http.StatusOK
+						}
+						require.Equal(t, want, rec.Code, rec.Body.String())
+						require.Len(t, upstream.hits, request, "fresh requests remain eligible, without retrying an interrupted request")
+					}
+					require.Zero(t, repo.modelWrites)
+					require.Empty(t, repo.rateLimitedIDs)
+				})
+			}
+		}
+	}
+}
+
+func TestPoolRelayStreamIncompleteAfterOutputNeverRetries(t *testing.T) {
+	for _, output := range []string{
+		`{"type":"response.output_text.delta","delta":"already-visible"}`,
+		`{"type":"response.output_item.added","output_index":0,"item":{"id":"call-1","type":"function_call","call_id":"call-1","name":"external_action","arguments":"{}"}}`,
+	} {
+		repo := &poolCapacityRepo{openAIWSFailoverHandlerAccountRepoStub: openAIWSFailoverHandlerAccountRepoStub{accounts: []service.Account{poolCapacityAccount(11, 1, true), poolCapacityAccount(12, 2, true)}}}
+		for i := range repo.accounts {
+			repo.accounts[i].Credentials["pool_mode_retry_status_codes"] = []any{float64(502)}
+			repo.accounts[i].Credentials["pool_mode_retry_count"] = float64(3)
+		}
+		upstream := &poolCapacityTransport{reply: func(*http.Request, int64) *http.Response {
+			return poolCapacityResponse(200, "text/event-stream", "data: "+output+"\n\nevent: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":"+gjson.Get(poolRelayStreamIncomplete502, "error").Raw+"}}\n\n", "")
+		}}
+		router := newPoolCapacityRouter(t, repo, upstream)
+		rec := servePoolCapacity(router, true)
+		require.Equal(t, http.StatusOK, rec.Code, "committed SSE retains its HTTP status")
+		require.Equal(t, []int64{11}, upstream.hits, "never retry either account after semantic output")
+		require.Contains(t, rec.Body.String(), "upstream_stream_incomplete")
+	}
+}
 
 func TestPoolRelayWebSocketHandshakeRetriesOnWire(t *testing.T) {
 	for _, endpoint := range []string{"responses", "chat/completions", "messages"} {

@@ -229,8 +229,16 @@ func (s *OpenAIGatewayService) handleOpenAIAccountUpstreamError(ctx context.Cont
 	// same-account retry budget. Recording the generic account+model transient
 	// cooldown here would block the next approved retry before that budget is used.
 	poolModeRetryable := account.IsPoolMode() && account.IsPoolModeRetryableStatus(statusCode)
+	// A relay's explicit stream-incomplete response cannot establish that its
+	// whole model pool is unavailable. Preserve all account policies above and
+	// the request's existing retry boundaries; only avoid this inferred cooldown.
+	poolStreamIncomplete := isOpenAIPoolRelayStreamIncompleteError(account, statusCode, responseBody)
+	if !shouldDisable && poolStreamIncomplete {
+		slog.Warn("openai_pool_relay_stream_incomplete", "account_id", account.ID,
+			"upstream_status", statusCode, "model_cooldown_applied", false)
+	}
 	if !shouldDisable && account.Platform == PlatformOpenAI && account.Type == AccountTypeAPIKey &&
-		shouldCooldownOpenAITransientUpstreamError(statusCode, responseBody) && !poolModeRetryable {
+		shouldCooldownOpenAITransientUpstreamError(statusCode, responseBody) && !poolModeRetryable && !poolStreamIncomplete {
 		model := ""
 		if len(canonicalModel) > 0 {
 			model = canonicalModel[0]
