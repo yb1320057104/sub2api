@@ -27,3 +27,4 @@ deploy/cluster-updater/overlays/pk62-r3/adaptation.patch -text
 deploy/cluster-updater/overlays/pk62-r4/adaptation.patch -text
 deploy/cluster-updater/overlays/pk66/adaptation.patch -text
 deploy/cluster-updater/overlays/pk69/adaptation.patch -text
+deploy/cluster-updater/overlays/pk70/adaptation.patch -text

@@ -32,6 +32,35 @@ func TestLoadDefaultModelsListReadMaxBytes(t *testing.T) {
 	require.Equal(t, DefaultModelsListReadMaxBytes, cfg.Gateway.ModelsListReadMaxBytes)
 }
 
+func TestPK70EncryptedAccountLockConfiguration(t *testing.T) {
+	for _, tc := range []struct {
+		name, yaml, env string
+		want            bool
+	}{
+		{name: "default"},
+		{name: "environment only true", env: "true", want: true},
+		{name: "environment only false", env: "false"},
+		{name: "yaml true", yaml: "true", want: true},
+		{name: "yaml false", yaml: "false"},
+		{name: "environment false overrides yaml", yaml: "true", env: "false"},
+		{name: "environment true overrides yaml", yaml: "false", env: "true", want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resetViperWithJWTSecret(t)
+			t.Setenv("GATEWAY_DISABLE_ENCRYPTED_ACCOUNT_LOCK", tc.env)
+			if tc.yaml != "" {
+				path := filepath.Join(t.TempDir(), "config.yaml")
+				require.NoError(t, os.WriteFile(path, []byte("gateway:\n  disable_encrypted_account_lock: "+tc.yaml+"\n"), 0o600))
+				t.Setenv("CONFIG_FILE", path)
+			}
+			cfg, err := Load()
+			require.NoError(t, err)
+			require.Equal(t, tc.want, cfg.Gateway.DisableEncryptedAccountLock)
+		})
+	}
+	require.False(t, (&Config{}).Gateway.DisableEncryptedAccountLock, "zero configuration retains the existing account lock")
+}
+
 func TestLoadDefaultMinOutputTokens(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	cfg, err := Load()

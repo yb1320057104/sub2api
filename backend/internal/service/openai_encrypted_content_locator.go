@@ -55,7 +55,7 @@ func openAIOpaqueHistoryKind(body []byte) (kind string, toolResult bool) {
 // account cannot establish compatibility. Tool results also preclude replay
 // after an ambiguous submission to the same account.
 func OpenAIUnverifiedOpaqueHistoryRecovery(ctx context.Context, body []byte) (*OpenAIAgentRecoveryError, bool) {
-	if request := openAIAgentRecoveryFromContext(ctx); request != nil && request.owner != nil {
+	if request := openAIAgentRecoveryFromContext(ctx); request != nil && !request.accountLockDisabled && request.owner != nil {
 		return nil, false
 	}
 	kind, toolResult := openAIOpaqueHistoryKind(body)

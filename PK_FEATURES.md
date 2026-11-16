@@ -354,6 +354,8 @@
 
 ## PK-006
 
+2026-11-16 pk.70：按用户明确要求关闭自动加密锁账号，新增 `gateway.disable_encrypted_account_lock` / `GATEWAY_DISABLE_ENCRYPTED_ACCOUNT_LOCK`，默认 false 保留既有行为；显式 true 时 HTTP/WS 不再自动查询/写入 encrypted agent owner 或强制其原账号，也不追加加密 reasoning 的硬粘性。保留原始 opaque 项、普通会话路由、previous_response_id、未知历史失败后禁止盲重放、已执行工具和交付/计费保护；不清除原有 owner 缓存，重新开启后仍按既有有效期处理。此开关不能改变上游自己的 409 或保证跨账号可解密。配置、service/handler、既有回归和独立 pk70 HA profile 同步验证，详见 `docs/PK_ENCRYPTED_ACCOUNT_LOCK_PK70_REVIEW.md`。无新增功能 ID，沿用 PK-006/021/047/058。
+
 2026-11-15 pk.68：针对已核实的上游 HTTP 502 `upstream_stream_incomplete` 完整错误体，仅 OpenAI API Key 转发池不再累计通用账号/模型短冷却。保留当前失败及现有同号重试配置，不新增正文/工具已执行后的重放资格，不跳过管理员临时规则或真实限流。普通 5xx 与非池账号保持原冷却。详见 `docs/PK_DOWNSTREAM_503_PK68_REVIEW.md`。
 
 2026-11-15 pk.67：API Key转发池的外层502包装明确WebSocket握手403时，使用严格结构化判定衔接现有同号有界恢复，避免额外冻结整账号的模型。显式重试关闭/范围、真实认证/权限错误、其他5xx冷却及正文/工具不可重放保持。实现与实际验证见 `docs/PK_DOWNSTREAM_503_PK67_REVIEW.md`；不保证上游持续故障清零。

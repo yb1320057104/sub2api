@@ -2,11 +2,78 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/stretchr/testify/require"
 	"testing"
 	"time"
 )
+
+func TestPK70EncryptedReasoningAffinitySwitch(t *testing.T) {
+	body := []byte(`{"input":[{"type":"reasoning","encrypted_content":"fixture-ciphertext"}]}`)
+	for _, tc := range []struct {
+		name string
+		cfg  *config.Config
+		want bool
+	}{
+		{name: "nil config preserves behavior", want: true},
+		{name: "zero config preserves behavior", cfg: &config.Config{}, want: true},
+		{name: "disabled", cfg: &config.Config{Gateway: config.GatewayConfig{DisableEncryptedAccountLock: true}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := &OpenAIGatewayService{cfg: tc.cfg}
+			inherited := WithOpenAIEncryptedReasoningAffinity(context.Background(), body)
+			ctx := svc.WithOpenAIEncryptedReasoningAffinity(inherited, body)
+			require.Equal(t, tc.want, ctx.Value(openAIEncryptedReasoningAffinityKey{}))
+			require.Equal(t, `{"input":[{"type":"reasoning","encrypted_content":"fixture-ciphertext"}]}`, string(body))
+		})
+	}
+}
+
+func TestPK70DisabledAccountLockRestoresNormalStickyEscape(t *testing.T) {
+	for _, direct := range []bool{false, true} {
+		t.Run(fmt.Sprintf("direct_scheduler_%t", direct), func(t *testing.T) {
+			groupID := int64(1070)
+			accounts := []Account{
+				{ID: 701, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 0, GroupIDs: []int64{groupID}},
+				{ID: 702, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive, Schedulable: true, Concurrency: 1, Priority: 1, GroupIDs: []int64{groupID}},
+			}
+			cache := &schedulerTestGatewayCache{sessionBindings: map[string]int64{"openai:pk70-session": 701}}
+			cfg := &config.Config{}
+			cfg.Gateway.DisableEncryptedAccountLock = true
+			cfg.Gateway.OpenAIScheduler.StickyEscapeEnabled = true
+			cfg.Gateway.OpenAIScheduler.StickyEscapeTTFTMs = 15000
+			cfg.Gateway.OpenAIScheduler.StickyEscapeErrorRate = 0.5
+			svc := &OpenAIGatewayService{
+				accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+				cache:              cache,
+				cfg:                cfg,
+				rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+				concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{acquireResults: map[int64]bool{702: true}}),
+				openaiAccountStats: newOpenAIAccountRuntimeStats(),
+			}
+			for i := 0; i < 5; i++ {
+				svc.openaiAccountStats.report(701, false, nil)
+			}
+			ctx := WithOpenAIEncryptedReasoningAffinity(context.Background(), []byte(`{"input":[{"type":"reasoning","encrypted_content":"fixture"}]}`))
+			var selection *AccountSelectionResult
+			var err error
+			if direct {
+				scheduler := &defaultOpenAIAccountScheduler{service: svc, stats: svc.openaiAccountStats}
+				selection, _, err = scheduler.Select(ctx, OpenAIAccountScheduleRequest{Platform: PlatformOpenAI, GroupID: &groupID, SessionHash: "pk70-session", StickyAccountID: 701, RequestedModel: "gpt-5.1", EncryptedReasoning: true})
+			} else {
+				selection, _, err = svc.SelectAccountWithScheduler(ctx, &groupID, "", "pk70-session", "gpt-5.1", nil, OpenAIUpstreamTransportAny, false)
+			}
+			require.NoError(t, err)
+			require.NotNil(t, selection)
+			require.NotNil(t, selection.Account)
+			require.Equal(t, int64(702), selection.Account.ID, "the disabled lock cannot suppress ordinary quality-based sticky escape")
+			if selection.ReleaseFunc != nil {
+				selection.ReleaseFunc()
+			}
+		})
+	}
+}
 
 func TestOpenAIGatewayService_SelectAccountWithScheduler_EncryptedStickyKeepsTTFT(t *testing.T) {
 	ctx := WithOpenAIEncryptedReasoningAffinity(context.Background(), []byte(`{"input":[{"type":"reasoning","encrypted_content":"synthetic"}]}`))

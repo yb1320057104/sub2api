@@ -1159,7 +1159,10 @@ func (c CodexWSAnchorConfig) Validate() error {
 }
 
 type GatewayConfig struct {
-	UpstreamRouting upstreamroute.Config `mapstructure:"upstream_routing"`
+	// DisableEncryptedAccountLock disables automatic opaque-owner binding and
+	// extra encrypted reasoning affinity, without changing replay safety.
+	DisableEncryptedAccountLock bool                 `mapstructure:"disable_encrypted_account_lock"`
+	UpstreamRouting             upstreamroute.Config `mapstructure:"upstream_routing"`
 	// PrismBrowser is the server-managed browser-session adapter for prism.openai.com.
 	// Account settings only select this route; cookies, sandbox state and the adapter
 	// API key remain outside account credentials.
@@ -2262,6 +2265,7 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 	if allowMissingJWTSecret && originalJWTSecret == "" {
 		cfg.JWT.Secret = ""
 	}
+	slog.Info("encrypted account lock configured", "disabled", cfg.Gateway.DisableEncryptedAccountLock)
 
 	if !cfg.Security.URLAllowlist.Enabled {
 		slog.Warn("security.url_allowlist.enabled=false; allowlist/SSRF checks disabled (minimal format validation only).")
@@ -2325,6 +2329,7 @@ func configureConfigSource(setConfigFile, addConfigPath func(string)) {
 func setDefaults() {
 	viper.SetDefault("binance_recharge.proxy_url", "")
 	viper.SetDefault("binance_recharge.proxy_preflight", false)
+	viper.SetDefault("gateway.disable_encrypted_account_lock", false)
 	viper.SetDefault("gateway.upstream_routing.enabled", false)
 	viper.SetDefault("runtime.role", RuntimeRoleFull)
 	viper.SetDefault("runtime.node_id", "")

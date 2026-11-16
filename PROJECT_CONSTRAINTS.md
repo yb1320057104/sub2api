@@ -1,5 +1,7 @@
 # PK出版项目约束
 
+2026-11-16 pk.70：用户已明确要求“要你现在关闭”自动加密锁账号。本轮新增反向配置 `gateway.disable_encrypted_account_lock`（默认 false），在用户现用部署显式设 true 后取消本地加密 owner 自动绑定/读取/学习及 reasoning 额外粘性。普通粘性、previous_response_id 路由、完整历史、未知 opaque 历史禁止盲目重放、工具与交付/记账保护继续保留。允许为完成此次关闭进行必要构建、隔离同制品验收和正常退出更新；新维护制品必须有独立源码/profile/哈希和真实验收记录，不伪造为完整正式 Release。源码与部署结果分别记载；旧制品、标签、绑定数据和存储拓扑不在本轮删除或改写。详见 `docs/PK_ENCRYPTED_ACCOUNT_LOCK_PK70_REVIEW.md`。
+
 2026-11-16 pk.69 部署范围更新：用户已明确要求部署，覆盖下方仅源码阶段的范围。允许本次必要构建、隔离同制品与数据库迁移/混合计费验证、正式发行及现有HA逐节点更新；使用独立pk69 profile，不覆盖旧profile/标签/制品，不改分组计价设置。保留单writer/活动worker、正常退出、真实备份和失败停步。生产身份、配置及流量证据留在受限本地记录，不随公开源码提交。
 
 2026-11-16 pk.69：新增 `free_openai_ultrafast`，默认false、更新省略保留、显式false关闭；OpenAI/Composite 分组的最终 Ultrafast 档只按 Standard 重算客户 ActualCost。Free Fast 与 Free Ultrafast 各管对应档位，不自动启用加速、不改变上游额度；原始 TotalCost、service_tier、账号成本、其他倍率和长上下文规则保持。新增迁移343和缓存v36，不重写旧迁移或历史账单。Fast Sol/Astra 默认2倍与 GPT-5.5 默认2.5倍、显式渠道倍率分别保留；不得把长上下文输出1.5倍改成 Fast2倍。仅当前源码交付与定向验证，未授权本次新生产配置变更或部署；记录见 `docs/PK_FREE_ULTRAFAST_PK69_REVIEW.md`。

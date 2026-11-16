@@ -96,6 +96,9 @@ func (r *openAIWSAgentRecovery) storedContinuation(source []byte) bool {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if initial := openAIAgentRecoveryFromContext(r.ctx); initial != nil && initial.accountLockDisabled {
+		return false
+	}
 	items := openAIAgentRecoveryItemDigests(source)
 	if len(items) == 0 {
 		return false
@@ -126,6 +129,14 @@ func (r *openAIWSAgentRecovery) begin(account *Account, source, payload []byte, 
 		r.finish = nil
 	}
 	r.itemDone = nil
+	if initial := openAIAgentRecoveryFromContext(r.ctx); initial != nil && initial.accountLockDisabled {
+		r.request = &openAIAgentRecoveryRequest{accountLockDisabled: true}
+		r.known = nil
+		if kind, _ := openAIOpaqueHistoryKind(source); kind != "" {
+			r.preventReplay()
+		}
+		return nil
+	}
 	if req.GetBody != nil {
 		// HTTP builders can still normalize the prepared body. Validate the
 		// built request's bytes, rather than replacing them with the earlier
@@ -217,6 +228,14 @@ func (r *openAIWSAgentRecovery) write(payload []byte, write func() error) error 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	request := r.request
+	if request != nil && request.accountLockDisabled {
+		// Retain only the local replay fence. No ownership, delivery reservation
+		// or extra response-account binding is created in the disabled mode.
+		if len(openAIAgentRecoveryDigests(payload, "item")) > 0 || len(openAIAgentRecoveryDigests(payload, "response.output")) > 0 {
+			r.preventReplay()
+		}
+		return write()
+	}
 	if request == nil || request.delivery == nil || r.finish == nil {
 		return write()
 	}

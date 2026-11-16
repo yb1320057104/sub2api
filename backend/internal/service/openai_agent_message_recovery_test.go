@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -109,6 +110,71 @@ func TestPK64RecoveryLongHistoryUsesBatchesWithoutWeakeningOwnership(t *testing.
 }
 
 const issue715OpaqueBody = `{"model":"gpt-6-astra","input":[{"type":"agent_message","author":"fixture-parent","recipient":"fixture-child","content":[{"type":"input_text","text":"fixture envelope"},{"type":"encrypted_content","encrypted_content":"fixture-opaque-reference"}]}]}`
+
+func TestPK70DisabledAccountLockIgnoresExistingOwnerAndDoesNotLearn(t *testing.T) {
+	for _, stored := range []string{"owner", "conflict", "unavailable"} {
+		t.Run(stored, func(t *testing.T) {
+			cache := &issue715BatchOwners{}
+			producer := &OpenAIGatewayService{cache: cache, cfg: &config.Config{}}
+			owner := &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+			issue715LearnRoute(t, producer, owner, issue715OpaqueBody)
+			c, _ := newTurnStateTestContext(t, 715, "fixture-session")
+			c.Set("api_key", &APIKey{ID: 715, GroupID: int64Ptr(715)})
+			oldCtx := producer.WithOpenAIAgentMessageRecovery(context.Background(), c, []byte(issue715OpaqueBody), "fixture-session", "gpt-6-astra")
+			require.True(t, openAIAgentRecoveryBound(oldCtx))
+			if stored == "conflict" {
+				for key := range cache.values {
+					cache.values[key] = "conflict"
+				}
+			}
+			if stored == "unavailable" {
+				cache.batchError = errors.New("fixture owner store unavailable")
+			}
+			before := make(map[string]string, len(cache.values))
+			for key, value := range cache.values {
+				before[key] = value
+			}
+			counts := []int{cache.reads, cache.publishes, cache.reserves, cache.finishes, cache.refreshes}
+			cfg := &config.Config{}
+			cfg.Gateway.DisableEncryptedAccountLock = true
+			svc := &OpenAIGatewayService{cache: cache, cfg: cfg}
+			body := []byte(issue715OpaqueBody)
+			ctx := svc.WithOpenAIAgentMessageRecovery(oldCtx, c, body, "fixture-session", "gpt-6-astra")
+			r := openAIAgentRecoveryFromContext(ctx)
+			require.NotNil(t, r, "WS still needs a per-request replay guard")
+			require.True(t, r.accountLockDisabled)
+			require.NotSame(t, openAIAgentRecoveryFromContext(oldCtx), r)
+			require.False(t, openAIAgentRecoveryBound(ctx))
+			require.Nil(t, r.owner)
+			require.NoError(t, r.lookupErr)
+			require.False(t, r.conflict)
+			require.Empty(t, r.keys)
+			other := &Account{ID: 2, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}
+			require.NoError(t, svc.checkOpenAIAgentRecoveryAccount(ctx, other))
+			require.NoError(t, svc.checkOpenAIAgentRecoveryDispatch(ctx, c, other, body))
+			req, err := http.NewRequest(http.MethodPost, "https://native.example/v1/responses", bytes.NewReader(body))
+			require.NoError(t, err)
+			finish, err := svc.prepareOpenAIAgentRecoveryAttempt(ctx, other, req)
+			require.NoError(t, err)
+			require.Nil(t, r.delivery)
+			c.Request = req.WithContext(ctx)
+			require.NoError(t, observeOpenAIAgentRecoveryOutput(c, []byte(`{"id":"resp_disabled","status":"completed","output":[{"type":"agent_message","encrypted_content":"fixture-new-output"}]}`), false))
+			finish(true)
+			require.Equal(t, issue715OpaqueBody, string(body), "the switch never strips encrypted history")
+			wire, err := io.ReadAll(req.Body)
+			require.NoError(t, err)
+			require.Equal(t, body, wire)
+			require.Equal(t, counts, []int{cache.reads, cache.publishes, cache.reserves, cache.finishes, cache.refreshes}, "disabled requests must not read, reserve, publish, finish or refresh owner records")
+			require.Equal(t, before, cache.values, "existing owners expire normally and are not deleted")
+			require.Empty(t, svc.agentMessageRecovery.bindings, "no fallback local ownership is learned")
+			toolBody := issue715OpaqueBody[:len(issue715OpaqueBody)-2] + `,{"type":"function_call_output","call_id":"fixture-call","output":"already applied"}]}`
+			recovery, tool := OpenAIUnverifiedOpaqueHistoryRecovery(ctx, []byte(toolBody))
+			require.NotNil(t, recovery, "disabling account affinity does not permit blind opaque replay")
+			require.Equal(t, "unverified_history", recovery.Reason)
+			require.True(t, tool)
+		})
+	}
+}
 
 func issue715LearnRoute(t *testing.T, svc *OpenAIGatewayService, account *Account, body string) {
 	t.Helper()

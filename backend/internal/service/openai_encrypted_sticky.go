@@ -9,6 +9,19 @@ import (
 
 type openAIEncryptedReasoningAffinityKey struct{}
 
+func (s *OpenAIGatewayService) encryptedAccountLockDisabled() bool {
+	return s != nil && s.cfg != nil && s.cfg.Gateway.DisableEncryptedAccountLock
+}
+
+// WithOpenAIEncryptedReasoningAffinity applies the operator's account-lock
+// policy before selection. Ordinary sticky and response-anchor routing remain.
+func (s *OpenAIGatewayService) WithOpenAIEncryptedReasoningAffinity(ctx context.Context, body []byte) context.Context {
+	if s.encryptedAccountLockDisabled() {
+		return context.WithValue(ctx, openAIEncryptedReasoningAffinityKey{}, false)
+	}
+	return WithOpenAIEncryptedReasoningAffinity(ctx, body)
+}
+
 // WithOpenAIEncryptedReasoningAffinity marks a Responses admission once, before
 // account selection. It does not change hard admission or capacity decisions.
 func WithOpenAIEncryptedReasoningAffinity(ctx context.Context, body []byte) context.Context {

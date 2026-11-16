@@ -422,6 +422,12 @@ func (s *defaultOpenAIAccountScheduler) Select(
 	req OpenAIAccountScheduleRequest,
 ) (selection *AccountSelectionResult, decision OpenAIAccountScheduleDecision, err error) {
 	recovery := openAIAgentRecoveryFromContext(ctx)
+	if s != nil && s.service.encryptedAccountLockDisabled() {
+		req.EncryptedReasoning = false
+	}
+	if recovery != nil && recovery.accountLockDisabled {
+		recovery = nil
+	}
 	if recovery != nil && recovery.lookupErr != nil {
 		return nil, decision, recovery.lookupErr
 	}
@@ -3013,7 +3019,7 @@ func (s *OpenAIGatewayService) selectAccountWithSchedulerOnce(
 		Platform:                platform,
 		SessionHash:             sessionHash,
 		StickyAccountID:         stickyAccountID,
-		EncryptedReasoning:      platform == PlatformOpenAI && ctx.Value(openAIEncryptedReasoningAffinityKey{}) == true,
+		EncryptedReasoning:      platform == PlatformOpenAI && !s.encryptedAccountLockDisabled() && ctx.Value(openAIEncryptedReasoningAffinityKey{}) == true,
 		GuardianParentAccountID: guardianParentAccountID,
 		StickyPreviousAccountID: stickyPreviousAccountID,
 		StickyWeighted:          stickyWeighted,

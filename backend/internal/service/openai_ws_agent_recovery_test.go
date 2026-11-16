@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -26,6 +27,95 @@ func issue715WSManager(t *testing.T, svc *OpenAIGatewayService, parent context.C
 func issue715WSBegin(t *testing.T, manager *openAIWSAgentRecovery, account *Account, source string, mode string) error {
 	t.Helper()
 	return manager.beginSocket(account, []byte(source), []byte(source), "wss://native.example/v1/responses", http.Header{"Authorization": {"Bearer fixture"}}, mode)
+}
+
+func TestPK70WSDisabledAccountLockRetainsReplayProtection(t *testing.T) {
+	for _, mode := range []string{"ctx_pool", "passthrough", "http_bridge"} {
+		for _, inputOpaque := range []bool{false, true} {
+			name := mode + "/generated_output"
+			if inputOpaque {
+				name = mode + "/opaque_input"
+			}
+			t.Run(name, func(t *testing.T) {
+				cache := &issue715BatchOwners{}
+				producer := &OpenAIGatewayService{cache: cache, cfg: &config.Config{}}
+				issue715LearnRoute(t, producer, &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey}, issue715OpaqueBody)
+				counts := []int{cache.reads, cache.publishes, cache.reserves, cache.finishes, cache.refreshes}
+				before := make(map[string]string, len(cache.values))
+				for key, value := range cache.values {
+					before[key] = value
+				}
+				cache.batchError = errors.New("fixture owner store unavailable")
+				cfg := &config.Config{}
+				cfg.Gateway.DisableEncryptedAccountLock = true
+				svc := &OpenAIGatewayService{cache: cache, cfg: cfg}
+				manager, _, account := issue715WSManager(t, svc, context.Background())
+				require.NotNil(t, manager)
+				defer manager.abort()
+				account.ID = 2
+				source := `{"model":"gpt-6-astra","input":[]}`
+				if inputOpaque {
+					source = issue715OpaqueBody
+				}
+				payload := []byte(source)
+				if mode == "http_bridge" {
+					req, err := http.NewRequest(http.MethodPost, "https://native.example/v1/responses", bytes.NewReader(payload))
+					require.NoError(t, err)
+					require.NoError(t, manager.begin(account, payload, payload, req, mode))
+				} else {
+					require.NoError(t, issue715WSBegin(t, manager, account, source, mode))
+				}
+				require.Equal(t, source, string(payload), "the switch must leave forwarded history intact")
+				require.True(t, manager.request.accountLockDisabled)
+				require.Nil(t, manager.request.delivery)
+				require.Nil(t, manager.request.owner)
+				require.Equal(t, !inputOpaque, OpenAIWSAgentRecoveryCanRetry(manager.ctx))
+				item := gjson.Get(issue715OpaqueBody, "input.0").Raw
+				frame := []byte(`{"type":"response.output_item.done","item":` + item + `}`)
+				writes := 0
+				require.NoError(t, manager.write(frame, func() error {
+					writes++
+					require.False(t, OpenAIWSAgentRecoveryCanRetry(manager.ctx), "opaque output must block replay before any downstream bytes are exposed")
+					return nil
+				}))
+				require.Equal(t, `{"type":"response.output_item.done","item":`+item+`}`, string(frame))
+				require.NoError(t, manager.write([]byte(`{"type":"response.completed","response":{"id":"resp_disabled_ws","status":"completed","output":[`+item+`]}}`), func() error {
+					writes++
+					return nil
+				}))
+				require.Equal(t, 2, writes)
+				// A new turn can select another permitted account without consulting
+				// or republishing the old encrypted owner.
+				account.ID = 3
+				require.NoError(t, issue715WSBegin(t, manager, account, issue715OpaqueBody, mode))
+				require.False(t, OpenAIWSAgentRecoveryCanRetry(manager.ctx))
+				require.Empty(t, manager.known)
+				writeErr := errors.New("fixture downstream write failed")
+				require.ErrorIs(t, manager.write(frame, func() error { return writeErr }), writeErr)
+				manager.abort()
+				require.Equal(t, counts, []int{cache.reads, cache.publishes, cache.reserves, cache.finishes, cache.refreshes})
+				require.Equal(t, before, cache.values)
+				require.Empty(t, svc.agentMessageRecovery.bindings)
+			})
+		}
+	}
+}
+
+func TestPK70WSDisabledAccountLockSkipsWireOwnershipValidation(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Gateway.DisableEncryptedAccountLock = true
+	manager, _, account := issue715WSManager(t, &OpenAIGatewayService{cfg: cfg}, context.Background())
+	defer manager.abort()
+	req, err := http.NewRequest(http.MethodPost, "https://native.example/v1/responses", bytes.NewBufferString(issue715OpaqueBody))
+	require.NoError(t, err)
+	reads := 0
+	req.GetBody = func() (io.ReadCloser, error) {
+		reads++
+		return nil, errors.New("fixture owner fingerprint unavailable")
+	}
+	require.NoError(t, manager.begin(account, []byte(issue715OpaqueBody), []byte(issue715OpaqueBody), req, "http_bridge"))
+	require.Zero(t, reads, "disabled ownership must not reject a normal send because a compatibility fingerprint cannot be built")
+	require.False(t, OpenAIWSAgentRecoveryCanRetry(manager.ctx))
 }
 
 func TestIssue715WSActualDeliveryFence(t *testing.T) {

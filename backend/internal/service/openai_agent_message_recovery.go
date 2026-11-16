@@ -45,22 +45,23 @@ type openAIAgentRecoveryState struct {
 }
 
 type openAIAgentRecoveryRequest struct {
-	keyID            int64
-	userID           int64
-	delivery         *openAIAgentRecoveryDelivery
-	outputs          [][32]byte
-	disallowLearning bool
-	nativeCompaction bool
-	lookupErr        error
-	toolResult       bool
-	known            map[[32]byte]bool
-	keys             [][32]byte
-	items            [][32]byte
-	owner            *openAIAgentRecoveryBinding
-	conflict         bool
-	groupID          int64
-	model            string
-	session          string
+	accountLockDisabled bool
+	keyID               int64
+	userID              int64
+	delivery            *openAIAgentRecoveryDelivery
+	outputs             [][32]byte
+	disallowLearning    bool
+	nativeCompaction    bool
+	lookupErr           error
+	toolResult          bool
+	known               map[[32]byte]bool
+	keys                [][32]byte
+	items               [][32]byte
+	owner               *openAIAgentRecoveryBinding
+	conflict            bool
+	groupID             int64
+	model               string
+	session             string
 }
 
 // WithOpenAIAgentMessageRecovery observes only opaque item identities. A route
@@ -71,6 +72,12 @@ type openAIAgentRecoveryRequest struct {
 // Ordinary sticky writes, HTTP 200 and reasoning are not proof.
 func (s *OpenAIGatewayService) WithOpenAIAgentMessageRecovery(ctx context.Context, c *gin.Context, body []byte, sessionHash, model string) context.Context {
 	request := &openAIAgentRecoveryRequest{groupID: getOpenAIGroupIDFromContext(c), model: model, session: sessionHash}
+	if s.encryptedAccountLockDisabled() {
+		// Keep a request-local marker for WS replay tracking, but never consult
+		// or mutate owner observations while the operator has disabled locking.
+		request.accountLockDisabled = true
+		return context.WithValue(ctx, openAIAgentRecoveryContextKey{}, request)
+	}
 	keyID := getAPIKeyIDFromContext(c)
 	request.keyID = keyID
 	request.userID = openAIAgentRecoveryHTTPUser(c, keyID)
@@ -132,7 +139,7 @@ func openAIAgentRecoveryFromContext(ctx context.Context) *openAIAgentRecoveryReq
 
 func openAIAgentRecoveryBound(ctx context.Context) bool {
 	request := openAIAgentRecoveryFromContext(ctx)
-	return request != nil && (request.owner != nil || request.conflict || request.lookupErr != nil)
+	return request != nil && !request.accountLockDisabled && (request.owner != nil || request.conflict || request.lookupErr != nil)
 }
 
 func openAIAgentRecoveryItemDigests(body []byte) [][32]byte {
@@ -206,7 +213,7 @@ func openAIAgentCompletedResponse(body []byte, nested bool) bool {
 
 func (s *OpenAIGatewayService) checkOpenAIAgentRecoveryAccount(ctx context.Context, account *Account) error {
 	request := openAIAgentRecoveryFromContext(ctx)
-	if request == nil {
+	if request == nil || request.accountLockDisabled {
 		return nil
 	}
 	if request.lookupErr != nil {
@@ -261,7 +268,7 @@ func (s *OpenAIGatewayService) prepareOpenAIAgentRecoveryAttempt(ctx context.Con
 		return noop, ctx.Err()
 	}
 	request := openAIAgentRecoveryFromContext(ctx)
-	if request == nil || request.keyID <= 0 || request.session == "" || request.model == "" {
+	if request == nil || request.accountLockDisabled || request.keyID <= 0 || request.session == "" || request.model == "" {
 		return noop, nil
 	}
 	if request.disallowLearning {
@@ -439,7 +446,7 @@ func observeOpenAIAgentRecoveryOutput(c *gin.Context, body []byte, nested bool) 
 		return nil
 	}
 	request := openAIAgentRecoveryFromContext(c.Request.Context())
-	if request == nil || request.delivery == nil {
+	if request == nil || request.accountLockDisabled || request.delivery == nil {
 		return nil
 	}
 	if !utf8.Valid(body) || !openAIEncryptedJSONUnambiguous(body) {
@@ -466,7 +473,7 @@ func observeOpenAIAgentRecoveryOutput(c *gin.Context, body []byte, nested bool) 
 // proven native task route, including pool-mode same-account retry.
 func OpenAIAgentToolResultContinuation(ctx context.Context) bool {
 	r := openAIAgentRecoveryFromContext(ctx)
-	return r != nil && r.owner != nil && r.toolResult
+	return r != nil && !r.accountLockDisabled && r.owner != nil && r.toolResult
 }
 
 // Native remote compaction v2 consumes an already proven task but proves no new

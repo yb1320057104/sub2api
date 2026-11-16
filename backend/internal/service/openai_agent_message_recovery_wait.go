@@ -106,6 +106,9 @@ func (s *defaultOpenAIAccountScheduler) checkOpenAIAgentRecoveryCooldown(ctx con
 }
 
 func (s *OpenAIGatewayService) retainOpenAIAgentRecovery(ctx context.Context, request *openAIAgentRecoveryRequest, ttl time.Duration) error {
+	if request == nil || request.accountLockDisabled {
+		return nil
+	}
 	if _, shared := s.cache.(OpenAIAgentRecoveryCache); shared {
 		cache, ok := s.cache.(OpenAIAgentRecoveryRetentionCache)
 		if !ok {
