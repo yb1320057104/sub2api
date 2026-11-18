@@ -1,0 +1,36 @@
+{
+  "protocol_version": 1,
+  "tosub2_commit": "8548397e89bf80e508eda64a87e0d556d43abc84",
+  "tosub2_protocol_blob": "ff2db2507e401c29fa78705e44f5b40a3108a8c6",
+  "tosub2_transport_blob": "3c8ba4508effa4856db725db9969945621fe8223",
+  "vendored_tosub2_files": {
+    "src/protocol-login.mjs": "b7e5ed0a4dcc2955607815f01ea291d1708c661af0796b19dc5dab23ff9c4752",
+    "src/tls-transport.mjs": "817a71063a0d381fd697f189c731293174931dbbbbfceb9a1628f02621733074",
+    "LICENSE": "2b033adfef2b387c0ccf5ed3d41b2e498357edd110bcf30aab4fc1c4e9e52bba"
+  },
+  "cfsolve_license_sha256": "30aa7fe62e67a157592052e074e67e279fa483e98f0862ce99e3749847769db1",
+  "rust_toolchain": "1.98.0",
+  "official_cloud_commit": "4f7acd6e99ebc66870c07324341eaf53d8b1fa1f",
+  "cfsolve_commit": "19efa31656328528457376ae0895a61164b22da0",
+  "consent_source": "Recognized same-origin POST consent form, resource_consent_decision=grant, JSON {auth_session_id}; pinned offline fixtures are not a current production login claim",
+  "verified_asset_source": "Externally supplied authorized Sentinel inputs; exact SHA256 required",
+  "sentinel_redistribution_authorized": false,
+  "cfsolve_source": "https://github.com/chris124567/cfsolve/tree/19efa31656328528457376ae0895a61164b22da0",
+  "tosub2_source": "https://github.com/poxiao33/toSub2/tree/8548397e89bf80e508eda64a87e0d556d43abc84",
+  "sentinel_assets": {
+    "sentinel_bridge.js": "4761034c18b39c16a210ede115f5361cfa72315efba3586dbf1a81401c3e41e0",
+    "sentinel_bootstrap.js": "59cfca34c5f62ea2b1ddff8c3708c10b79c7d23716dd8113a44f5eb1a962f21a",
+    "sentinel_sdk.js": "f21fa2a6859b320ef3157e3cf17d9a8da7fbf824aba55502b5fc3f421c03ef11"
+  },
+  "profiles": {
+    "safari-26-ios.json": "0238708edcd6bea3c1d380f51ada8e652e9bf6d63083349cc4fffe80a144da56"
+  },
+  "profile_lf_sha256": "2ee00ccbd66b7fc64a87927f7a08b8f040d4ff67c8fe2f93696590b4613f13fa",
+  "profile_relative_assets_lf_sha256": {
+    "safari-26-ios/answers.json": "dd2dc3ba9a26dfd084aa23e9cb1ae78852bc991fed7a5b492e187a5a405d9dda",
+    "safari-26-ios/challenge-page-answers.json": "48f9a613f0b4492fd5d422785bc2847463b33f4f61a39531493bdba554a2f4ee"
+  },
+  "device_consumer": "Go KiloRemote only; both legacy GET and POST /token atomically consume the result",
+  "byok_enabled_evidence": "fresh delegated OAuth callback plus matching status.connectedAt; official save inserts/upserts is_enabled:true; preexisting connected alone remains unverified",
+  "production_end_to_end_verified": false
+}

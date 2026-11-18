@@ -203,6 +203,7 @@ func TestProvideCleanup_WithMinimalDependencies_NoPanic(t *testing.T) {
 		service.NewIntelligenceTestService(nil, nil, nil, nil, nil, cfg),
 		service.NewAccountCandyTestService(nil, nil, nil, nil, nil),
 		nil, // accountAuthorization
+		nil, // kilo
 		nil, // accountUsage
 		nil, // channelMonitorV2Aggregator
 		nil, // channelMonitorV3Prober

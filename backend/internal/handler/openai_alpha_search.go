@@ -70,12 +70,25 @@ func (h *OpenAIGatewayHandler) AlphaSearch(c *gin.Context) {
 	}
 
 	modelResult := gjson.GetBytes(body, "model")
-	if !modelResult.Exists() || modelResult.Type != gjson.String || strings.TrimSpace(modelResult.String()) == "" {
-		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "model is required")
-		return
-	}
 	requestedModel := strings.TrimSpace(modelResult.String())
-	if !compositeTargetPlatformAllowed(c, apiKey, requestedModel, service.PlatformOpenAI) {
+	requiredCapability := service.OpenAIEndpointCapabilityAlphaSearch
+	searchCalls := 1
+	if !modelResult.Exists() || requestedModel == "" {
+		var validationErr error
+		searchCalls, validationErr = service.ValidateKiloAlphaSearchBody(body)
+		if validationErr != nil {
+			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "A model or valid Kilo search_query commands are required")
+			return
+		}
+		requiredCapability = service.OpenAIEndpointCapabilityKiloAlphaSearch
+	} else if modelResult.Type != gjson.String {
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "model must be a string")
+		return
+	} else if count, validationErr := service.ValidateKiloAlphaSearchBody(body); validationErr == nil {
+		// A model-bearing Kilo batch also reserves every actual query.
+		searchCalls = count
+	}
+	if requestedModel != "" && !compositeTargetPlatformAllowed(c, apiKey, requestedModel, service.PlatformOpenAI) {
 		h.errorResponse(c, http.StatusNotFound, "not_found_error", "Codex alpha search only supports OpenAI models for Composite groups")
 		return
 	}
@@ -110,7 +123,7 @@ func (h *OpenAIGatewayHandler) AlphaSearch(c *gin.Context) {
 	}
 
 	// 余额模式在途预留（与计费同口径估算；计费任务扣减余额缓存后才释放）。
-	inflightDone, inflightErr := reserveInflightBalance(c, h.billingCacheService, h.gatewayService, apiKey, subscription, service.InflightEstimateRequest{Model: requestedModel, BodyBytes: len(body), MaxTokens: requestMaxOutputTokens(body), Kind: service.InflightEstimateToken, SearchCalls: 1})
+	inflightDone, inflightErr := reserveInflightBalance(c, h.billingCacheService, h.gatewayService, apiKey, subscription, service.InflightEstimateRequest{Model: requestedModel, BodyBytes: len(body), MaxTokens: requestMaxOutputTokens(body), Kind: service.InflightEstimateWebSearch, SearchCalls: searchCalls})
 	if inflightErr != nil {
 		status, code, message, retryAfter := billingErrorDetails(inflightErr)
 		if retryAfter > 0 {
@@ -146,7 +159,7 @@ func (h *OpenAIGatewayHandler) AlphaSearch(c *gin.Context) {
 			requestedModel,
 			failedAccountIDs,
 			service.OpenAIUpstreamTransportHTTPSSE,
-			service.OpenAIEndpointCapabilityAlphaSearch,
+			requiredCapability,
 			false,
 			false,
 			false,
@@ -241,6 +254,12 @@ func (h *OpenAIGatewayHandler) AlphaSearch(c *gin.Context) {
 		}
 
 		h.gatewayService.ReportOpenAIAccountScheduleResult(account, openAIAccountScheduleModel(c, account, requestedModel, false, result), false, nil, err)
+		if account.IsKiloGatewayAccount() {
+			// Managed Kilo search retains the same no-replay ownership as model
+			// requests; an upstream error cannot move a submitted search batch.
+			h.handleFailoverExhausted(c, failoverErr, c.Writer.Size() != writerSizeBeforeForward)
+			return
+		}
 		if c.Writer.Size() != writerSizeBeforeForward {
 			h.handleFailoverExhausted(c, failoverErr, true)
 			return
@@ -306,6 +325,14 @@ func (h *OpenAIGatewayHandler) recordAlphaSearchUsage(
 	result *service.OpenAIForwardResult,
 	userID int64,
 ) {
+	if result != nil && result.Model == "" && account.IsKiloGatewayAccount() {
+		// A record label only: never inject a fictitious model into scheduling
+		// or the Exa request, which operates on search commands alone.
+		copy := *result
+		copy.Model = "kilo-search"
+		result = &copy
+		requestedModel = "kilo-search"
+	}
 	userAgent := c.GetHeader("User-Agent")
 	clientIP := ip.GetClientIP(c)
 	sessionID := service.ExtractClientSessionID(c)

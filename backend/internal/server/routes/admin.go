@@ -33,6 +33,8 @@ func RegisterAdminRoutes(
 	admin.Use(gin.HandlerFunc(adminAuth))
 	// 面板全局按用户限流（默认管理员豁免，可在系统设置中关闭豁免）
 	admin.Use(panelRateLimiter.Global())
+	// 凭据导入必须在审计捕获之前隔离请求正文，拒绝或解析失败也不记录密钥。
+	admin.Use(handler.KiloOnboardingImportPrivacy())
 	// 审计中间件挂在认证之后：所有管理面变更类操作 + 敏感读取入审计日志
 	admin.Use(gin.HandlerFunc(auditLog))
 	admin.Use(h.Admin.Account.AuthorizeObserver)
@@ -42,6 +44,40 @@ func RegisterAdminRoutes(
 	if h.Admin.AccountTokenGuardV2 != nil {
 		admin.POST("/account-ops/token-guard-v2/accounts/batch", panelRateLimiter.Heavy(), h.Admin.AccountTokenGuardV2.BatchCreate)
 		admin.POST("/account-ops/token-guard-v2/sync", panelRateLimiter.Heavy(), h.Admin.AccountTokenGuardV2.Sync)
+	}
+	if h.Kilo != nil {
+		kilo := admin.Group("/kilo")
+		kilo.GET("/overview", h.Kilo.Overview)
+		kilo.GET("/accounts/candidates", h.Kilo.Candidates)
+		kilo.GET("/groups", h.Kilo.Groups)
+		kilo.GET("/proxy-groups", h.Kilo.ProxyGroups)
+		kilo.GET("/proxies", h.Kilo.Proxies)
+		kilo.POST("/proxies/:id/preflight", panelRateLimiter.Heavy(), h.Kilo.PreflightProxy)
+		kilo.DELETE("/prepared/:id", h.Kilo.DeleteFailedPrepared)
+		kilo.DELETE("/jobs/:id", h.Kilo.DeleteFailedJob)
+		kilo.POST("/jobs/:id/login-proxy", h.Kilo.SetFailedJobLoginProxy)
+		kilo.POST("/prepared/import", panelRateLimiter.Heavy(), h.Kilo.Import)
+		kilo.POST("/batches", panelRateLimiter.Heavy(), h.Kilo.Submit)
+		kilo.POST("/onboarding/import", panelRateLimiter.Heavy(), h.Kilo.ImportOnboarding)
+		kilo.POST("/onboarding/batches", panelRateLimiter.Heavy(), h.Kilo.SubmitOnboarding)
+		kilo.GET("/onboarding/batches/:batch_id", h.Kilo.OnboardingBatch)
+		kilo.POST("/device", panelRateLimiter.Heavy(), h.Kilo.DeviceStart)
+		kilo.POST("/device/:session/poll", h.Kilo.DevicePoll)
+		kilo.DELETE("/device/:session", h.Kilo.DeviceCancel)
+		kilo.POST("/prepared/:id/organizations", h.Kilo.Organizations)
+		kilo.PUT("/prepared/:id/organization", h.Kilo.SetOrganization)
+		kilo.PUT("/prepared/:id/routing", h.Kilo.SetRouting)
+		kilo.POST("/prepared/:id/models/refresh", panelRateLimiter.Heavy(), h.Kilo.RefreshModels)
+		kilo.POST("/prepared/:id/identity/refresh", panelRateLimiter.Heavy(), h.Kilo.RefreshIdentityPolicy)
+		kilo.POST("/prepared/:id/unbind", panelRateLimiter.Heavy(), h.Kilo.UnbindPrepared)
+		kilo.POST("/prepared/:id/release", h.Kilo.ReleasePrepared)
+		kilo.POST("/jobs/:id/retry", h.Kilo.Retry)
+		kilo.POST("/jobs/:id/reconcile-subscription", panelRateLimiter.Heavy(), h.Kilo.ReconcileSubscription)
+		kilo.POST("/jobs/:id/reauthorize-subscription", panelRateLimiter.Heavy(), h.Kilo.ReauthorizeSubscription)
+		kilo.POST("/jobs/:id/cancel", h.Kilo.Cancel)
+		kilo.GET("/accounts/:account_id/egress", h.Kilo.Egress)
+		kilo.POST("/accounts/:account_id/egress", panelRateLimiter.Heavy(), h.Kilo.VerifyEgress)
+		kilo.DELETE("/egress/:id", h.Kilo.ReleaseEgress)
 	}
 	if h.Lottery != nil {
 		lottery := admin.Group("/lottery")

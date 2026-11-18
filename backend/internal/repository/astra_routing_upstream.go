@@ -87,6 +87,9 @@ func (s *astraRoutingUpstream) Do(r *http.Request, p string, a int64, n int) (*h
 	return s.DoWithTLS(r, p, a, n, nil)
 }
 func (s *astraRoutingUpstream) DoWithTLS(r *http.Request, p string, a int64, n int, f *tlsfingerprint.Profile) (*http.Response, error) {
+	if err := s.AccountProxyRouter().GuardKiloInferenceRequest(r, a); err != nil {
+		return nil, err
+	}
 	if r != nil && service.IsBoundAstraTicketRequest(r.Context()) {
 		return s.delegate.DoWithTLS(r, p, a, n, f)
 	}

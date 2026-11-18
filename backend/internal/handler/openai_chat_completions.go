@@ -283,15 +283,16 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 
 		forwardBody := openAIModelMappedBody(body, channelMapping.Mapped, channelMapping.MappedModel, h.gatewayService.ReplaceModelInBody)
 		writerSizeBeforeForward := service.OpenAICompactKeepaliveAdjustedWrittenSize(c)
+		forwardCtx, kiloSubmission := observeManagedKiloSubmission(rpmAdmission.forwardContext(c.Request.Context(), account), account)
 		result, err := func() (*service.OpenAIForwardResult, error) {
 			defer func() {
 				if accountReleaseFunc != nil {
 					accountReleaseFunc()
 				}
 			}()
-			return h.gatewayService.ForwardAsChatCompletions(rpmAdmission.forwardContext(c.Request.Context(), account), c, account, forwardBody, promptCacheKey, "")
+			return h.gatewayService.ForwardAsChatCompletions(forwardCtx, c, account, forwardBody, promptCacheKey, "")
 		}()
-		if retryOpenAIInitialAdmission(c, err, result, body, account.ID, failedAccountIDs, &switchCount, maxAccountSwitches) {
+		if !account.RequiresKiloInference() && retryOpenAIInitialAdmission(c, err, result, body, account.ID, failedAccountIDs, &switchCount, maxAccountSwitches) {
 			lastAdmissionErr = err
 			reqLog.Info("openai_chat_completions.admission_reselecting", zap.Int64("account_id", account.ID), zap.Int("switch_count", switchCount))
 			continue
@@ -361,6 +362,10 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 			})
 		}
 		if err != nil {
+			if code, message, policy := service.KiloInferencePolicyError(err); policy {
+				h.handleStreamingAwareErrorWithCode(c, http.StatusServiceUnavailable, "api_error", code, message, streamStarted, false)
+				return
+			}
 			if service.IsOpenAITurnAdmissionError(err) {
 				h.handleTurnAdmissionError(c, err, streamStarted)
 				return
@@ -379,6 +384,11 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 							zap.Int64("account_id", account.ID),
 							zap.Int("upstream_status", failoverErr.StatusCode),
 						)
+						return
+					}
+					if kiloSubmission.blocksReplay(c, failoverErr) {
+						h.gatewayService.ObserveOpenAIAccountHealthFailure(c.Request.Context(), account, err)
+						h.handleFailoverExhausted(c, failoverErr, streamStarted || c.Writer.Written())
 						return
 					}
 					if !openAIForwardMayFailover(c, writerSizeBeforeForward, nil) {

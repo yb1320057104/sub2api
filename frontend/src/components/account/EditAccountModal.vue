@@ -2920,6 +2920,12 @@
         v-if="account?.platform === 'openai'"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
       >
+        <div v-if="authStore.isAdmin && (account.type === 'oauth' && !isSparkShadow || account.extra?.kilo_managed === true)" class="mb-4 space-y-2 rounded-lg bg-primary-50 p-3 dark:bg-primary-900/20">
+          <p class="text-sm font-medium text-primary-800 dark:text-primary-200">{{ t('kilo.accountEntry.modeTitle') }}</p>
+          <p v-if="Number(account.extra?.kilo_source_prepared_id) > 0" class="text-sm text-primary-700 dark:text-primary-300">{{ t('kilo.accountEntry.active') }}</p>
+          <p class="text-xs leading-5 text-gray-600 dark:text-dark-300">{{ t('kilo.accountEntry.conversionHint') }}</p>
+          <router-link :to="{ path: '/admin/kilo', query: account.extra?.kilo_managed === true ? { account_id: String(account.id) } : { source_account_id: String(account.id) } }" class="btn btn-secondary btn-sm" data-testid="edit-account-kilo-entry">{{ Number(account.extra?.kilo_source_prepared_id) > 0 || account.extra?.kilo_managed === true ? t('kilo.accountEntry.manage') : t('kilo.accountEntry.switch') }}</router-link>
+        </div>
         <div class="flex items-center justify-between gap-4">
           <div>
             <label class="input-label mb-0">{{ t('admin.accounts.openai.kiloBridge') }}</label>

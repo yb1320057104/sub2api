@@ -2,15 +2,18 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/tidwall/gjson"
 )
 
 // buildAccountResponsesURL keeps the configured host/path and account proxy.
-// Kilo's gateway base ends in /api/gateway rather than /v1.
+// Kilo gateway profiles keep their own configured API path.
 func buildAccountResponsesURL(account *Account, base string) string {
 	if account.IsKiloBridgeEnabled() {
 		return buildOpenAIEndpointURL(base, "/responses")
@@ -18,9 +21,9 @@ func buildAccountResponsesURL(account *Account, base string) string {
 	return buildOpenAIResponsesURLForPlatform(account.Platform, base)
 }
 
-// translateKiloResponsesRequest adapts only the request wire format. In
-// particular, model and opaque tool arguments/results are never remapped or
-// scrubbed here. The latter may contain an encrypted subagent task.
+// translateKiloResponsesRequest adapts the request wire format. Only the
+// managed CLI profile adds a provider model prefix; opaque tool arguments and
+// results remain intact because they may contain an encrypted subagent task.
 func translateKiloResponsesRequest(account *Account, body []byte) ([]byte, error) {
 	if !account.IsKiloBridgeEnabled() {
 		return body, nil
@@ -53,8 +56,17 @@ func translateKiloResponsesRequest(account *Account, body []byte) ([]byte, error
 			request["include"] = filtered
 		}
 	}
+	if model, ok := request["model"].(string); ok {
+		request["model"] = kiloGatewayUpstreamModel(account, model)
+	}
 	if input, ok := request["input"].([]any); ok {
-		for index, raw := range input {
+		var err error
+		input, err = adaptKiloAgentMessages(input, isKiloCLIGatewayAccount(account))
+		if err != nil {
+			return nil, err
+		}
+		request["input"] = input
+		for _, raw := range input {
 			item, ok := raw.(map[string]any)
 			if !ok {
 				continue
@@ -83,22 +95,113 @@ func translateKiloResponsesRequest(account *Account, body []byte) ([]byte, error
 						item["output"] = []any{map[string]any{"type": "input_text", "text": text}}
 					}
 				}
-			case "agent_message":
-				content := make([]any, 0)
-				if parts, ok := item["content"].([]any); ok {
-					for _, part := range parts {
-						if block, ok := part.(map[string]any); ok && block["type"] == "input_text" {
-							content = append(content, block)
-						}
-					}
-				}
-				input[index] = map[string]any{"type": "message", "role": "user", "content": content}
 			case "reasoning":
 				delete(item, "encrypted_content")
 			}
 		}
 	}
 	return marshalOpenAIUpstreamJSON(request)
+}
+
+// Agent communications are received history, not new tool requests. Pair each
+// recorded transport call with its result before appending the readable message;
+// the bridge never registers or executes collaboration tools.
+func adaptKiloAgentMessages(input []any, strictRouting bool) ([]any, error) {
+	adapted := make([]any, 0, len(input))
+	for index, raw := range input {
+		item, ok := raw.(map[string]any)
+		if !ok || item["type"] != "agent_message" {
+			adapted = append(adapted, raw)
+			continue
+		}
+		author, authorOK := item["author"].(string)
+		recipient, recipientOK := item["recipient"].(string)
+		parts, ok := item["content"].([]any)
+		if !ok {
+			return nil, fmt.Errorf("unsupported agent_message content at input[%d]: expected an array; message was not forwarded or discarded", index)
+		}
+		if !authorOK || !recipientOK {
+			// Legacy plaintext history predates agent routing fields. Only that
+			// shape is accepted without a route; ciphertext must remain routable.
+			_, hasAuthor := item["author"]
+			_, hasRecipient := item["recipient"]
+			if strictRouting || hasAuthor || hasRecipient {
+				return nil, fmt.Errorf("agent_message at input[%d] requires author and recipient strings", index)
+			}
+			for _, part := range parts {
+				block, ok := part.(map[string]any)
+				if !ok || block["type"] != "input_text" {
+					return nil, fmt.Errorf("agent_message at input[%d] requires author and recipient strings for non-plaintext content", index)
+				}
+			}
+		}
+		routing := make(map[string]any, len(item)-2)
+		for key, value := range item {
+			if key != "type" && key != "content" {
+				routing[key] = value
+			}
+		}
+		routingJSON, err := json.Marshal(routing)
+		if err != nil {
+			return nil, fmt.Errorf("encode Kilo agent routing: %w", err)
+		}
+		message := make([]any, 0, len(parts)+1)
+		if len(routing) != 0 {
+			message = append(message, map[string]any{"type": "input_text", "text": "Received agent communication:\n" + string(routingJSON)})
+		}
+		for partIndex, part := range parts {
+			block, ok := part.(map[string]any)
+			if !ok {
+				return nil, fmt.Errorf("unsupported agent_message content at input[%d].content[%d]: expected an object; message was not forwarded or discarded", index, partIndex)
+			}
+			switch block["type"] {
+			case "input_text":
+				if _, ok := block["text"].(string); !ok {
+					return nil, fmt.Errorf("unsupported agent_message input_text at input[%d].content[%d]: expected text string", index, partIndex)
+				}
+				message = append(message, block)
+			case "encrypted_content":
+				ciphertext, ok := block["encrypted_content"].(string)
+				if !ok {
+					return nil, fmt.Errorf("unsupported agent_message encrypted_content at input[%d].content[%d]: expected ciphertext string", index, partIndex)
+				}
+				identity, err := json.Marshal([]any{index, partIndex, item})
+				if err != nil {
+					return nil, fmt.Errorf("encode Kilo agent history identity: %w", err)
+				}
+				digest := sha256.Sum256(identity)
+				callID := "call_kilo_agent_" + hex.EncodeToString(digest[:16])
+				arguments, err := json.Marshal(map[string]any{"target": recipient, "message": ciphertext})
+				if err != nil {
+					return nil, fmt.Errorf("encode Kilo agent transport arguments: %w", err)
+				}
+				result := map[string]any{"transport": "received_agent_message", "author": author, "recipient": recipient, "content_index": partIndex}
+				// Preserve extension metadata without emitting native encrypted input.
+				metadata := make(map[string]any)
+				for key, value := range block {
+					if key != "type" && key != "encrypted_content" {
+						metadata[key] = value
+					}
+				}
+				if len(metadata) != 0 {
+					result["content_metadata"] = metadata
+				}
+				output, err := json.Marshal(result)
+				if err != nil {
+					return nil, fmt.Errorf("encode Kilo agent transport result: %w", err)
+				}
+				adapted = append(adapted,
+					map[string]any{"type": "function_call", "call_id": callID, "namespace": "collaboration", "name": "send_message", "arguments": string(arguments)},
+					map[string]any{"type": "function_call_output", "call_id": callID, "output": string(output)},
+				)
+				message = append(message, map[string]any{"type": "input_text", "text": fmt.Sprintf("The content of this part is the message argument of recorded transport call %s.", callID)})
+			default:
+				return nil, fmt.Errorf("unsupported agent_message content type at input[%d].content[%d]; message was not forwarded or discarded", index, partIndex)
+			}
+		}
+		adapted = append(adapted, map[string]any{"type": "message", "role": "user", "content": message})
+	}
+	return adapted, nil
 }
 
 func rewriteKiloItemID(item map[string]any, from, to string) {
@@ -135,6 +238,16 @@ func kiloUpstreamReasoningEffort(effort string) string {
 func stampKiloBridgeUsage(ctx context.Context, account *Account, inbound []byte, result *OpenAIForwardResult) {
 	if !account.IsKiloBridgeEnabled() || result == nil {
 		return
+	}
+	if isKiloCLIGatewayAccount(account) {
+		if err := bindKiloGatewayResponseSession(ctx, result); err != nil {
+			// The upstream turn has already completed. Surface the metadata
+			// failure operationally, without replaying or altering usage.
+			logger.LegacyPrintf("service.openai_gateway", "[Kilo] Shared wire-session binding failed (account_id=%d)", account.ID)
+		}
+		if identity, ok := ctx.Value(kiloGatewaySessionContextKeyType{}).(kiloGatewaySessionContext); ok && identity.accountID == account.ID && identity.model != "" {
+			result.UpstreamModel = identity.model
+		}
 	}
 	if requested := RequestedReasoningEffortFromContext(ctx); requested != nil {
 		result.RequestedReasoningEffort = requested

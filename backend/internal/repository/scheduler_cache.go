@@ -61,9 +61,9 @@ const (
 	schedulerAccountMetaRevisionBytes        = 16
 	schedulerAccountMetaRevisionWriteTimeout = 3 * time.Second
 
-	// Older OpenAI projections omit kilo_bridge_enabled. The marker applies
-	// only to metadata, so full account reads and other platforms stay compatible.
-	schedulerOpenAIProjectionVersion = 1
+	// Kilo query-only and managed identity must survive candidate projection.
+	// Bump metadata versions so pre-policy snapshots cannot admit a source.
+	schedulerOpenAIProjectionVersion = 4
 )
 
 const (
@@ -1424,12 +1424,15 @@ func filterSchedulerCredentials(credentials map[string]any) map[string]any {
 	}
 	// Candidate-list admission evaluates the account override before hydrating
 	// the full account. Dropping it silently falls back to the platform threshold.
-	keys := []string{"model_mapping", "model_mapping_mode", "compact_model_mapping", "api_key", "project_id", "oauth_type", "plan_type", "account_scheduling_threshold",
+	keys := []string{"model_mapping", "model_mapping_mode", "compact_model_mapping", "api_key", service.KiloGatewayOrganizationIDCredential, "project_id", "oauth_type", "plan_type", "account_scheduling_threshold",
 		// Gemini 显式缓存的候选过滤（GeminiExplicitCacheExclusions）读本投影判定账号是否支持显式缓存：
 		// 官方地址、Vertex 认证方式与上游网关的显式缓存声明。缺这几个键时只能按类型粗筛，
 		// 不支持的账号要逐个选中后才被剔除。
 		"base_url", "auth_mode", service.DeepSeekResponsesImageFieldCredential, service.GeminiExplicitCacheUpstreamCredentialKey, service.GeminiExplicitCacheUpstreamMaxTTLCredentialKey}
 	filtered := make(map[string]any)
+	if token, _ := credentials["access_token"].(string); token != "" {
+		filtered["_openai_access_token_digest"] = service.OpenAIAccessTokenDigest(token)
+	}
 	for _, key := range keys {
 		if value, ok := credentials[key]; ok && value != nil {
 			filtered[key] = value
@@ -1446,6 +1449,7 @@ func filterSchedulerExtra(extra map[string]any) map[string]any {
 		return nil
 	}
 	keys := []string{
+		service.OpenAIAuthRecoveryKey,
 		service.OAuthDegradationActionExtraKey,
 		// Images candidate authorization runs before full-account hydration.
 		service.ExtraImageModelsKey,
@@ -1497,7 +1501,12 @@ func filterSchedulerExtra(extra map[string]any) map[string]any {
 		"openai_ws_force_http",
 		// Kilo admission must use the same account mapping and HTTP-only policy
 		// as the hydrated forwarding account, including passthrough accounts.
-		service.AccountExtraKiloBridgeEnabled,
+		service.AccountExtraKiloBridgeEnabled, service.KiloManagedExtraKey, service.KiloGatewayProfileExtra,
+		"kilo_prepared_id", "kilo_source_prepared_id", "kilo_source_gateway_id",
+		"kilo_quota_only", "kilo_onboarding_source_id", "kilo_onboarding_job_id",
+		"kilo_subscription_models", "kilo_subscription_scope_verified_at", "kilo_subscription_scope_source",
+		// Candidate validation verifies the same Key and organization before hydration.
+		"kilo_subscription_scope_key", "kilo_subscription_scope_organization",
 		"openai_responses_mode",
 		"openai_responses_supported",
 		// 透传开关必须进投影：候选过滤(ListSchedulableAccounts)读的是本投影，

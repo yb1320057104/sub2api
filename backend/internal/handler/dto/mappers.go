@@ -503,6 +503,7 @@ func AccountListItemFromAccount(a *Account) *AccountListItem {
 		return nil
 	}
 	return &AccountListItem{
+		Kilo:                   a.Kilo,
 		UpstreamChannelBinding: a.UpstreamChannelBinding,
 		ID:                     a.ID, Name: a.Name, Notes: a.Notes, Platform: a.Platform, Type: a.Type,
 		Credentials: a.Credentials, CredentialsStatus: a.CredentialsStatus, Extra: a.Extra,
@@ -1055,6 +1056,8 @@ func AccountForObserver(ctx context.Context, account *Account) *Account {
 	if _, scoped := service.ObserverGroupIDs(ctx); !scoped || account == nil {
 		return account
 	}
+	// A Kilo source may belong to a group outside the gateway's scope.
+	account.Kilo = nil
 	account.GroupIDs = service.ObserverVisibleGroups(ctx, account.GroupIDs)
 	groups := account.Groups[:0]
 	for _, group := range account.Groups {

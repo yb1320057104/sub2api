@@ -20,7 +20,17 @@ func (s *OpenAIGatewayService) FetchOpenAIModelsList(ctx context.Context, accoun
 	if account != nil && account.IsExcelBPSEnabled() {
 		return s.fetchExcelBPSAccountModels(ctx, account)
 	}
-	return s.fetchNativeOpenAIModelsList(ctx, account)
+	response, err := s.fetchNativeOpenAIModelsList(ctx, account)
+	if err != nil || response == nil || !account.hasKiloSubscriptionScope() {
+		return response, err
+	}
+	body, err := filterKiloSubscriptionModelsBody(account, response.Body, false)
+	if err != nil {
+		return nil, err
+	}
+	result := *response
+	result.Body, result.ETag = body, codexModelsManifestBodyETag(body)
+	return &result, nil
 }
 
 func (s *OpenAIGatewayService) fetchNativeOpenAIModelsList(ctx context.Context, account *Account) (*OpenAIModelsResponse, error) {
@@ -176,6 +186,11 @@ func standardOpenAIModelsBody(body []byte, fromManifest bool) ([]byte, error) {
 // would interpret upstream names as aliases and can retain retired targets or
 // discard metadata needed by a valid replacement alias.
 func projectAccountModelsBody(body []byte, account *Account, group *Group, codex bool) ([]byte, error) {
+	scoped, scopeErr := filterKiloSubscriptionModelsBody(account, body, codex)
+	if scopeErr != nil {
+		return nil, scopeErr
+	}
+	body = scoped
 	projected, err := projectAccountModelAliases(body, account, group, codex)
 	if err != nil {
 		return nil, err
@@ -195,7 +210,7 @@ func projectAccountModelAliases(body []byte, account *Account, group *Group, cod
 	if codex {
 		field, idField = "models", "slug"
 	}
-	if !account.hasOAuthInitialModelSelection() && (account.IsOpenAIPassthroughEnabled() || len(account.GetModelMapping()) == 0) {
+	if !account.hasOAuthInitialModelSelection() && !account.hasKiloSubscriptionScope() && (account.IsOpenAIPassthroughEnabled() || len(account.GetModelMapping()) == 0) {
 		if len(account.GroupAllowedModels(derefGroupID(groupID))) == 0 {
 			return body, nil
 		}
@@ -257,7 +272,7 @@ func projectAccountModelAliases(body []byte, account *Account, group *Group, cod
 		if !account.IsModelAllowedInGroup(groupID, id) {
 			continue
 		}
-		if account.hasOAuthInitialModelSelection() && !account.IsModelSupported(id) {
+		if (account.hasOAuthInitialModelSelection() || account.hasKiloSubscriptionScope()) && !account.IsModelSupported(id) {
 			continue
 		}
 		target, matched := account.ResolveMappedModel(id)

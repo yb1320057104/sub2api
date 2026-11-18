@@ -109,10 +109,10 @@ func (r *OpenAITokenRefresher) NeedsRefresh(account *Account, refreshWindow time
 	}
 	expiresAt := account.GetCredentialAsTime("expires_at")
 	if expiresAt == nil {
-		return account.IsRateLimited()
+		return OpenAIAuthRecoveryPending(account) || account.IsRateLimited()
 	}
 
-	return time.Until(*expiresAt) < refreshWindow
+	return OpenAIAuthRecoveryPending(account) || time.Until(*expiresAt) < refreshWindow
 }
 
 // Refresh 执行token刷新

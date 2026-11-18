@@ -17,6 +17,12 @@ func (s *OpenAIGatewayService) SetPluginManager(manager *PluginManager) {
 // doOpenAIUpstream 只在 OpenAI OAuth 能力绑定已启用时把真实请求交给插件。
 // 插件返回标准 http.Response，响应解析、错误映射、SSE 和计费仍由现有核心链处理。
 func (s *OpenAIGatewayService) doOpenAIUpstream(request *http.Request, proxyURL string, account *Account) (result *http.Response, resultErr error) {
+	if err := GuardKiloInferenceRequest(request.Context(), kiloInferenceReader(s.accountRepo), request, account, account.ID); err != nil {
+		return nil, err
+	}
+	if account.IsKiloGatewayAccount() {
+		request = request.WithContext(WithHTTPUpstreamRedirectsDisabled(request.Context()))
+	}
 	if s.excelOAuthReauth != nil {
 		if err := s.excelOAuthReauth.validateAuthConnectionPolicy(request.Context(), account); err != nil {
 			return nil, err
@@ -126,7 +132,16 @@ func (s *OpenAIGatewayService) doOpenAIUpstream(request *http.Request, proxyURL 
 	}()
 	// Keep ticket observation/strict validation around the final response,
 	// while every egress attempt retains its own plugin routing and trace.
-	return s.doUpstreamWithProxyFallback(request.Context(), request, account, proxyURL)
+	return doKiloCompatibleUpstream(request, account, true, func(status int, headers http.Header, body []byte) {
+		if s.rateLimitService != nil {
+			s.rateLimitService.observeKiloGatewayFailure(request.Context(), account, status, body)
+		}
+	}, func(attempt *http.Request) (*http.Response, error) {
+		if err := GuardKiloInferenceRequest(attempt.Context(), kiloInferenceReader(s.accountRepo), attempt, account, account.ID); err != nil {
+			return nil, err
+		}
+		return s.doUpstreamWithProxyFallback(attempt.Context(), attempt, account, proxyURL)
+	})
 }
 
 type accountProxyResponseBody struct {
@@ -152,6 +167,9 @@ func (s *AccountTestService) doOpenAIAccountCandyUpstream(request *http.Request,
 	// The PK probe owns proxy rotation. A gateway ticket must not introduce an
 	// independent fallback chain inside each of its three handshake attempts.
 	request = request.WithContext(context.WithValue(request.Context(), accountCandyFixedEgressKey{}, true))
+	if account.RequiresKiloInference() {
+		return s.openAIAccountTestSender(proxyURL, account, true, body)(request)
+	}
 	return doAccountCandyTLSHandshakeRetry(request, s.openAIAccountTestSender(proxyURL, account, true, body))
 }
 
@@ -159,43 +177,57 @@ func (s *AccountTestService) openAIAccountTestSender(proxyURL string, account *A
 	var profile *tlsfingerprint.Profile
 	profileResolved := false
 	return func(request *http.Request) (*http.Response, error) {
-		gateway := s.openaiGatewayService
-		model := extractOpenAICodexTicketModel(body)
-		if gateway != nil && !IsAstraSourceAcquisition(request.Context()) && request.URL != nil && request.URL.String() == chatgptCodexAPIURL &&
-			isOpenAICodexTicketAccount(account, model) && gateway.openAICodexTicketEnabledContext(request.Context()) &&
-			gateway.openAICodexTicketGatedModel(model) {
-			if err := gateway.applyOpenAICodexTicket(request.Context(), account, model, request.Header, "sse"); err != nil {
-				return nil, err
-			}
-			// This restores the complete cookie/egress bundle, holds it until body close,
-			// observes replacements and enforces the configured strict response policy.
-			request = request.WithContext(context.WithValue(request.Context(), astraCandySkipObservationKey{}, true))
-			return gateway.doOpenAIUpstream(request, proxyURL, account)
-		}
-		if s.pluginManager != nil {
-			response, handled, err := roundTripOpenAIPluginWithProxySlot(s.pluginManager, s.httpUpstream, request, proxyURL, account)
-			if handled {
-				if options, ok := pelicanTestOptionsFromContext(request.Context()); ok && options.nativeOAuthTransport != nil && !IsAstraSourceAcquisition(request.Context()) {
-					*options.nativeOAuthTransport = false
-				}
-				return response, err
-			}
-		}
-		// Ticket admission (including donor tickets) and handled plugin requests
-		// returned above. Only this native transport may certify an own OAuth 401.
-		if options, ok := pelicanTestOptionsFromContext(request.Context()); ok && options.nativeOAuthTransport != nil && !IsAstraSourceAcquisition(request.Context()) {
-			*options.nativeOAuthTransport = true
-		}
-		if useTLSFallback {
-			// Resolve a random fingerprint once for the entire probe, including retries.
-			if !profileResolved {
-				profile = s.tlsFPProfileService.ResolveTLSProfile(account)
-				profileResolved = true
-			}
-			return timedAccountTestUpstream(s.httpUpstream).DoWithTLS(request, proxyURL, account.ID, account.Concurrency, profile)
-		}
-		return timedAccountTestUpstream(s.httpUpstream).Do(request, proxyURL, account.ID, account.Concurrency)
+		return doKiloCompatibleUpstream(request, account, false, func(status int, headers http.Header, payload []byte) {
+			s.observeKiloAccountTestFailure(request.Context(), account, status, headers, payload)
+		}, func(attempt *http.Request) (*http.Response, error) {
+			return s.doProtectedAccountTestUpstream(attempt, proxyURL, account, useTLSFallback, body, &profile, &profileResolved)
+		})
 	}
+}
+
+func (s *AccountTestService) doProtectedAccountTestUpstream(request *http.Request, proxyURL string, account *Account, useTLSFallback bool, body []byte, profile **tlsfingerprint.Profile, profileResolved *bool) (*http.Response, error) {
+	if err := GuardKiloInferenceRequest(request.Context(), kiloInferenceReader(s.accountRepo), request, account, account.ID); err != nil {
+		return nil, err
+	}
+	if account.IsKiloGatewayAccount() {
+		request = request.WithContext(WithHTTPUpstreamRedirectsDisabled(request.Context()))
+	}
+	gateway := s.openaiGatewayService
+	model := extractOpenAICodexTicketModel(body)
+	if gateway != nil && !IsAstraSourceAcquisition(request.Context()) && request.URL != nil && request.URL.String() == chatgptCodexAPIURL &&
+		isOpenAICodexTicketAccount(account, model) && gateway.openAICodexTicketEnabledContext(request.Context()) &&
+		gateway.openAICodexTicketGatedModel(model) {
+		if err := gateway.applyOpenAICodexTicket(request.Context(), account, model, request.Header, "sse"); err != nil {
+			return nil, err
+		}
+		// This restores the complete cookie/egress bundle, holds it until body close,
+		// observes replacements and enforces the configured strict response policy.
+		request = request.WithContext(context.WithValue(request.Context(), astraCandySkipObservationKey{}, true))
+		return gateway.doOpenAIUpstream(request, proxyURL, account)
+	}
+	if s.pluginManager != nil {
+		response, handled, err := roundTripOpenAIPluginWithProxySlot(s.pluginManager, s.httpUpstream, request, proxyURL, account)
+		if handled {
+			if options, ok := pelicanTestOptionsFromContext(request.Context()); ok && options.nativeOAuthTransport != nil && !IsAstraSourceAcquisition(request.Context()) {
+				*options.nativeOAuthTransport = false
+			}
+			return response, err
+		}
+	}
+	// Ticket admission (including donor tickets) and handled plugin requests
+	// returned above. Only this native transport may certify an own OAuth 401.
+	if options, ok := pelicanTestOptionsFromContext(request.Context()); ok && options.nativeOAuthTransport != nil && !IsAstraSourceAcquisition(request.Context()) {
+		*options.nativeOAuthTransport = true
+	}
+	if useTLSFallback {
+		// Resolve a random fingerprint once for the entire probe, including retries.
+		if !*profileResolved {
+			*profile = s.tlsFPProfileService.ResolveTLSProfile(account)
+			*profileResolved = true
+		}
+		return timedAccountTestUpstream(s.httpUpstream).DoWithTLS(request, proxyURL, account.ID, account.Concurrency, *profile)
+	}
+	return timedAccountTestUpstream(s.httpUpstream).Do(request, proxyURL, account.ID, account.Concurrency)
 }
 
 // Plugins own their HTTP client, so they must hold the same shared proxy lease

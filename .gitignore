@@ -137,6 +137,7 @@ deploy/docker-compose.override.yml
 vite.config.js
 user-traffic-pending/
 docs/*
+!docs/KILO_SYSTEM.md
 !docs/ai-ops-codex.md
 !docs/reauth-identity-validation.md
 !docs/openai-context-limit-errors.md

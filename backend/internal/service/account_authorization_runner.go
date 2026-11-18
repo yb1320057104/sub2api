@@ -29,8 +29,9 @@ type authorizationJob struct {
 	settings               AuthorizationSubmit
 }
 type authorizationProxy struct {
-	id  int64
-	raw string
+	id       int64
+	raw      string
+	assigned bool
 }
 
 func (s *AccountAuthorizationService) runAuthorizationBatch(ctx context.Context, cfg *AuthorizationConfig, conn *sql.Conn) error {
@@ -274,14 +275,24 @@ func (s *AccountAuthorizationService) runAuthorizationJob(parent context.Context
 			return
 		}
 	}
-	proxies, err := s.loadAuthorizationProxies(ctx)
-	if err != nil {
-		resultErr = authorizationBrowserFailure("proxy_failed", "无法读取授权代理")
-		return
-	}
-	if len(proxies) == 0 {
-		resultErr = authorizationBrowserFailure("proxy_missing", "请先在授权代理页添加可用代理")
-		return
+	var proxies []authorizationProxy
+	if before.IsKiloSourceAccount() {
+		route, routeErr := resolveAssignedAuthProxy(ctx, before, assignedAuthProxyStore{account: s.accounts.GetByID, proxy: s.oauth.proxyRepo.GetByID, pin: s.accounts.UpdateExtra})
+		if routeErr != nil || route.ID <= 0 || route.URL == "" {
+			resultErr = authorizationBrowserFailure("assigned_proxy_unavailable", "Kilo来源的固定登录代理不可用，本次未改用授权代理池或直连")
+			return
+		}
+		proxies = []authorizationProxy{{id: route.ID, raw: route.URL, assigned: true}}
+	} else {
+		proxies, err = s.loadAuthorizationProxies(ctx)
+		if err != nil {
+			resultErr = authorizationBrowserFailure("proxy_failed", "无法读取授权代理")
+			return
+		}
+		if len(proxies) == 0 {
+			resultErr = authorizationBrowserFailure("proxy_missing", "请先在授权代理页添加可用代理")
+			return
+		}
 	}
 	token, err := s.authorizeWithProxyRotation(ctx, job, secret, proxies, progress)
 	if err != nil {

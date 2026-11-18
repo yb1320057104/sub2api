@@ -44,6 +44,7 @@ import requestTiming from './requestTiming'
 import latencyObservability from './latencyObservability'
 import autoConfig from './autoConfig'
 import smartOps from './smartOps'
+import kilo from './kilo'
 
 export default {
   adminAccessKeys,
@@ -75,6 +76,7 @@ export default {
   siwc,
   autoConfig,
   smartOps,
+  kilo,
   priorityScheduling,
   qualityOps,
   channelOps,

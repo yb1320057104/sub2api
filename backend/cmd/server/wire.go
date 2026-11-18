@@ -145,6 +145,7 @@ func provideCleanup(
 	intelligenceTest *service.IntelligenceTestService,
 	accountCandyTest *service.AccountCandyTestService,
 	accountAuthorization *service.AccountAuthorizationService,
+	kilo *service.KiloService,
 	accountUsage *service.AccountUsageService,
 	channelMonitorV2Aggregator *service.ChannelMonitorV2Aggregator,
 	channelMonitorV3Prober *service.ChannelMonitorV3Prober,
@@ -181,6 +182,12 @@ func provideCleanup(
 
 		// 应用层清理步骤可并行执行，基础设施资源（Redis/Ent）最后按顺序关闭。
 		parallelSteps := []cleanupStep{
+			{"KiloService", func() error {
+				if kilo != nil {
+					kilo.Stop()
+				}
+				return nil
+			}},
 			{"CyberPolicyBalanceWorker", func() error {
 				if cyberPolicyBalanceWorker != nil {
 					cyberPolicyBalanceWorker.Stop()
@@ -582,7 +589,7 @@ func provideCleanup(
 			"BackupService": true, "PaymentOrderExpiryService": true,
 			"BinanceRechargeService": true, "ChannelMonitorV2Aggregator": true,
 			"IntelligenceTestService": true, "AccountHealthService": true,
-			"AccountAuthorizationService": true, "AccountCandyTestService": true,
+			"AccountAuthorizationService": true, "AccountCandyTestService": true, "KiloService": true,
 			"ChannelMonitorV3Prober": true, "ChannelMonitorRunner": true,
 			"UpstreamBillingProbeService": true, "OllamaCloudUsageService": true,
 			"OpenCodeGoUsageService": true,

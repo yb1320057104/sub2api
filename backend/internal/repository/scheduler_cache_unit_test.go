@@ -4,6 +4,7 @@ package repository
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -113,7 +114,7 @@ func TestSchedulerCacheSnapshotAccountIDReusePreservesPayloadAndMembers(t *testi
 	wantMeta, err := json.Marshal(struct {
 		service.Account
 		PKProjectionVersion int
-	}{Account: buildSchedulerMetadataAccount(validOne), PKProjectionVersion: 1})
+	}{Account: buildSchedulerMetadataAccount(validOne), PKProjectionVersion: schedulerOpenAIProjectionVersion})
 	require.NoError(t, err)
 	fullBefore, err := cache.rdb.Get(ctx, schedulerAccountKey("701")).Bytes()
 	require.NoError(t, err)
@@ -393,7 +394,7 @@ func TestSchedulerCacheOpenAIProjectionVersionCompatibility(t *testing.T) {
 		require.NoError(t, err)
 		var metaFields map[string]json.RawMessage
 		require.NoError(t, json.Unmarshal(metaPayload, &metaFields))
-		require.JSONEq(t, "1", string(metaFields["PKProjectionVersion"]))
+		require.JSONEq(t, "4", string(metaFields["PKProjectionVersion"]), "Kilo Key and organization scope proofs require the new projection")
 		legacyReader, err := decodeCachedAccount(metaPayload)
 		require.NoError(t, err)
 		require.True(t, legacyReader.IsKiloBridgeEnabled(), "old readers ignore the new top-level metadata field")
@@ -418,6 +419,41 @@ func TestSchedulerCacheOpenAIProjectionVersionCompatibility(t *testing.T) {
 		require.Len(t, snapshot, 1)
 		require.Equal(t, account.ID, snapshot[0].ID)
 	})
+}
+
+func TestKiloSchedulerSnapshotRetainsAuthenticatedScopeProof(t *testing.T) {
+	ctx := context.Background()
+	cache := newSchedulerCacheUnit(t)
+	key := "synthetic-kilo-key"
+	digest := sha256.Sum256([]byte(key))
+	account := service.Account{ID: 806, Platform: service.PlatformOpenAI, Type: service.AccountTypeAPIKey,
+		Status: service.StatusActive, Schedulable: true,
+		Credentials: map[string]any{"api_key": key, "base_url": service.KiloGatewayBaseURL, service.KiloGatewayOrganizationIDCredential: "synthetic-org"},
+		Extra: map[string]any{
+			service.AccountExtraKiloBridgeEnabled: true, service.KiloManagedExtraKey: true, service.KiloGatewayProfileExtra: service.KiloGatewayCLIProfile,
+			"kilo_prepared_id": int64(8), "kilo_onboarding_source_id": int64(9), "kilo_binding_revision": int64(1),
+			"kilo_subscription_models": []string{"openai/gpt-6.1-sol"}, "kilo_subscription_scope_source": service.KiloAuthenticatedModelScope,
+			"kilo_subscription_scope_verified_at": time.Now().UTC().Format(time.RFC3339),
+			"kilo_subscription_scope_key":         hex.EncodeToString(digest[:]), "kilo_subscription_scope_organization": "synthetic-org",
+		}}
+	require.NoError(t, service.ValidateKiloInferenceAccount(&account))
+	bucket := service.SchedulerBucket{GroupID: 21, Platform: service.PlatformOpenAI, Mode: service.SchedulerModeSingle}
+	token, err := cache.CaptureBucketWriteToken(ctx, bucket)
+	require.NoError(t, err)
+	require.NoError(t, cache.SetSnapshot(ctx, bucket, token, []service.Account{account}))
+	snapshot, hit, err := cache.GetSnapshot(ctx, bucket)
+	require.NoError(t, err)
+	require.True(t, hit)
+	require.Len(t, snapshot, 1)
+	require.NoError(t, service.ValidateKiloInferenceAccount(snapshot[0]))
+	require.True(t, snapshot[0].IsSchedulable(), "candidate admission must agree with the hydrated gateway")
+	require.Equal(t, "synthetic-org", snapshot[0].GetCredential(service.KiloGatewayOrganizationIDCredential))
+
+	legacy, err := json.Marshal(schedulerMetadataPayload{Account: buildSchedulerMetadataAccount(account), PKProjectionVersion: 3})
+	require.NoError(t, err)
+	_, compatible, err := decodeSchedulerMetadataAccount(legacy)
+	require.NoError(t, err)
+	require.False(t, compatible, "old proof-incomplete projections must be rebuilt")
 }
 
 func TestBuildSchedulerMetadataAccount_KeepsOpenAIWSFlags(t *testing.T) {

@@ -26,24 +26,30 @@ func authorizationMayChangeProxy(err error) bool {
 
 func (s *AccountAuthorizationService) authorizeWithProxyRotation(ctx context.Context, job *authorizationJob, secret *AuthorizationSecret, proxies []authorizationProxy, progress func(string, string) error) (*OpenAITokenInfo, error) {
 	passed, scanned := 0, 0
+	limit := authorizationPassedProxyLimit
+	if len(proxies) == 1 && proxies[0].assigned {
+		limit = 1
+	}
 	var last error
 	// One pool snapshot, at most one visit per ID. Disabled/deleted candidates are
 	// checked again before use. A failed precheck does not consume a passed slot.
-	for i := 0; i < len(proxies) && passed < authorizationPassedProxyLimit; i++ {
+	for i := 0; i < len(proxies) && passed < limit; i++ {
 		if ctx.Err() != nil {
 			break
 		}
 		proxy := proxies[(int(job.id)+i)%len(proxies)]
-		var enabled bool
-		if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pk_authorization_proxies WHERE id=$1 AND enabled)`, proxy.id).Scan(&enabled); err != nil {
-			return nil, err
-		}
-		if !enabled {
-			continue
+		if !proxy.assigned {
+			var enabled bool
+			if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pk_authorization_proxies WHERE id=$1 AND enabled)`, proxy.id).Scan(&enabled); err != nil {
+				return nil, err
+			}
+			if !enabled {
+				continue
+			}
 		}
 		scanned++
 		record := func() error {
-			r, e := s.db.ExecContext(ctx, `UPDATE pk_authorization_jobs SET settings=settings||jsonb_build_object('authorization_proxy_id',$3::bigint,'authorization_proxy_scanned',$4::integer,'authorization_proxy_passed',$5::integer,'authorization_proxy_limit',$6::integer) WHERE id=$1 AND owner_token=$2 AND status='running'`, job.id, job.token, proxy.id, scanned, passed, authorizationPassedProxyLimit)
+			r, e := s.db.ExecContext(ctx, `UPDATE pk_authorization_jobs SET settings=settings||jsonb_build_object('authorization_proxy_id',$3::bigint,'authorization_proxy_scanned',$4::integer,'authorization_proxy_passed',$5::integer,'authorization_proxy_limit',$6::integer) WHERE id=$1 AND owner_token=$2 AND status='running'`, job.id, job.token, proxy.id, scanned, passed, limit)
 			if e != nil {
 				return e
 			}
@@ -56,7 +62,14 @@ func (s *AccountAuthorizationService) authorizeWithProxyRotation(ctx context.Con
 			}
 			return nil
 		}
-		if err := progress("proxy_switch", fmt.Sprintf("正在尝试授权代理 #%d；已有 %d/%d 条代理预检通过", proxy.id, passed, authorizationPassedProxyLimit)); err != nil {
+		stage, message := "proxy_switch", fmt.Sprintf("正在尝试授权代理 #%d；已有 %d/%d 条代理预检通过", proxy.id, passed, limit)
+		if proxy.assigned {
+			stage, message = "assigned_proxy", fmt.Sprintf("正在使用原账号固定登录代理 #%d；本次不会切换出口", proxy.id)
+			if proxy.raw == "" {
+				message = "原账号未配置代理，正在使用直连；本次不会切换出口"
+			}
+		}
+		if err := progress(stage, message); err != nil {
 			return nil, err
 		}
 		if err := record(); err != nil {
@@ -74,8 +87,10 @@ func (s *AccountAuthorizationService) authorizeWithProxyRotation(ctx context.Con
 			if stage == "login" && !prechecked {
 				prechecked = true
 				passed++
-				if _, e := s.db.ExecContext(ctx, `UPDATE pk_authorization_proxies SET last_checked_at=NOW(),last_status='passed',last_message='chatgpt.com GET预检通过' WHERE id=$1 AND enabled`, proxy.id); e != nil {
-					return e
+				if !proxy.assigned {
+					if _, e := s.db.ExecContext(ctx, `UPDATE pk_authorization_proxies SET last_checked_at=NOW(),last_status='passed',last_message='chatgpt.com GET预检通过' WHERE id=$1 AND enabled`, proxy.id); e != nil {
+						return e
+					}
 				}
 				if e := record(); e != nil {
 					return e
@@ -88,7 +103,7 @@ func (s *AccountAuthorizationService) authorizeWithProxyRotation(ctx context.Con
 			s.oauth.sessionStore.Delete(session.SessionID)
 			last = err
 			var failure *authorizationBrowserError
-			if !prechecked && errors.As(err, &failure) && authorizationMayChangeProxy(err) {
+			if !proxy.assigned && !prechecked && errors.As(err, &failure) && authorizationMayChangeProxy(err) {
 				if _, e := s.db.ExecContext(ctx, `UPDATE pk_authorization_proxies SET last_checked_at=NOW(),last_status='failed',last_message=$2 WHERE id=$1 AND enabled`, proxy.id, failure.message); e != nil {
 					return nil, e
 				}
@@ -96,7 +111,7 @@ func (s *AccountAuthorizationService) authorizeWithProxyRotation(ctx context.Con
 			if ctx.Err() != nil {
 				break
 			}
-			if credentialsSubmitted || !authorizationMayChangeProxy(err) {
+			if proxy.assigned || credentialsSubmitted || !authorizationMayChangeProxy(err) {
 				return nil, err
 			}
 			if e := progress("proxy_switch", fmt.Sprintf("当前代理未完成授权，正在换下一条；预检通过 %d/%d 条", passed, authorizationPassedProxyLimit)); e != nil {

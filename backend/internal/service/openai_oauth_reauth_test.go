@@ -107,6 +107,7 @@ type reauthTestRepo struct {
 	markSucceeded int
 	createCalls   int
 	createErr     error
+	quotaOnly     bool
 }
 
 func (r *reauthTestRepo) UpsertConfig(_ context.Context, config *OpenAIOAuthReauthStoredConfig) error {
@@ -152,8 +153,12 @@ func (r *reauthTestRepo) ClaimNextTaskForEngines(ctx context.Context, workerID s
 	if r.config == nil || (mode != "" && r.config.CredentialMode != mode) {
 		return nil, nil
 	}
+	effective := normalizedReauthEngine(r.config.Engine)
+	if r.quotaOnly && r.task != nil && reauthTaskProfile(r.task) == "codex" {
+		effective = OpenAIOAuthReauthEngineLocal
+	}
 	for _, engine := range engines {
-		if normalizedReauthEngine(r.config.Engine) == engine {
+		if effective == engine {
 			return r.ClaimNextTask(ctx, workerID, stale)
 		}
 	}

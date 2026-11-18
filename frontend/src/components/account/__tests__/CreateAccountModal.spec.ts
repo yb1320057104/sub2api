@@ -1,5 +1,6 @@
+/// <reference path="../../../vite-env.d.ts" />
 vi.mock('@/api/admin/upstreamChannels', () => ({ listUpstreamChannels: vi.fn(), readChannelBindings: vi.fn(), bindChannelAccounts: vi.fn() }))
-import { readChannelBindings, listUpstreamChannels } from '@/api/admin/upstreamChannels'
+import { readChannelBindings, listUpstreamChannels } from '../../../api/admin/upstreamChannels'
 import UpstreamChannelSelector from '../UpstreamChannelSelector.vue'
 
 vi.mock('@/api/admin/credentialEncryption', () => ({
@@ -13,7 +14,7 @@ import {
   BUILTIN_PLATFORM_CATALOG,
   resetPlatformCatalog,
   setPlatformCatalog,
-} from '@/constants/platformCatalog'
+} from '../../../constants/platformCatalog'
 
 enableAutoUnmount(afterEach)
 
@@ -101,6 +102,15 @@ vi.mock('vue-i18n', async () => {
 
 import CreateAccountModal from '../CreateAccountModal.vue'
 import OpenAITwoFAImport from '../OpenAITwoFAImport.vue'
+import KiloTwoFAImport from '../KiloTwoFAImport.vue'
+import { webcrypto } from 'node:crypto'
+import { getGroups, getOverview, getProxies, getProxyGroups, importOnboarding, preflightProxy } from '../../../api/admin/kilo'
+
+vi.mock('@/api/admin/kilo', async original => ({
+  ...await original<typeof import('../../../api/admin/kilo')>(),
+  getGroups: vi.fn(), getOverview: vi.fn(), getProxies: vi.fn(), getProxyGroups: vi.fn(),
+  importOnboarding: vi.fn(), preflightProxy: vi.fn(),
+}))
 
 const BaseDialogStub = defineComponent({
   name: 'BaseDialog',
@@ -175,15 +185,19 @@ const ModelWhitelistSelectorStub = defineComponent({
   >models</button>`,
 })
 
-function mountModal(groups: any[] = []) {
+function mountModal(groups: any[] = [], realDialog = false, realKiloImport = false) {
   return mount(CreateAccountModal, {
+    attachTo: realDialog ? document.body : undefined,
     props: { show: true, proxies: [], groups },
     global: {
       stubs: {
-        BaseDialog: BaseDialogStub,
+        BaseDialog: realDialog ? false : BaseDialogStub,
+        teleport: true,
         OAuthAuthorizationFlow: OAuthAuthorizationFlowStub,
+        KiloTwoFAImport: !realKiloImport,
+        RouterLink: true,
         ConfirmDialog: true,
-        Select: true,
+        Select: !realKiloImport,
         Icon: true,
         PlatformIcon: true,
         ProxySelector: true,
@@ -260,6 +274,77 @@ function expectWSAcceleration(extra: unknown, enabled: boolean) {
 }
 
 describe('CreateAccountModal OpenAI long-context billing', () => {
+  it('opens the independent Kilo 2FA flow without ordinary account creation and forwards the accepted batch', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'OpenAI')
+    expect(wrapper.find('[data-testid="openai-two-fa"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="openai-bps-oauth"]').exists()).toBe(true)
+    await wrapper.get('[data-testid="openai-kilo-two-fa"]').trigger('click')
+    expect(wrapper.findComponent(GroupSelectorStub).exists()).toBe(false)
+    await wrapper.get('#create-account-form').trigger('submit.prevent')
+    await flushPromises()
+    const importer = wrapper.getComponent(KiloTwoFAImport)
+    expect(wrapper.findComponent(OpenAITwoFAImport).exists()).toBe(false)
+    expect(wrapper.findComponent(OAuthAuthorizationFlowStub).exists()).toBe(false)
+    expect(createAccountMock).not.toHaveBeenCalled()
+    expect(importCodexSessionMock).not.toHaveBeenCalled()
+    importer.vm.$emit('created', { batch_id: 'kilo-atomic-batch', items: [] })
+    await flushPromises()
+    expect(wrapper.emitted('kiloBatchCreated')).toEqual([['kilo-atomic-batch']])
+    expect(wrapper.emitted('created')).toHaveLength(1)
+    expect(wrapper.emitted('close')).toHaveLength(1)
+  })
+
+  it('submits the website Kilo import with all request proxies and a separate fixed login proxy', async () => {
+    vi.stubGlobal('crypto', webcrypto)
+    try {
+      vi.mocked(getOverview).mockResolvedValue({ prepared: [], jobs: [], encryption_ready: true })
+      vi.mocked(getGroups).mockResolvedValue([{ id: 7, name: 'OpenAI target' }])
+      vi.mocked(getProxyGroups).mockResolvedValue([])
+      vi.mocked(getProxies).mockResolvedValue([
+        { id: 41, name: 'Login exit', status: 'active', owned: false, owner_account_id: null, owner_account_name: '', owner_deleted: false },
+      ])
+      vi.mocked(preflightProxy).mockResolvedValue({ proxy_id: 41, reachable: true, checks: [] })
+      vi.mocked(importOnboarding).mockResolvedValue({ batch_id: 'fixture-all-proxies', items: [] })
+      const wrapper = mountModal([], false, true)
+      await selectButtonByText(wrapper, 'OpenAI')
+      await wrapper.get('[data-testid="openai-kilo-two-fa"]').trigger('click')
+      await wrapper.get('#create-account-form').trigger('submit.prevent')
+      await flushPromises()
+      const form = wrapper.get('[data-testid="kilo-two-fa-import"]')
+      await form.get('#kilo-two-fa-credentials').setValue('sample+tag@example.test----Fixture$&^%*Password----JBSWY3DPEHPK3PXP')
+      await form.get('[data-testid="kilo-two-fa-preview"]').trigger('click')
+
+      const choose = async (selector: string, label: string) => {
+        await form.get(selector).trigger('click')
+        const option = form.findAll('[role="option"]').find(item => item.text().includes(label))
+        expect(option, label).toBeDefined()
+        await option!.trigger('click')
+      }
+      await choose('#kilo-two-fa-0-login', 'Login exit #41')
+      await form.get('[data-testid="kilo-proxy-check"]').trigger('click')
+      await flushPromises()
+      expect(preflightProxy).toHaveBeenCalledWith(41, expect.any(AbortSignal))
+      await choose('#kilo-import-routing-pool', 'kilo.batch.allRequestProxies')
+      await choose('#kilo-import-routing-groups', 'OpenAI target')
+      const submit = form.get<HTMLButtonElement>('[data-testid="kilo-two-fa-submit"]')
+      expect(submit.element.disabled).toBe(false)
+      await submit.trigger('click')
+      await vi.waitFor(() => expect(importOnboarding).toHaveBeenCalledTimes(1))
+      await flushPromises()
+      expect(importOnboarding).toHaveBeenCalledWith(expect.objectContaining({
+        request_id: expect.stringMatching(/^[0-9a-f-]{36}$/),
+        group_ids: [7],
+        items: [expect.objectContaining({ email: 'sample+tag@example.test', password: 'Fixture$&^%*Password', login_proxy_id: 41 })],
+        routing: expect.objectContaining({ proxy_group_id: -1 }),
+      }), expect.any(AbortSignal))
+      expect(wrapper.emitted('kiloBatchCreated')).toEqual([['fixture-all-proxies']])
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+
   it('leaves upstream response-tier billing disabled by default', async () => {
     await submitApiKeyAccount('openai')
 

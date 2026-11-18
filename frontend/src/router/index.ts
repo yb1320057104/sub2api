@@ -21,6 +21,7 @@ import { resolveRouteDocumentTitle } from './title'
  * Route definitions with lazy loading
  */
 const routes: RouteRecordRaw[] = [
+  { path: '/admin/kilo', name: 'AdminKiloAccounts', component: () => import('@/views/admin/KiloAccountsView.vue'), meta: { requiresAuth: true, requiresAdmin: true, titleKey: 'kilo.title' } },
   // ==================== Setup Routes ====================
   {
     path: '/setup',

@@ -236,6 +236,7 @@ type AccountProxyBinding struct {
 }
 
 type Account struct {
+	Kilo                   *service.KiloAccountView        `json:"kilo,omitempty"`
 	UpstreamChannelBinding *service.UpstreamChannelBinding `json:"upstream_channel_binding,omitempty"`
 	ID                     int64                           `json:"id"`
 	Name                   string                          `json:"name"`
@@ -370,6 +371,7 @@ type Account struct {
 // repeated account_groups and groups object graphs. Fetch /admin/accounts/:id
 // for the complete Account DTO when editing or inspecting an account.
 type AccountListItem struct {
+	Kilo                   *service.KiloAccountView        `json:"kilo,omitempty"`
 	UpstreamChannelBinding *service.UpstreamChannelBinding `json:"upstream_channel_binding,omitempty"`
 	ID                     int64                           `json:"id"`
 	Name                   string                          `json:"name"`

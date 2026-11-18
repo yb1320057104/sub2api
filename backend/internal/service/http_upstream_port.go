@@ -6,6 +6,13 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 )
 
+// HTTPUpstreamSession scopes the transport used by one logical request and its
+// continuations. Closing it retires idle connections after response bodies close.
+// Implementations and test doubles may keep using HTTPUpstream without opting in.
+type HTTPUpstreamSession interface {
+	NewExcelBPSSession() (HTTPUpstream, func())
+}
+
 // HTTPUpstream 上游 HTTP 请求接口
 // 用于向上游 API（Claude、OpenAI、Gemini 等）发送请求
 type HTTPUpstream interface {

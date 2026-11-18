@@ -400,6 +400,16 @@ func (s *AccountTestService) TestAccountConnection(c *gin.Context, accountID int
 	if err != nil {
 		return s.sendErrorAndEnd(c, "Account not found")
 	}
+	return s.testAccountConnectionForAccount(c, account, modelID, prompt, mode, testOpts)
+}
+
+func (s *AccountTestService) testAccountConnectionForAccount(c *gin.Context, account *Account, modelID, prompt, mode string, testOpts AccountTestOptions) error {
+	ctx := c.Request.Context()
+	resolved, routeErr := resolveKiloTestAccount(ctx, s.accountRepo, account)
+	if routeErr != nil {
+		return s.sendErrorAndEnd(c, routeErr.Error())
+	}
+	account = resolved
 	bindAccountTestPlatform(c, account)
 	recordQualityBatchRoute(c, account, modelID, account.Platform+":"+account.GetAPIProtocol())
 	if expected, ok := ctx.Value(modelTraceContextKey{}).(modelTraceEnvironment); ok {
@@ -915,8 +925,13 @@ func (s *AccountTestService) testBedrockAccountConnection(c *gin.Context, ctx co
 
 // testOpenAIAccountConnection tests an OpenAI account's connection
 func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account *Account, modelID string, prompt string, mode string) error {
-	recordQualityBatchRoute(c, account, modelID, "openai:account")
 	ctx := c.Request.Context()
+	resolved, routeErr := resolveKiloTestAccount(ctx, s.accountRepo, account)
+	if routeErr != nil {
+		return s.sendErrorAndEnd(c, routeErr.Error())
+	}
+	account = resolved
+	recordQualityBatchRoute(c, account, modelID, "openai:account")
 	candy := candyProbe(c)
 	mode = normalizeAccountTestMode(mode)
 	if account.IsExcelOAuth() {
@@ -992,7 +1007,11 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 	}
 
 	credentialAccount := account
-	if candy != nil && candy.credentialAccount != nil {
+	if account.IsKiloGatewayAccount() {
+		// The source remains query-only even when a candy caller captured its
+		// OAuth credential before this test resolved the paired gateway.
+		credentialAccount = account
+	} else if candy != nil && candy.credentialAccount != nil {
 		credentialAccount = candy.credentialAccount
 	} else if account.IsCredentialShadow() {
 		resolved, err := resolveCredentialAccount(ctx, s.accountRepo, account)
@@ -1002,6 +1021,9 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 		credentialAccount = resolved
 	}
 
+	if err := ValidateKiloInferenceAccount(credentialAccount); err != nil {
+		return s.sendErrorAndEnd(c, err.Error())
+	}
 	if credentialAccount.IsExcelOAuth() {
 		return s.sendErrorAndEnd(c, errExcelOAuthRouteUnavailable.Error())
 	}
@@ -1132,6 +1154,16 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 	// 账号级请求头覆写：测试请求与真实转发保持一致的最终头
 	applyOpenAIAPIKeyIdentityHeaders(req.Header, credentialAccount, credentialAccount.GetOpenAIUserAgent())
 	credentialAccount.ApplyHeaderOverrides(req.Header)
+	if err := applyKiloGatewayIdentity(req, c, account, payloadBytes, ""); err != nil {
+		return s.sendErrorAndEnd(c, err.Error())
+	}
+	if err := ValidateKiloInferenceRequest(req, account); err != nil {
+		return s.sendErrorAndEnd(c, err.Error())
+	}
+	if account.IsKiloGatewayAccount() {
+		// The managed gateway owns the model request's proxy lease.
+		req = req.WithContext(WithAccountProxyRouting(req.Context()))
+	}
 
 	// Get proxy URL
 	proxyURL := ""
@@ -1178,6 +1210,7 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 		}
 		body, _ := io.ReadAll(errorBody)
 		body = redactAgentIdentitySensitiveBodyForAccount(ctx, s.accountRepo, credentialAccount, body)
+		s.observeKiloAccountTestFailure(ctx, account, resp.StatusCode, resp.Header, body)
 		// A candy HTTP business failure is final for this attempt, including
 		// task-invalid identities. Task re-registration would otherwise issue
 		// another model POST outside the model's bounded recovery budget.
@@ -1207,14 +1240,17 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 			}
 		}
 		// 401 Unauthorized: 标记账号为永久错误
-		if resp.StatusCode == http.StatusUnauthorized && s.accountRepo != nil && !IsAstraSourceAcquisition(ctx) && !aiRecoveryProbe {
+		if resp.StatusCode == http.StatusUnauthorized && s.accountRepo != nil && !account.IsKiloGatewayAccount() && !IsAstraSourceAcquisition(ctx) && !aiRecoveryProbe {
 			errMsg := fmt.Sprintf("Authentication failed (401): %s", string(body))
 			_ = s.accountRepo.SetError(ctx, account.ID, errMsg)
 		}
 		return s.sendErrorAndEnd(c, fmt.Sprintf("API returned %d: %s", resp.StatusCode, string(body)))
 	}
 
-	// Process SSE stream
+	// Keep the credential snapshot with stream errors as well as HTTP errors.
+	if account.IsKiloGatewayAccount() {
+		c.Request = c.Request.WithContext(context.WithValue(ctx, kiloAccountTestFailureSnapshotKey{}, account))
+	}
 	if candy != nil {
 		return finishAccountCandyProbe(c, resp, false)
 	}
@@ -2580,6 +2616,11 @@ func (s *AccountTestService) testOpenAIChatCompletionsConnection(
 // endpoint has been sunset upstream (404, #5598/#5624) and is no longer probed.
 func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account *Account, testModelID string) error {
 	ctx := c.Request.Context()
+	resolved, routeErr := resolveKiloTestAccount(ctx, s.accountRepo, account)
+	if routeErr != nil {
+		return s.sendErrorAndEnd(c, routeErr.Error())
+	}
+	account = resolved
 	credentialAccount := account
 	if account.IsShadow() {
 		resolved, err := resolveCredentialAccount(ctx, s.accountRepo, account)
@@ -2635,6 +2676,13 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 		testModelID = normalizeOpenAIModelForUpstream(credentialAccount, testModelID)
 	}
 	payloadBytes, _ := json.Marshal(createOpenAICompactProbePayload(testModelID, isOAuth))
+	if account.IsKiloGatewayAccount() {
+		var translateErr error
+		payloadBytes, translateErr = translateKiloResponsesRequest(account, payloadBytes)
+		if translateErr != nil {
+			return s.sendErrorAndEnd(c, translateErr.Error())
+		}
+	}
 	if !agentIdentityTaskRecoveryWasTried(ctx) {
 		s.sendEvent(c, TestEvent{Type: "test_start", Model: testModelID})
 	}
@@ -2684,6 +2732,12 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 	// 账号级请求头覆写：测试请求与真实转发保持一致的最终头
 	applyOpenAIAPIKeyIdentityHeaders(req.Header, credentialAccount, credentialAccount.GetOpenAIUserAgent())
 	account.ApplyHeaderOverrides(req.Header)
+	if err := applyKiloGatewayIdentity(req, c, account, payloadBytes, ""); err != nil {
+		return s.sendErrorAndEnd(c, err.Error())
+	}
+	if account.IsKiloGatewayAccount() {
+		req = req.WithContext(WithAccountProxyRouting(req.Context()))
+	}
 
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {
@@ -2729,7 +2783,8 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		if resp.StatusCode == http.StatusUnauthorized && s.accountRepo != nil {
+		s.observeKiloAccountTestFailure(ctx, account, resp.StatusCode, resp.Header, body)
+		if resp.StatusCode == http.StatusUnauthorized && s.accountRepo != nil && !account.IsKiloGatewayAccount() {
 			errMsg := fmt.Sprintf("Authentication failed (401): %s", string(body))
 			_ = s.accountRepo.SetError(ctx, account.ID, errMsg)
 		}
@@ -3412,6 +3467,29 @@ func (s *AccountTestService) processOpenAIChatCompletionsStream(c *gin.Context, 
 	}
 }
 
+type kiloAccountTestFailureSnapshotKey struct{}
+
+// Tests report the same real upstream failures as inference. A displayed error
+// must not leave a failed managed Key eligible for the next request.
+func (s *AccountTestService) observeKiloAccountTestFailure(ctx context.Context, account *Account, status int, headers http.Header, body []byte) {
+	if s == nil || account == nil || !account.IsKiloGatewayAccount() || s.openaiGatewayService == nil || IsAstraSourceAcquisition(ctx) {
+		return
+	}
+	if recovery, _ := ctx.Value(aiOpsRecoveryProbeKey{}).(bool); recovery {
+		return
+	}
+	if status == http.StatusOK {
+		status = openAIStreamFailedEventSemanticStatus(body, extractUpstreamErrorMessage(body))
+		for _, path := range openAIStreamErrorStatusPaths {
+			if int(gjson.GetBytes(body, path).Int()) == http.StatusPaymentRequired {
+				status = http.StatusPaymentRequired
+				break
+			}
+		}
+	}
+	s.openaiGatewayService.handleOpenAIAccountUpstreamError(ctx, account, status, headers, body)
+}
+
 // processOpenAIStream processes the SSE stream from OpenAI Responses API
 func (s *AccountTestService) processOpenAIStream(c *gin.Context, body io.Reader) error {
 	defer accountTestStream(c)()
@@ -3472,6 +3550,8 @@ func (s *AccountTestService) processOpenAIStream(c *gin.Context, body io.Reader)
 			s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
 			return nil
 		case "response.failed":
+			account, _ := c.Request.Context().Value(kiloAccountTestFailureSnapshotKey{}).(*Account)
+			s.observeKiloAccountTestFailure(c.Request.Context(), account, http.StatusOK, nil, []byte(jsonStr))
 			errorMsg := "OpenAI response failed"
 			if responseData, ok := data["response"].(map[string]any); ok {
 				if errData, ok := responseData["error"].(map[string]any); ok {
@@ -3482,6 +3562,8 @@ func (s *AccountTestService) processOpenAIStream(c *gin.Context, body io.Reader)
 			}
 			return s.sendErrorAndEnd(c, errorMsg)
 		case "error":
+			account, _ := c.Request.Context().Value(kiloAccountTestFailureSnapshotKey{}).(*Account)
+			s.observeKiloAccountTestFailure(c.Request.Context(), account, http.StatusOK, nil, []byte(jsonStr))
 			errorMsg := "Unknown error"
 			if errData, ok := data["error"].(map[string]any); ok {
 				if msg, ok := errData["message"].(string); ok {

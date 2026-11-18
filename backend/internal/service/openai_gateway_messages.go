@@ -82,7 +82,14 @@ func (s *OpenAIGatewayService) forwardAsAnthropic(
 	// reinterpret max, and do not apply the same mapping a second time below.
 	kiloAliasPolicyApplied := false
 	if gjson.GetBytes(body, "thinking.type").String() != "disabled" {
-		policyBody, aliasChanged, aliasErr := applyKiloReasoningEffortPolicyFromContext(ctx, account, body, "output_config.effort")
+		aliasCtx := ctx
+		if account.IsKiloBridgeEnabled() {
+			// Wire aliases still need adapting when the group has no policy.
+			if _, bound := ctx.Value(openAIReasoningEffortPolicyContextKey{}).(openAIReasoningEffortPolicy); !bound {
+				aliasCtx = WithOpenAIReasoningEffortPolicy(ctx, "", nil, "")
+			}
+		}
+		policyBody, aliasChanged, aliasErr := applyKiloReasoningEffortPolicyFromContext(aliasCtx, account, body, "output_config.effort")
 		if aliasErr != nil {
 			if IsReasoningEffortPolicyDenied(aliasErr) {
 				MarkOpsClientBusinessLimited(c, OpsClientBusinessLimitedReasonLocalPolicyDenied)
@@ -545,7 +552,7 @@ func (s *OpenAIGatewayService) forwardAsAnthropic(
 			}
 			return s.ForwardAsAnthropic(markAgentIdentityTaskRecoveryTried(ctx), c, account, originalBody, promptCacheKey, defaultMappedModel)
 		}
-		if previousResponseID != "" && (isOpenAICompatPreviousResponseNotFound(resp.StatusCode, upstreamMsg, respBody) || isOpenAICompatPreviousResponseUnsupported(resp.StatusCode, upstreamMsg, respBody)) {
+		if !isKiloCLIGatewayAccount(account) && previousResponseID != "" && (isOpenAICompatPreviousResponseNotFound(resp.StatusCode, upstreamMsg, respBody) || isOpenAICompatPreviousResponseUnsupported(resp.StatusCode, upstreamMsg, respBody)) {
 			if isOpenAICompatPreviousResponseUnsupported(resp.StatusCode, upstreamMsg, respBody) {
 				s.disableOpenAICompatSessionContinuation(ctx, c, account, promptCacheKey)
 			} else {
@@ -620,7 +627,7 @@ func (s *OpenAIGatewayService) forwardAsAnthropic(
 		if tier := resolvedOpenAIUpstreamServiceTier(c, extractOpenAIServiceTierFromBody(responsesBody)); tier != nil {
 			result.ServiceTier = tier
 		}
-		result.ReasoningEffort = extractOpenAIReasoningEffortFromBody(responsesBody, upstreamModel, billingModel, originalModel)
+		result.ReasoningEffort = extractOpenAIReasoningEffortForAccount(account, responsesBody, upstreamModel, billingModel, originalModel)
 	}
 
 	// Extract and save Codex usage snapshot from response headers (for OAuth accounts).

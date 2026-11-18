@@ -553,6 +553,16 @@ func (s *AccountTokenGuardV2Service) runProbe(ctx context.Context, record Accoun
 		return s.completeProbe(ctx, record.AccountID, owner, completion)
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	// A rejected Kilo quota token first uses the existing refresh path.
+	recoveryObserved := OpenAIAuthRecoveryPending(account)
+	if recoveryObserved && !OpenAIAuthNeedsRelogin(account) {
+		if gateway, ok := s.prober.(*OpenAIGatewayService); ok && gateway.openAITokenProvider != nil {
+			_, _ = gateway.openAITokenProvider.GetAccessToken(probeCtx, account)
+			if fresh, readErr := s.accounts.GetAccount(probeCtx, record.AccountID); readErr == nil && fresh != nil {
+				account = fresh
+			}
+		}
+	}
 	state, detail := s.probeAccount(probeCtx, account)
 	cancel()
 	if err := ctx.Err(); err != nil {
@@ -590,10 +600,26 @@ func (s *AccountTokenGuardV2Service) runProbe(ctx context.Context, record Accoun
 	switch state {
 	case AccountTokenGuardV2ProbeOK:
 		completion.FailStreak = 0
+		if recoveryObserved && s.reauth != nil {
+			if lifecycle, ok := s.reauth.credentialUpdater.(OpenAICredentialLifecycleRepository); ok {
+				if _, recoveryErr := lifecycle.RecoverVerifiedOpenAIAuth(ctx, account.ID, account.Credentials, OpenAIAuthRecoveryGeneration(account)); recoveryErr != nil {
+					completion.BlockedReason = "verified credential recovery failed"
+				}
+			} else if recovery, ok := s.reauth.credentialUpdater.(OpenAIAuthRecoveryRepository); ok {
+				if restored, recoveryErr := recovery.RecoverOpenAIAuthIfUnchanged(ctx, account.ID, account.GetOpenAIAccessToken()); recoveryErr != nil {
+					completion.BlockedReason = "verified credential scheduling recovery failed"
+				} else if restored && s.reauth.runtimeBlocker != nil {
+					s.reauth.runtimeBlocker.ClearAccountSchedulingBlock(account.ID)
+				}
+			}
+		}
 		// The reconciler alone can clear a budget cooldown after a verified
 		// success. A plain OK must retain an explicit recovery's cooldown.
 	case AccountTokenGuardV2ProbeAuth:
 		completion.FailStreak++
+		if recoveryObserved {
+			completion.FailStreak = max(completion.FailStreak, rules.FailStreakThreshold)
+		}
 		completion.NextProbeAt = now.Add(time.Duration(rules.RetryIntervalSeconds) * time.Second)
 		cooldownActive := record.CooldownUntil != nil && record.CooldownUntil.After(now)
 		if cooldownActive && completion.BlockedReason == "" {

@@ -998,7 +998,9 @@ func (s *TokenRefreshService) refreshWithRetryWithRateGate(
 		if isNonRetryableRefreshError(err) {
 			errorMsg := "Token refresh failed (non-retryable): " + logredact.RedactText(err.Error())
 			isGrokOAuth := account.IsGrokOAuth()
-			if !isGrokOAuth {
+			_, atomicRecovery := s.accountRepo.(OpenAICredentialLifecycleRepository)
+			atomicRecovery = atomicRecovery && account.Platform == PlatformOpenAI && account.Type == AccountTypeOAuth
+			if !isGrokOAuth && !atomicRecovery {
 				s.notifyAccountSchedulingBlocked(account, time.Time{}, "token_refresh_non_retryable")
 			}
 			s.clearAntigravityForceTokenRefresh(ctx, account, "non_retryable")
@@ -1023,6 +1025,16 @@ func (s *TokenRefreshService) refreshWithRetryWithRateGate(
 						return errRefreshSkipped
 					}
 				}
+			} else if atomicRecovery {
+				lifecycle := s.accountRepo.(OpenAICredentialLifecycleRepository)
+				marked, signalErr := lifecycle.MarkOpenAIRefreshFailure(ctx, account.ID, account.Credentials, account.ProxyID, true, time.Now().Add(tokenRefreshTempUnschedDuration), "invalid_refresh_token")
+				if signalErr != nil {
+					return &providerCycleContainmentRefreshError{err: signalErr}
+				}
+				if !marked {
+					return errRefreshSkipped
+				}
+				persistentlyBlocked = true
 			} else {
 				setErr = s.accountRepo.SetError(ctx, account.ID, errorMsg)
 				persistentlyBlocked = setErr == nil
@@ -1135,6 +1147,16 @@ func (s *TokenRefreshService) refreshWithRetryWithRateGate(
 		return lastErr
 	}
 
+	if lifecycle, ok := s.accountRepo.(OpenAICredentialLifecycleRepository); ok && account.Platform == PlatformOpenAI && account.Type == AccountTypeOAuth {
+		applied, saveErr := lifecycle.MarkOpenAIRefreshFailure(ctx, account.ID, account.Credentials, account.ProxyID, false, until, "refresh_retry_exhausted")
+		if saveErr != nil {
+			return &providerCycleContainmentRefreshError{err: saveErr}
+		}
+		if !applied {
+			return errRefreshSkipped
+		}
+		return lastErr
+	}
 	s.notifyAccountSchedulingBlocked(account, until, "token_refresh_retry_exhausted")
 	if setErr := s.accountRepo.SetTempUnschedulable(ctx, account.ID, until, reason); setErr != nil {
 		slog.Warn("token_refresh.set_temp_unschedulable_failed",
@@ -1224,6 +1246,11 @@ func (s *TokenRefreshService) grokRefreshClearsTempUnschedulable(ctx context.Con
 	if account == nil || account.TempUnschedulableUntil == nil || !time.Now().Before(*account.TempUnschedulableUntil) {
 		return false
 	}
+	if account.Platform == PlatformOpenAI {
+		if _, durable := s.accountRepo.(OpenAICredentialLifecycleRepository); durable {
+			return false
+		}
+	}
 	if account.Platform != PlatformGrok {
 		return true
 	}
@@ -1261,6 +1288,17 @@ func (s *TokenRefreshService) postRefreshStateSyncWithCleanup(parent context.Con
 }
 
 func (s *TokenRefreshService) postRefreshStateSync(ctx context.Context, account *Account) {
+	if account == nil {
+		return
+	}
+	if _, durable := s.accountRepo.(OpenAICredentialLifecycleRepository); durable && account.Platform == PlatformOpenAI {
+		// The repository already publishes its durable snapshot and outbox.
+		// A stale post-refresh account must never republish scheduler state.
+		if s.cacheInvalidator != nil {
+			_ = s.cacheInvalidator.InvalidateToken(ctx, account)
+		}
+		return
+	}
 	// 对所有 OAuth 账号调用缓存失效（InvalidateToken 内部根据平台判断是否需要处理）
 	if s.cacheInvalidator != nil && account.Type == AccountTypeOAuth {
 		if err := s.cacheInvalidator.InvalidateToken(ctx, account); err != nil {

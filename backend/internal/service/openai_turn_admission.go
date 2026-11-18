@@ -203,6 +203,10 @@ func openAITurnRouteFingerprint(a *Account) [32]byte {
 		"openai_responses_mode", "openai_responses_supported",
 		"openai_responses_flatten_namespaces", "enable_tls_fingerprint", "tls_fingerprint_profile_id",
 		"codex_cli_only", "codex_cli_only_allow_app_server",
+		AccountExtraKiloBridgeEnabled, KiloManagedExtraKey, KiloGatewayProfileExtra,
+		"kilo_prepared_id", "kilo_source_prepared_id", "kilo_source_gateway_id",
+		"kilo_quota_only", "kilo_onboarding_source_id", "kilo_onboarding_job_id",
+		"kilo_subscription_models", "kilo_subscription_scope_verified_at", "kilo_subscription_scope_source",
 	} {
 		if value, ok := a.Extra[key]; ok {
 			routeExtra[key] = value
@@ -257,6 +261,9 @@ func (s *OpenAIGatewayService) latestOpenAITurnAccountForGroup(
 	}
 	if selected == nil {
 		return nil, denyOpenAITurn("account_unavailable")
+	}
+	if err := ValidateKiloInferenceAccount(selected); err != nil {
+		return nil, err
 	}
 	if !selected.IsOpenAI() && (s.schedulerSnapshot == nil || s.schedulerSnapshot.localSnapshotReader == nil) {
 		// This patch changes OpenAI Responses admission only, not other
@@ -313,6 +320,29 @@ func (s *OpenAIGatewayService) latestOpenAITurnAccountForGroup(
 			// can exercise the pure supplied-account predicate without a database.
 			return nil, denyOpenAITurn("latest_state_unavailable")
 		}
+	}
+	// Kilo onboarding can make an OAuth source query-only after this turn's
+	// cached admission snapshot. Recheck the narrow policy on every turn.
+	if reader := kiloInferenceReader(s.accountRepo); reader != nil {
+		current, readErr := reader.GetKiloInferenceAccount(ctx, selected.ID)
+		if readErr != nil || current == nil {
+			return nil, kiloInferenceDenied("KILO_INFERENCE_STATE_UNAVAILABLE", "无法核对当前 Kilo 推理隔离状态")
+		}
+		if err := ValidateKiloInferenceAccount(current); err != nil {
+			return nil, err
+		}
+		if current.RequiresKiloInference() != latest.RequiresKiloInference() {
+			return nil, kiloInferenceDenied("KILO_INFERENCE_BINDING_CHANGED", "Kilo 推理配对已更改，请重新选择账号")
+		}
+		if current.ParentAccountID != nil {
+			parent, parentErr := reader.GetKiloInferenceAccount(ctx, *current.ParentAccountID)
+			if parentErr != nil || parent == nil || parent.RequiresKiloInference() {
+				return nil, kiloInferenceDenied("KILO_SOURCE_INFERENCE_BLOCKED", "凭据来源已绑定 Kilo 或状态不可用，禁止借用来源 OAuth 生成")
+			}
+		}
+	}
+	if err := ValidateKiloInferenceAccount(latest); err != nil {
+		return nil, err
 	}
 	if latest.Platform != selected.Platform || (latest.Type != selected.Type && selected.AuthConnectionID == "") {
 		return nil, denyOpenAITurn("account_binding_changed")
@@ -471,6 +501,9 @@ func (s *OpenAIGatewayService) bindOpenAIWSHandshake(account *Account, model str
 }
 
 func (s *OpenAIGatewayService) checkOpenAIWSBinding(account *Account, model string, b *openAIWSTurnBinding) error {
+	if account.RequiresKiloInference() {
+		return kiloInferenceDenied("KILO_INFERENCE_HTTP_REQUIRED", "Kilo 生成仅支持 Kilo Gateway HTTP，官方 WebSocket 不可用")
+	}
 	if account.isPrismBrowserUpstreamModelEnabled(model) {
 		return denyOpenAITurn("prism_requires_http")
 	}

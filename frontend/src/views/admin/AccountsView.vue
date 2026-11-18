@@ -205,6 +205,10 @@
             </template>
           </AccountTableActions>
         </div>
+        <div v-if="authStore.isAdmin && kiloCreatedIds.length" class="mt-2 space-y-2 rounded-lg border border-primary-200 bg-primary-50 p-3 text-sm text-primary-800 dark:border-primary-900 dark:bg-primary-900/20 dark:text-primary-200" role="status">
+          <p>{{ t('kilo.accountEntry.created', { count: kiloCreatedIds.length }) }} {{ t('kilo.accountEntry.conversionHint') }}</p>
+          <div class="flex flex-wrap items-center gap-2"><router-link v-for="id in kiloCreatedIds" :key="id" :to="{ path: '/admin/kilo', query: { source_account_id: String(id) } }" class="btn btn-secondary btn-sm">{{ t('kilo.accountEntry.continue') }} #{{ id }}</router-link><button type="button" class="text-xs underline" @click="kiloCreatedIds = []">{{ t('kilo.accountEntry.dismiss') }}</button></div>
+        </div>
         <div
           v-if="hasPendingListSync"
           class="mt-2 flex items-center justify-between rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-700/40 dark:bg-amber-900/20 dark:text-amber-200"
@@ -272,7 +276,11 @@
           </template>
           <template #cell-name="{ row, value }">
             <a v-if="row.upstream_channel_binding" href="/admin/upstream-channels" class="block text-xs text-primary-600" data-testid="account-current-upstream">{{ row.upstream_channel_binding.channel ? `${row.upstream_channel_binding.channel.name} · ${row.upstream_channel_binding.channel.code}` : t('upstreamEntities.unbound') }}</a>
-            <div class="flex flex-col">
+            <div v-if="row.kilo" class="min-w-0 space-y-1">
+              <KiloAccountIdentity :view="row.kilo" :can-manage-source="authStore.isAdmin" :source-loading="kiloSourceLoadingId === row.kilo.source?.id" :disabled="kiloSourceLoadingId !== null" @manage-source="handleManageKiloSource" />
+              <router-link v-if="authStore.isAdmin" :to="kiloAccountRoute(row)" class="inline-flex min-h-8 items-center rounded-md px-1.5 text-xs font-medium text-primary-600 underline-offset-2 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary-500 dark:text-primary-400" data-testid="account-kilo-entry">{{ t('kilo.accountEntry.manage') }}</router-link>
+            </div>
+            <div v-else class="flex flex-col">
               <HelpTooltip
                 v-if="accountHomepageUrl(row)"
                 :content="accountHomepageUrl(row)"
@@ -298,6 +306,11 @@
               >
                 {{ accountDisplayEmail(row) }}
               </span>
+              <div v-if="authStore.isAdmin && row.platform === 'openai' && (row.type === 'oauth' && !row.parent_account_id || row.extra?.kilo_managed === true)" class="mt-1 space-y-1 text-xs">
+                <p v-if="kiloSourceMode(row)" class="text-primary-700 dark:text-primary-300">{{ t('kilo.accountEntry.active') }}</p>
+                <p v-if="kiloSourceMode(row)" class="text-gray-500 dark:text-dark-400">{{ t('kilo.accountEntry.pair', { prepared: row.extra?.kilo_source_prepared_id, gateway: row.extra?.kilo_source_gateway_id }) }}</p>
+                <router-link :to="kiloAccountRoute(row)" class="text-primary-600 underline dark:text-primary-400" data-testid="account-kilo-entry">{{ kiloSourceMode(row) || row.extra?.kilo_managed === true ? t('kilo.accountEntry.manage') : t('kilo.accountEntry.switch') }}</router-link>
+              </div>
               <ExcelBPS403Badge :account="row" :groups="accountGroupsForRow(row)" :global-bps-enabled="appStore.cachedPublicSettings?.excel_bps_enabled !== false" />
             </div>
           </template>
@@ -308,7 +321,8 @@
           <template #cell-platform_type="{ row }">
             <div class="flex min-w-0 flex-col gap-1">
               <div class="flex flex-wrap items-center gap-1">
-                <PlatformTypeBadge :platform="row.platform" :type="row.type"
+                <span v-if="row.kilo" class="rounded-md bg-primary-50 px-2 py-1 text-xs font-medium text-primary-700 dark:bg-primary-900/30 dark:text-primary-300" data-testid="account-kilo-platform">{{ row.kilo.source ? t('kilo.identity.platformBound', { plan: openAIPlanTypeLabel(row.kilo.source.plan_type) || t('kilo.identity.planUnknown') }) : t('kilo.identity.platformSingle') }}</span>
+                <PlatformTypeBadge v-else :platform="row.platform" :type="row.type"
                   :auth-mode="getOpenAIAuthMode(row)"
                   :plan-type="getAccountPlanType(row)"
                   :privacy-mode="row.extra?.privacy_mode || row.parent_privacy_mode"
@@ -407,7 +421,8 @@
             </div>
           </template>
           <template #cell-usage="{ row }">
-            <AccountUsageCell
+            <KiloQuotaCell v-if="row.kilo" :gateway-id="row.id" :view="row.kilo" :manual-refresh-token="usageManualRefreshToken" />
+            <AccountUsageCell v-else
               :account="row"
               :notice-user-id="authStore.isAdmin ? authStore.user?.id : null"
               :today-stats="todayStatsByAccountId[String(row.id)] ?? null"
@@ -544,7 +559,7 @@
       <template #pagination><Pagination v-if="pagination.total > 0" :page="pagination.page" :total="pagination.total" :page-size="pagination.page_size" @update:page="handlePageChange" @update:pageSize="handlePageSizeChange" /></template>
     </TablePageLayout>
     <NewAPIUpstreamConfigDialog v-if="authStore.isAdmin" :show="newAPIConfigAccount !== null" :account="newAPIConfigAccount" @close="newAPIConfigAccount = null" @saved="reload" />
-    <CreateAccountModal :show="showCreate" :proxies="proxies" :groups="groups" @close="showCreate = false" @created="reload" />
+    <CreateAccountModal :show="showCreate" :proxies="proxies" :groups="groups" @close="showCreate = false" @created="reload" @kilo-ready="rememberKiloSources" @kilo-batch-created="openKiloBatch" />
     <EditAccountModal :show="showEdit" :account="edAcc" :proxies="proxies" :groups="groups" @close="showEdit = false" @updated="handleAccountUpdated" />
     <AccountAssignProxiesDialog :show="showAssignProxies" :account-ids="assignProxyIDs" @close="showAssignProxies = false" @assigned="handleProxiesAssigned" />
     <ReAuthAccountModal :show="showReAuth" :account="reAuthAcc" @close="closeReAuthModal" @reauthorized="handleAccountUpdated" />
@@ -591,6 +606,10 @@ import { isValidAccountCostMultiplier } from '@/utils/accountCost'
 import { ref, reactive, computed, onMounted, onUnmounted, toRaw, watch } from 'vue'
 import { useIntervalFn } from '@vueuse/core'
 import { useI18n } from 'vue-i18n'
+import { useRouter } from 'vue-router'
+import KiloAccountIdentity from '@/components/admin/kilo/KiloAccountIdentity.vue'
+import KiloQuotaCell from '@/components/admin/kilo/KiloQuotaCell.vue'
+import { openAIPlanTypeLabel } from '@/utils/planType'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
 import { adminAPI } from '@/api/admin'
@@ -663,6 +682,19 @@ import type { Account, AccountListItem, AccountPlatform, AccountSchedulerGroupSc
 const { t } = useI18n()
 const appStore = useAppStore()
 const authStore = useAuthStore()
+const kiloRouter = useRouter()
+function openKiloBatch(batchId: string) {
+  showCreate.value = false
+  kiloCreatedIds.value = []
+  void kiloRouter.push({ path: '/admin/kilo', query: { tab: 'jobs', onboarding_batch_id: batchId } })
+}
+const kiloCreatedIds = ref<number[]>([])
+function rememberKiloSources(ids: number[]) { kiloCreatedIds.value = [...new Set([...kiloCreatedIds.value, ...ids])] }
+function kiloSourceMode(account: Pick<AccountListItem, 'extra'>) { return Number(account.extra?.kilo_source_prepared_id) > 0 }
+function kiloAccountRoute(account: Pick<AccountListItem, 'id' | 'extra' | 'kilo'>) { return { path: '/admin/kilo', query: account.kilo || account.extra?.kilo_managed === true ? { account_id: String(account.id) } : { source_account_id: String(account.id) } } }
+const kiloSourceLoadingId = ref<number | null>(null)
+let kiloSourceGeneration = 0
+onUnmounted(() => { kiloSourceGeneration++ })
 const concurrencyUpgradeEnabled = ref(false)
 let concurrencyUpgradeRequest = 0
 
@@ -1752,6 +1784,7 @@ const inAutoRefreshSilentWindow = () => {
 const shouldReplaceAutoRefreshRow = (current: Account, next: Account) => {
   return (
     current.updated_at !== next.updated_at ||
+    JSON.stringify(current.kilo ?? null) !== JSON.stringify(next.kilo ?? null) ||
     // Bindings have their own revision; do not rely on the account timestamp
     // to invalidate the displayed upstream identity or declaration snapshot.
     JSON.stringify(current.upstream_channel_binding ?? null) !== JSON.stringify(next.upstream_channel_binding ?? null) ||
@@ -2278,7 +2311,24 @@ const loadAccountDetails = async (account: Pick<AccountListItem, 'id'>): Promise
   }
 }
 
+const handleManageKiloSource = async (id: number) => {
+  if (!authStore.isAdmin || kiloSourceLoadingId.value !== null) return
+  const generation = ++kiloSourceGeneration
+  kiloSourceLoadingId.value = id
+  try {
+    const account = await loadAccountDetails({ id })
+    if (!account || generation !== kiloSourceGeneration) return
+    await refreshBindingProxies()
+    if (generation !== kiloSourceGeneration) return
+    edAcc.value = account
+    showEdit.value = true
+  } finally {
+    if (generation === kiloSourceGeneration) kiloSourceLoadingId.value = null
+  }
+}
 const handleEdit = async (a: AccountListItem) => {
+  kiloSourceGeneration++
+  kiloSourceLoadingId.value = null
   const account = await loadAccountDetails(a)
   if (!account) return
   await refreshBindingProxies()
@@ -2758,7 +2808,11 @@ const handleProbeUpstreamBilling = async (account: Account) => {
 }
 const handleAccountUpdated = (updatedAccount: Account) => {
   delete resetCreditQueries.value[updatedAccount.id]
-  patchAccountInList(updatedAccount)
+  if (accounts.value.some(account => account.kilo?.source?.id === updatedAccount.id)) {
+    void reload()
+  } else {
+    patchAccountInList(updatedAccount)
+  }
   enterAutoRefreshSilentWindow()
 }
 const formatExportTimestamp = () => {

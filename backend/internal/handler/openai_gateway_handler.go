@@ -10,6 +10,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/requesttiming"
 	"io"
 	"net/http"
+	"net/http/httptrace"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -1146,18 +1147,19 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		// 从不可变的 canonical forwardBody 派生本次尝试 body 并整块剔除上游私有的加密
 		// reasoning item（含耦合的 id/summary），避免非透传上游 400 拒绝 Kiro reasoning 形态。
 		attemptBody := h.deriveOpenAIForwardAttemptBody(reqLog, forwardBody, account, &passthroughFailoverState)
+		forwardCtx, kiloSubmission := observeManagedKiloSubmission(rpmAdmission.forwardContext(c.Request.Context(), account), account)
 		result, err := func() (*service.OpenAIForwardResult, error) {
 			defer func() {
 				if accountReleaseFunc != nil {
 					accountReleaseFunc()
 				}
 			}()
-			return h.gatewayService.Forward(rpmAdmission.forwardContext(c.Request.Context(), account), c, account, attemptBody)
+			return h.gatewayService.Forward(forwardCtx, c, account, attemptBody)
 		}()
 		if result != nil {
 			result.HeaderTimeoutRetries = headerTimeoutRetries
 		}
-		if retryOpenAIInitialAdmission(c, err, result, forwardBody, account.ID, failedAccountIDs, &switchCount, maxAccountSwitches) {
+		if !account.RequiresKiloInference() && retryOpenAIInitialAdmission(c, err, result, forwardBody, account.ID, failedAccountIDs, &switchCount, maxAccountSwitches) {
 			lastAdmissionErr = err
 			reqLog.Info("openai.admission_reselecting", zap.Int64("account_id", account.ID), zap.Int("switch_count", switchCount))
 			continue
@@ -1229,6 +1231,10 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			})
 		}
 		if err != nil {
+			if code, message, policy := service.KiloInferencePolicyError(err); policy {
+				h.handleStreamingAwareErrorWithCode(c, http.StatusServiceUnavailable, "api_error", code, message, streamStarted, false)
+				return
+			}
 			if h.handleOpenAIAgentRecoveryError(c, err, streamStarted) {
 				submitResponsesUsage(result)
 				return
@@ -1274,6 +1280,11 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 							zap.Int64("account_id", account.ID),
 							zap.Int("upstream_status", failoverErr.StatusCode),
 						)
+						return
+					}
+					if kiloSubmission.blocksReplay(c, failoverErr) {
+						h.gatewayService.ObserveOpenAIAccountHealthFailure(c.Request.Context(), account, err)
+						h.handleFailoverExhausted(c, failoverErr, streamStarted || c.Writer.Written())
 						return
 					}
 					if !openAIForwardMayFailover(c, writerSizeBeforeForward, failoverErr) {
@@ -1827,13 +1838,14 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		// 应用渠道模型映射到请求体
 		forwardBody := mappedBodyForMessages(channelMappingMsg.Mapped, channelMappingMsg.MappedModel)
 		writerSizeBeforeForward := service.OpenAICompactKeepaliveAdjustedWrittenSize(c)
+		forwardCtx, kiloSubmission := observeManagedKiloSubmission(rpmAdmission.forwardContext(c.Request.Context(), account), account)
 		result, err := func() (*service.OpenAIForwardResult, error) {
 			defer func() {
 				if accountReleaseFunc != nil {
 					accountReleaseFunc()
 				}
 			}()
-			return h.gatewayService.ForwardAsAnthropic(rpmAdmission.forwardContext(c.Request.Context(), account), c, account, forwardBody, promptCacheKey, defaultMappedModel)
+			return h.gatewayService.ForwardAsAnthropic(forwardCtx, c, account, forwardBody, promptCacheKey, defaultMappedModel)
 		}()
 		if result != nil {
 			result.HeaderTimeoutRetries = headerTimeoutRetries
@@ -1905,6 +1917,10 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 			})
 		}
 		if err != nil {
+			if code, message, policy := service.KiloInferencePolicyError(err); policy {
+				h.anthropicStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", message, streamStarted, code)
+				return
+			}
 			if h.handleAnthropicAPIKeyLongContextError(c, err, streamStarted) {
 				return
 			}
@@ -1929,6 +1945,11 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 							zap.Int64("account_id", account.ID),
 							zap.Int("upstream_status", failoverErr.StatusCode),
 						)
+						return
+					}
+					if kiloSubmission.blocksReplay(c, failoverErr) {
+						h.gatewayService.ObserveOpenAIAccountHealthFailure(c.Request.Context(), account, err)
+						h.handleAnthropicFailoverExhausted(c, failoverErr, streamStarted || c.Writer.Written())
 						return
 					}
 					if !openAIForwardMayFailover(c, writerSizeBeforeForward, nil) {
@@ -4852,6 +4873,39 @@ func openAIForwardErrorAlreadyCommunicated(c *gin.Context, writerSizeBeforeForwa
 		}
 	}
 	return false
+}
+
+type managedKiloSubmission struct {
+	written  atomic.Bool
+	kiloOnly bool
+}
+
+// Selecting Kilo fixes this request's upstream family, including failures
+// before any HTTP bytes are written. Submission traces remain actual evidence.
+func observeManagedKiloSubmission(ctx context.Context, account *service.Account) (context.Context, *managedKiloSubmission) {
+	if account == nil || !account.RequiresKiloInference() {
+		return ctx, nil
+	}
+	// Once this attempt selects Kilo, an unavailable gateway must stay an
+	// explicit failure. Even a pre-write failure cannot pick official OAuth
+	// from a mixed group and silently turn this into an official request.
+	state := &managedKiloSubmission{kiloOnly: true}
+	markWritten := func() { state.written.Store(true) }
+	return httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+		WroteHeaders:         markWritten,
+		WroteRequest:         func(httptrace.WroteRequestInfo) { markWritten() },
+		GotFirstResponseByte: markWritten,
+	}), state
+}
+
+func (s *managedKiloSubmission) blocksReplay(c *gin.Context, failure *service.UpstreamFailoverError) bool {
+	if s == nil {
+		return false
+	}
+	// Reuse the service's positive submission evidence as well as the HTTP
+	// trace: custom transports can report a response without net/http hooks.
+	return s.kiloOnly || s.written.Load() || failure != nil && failure.HeaderTimeoutSubmitted ||
+		c != nil && c.GetInt(service.OpsUpstreamStatusCodeKey) > 0
 }
 
 func openAIForwardMayFailover(c *gin.Context, writerSizeBeforeForward int, failoverErr *service.UpstreamFailoverError) bool {

@@ -89,3 +89,19 @@ CLAUDE.md
 **/totp-recovery/
 **/*.sealed
 **/credential-operations.key
+
+# Kilo builds consume only explicit source and the named Sentinel context.
+# Local acquisitions, service secrets and release archives are never sent.
+staging/
+.breezell/
+**/.env
+**/*.token
+**/kilo-runtime/releases/
+**/kilo-runtime/config/
+**/kilo-runtime/current
+**/kilo-runtime/previous-release
+**/kilo-runtime/secrets/
+**/kilo-runtime/sentinel_assets/
+**/kilo-runtime/bin/
+**/kilo-runtime/*.tar.gz
+!deploy/kilo-runtime/.env.example

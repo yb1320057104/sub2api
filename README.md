@@ -2,6 +2,8 @@
 
 Maintenance requirements: [Project constraints](PROJECT_CONSTRAINTS.md) · [PK feature register](PK_FEATURES.md). Preserve every registered feature when merging upstream; register new customizations in the same change.
 
+> **Kilo branch:** Native Kilo onboarding, subscription/identity lifecycle, fixed login exits and gateway routing are documented in [Kilo 系统说明](docs/KILO_SYSTEM.md). The separate authenticated executor has its own [build and deployment guide](deploy/kilo-runtime/README.md); this branch does not automatically update an existing installation.
+
 <div align="center">
 
 <img src="assets/logo-icon.png" alt="Sub2API Logo" width="128" />

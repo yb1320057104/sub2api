@@ -213,6 +213,9 @@ func authorizationBrowserHost(host string) bool {
 }
 
 func authorizationProxyDial(ctx context.Context, proxyURL, target string) (net.Conn, error) {
+	if proxyURL == "" {
+		return (&net.Dialer{Timeout: 20 * time.Second}).DialContext(ctx, "tcp", target)
+	}
 	u, err := url.Parse(proxyURL)
 	if err != nil || u.Host == "" {
 		return nil, errors.New("invalid proxy")
@@ -607,6 +610,9 @@ func authorizationTraceEnabled() bool {
 
 // Proxy URLs carry credentials; only host:port may reach the log.
 func authorizationProxyEndpoint(proxyURL string) string {
+	if proxyURL == "" {
+		return "direct"
+	}
 	parsed, err := url.Parse(proxyURL)
 	if err != nil || parsed.Host == "" {
 		return "invalid"

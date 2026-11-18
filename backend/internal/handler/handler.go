@@ -66,6 +66,7 @@ type Handlers struct {
 	IntelligenceTest     *IntelligenceTestHandler
 	AccountCandyTest     *AccountCandyTestHandler
 	AccountAuthorization *AccountAuthorizationHandler
+	Kilo                 *KiloHandler
 	Admin                *AdminHandlers
 	Gateway              *GatewayHandler
 	OpenAIGateway        *OpenAIGatewayHandler

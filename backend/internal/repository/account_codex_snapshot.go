@@ -59,6 +59,9 @@ func (r *accountRepository) UpdateCodexUsageSnapshot(ctx context.Context, id int
 	}
 	window, display := make(map[string]any), make(map[string]any)
 	for k, v := range stripCodexFingerprintSeedFromExtraUpdate(updates) {
+		if k == "kilo_quota_only" && v != true {
+			continue // Usage observations never grant official inference again.
+		}
 		if service.IsCodexUsageExtraKey(k) {
 			window[k] = v
 		} else {

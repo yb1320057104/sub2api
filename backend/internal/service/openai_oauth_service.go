@@ -17,6 +17,7 @@ import (
 type OpenAIOAuthService struct {
 	sessionStore           *openai.SessionStore
 	proxyRepo              ProxyRepository
+	authProxyStore         assignedAuthProxyStore
 	oauthClient            OpenAIOAuthClient
 	privacyClientFactory   PrivacyClientFactory               // 用于调用 chatgpt.com/backend-api（ImpersonateChrome）
 	refreshFailureRecorder CredentialOperationRefreshRecorder // wired before serving
@@ -381,7 +382,15 @@ func (s *OpenAIOAuthService) RefreshAccountToken(ctx context.Context, account *A
 	}
 
 	var proxyURL string
-	if account.ProxyID != nil && s.proxyRepo != nil {
+	if account.IsKiloSourceAccount() {
+		// Kilo authentication stays on its fixed login exit, not the model
+		// request proxy or a direct fallback when proxy_id is intentionally empty.
+		route, err := resolveAssignedAuthProxy(ctx, account, s.authProxyStore)
+		if err != nil || route.ID <= 0 || route.URL == "" {
+			return nil, infraerrors.BadRequest("OPENAI_OAUTH_LOGIN_PROXY_UNAVAILABLE", "Kilo source credentials require their original fixed login proxy; refresh was not sent")
+		}
+		proxyURL = route.URL
+	} else if account.ProxyID != nil && s.proxyRepo != nil {
 		proxy, err := s.proxyRepo.GetByID(ctx, *account.ProxyID)
 		if err == nil && proxy != nil {
 			proxyURL = proxy.URL()

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"net/http"
 	"net/url"
 	"os"
 	"strings"
@@ -139,12 +140,16 @@ func ProvideBatchImageCleanupService(repo BatchImageRepository, accountRepo Acco
 
 // ProvideOpenAIOAuthService creates OpenAIOAuthService with privacy/account enrichment support.
 func ProvideOpenAIOAuthService(
+	accountRepo AccountRepository,
 	proxyRepo ProxyRepository,
 	oauthClient OpenAIOAuthClient,
 	privacyClientFactory PrivacyClientFactory,
 	cfg *config.Config,
 ) *OpenAIOAuthService {
 	svc := NewOpenAIOAuthService(proxyRepo, oauthClient)
+	if accountRepo != nil && proxyRepo != nil {
+		svc.authProxyStore = assignedAuthProxyStore{account: accountRepo.GetByID, proxy: proxyRepo.GetByID}
+	}
 	svc.SetPrivacyClientFactory(privacyClientFactory)
 	return svc
 }
@@ -263,6 +268,11 @@ func ProvideOpenAIQuotaService(
 ) *OpenAIQuotaService {
 	service := NewOpenAIQuotaService(accountRepo, proxyRepo, tokenProvider, privacyClientFactory, referralClient)
 	service.agentIdentityWS = openAIGatewayService
+	if openAIGatewayService != nil && openAIGatewayService.rateLimitService != nil {
+		service.upstreamErrorHandler = func(ctx context.Context, account *Account, status int, headers http.Header, body []byte) bool {
+			return openAIGatewayService.rateLimitService.HandleUpstreamError(ctx, account, status, headers, body)
+		}
+	}
 	return service
 }
 
@@ -1221,6 +1231,8 @@ var ProviderSet = wire.NewSet(
 	ProvideIntelligenceTestService,
 	ProvideAccountCandyTestService,
 	ProvideAccountAuthorizationService,
+	ProvideKiloService,
+	NewKiloRemoteClient,
 	NewChannelMonitorQuotaFetcher,
 	ProvideChannelMonitorV2Service,
 	ProvideChannelMonitorV2Aggregator,
@@ -1376,6 +1388,15 @@ func ProvideClaudeResetCreditService(accounts AccountRepository, tokens *ClaudeT
 	s := NewClaudeResetCreditService(accounts, tokens, proxies, settings)
 	s.ConfigureRedemption(idem, locks)
 	return s
+}
+
+func ProvideKiloService(db *sql.DB, client *dbent.Client, accounts AccountRepository, admin AdminService, groups GroupRepository, proxies ProxyRepository, encryptor SecretEncryptor, remote KiloRemote, egress KiloEgressManager, router *AccountProxyRouter, reauth *OpenAIOAuthReauthService, gateway *OpenAIGatewayService, tokenGuard *AccountTokenGuardV2Service, cfg *config.Config) *KiloService {
+	svc := NewKiloService(db, client, accounts, admin, groups, proxies, encryptor, remote, egress, router, cfg)
+	svc.SetOnboardingDependencies(reauth, nil)
+	svc.recovery = tokenGuard
+	svc.modelSource = gateway
+	startBackgroundService(cfg, svc)
+	return svc
 }
 
 func ProvideAccountAuthorizationService(db *sql.DB, client *dbent.Client, accounts AccountRepository, admin AdminService, oauth *OpenAIOAuthService, tests *AccountTestService, encryptor SecretEncryptor, invalidator TokenCacheInvalidator, cfg *config.Config) *AccountAuthorizationService {

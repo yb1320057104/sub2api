@@ -3,9 +3,11 @@
     :show="show"
     :title="t('admin.accounts.createAccount')"
     width="wide"
+    :show-close-button="!kiloTwoFABusy"
+    :close-on-escape="!kiloTwoFABusy"
     @close="handleClose"
   >
-    <div v-if="show" class="mb-4 space-y-2">
+    <div v-if="show && !isKiloTwoFA" class="mb-4 space-y-2">
       <UpstreamChannelSelector v-model="initialChannelId" @update:model-value="initialChannelConfirmed = false" />
       <label v-if="initialChannelId > 0" class="flex gap-2 text-sm"><input v-model="initialChannelConfirmed" type="checkbox" data-testid="confirm-create-channel" />{{ t('upstreamEntities.confirmCreate') }}</label>
     </div>
@@ -49,18 +51,18 @@
       @submit.prevent="handleSubmit"
       class="space-y-5"
     >
-      <div>
+      <div v-if="!isKiloTwoFA">
         <label class="input-label">{{ t('admin.accounts.accountName') }}</label>
         <input
           v-model="form.name"
           type="text"
-          :required="!isGrokSSOInputMethod && !isOpenAITwoFA"
+          :required="!isGrokSSOInputMethod && !isOpenAITwoFA && !isKiloTwoFA"
           class="input"
           :placeholder="t('admin.accounts.enterAccountName')"
           data-tour="account-form-name"
         />
       </div>
-      <div>
+      <div v-if="!isKiloTwoFA">
         <label class="input-label">{{ t('admin.accounts.notes') }}</label>
         <textarea
           v-model="form.notes"
@@ -408,10 +410,10 @@
         <div class="mt-2 grid grid-cols-2 gap-3 lg:grid-cols-4" data-tour="account-form-type">
           <button
             type="button"
-            @click="accountCategory = 'oauth-based'; openaiTwoFA = false; openaiBPSOAuth = false"
+            @click="accountCategory = 'oauth-based'; openaiTwoFA = false; openaiBPSOAuth = false; openaiKiloTwoFA = false"
             :class="[
               'flex items-center gap-3 rounded-lg border-2 p-3 text-left transition-all',
-              accountCategory === 'oauth-based' && !openaiTwoFA && !openaiBPSOAuth
+              accountCategory === 'oauth-based' && !openaiTwoFA && !openaiBPSOAuth && !openaiKiloTwoFA
                 ? 'border-green-500 bg-green-50 dark:bg-green-900/20'
                 : 'border-gray-200 hover:border-green-300 dark:border-dark-600 dark:hover:border-green-700'
             ]"
@@ -419,7 +421,7 @@
             <div
               :class="[
                 'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg',
-                accountCategory === 'oauth-based' && !openaiTwoFA && !openaiBPSOAuth
+                accountCategory === 'oauth-based' && !openaiTwoFA && !openaiBPSOAuth && !openaiKiloTwoFA
                   ? 'bg-green-500 text-white'
                   : 'bg-gray-100 text-gray-500 dark:bg-dark-600 dark:text-gray-400'
               ]"
@@ -458,7 +460,7 @@
             </div>
           </button>
 
-          <button type="button" data-testid="openai-two-fa" @click="accountCategory = 'oauth-based'; openaiTwoFA = true; openaiBPSOAuth = false"
+          <button type="button" data-testid="openai-two-fa" @click="accountCategory = 'oauth-based'; openaiTwoFA = true; openaiBPSOAuth = false; openaiKiloTwoFA = false"
             :class="['flex items-center gap-3 rounded-lg border-2 p-3 text-left transition-all',
               isOpenAITwoFA ? 'border-green-500 bg-green-50 dark:bg-green-900/20' : 'border-gray-200 dark:border-dark-600']">
             <Icon name="shield" size="sm" />
@@ -469,7 +471,7 @@
           </button>
 
           <button type="button" data-testid="openai-bps-oauth"
-            @click="accountCategory = 'oauth-based'; openaiTwoFA = false; openaiBPSOAuth = true"
+            @click="accountCategory = 'oauth-based'; openaiTwoFA = false; openaiBPSOAuth = true; openaiKiloTwoFA = false"
             :class="['flex items-center gap-3 rounded-lg border-2 p-3 text-left transition-all',
               isOpenAIBPSOAuth ? 'border-green-500 bg-green-50 dark:bg-green-900/20' : 'border-gray-200 hover:border-green-300 dark:border-dark-600']">
             <Icon name="link" size="sm" />
@@ -479,6 +481,15 @@
             </div>
           </button>
         </div>
+        <div class="mt-3" data-testid="kilo-account-type-entry">
+          <button type="button" data-testid="openai-kilo-two-fa"
+            @click="accountCategory = 'oauth-based'; openaiTwoFA = false; openaiBPSOAuth = false; openaiKiloTwoFA = true"
+            :class="['flex w-full items-center gap-3 rounded-lg border-2 p-3 text-left transition-all focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary-500', isKiloTwoFA ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20' : 'border-gray-200 hover:border-primary-300 dark:border-dark-600']">
+            <Icon name="shield" size="sm" />
+            <div><span class="block text-sm font-medium text-gray-900 dark:text-white">{{ t('kilo.twoFA.label') }}</span><span class="text-xs text-gray-500 dark:text-gray-400">{{ t('kilo.twoFA.cardDescription') }}</span></div>
+          </button>
+        </div>
+        <p v-if="isKiloTwoFA" class="input-hint">{{ t('kilo.twoFA.entryHint') }}</p>
         <p v-if="isOpenAITwoFA" class="input-hint">{{ t('tokenGuard.twoFA.nameHint') }}</p>
         <div v-if="isOpenAIBPSOAuth" class="mt-3 space-y-2" data-testid="bps-oauth-models">
           <p class="input-hint">{{ t('admin.accounts.oauth.openai.excelLoginHint') }}</p>
@@ -487,6 +498,7 @@
         </div>
       </div>
 
+      <template v-if="!isKiloTwoFA">
       <!-- Account Type Selection (Grok) -->
       <div v-if="form.platform === 'grok'">
         <label class="input-label">{{ t('admin.accounts.accountType') }}</label>
@@ -3566,6 +3578,11 @@
         v-if="form.platform === 'openai'"
         class="border-t border-gray-200 pt-4 dark:border-dark-600"
       >
+        <div v-if="accountCategory === 'oauth-based'" class="mb-4 rounded-lg bg-primary-50 p-3 dark:bg-primary-900/20">
+          <p class="text-sm font-medium text-primary-800 dark:text-primary-200">{{ t('kilo.accountEntry.modeTitle') }}</p>
+          <p class="mt-1 text-xs leading-5 text-primary-700 dark:text-primary-300">{{ t('kilo.accountEntry.createHint') }}</p>
+          <p class="mt-1 text-xs leading-5 text-gray-500 dark:text-dark-400">{{ t('kilo.accountEntry.conversionHint') }}</p>
+        </div>
         <div class="flex items-center justify-between gap-4">
           <div>
             <label class="input-label mb-0">{{ t('admin.accounts.openai.kiloBridge') }}</label>
@@ -3934,12 +3951,13 @@
           data-tour="account-form-groups"
         />
       </div>
-
+      </template>
     </form>
 
     <!-- Step 2: OAuth Authorization -->
     <div v-else class="space-y-5">
-      <OpenAITwoFAImport v-if="isOpenAITwoFA" :import-credential="importTwoFACredential" @busy="twoFABusy = $event" />
+      <KiloTwoFAImport v-if="isKiloTwoFA" @busy="kiloTwoFABusy = $event" @created="handleKiloBatchCreated" />
+      <OpenAITwoFAImport v-else-if="isOpenAITwoFA" :import-credential="importTwoFACredential" @busy="twoFABusy = $event" />
       <OAuthAuthorizationFlow
         v-else
         ref="oauthFlowRef"
@@ -4021,11 +4039,11 @@
         </button>
       </div>
       <div v-else class="flex justify-between gap-3">
-        <button type="button" class="btn btn-secondary" :disabled="twoFABusy" @click="isOpenAITwoFA ? handleClose() : goBackToBasicInfo()">
+        <button type="button" class="btn btn-secondary" :disabled="twoFABusy || kiloTwoFABusy" @click="isOpenAITwoFA ? handleClose() : goBackToBasicInfo()">
           {{ t('common.back') }}
         </button>
         <button
-          v-if="!isOpenAITwoFA && isManualInputMethod"
+          v-if="!isOpenAITwoFA && !isKiloTwoFA && isManualInputMethod"
           type="button"
           :disabled="!canExchangeCode"
           class="btn btn-primary"
@@ -4298,6 +4316,8 @@ import { parseExtraImageModels } from '@/utils/extraImageModels'
 import { DEFAULT_ACCOUNT_COST_MULTIPLIER, isValidAccountCostMultiplier } from '@/utils/accountCost'
 
 import OpenAITwoFAImport from './OpenAITwoFAImport.vue'
+import KiloTwoFAImport from './KiloTwoFAImport.vue'
+import type { KiloOnboardingBatchResult } from '@/api/admin/kilo'
 import { createTokenGuardV2Account } from '@/api/admin/accountTokenGuardV2'
 import type { TokenGuardReloginAccount } from '@/api/admin/accountTokenGuard'
 import { ref, reactive, computed, watch } from 'vue'
@@ -4434,6 +4454,7 @@ const { t } = useI18n()
 const browserTimeZone = getBrowserTimeZone()
 
 const oauthStepTitle = computed(() => {
+  if (isKiloTwoFA.value) return t('kilo.twoFA.title')
   if (isOpenAITwoFA.value) return t('tokenGuard.twoFA.title')
   if (isOpenAIBPSOAuth.value) return t('admin.accounts.oauth.openai.excelTitle')
   if (form.platform === 'openai') return t('admin.accounts.oauth.openai.title')
@@ -4526,6 +4547,8 @@ const props = defineProps<Props>()
 const emit = defineEmits<{
   close: []
   created: []
+  kiloReady: [accountIds: number[]]
+  kiloBatchCreated: [batchId: string]
 }>()
 
 const appStore = useAppStore()
@@ -4596,6 +4619,9 @@ interface TempUnschedRuleForm {
 // State
 const step = ref(1)
 const openaiTwoFA = ref(false)
+const openaiKiloTwoFA = ref(false)
+const kiloTwoFABusy = ref(false)
+const isKiloTwoFA = computed(() => form.platform === 'openai' && accountCategory.value === 'oauth-based' && openaiKiloTwoFA.value)
 const openaiBPSOAuth = ref(false)
 const bpsOAuthModels = ref<string[]>([...DEFAULT_EXCEL_BPS_MODELS])
 const isOpenAIBPSOAuth = computed(() => form.platform === 'openai' && accountCategory.value === 'oauth-based' && openaiBPSOAuth.value)
@@ -5392,6 +5418,7 @@ watch(
 watch(
   () => form.platform,
   (newPlatform) => {
+    openaiKiloTwoFA.value = false
     openaiBPSOAuth.value = false
     // Reset base URL based on platform
     if (isMultiProtocolApiKeyPlatform(newPlatform)) {
@@ -5841,18 +5868,27 @@ async function runChannelCreation<T>(kind: string, payload: unknown, operation: 
  pendingChannelCreations.delete(key)
  return result
 }
-function createAccountWithUpstream(payload: CreateAccountRequest) {
+async function createAccountWithUpstream(payload: CreateAccountRequest) {
  const selected = initialChannelId.value > 0 ? { upstream_channel_id: initialChannelId.value, confirm_upstream_channel_binding: initialChannelConfirmed.value } : {}
- return runChannelCreation('account', payload, () => adminAPI.accounts.create({ ...payload, ...selected }), a => [a.id], true)
+ const account = await runChannelCreation('account', payload, () => adminAPI.accounts.create({ ...payload, ...selected }), a => [a.id], true)
+ if (account.platform === 'openai' && account.type === 'oauth' && !account.parent_account_id) emit('kiloReady', [account.id])
+ return account
 }
-function importWithUpstream(payload: UpstreamImportRequest) {
- return runChannelCreation('import', payload, () => adminAPI.accounts.importCodexSession(payload), result => {
+async function importWithUpstream(payload: UpstreamImportRequest) {
+ const result = await runChannelCreation('import', payload, () => adminAPI.accounts.importCodexSession(payload), result => {
   const ids = (result.items || []).filter(item => item.action === 'created' && item.account_id).map(item => item.account_id!)
   if (initialChannelId.value && ids.length !== result.created) throw new Error(t('upstreamEntities.createReadbackFailed'))
   return ids
  })
+ const ids = (result.items || []).filter(item => item.action === 'created' && item.account_id).map(item => item.account_id!)
+ if (ids.length) emit('kiloReady', ids)
+ return result
 }
-function createPATWithUpstream(payload: UpstreamPATRequest) { return runChannelCreation('pat', payload, () => adminAPI.accounts.createOpenAICodexPAT(payload), a => [a.id]) }
+async function createPATWithUpstream(payload: UpstreamPATRequest) {
+ const account = await runChannelCreation('pat', payload, () => adminAPI.accounts.createOpenAICodexPAT(payload), a => [a.id])
+ if (account.platform === 'openai' && account.type === 'oauth' && !account.parent_account_id) emit('kiloReady', [account.id])
+ return account
+}
 function createGrokWithUpstream(payload: Parameters<typeof adminAPI.grok.createFromSSO>[0]) {
  return runChannelCreation('grok', payload, () => adminAPI.grok.createFromSSO(payload), result => result.created.map(item => {
   const id = (item.account as { id?: number } | undefined)?.id
@@ -5923,6 +5959,8 @@ const resetForm = () => {
   pendingChannelCreations.clear()
   step.value = 1
   openaiTwoFA.value = false
+  openaiKiloTwoFA.value = false
+  kiloTwoFABusy.value = false
   openaiBPSOAuth.value = false
   bpsOAuthModels.value = [...DEFAULT_EXCEL_BPS_MODELS]
   autoBPS.reset()
@@ -6059,8 +6097,14 @@ const resetForm = () => {
   clearMixedChannelDialog()
 }
 
+const handleKiloBatchCreated = (result: KiloOnboardingBatchResult) => {
+  emit('created')
+  emit('kiloBatchCreated', result.batch_id)
+  emit('close')
+}
+
 const handleClose = () => {
-  if (twoFABusy.value) return
+  if (twoFABusy.value || kiloTwoFABusy.value) return
   antigravityMixedChannelConfirmed.value = false
   clearMixedChannelDialog()
   emit('close')
@@ -6317,6 +6361,10 @@ const handleVertexServiceAccountDrop = async (event: DragEvent) => {
 }
 
 const handleSubmit = async () => {
+  if (isKiloTwoFA.value) {
+    step.value = 2
+    return
+  }
   if (!validateCacheConversion()) return
 
   if (isOpenAIBPSOAuth.value && !bpsOAuthModels.value.some(model => model.trim())) {

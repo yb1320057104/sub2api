@@ -93,6 +93,11 @@ func isOpenAIAccount(account *Account) bool {
 // handleOpenAIAccountUpstreamError expects canonicalModel to be the model used
 // for scheduling after applying account mapping exactly once.
 func (s *OpenAIGatewayService) handleOpenAIAccountUpstreamError(ctx context.Context, account *Account, statusCode int, headers http.Header, responseBody []byte, canonicalModel ...string) (shouldDisable bool) {
+	if s != nil && s.rateLimitService != nil {
+		if handled, disabled := s.rateLimitService.observeKiloGatewayFailure(ctx, account, statusCode, responseBody); handled {
+			return disabled
+		}
+	}
 	if s != nil {
 		var disabledOn429 bool
 		ctx, disabledOn429 = s.rateLimitService.maybeDisableOpenAISchedulingOn429(ctx, account, statusCode, headers)
@@ -150,6 +155,12 @@ func (s *OpenAIGatewayService) handleOpenAIAccountUpstreamError(ctx context.Cont
 	defer cancel()
 	if s != nil {
 		stateCtx = s.rateLimitService.observeAccountOps(stateCtx, account, statusCode, headers, responseBody)
+	}
+	if account != nil && account.IsKiloSourceAccount() && account.IsOpenAIOAuth() &&
+		(statusCode == http.StatusUnauthorized || statusCode == http.StatusPaymentRequired) && s != nil && s.rateLimitService != nil {
+		// Retained quota OAuth uses token-version quarantine, including an
+		// explicit workspace rejection. Do not bypass its CAS via SetError.
+		return s.rateLimitService.HandleUpstreamError(stateCtx, account, statusCode, headers, responseBody)
 	}
 	if account != nil && account.Platform == PlatformOpenAI && isOpenAIHTTPUpstreamAccessStateError(statusCode, "", responseBody) {
 		message := "OpenAI upstream account or workspace is unavailable"

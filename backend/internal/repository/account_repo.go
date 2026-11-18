@@ -905,6 +905,7 @@ func lockAndMergeAccountProbeExtra(
 		}
 	}
 	extra := service.MergeOpenAICodexTicketExtra(copyJSONMap(normalizeJSONMap(account.Extra)), currentExtra)
+	extra = preserveKiloQuotaOnlyExtra(extra, currentExtra)
 	if identityUnchanged {
 		extra = preserveCommittedCodexUsage(extra, currentExtra)
 	}
@@ -1238,6 +1239,7 @@ func (r *accountRepository) ApplyOpenAIOAuthReauth(
 	extra = copyJSONMap(extra)
 	delete(extra, service.OpenAITwoFAAdmissionExtraKey)
 	delete(extra, service.OAuthDegradationActionExtraKey)
+	delete(extra, "kilo_quota_only") // Reauthorization can refresh OAuth, never restore inference.
 	extraJSON, err := json.Marshal(normalizeJSONMap(extra))
 	if err != nil {
 		return false, err
@@ -1260,10 +1262,7 @@ func (r *accountRepository) ApplyOpenAIOAuthReauth(
 		), updated_account AS (
 		UPDATE accounts AS a
 		SET credentials = $1::jsonb,
-			extra = CASE
-				WHEN $2::jsonb = '{}'::jsonb THEN a.extra
-				ELSE COALESCE(a.extra, '{}'::jsonb) || $2::jsonb
-			END,
+			extra = (COALESCE(a.extra, '{}'::jsonb) || $2::jsonb)-'openai_auth_recovery',
 			expires_at = COALESCE($14::timestamptz, a.expires_at),
 			status = $5,
 			error_message = '',
@@ -1294,6 +1293,12 @@ func (r *accountRepository) ApplyOpenAIOAuthReauth(
 			AND task.worker_id = $10
 			AND task.status = $11
 		RETURNING task.account_id
+		), awakened_tests AS (
+		UPDATE account_tests AS test
+		SET available_at=LEAST(test.available_at,NOW()),queue_reason=''
+		FROM completed_task
+		WHERE test.account_id=completed_task.account_id AND test.status='queued' AND NOT test.cancel_requested
+		RETURNING test.id
 		)
 		INSERT INTO scheduler_outbox (event_type, account_id, group_id, payload)
 		SELECT $8, completed_task.account_id, NULL, NULL FROM completed_task
@@ -1478,7 +1483,7 @@ func (r *accountRepository) accountListFilteredQuery(platform, accountType, stat
 }
 
 func (r *accountRepository) ListWithFilters(ctx context.Context, params pagination.PaginationParams, platform, accountType, status, search string, groupID int64, privacyMode string) ([]service.Account, *pagination.PaginationResult, error) {
-	q := observerAccountQuery(ctx, r.accountListFilteredQuery(platform, accountType, status, search, groupID, privacyMode))
+	q := observerAccountQuery(ctx, r.kiloAccountListFilteredQuery(ctx, platform, accountType, status, search, groupID, privacyMode))
 	// Clone before Count so interceptor-appended predicates (SoftDeleteMixin's
 	// deleted_at IS NULL) don't accumulate on the shared builder and pollute the
 	// subsequent list query. Same pattern used in group_repo/promo_code_repo/user_repo
@@ -1511,7 +1516,7 @@ func (r *accountRepository) ListAllWithFilters(ctx context.Context, platform, ac
 	if scoped := r.accountTransactionScope(ctx); scoped != r {
 		return scoped.ListAllWithFilters(ctx, platform, accountType, status, search, groupID, privacyMode)
 	}
-	accounts, err := observerAccountQuery(ctx, r.accountListFilteredQuery(platform, accountType, status, search, groupID, privacyMode)).All(ctx)
+	accounts, err := observerAccountQuery(ctx, r.kiloAccountListFilteredQuery(ctx, platform, accountType, status, search, groupID, privacyMode)).All(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -1842,29 +1847,32 @@ func (r *accountRepository) BatchUpdateLastUsed(ctx context.Context, updates map
 }
 
 func (r *accountRepository) SetError(ctx context.Context, id int64, errorMsg string) error {
-	if scoped := r.accountTransactionScope(ctx); scoped != r {
-		return scoped.SetError(ctx, id, errorMsg)
-	}
-	// Error status already excludes OpenAI OAuth accounts from scheduling. Keep
-	// their persistent switch so successful re-authentication can restore a
-	// previously enabled account without reopening a manual or 429 pause. Read
-	// the switch in the UPDATE itself to preserve concurrent scheduling changes.
-	_, err := r.sql.ExecContext(ctx, `
-		UPDATE accounts
-		SET status = $2,
-			error_message = $3,
-			schedulable = CASE WHEN platform = $4 AND type = $5 THEN schedulable ELSE FALSE END,
-			updated_at = NOW()
-		WHERE id = $1 AND deleted_at IS NULL
-	`, id, service.StatusError, errorMsg, service.PlatformOpenAI, service.AccountTypeOAuth)
-	if err != nil {
-		return err
-	}
-	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &id, nil, nil); err != nil {
-		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue set error failed: account=%d err=%v", id, err)
-	}
-	r.syncSchedulerAccountSnapshot(ctx, id)
-	return nil
+	_, err := r.mutateKiloSourceHealth(ctx, id, func(opCtx context.Context, scoped *accountRepository, _ bool, paired bool) (bool, error) {
+		// Authentication does not own the source's manual scheduling switch.
+		result, err := scoped.sql.ExecContext(opCtx, `
+			UPDATE accounts
+			SET status = $2,
+				error_message = $3,
+				schedulable = CASE WHEN platform = $4 AND type = $5 THEN schedulable ELSE FALSE END,
+				updated_at = NOW()
+			WHERE id = $1 AND deleted_at IS NULL
+		`, id, service.StatusError, errorMsg, service.PlatformOpenAI, service.AccountTypeOAuth)
+		if err != nil {
+			return false, err
+		}
+		n, err := result.RowsAffected()
+		if err != nil || n == 0 {
+			return false, err
+		}
+		if err := enqueueSchedulerOutbox(opCtx, scoped.sql, service.SchedulerOutboxEventAccountChanged, &id, nil, nil); err != nil {
+			if paired {
+				return false, err
+			}
+			logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue set error failed: account=%d err=%v", id, err)
+		}
+		return true, nil
+	})
+	return err
 }
 
 func (r *accountRepository) SetGrokCredentialErrorIfMatch(
@@ -3274,6 +3282,11 @@ func (r *accountRepository) UpdateExtra(ctx context.Context, id int64, updates m
 		return scoped.UpdateExtra(ctx, id, updates)
 	}
 	if hasCodexWindowUpdates(updates) {
+		if value, targetsKiloFlag := updates["kilo_quota_only"]; targetsKiloFlag && value != true {
+			// Usage CAS must not hide a quota-only downgrade among display keys.
+			updates = copyJSONMap(updates)
+			delete(updates, "kilo_quota_only")
+		}
 		_, err := r.UpdateCodexUsageSnapshot(ctx, id, updates)
 		return err
 	}
@@ -3307,6 +3320,9 @@ func (r *accountRepository) UpdateExtra(ctx context.Context, id int64, updates m
 		}
 	}
 	extraExpression := "COALESCE(extra, '{}'::jsonb) || $1::jsonb"
+	if _, targetsKiloFlag := updates["kilo_quota_only"]; targetsKiloFlag {
+		extraExpression = preserveKiloQuotaOnlySQL(extraExpression)
+	}
 	if clearProbeSnapshot {
 		extraExpression = "(" + extraExpression + ") - 'upstream_billing_probe'"
 	}
@@ -3820,6 +3836,9 @@ func (r *accountRepository) BulkUpdate(ctx context.Context, ids []int64, updates
 			// hold. The degradation history remains immutable audit data.
 			extraExpression = "(" + extraExpression + ") - 'auto_config_concurrency'"
 		}
+		if _, targetsKiloFlag := updates.Extra["kilo_quota_only"]; targetsKiloFlag {
+			extraExpression = preserveKiloQuotaOnlySQL(extraExpression)
+		}
 		setClauses = append(setClauses, "extra = "+extraExpression)
 	}
 
@@ -4077,6 +4096,8 @@ func (r *accountRepository) accountsToService(ctx context.Context, accounts []*d
 
 func tempUnschedulablePredicate() dbpredicate.Account {
 	return dbpredicate.Account(func(s *entsql.Selector) {
+		// A Kilo source remains an OAuth credential owner, not a direct candidate.
+		s.Where(entsql.ExprP("COALESCE(" + s.C("extra") + "->>'kilo_source_prepared_id','0')='0' AND COALESCE(" + s.C("extra") + "->>'kilo_source_gateway_id','0')='0' AND COALESCE(" + s.C("extra") + "->>'kilo_quota_only','false')<>'true'"))
 		col := s.C("temp_unschedulable_until")
 		s.Where(entsql.Or(
 			entsql.IsNull(col),

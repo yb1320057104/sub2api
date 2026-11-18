@@ -54,6 +54,13 @@ func (s *AccountTestService) runAccountCandyProbe(ctx context.Context, account, 
 	if account == nil || credentialAccount == nil {
 		return "", candyProbeFailure("测试账号不存在。")
 	}
+	resolved, routeErr := resolveKiloTestAccount(ctx, s.accountRepo, account)
+	if routeErr != nil {
+		return "", routeErr
+	}
+	if resolved.IsKiloGatewayAccount() {
+		account, credentialAccount = resolved, resolved
+	}
 	if account.Platform != PlatformOpenAI || account.IsSyntheticUITest() {
 		return "", candyProbeFailure("糖果测试仅支持真实 OpenAI 账号。")
 	}

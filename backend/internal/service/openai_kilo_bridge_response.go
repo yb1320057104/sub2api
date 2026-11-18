@@ -68,8 +68,24 @@ func kiloBridgeResponseEffort(c *gin.Context, account *Account) string {
 // Rewrite only protocol metadata, never generated text, tool input, or usage.
 func rewriteKiloBridgeResponseJSON(c *gin.Context, account *Account, body []byte) ([]byte, error) {
 	requested := kiloBridgeResponseEffort(c, account)
-	if requested == "" || !gjson.ValidBytes(body) {
+	if (requested == "" && !isKiloCLIGatewayAccount(account)) || !gjson.ValidBytes(body) {
 		return body, nil
+	}
+	if isKiloCLIGatewayAccount(account) {
+		for _, path := range []string{"model", "response.model"} {
+			value := gjson.GetBytes(body, path)
+			if value.Type != gjson.String || !strings.HasPrefix(value.String(), "openai/") {
+				continue
+			}
+			var err error
+			body, err = sjson.SetBytes(body, path, strings.TrimPrefix(value.String(), "openai/"))
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	if requested == "" {
+		return sanitizeKiloBridgeClientErrorJSON(c, body)
 	}
 	for _, path := range []string{"reasoning.effort", "reasoning_effort", "response.reasoning.effort", "response.reasoning_effort"} {
 		value := gjson.GetBytes(body, path)
@@ -148,7 +164,7 @@ func SanitizeKiloBridgeClientErrorLog(c *gin.Context, entry *OpsInsertErrorLogIn
 }
 
 func rewriteKiloBridgeResponseHTTPBody(c *gin.Context, account *Account, body []byte) ([]byte, error) {
-	if kiloBridgeResponseEffort(c, account) == "" {
+	if kiloBridgeResponseEffort(c, account) == "" && !isKiloCLIGatewayAccount(account) {
 		return body, nil
 	}
 	if !bodyHasSSEFraming(body) {

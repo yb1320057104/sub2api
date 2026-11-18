@@ -1436,7 +1436,25 @@ export interface AccountProxyBinding extends AccountProxyBindingInput {
   current_concurrency: number | null
 }
 
+export interface KiloAccountView {
+  prepared_id?: number
+  name: string
+  email: string
+  organization_id: string
+  has_key: boolean
+  source?: {
+    id: number
+    name: string
+    email: string
+    plan_type: string
+    workspace_id: string
+    status: string
+    quota_only: boolean
+  }
+}
+
 export interface Account {
+  kilo?: KiloAccountView
   upstream_channel_binding?: import('@/api/admin/upstreamChannels').ChannelBinding
  excel_bps_credential_state?: ExcelBPSCredentialState
   id: number

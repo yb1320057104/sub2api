@@ -299,12 +299,30 @@ func (api *OAuthRefreshAPI) RefreshIfNeeded(
 		if requestPath && attemptedAccount.Platform == PlatformGrok {
 			return result, withGrokCredentialFailureSnapshot(refreshErr, attemptedAccount)
 		}
+		if attemptedAccount.Platform == PlatformOpenAI && isNonRetryableRefreshError(refreshErr) && !isSharedProviderRefreshError(refreshErr) {
+			if lifecycle, ok := api.accountRepo.(OpenAICredentialLifecycleRepository); ok {
+				if _, markErr := lifecycle.MarkOpenAIRefreshFailure(ctx, attemptedAccount.ID, attemptedAccount.Credentials, attemptedAccount.ProxyID, true, time.Now().Add(10*time.Minute), "invalid_refresh_token"); markErr != nil {
+					slog.Warn("oauth_refresh_recovery_signal_failed", "account_id", attemptedAccount.ID)
+				}
+			}
+		}
 		return result, refreshErr
 	}
 
 	// 5. 设置版本号 + 更新 DB
 	if newCredentials != nil {
 		newCredentials["_token_version"] = time.Now().UnixMilli()
+		if lifecycle, ok := api.accountRepo.(OpenAICredentialLifecycleRepository); ok && freshAccount.Platform == PlatformOpenAI && freshAccount.Type == AccountTypeOAuth {
+			applied, saveErr := lifecycle.ApplyOpenAIRefresh(ctx, freshAccount.ID, attemptedAccount.Credentials, attemptedAccount.ProxyID, newCredentials)
+			if saveErr != nil {
+				return nil, &providerCycleContainmentRefreshError{err: fmt.Errorf("OpenAI refresh persistence: %w", saveErr)}
+			}
+			durable, readErr := api.accountRepo.GetByID(ctx, freshAccount.ID)
+			if readErr != nil || durable == nil {
+				return &OAuthRefreshResult{Refreshed: applied, NewCredentials: newCredentials, Account: attemptedAccount}, &providerCycleContainmentRefreshError{err: fmt.Errorf("OpenAI durable refresh state unavailable: %w", readErr)}
+			}
+			return &OAuthRefreshResult{Refreshed: applied, NewCredentials: newCredentials, Account: durable}, nil
+		}
 		if freshAccount.IsGrokOAuth() {
 			conditionalRepo, ok := api.accountRepo.(GrokOAuthRefreshSuccessRepository)
 			if !ok {
@@ -385,6 +403,13 @@ func (api *OAuthRefreshAPI) RefreshIfNeeded(
 		}
 	}
 
+	if freshAccount.Platform == PlatformOpenAI && newCredentials != nil {
+		if recovery, ok := api.accountRepo.(OpenAIAuthRecoveryRepository); ok {
+			if _, recoveryErr := recovery.RecoverOpenAIAuthIfUnchanged(ctx, freshAccount.ID, freshAccount.GetOpenAIAccessToken()); recoveryErr != nil {
+				return nil, fmt.Errorf("OAuth refreshed but authentication quarantine recovery failed: %w", recoveryErr)
+			}
+		}
+	}
 	return &OAuthRefreshResult{
 		Refreshed:      true,
 		NewCredentials: newCredentials,

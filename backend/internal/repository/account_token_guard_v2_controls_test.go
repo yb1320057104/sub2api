@@ -29,7 +29,10 @@ func TestOpenAIOAuthReauthRuntimeEngineFiltersBeforeClaim(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = db.Close() }()
 	repo := &openAIOAuthReauthRepository{db: db}
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT pg_advisory_xact_lock").WithArgs(openAIReauthKiloBatchLock).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery("(?s)WITH expired_callbacks.*CASE WHEN.*credential_mode.*ELSE engine END.*ANY.*FOR UPDATE SKIP LOCKED").WithArgs("failed", "failed", "callback_processing", int64(1800), "queued", "running", "starting", "worker", "", sqlmock.AnyArg(), "session_studio").WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	mock.ExpectCommit()
 	claim, err := repo.ClaimNextTaskForRuntime(context.Background(), "worker", 30*time.Minute, "", []string{service.OpenAIOAuthReauthEngineLocal}, service.OpenAIOAuthReauthEngineSessionStudio)
 	require.NoError(t, err)
 	require.Nil(t, claim)

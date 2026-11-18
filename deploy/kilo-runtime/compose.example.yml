@@ -1,0 +1,79 @@
+# Opt-in override for deploy/docker-compose.local.yml (not enabled by default).
+# Both processes read one host file; no token is written to an env/command line.
+services:
+  sub2api:
+    # Register the token group before the image entrypoint calls su-exec.
+    # Keep its root-owned data repair and PK browser bootstrap intact.
+    user: "0:0"
+    entrypoint: ["/bin/sh", "/run/kilo/app-entrypoint.sh"]
+    environment:
+      KILO_EXECUTOR_URL: http://127.0.0.1:8099
+      KILO_EXECUTOR_TOKEN_FILE: /run/kilo/service.token
+      KILO_TOKEN_GID: "${KILO_TOKEN_GID:?Set the dedicated read-only token group GID}"
+    volumes:
+      - type: bind
+        source: ${KILO_TOKEN_FILE:?Set an absolute, restricted token file}
+        target: /run/kilo/service.token
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./kilo-runtime/app-entrypoint.sh
+        target: /run/kilo/app-entrypoint.sh
+        read_only: true
+        bind:
+          create_host_path: false
+    group_add:
+      - "${KILO_TOKEN_GID:?Set the dedicated read-only token group GID}"
+
+  kilo-runtime:
+    image: ${KILO_RUNTIME_IMAGE:?Set the locally built immutable executor image tag}
+    build:
+      context: ..
+      dockerfile: deploy/kilo-runtime/Dockerfile
+      additional_contexts:
+        sentinel_assets: ${KILO_SENTINEL_ASSETS:?Set the authorized pinned JS directory}
+    # Go rejects cleartext HTTP to a container hostname. Sharing the app's
+    # network namespace keeps the private executor genuinely on its loopback.
+    network_mode: service:sub2api
+    depends_on:
+      sub2api:
+        condition: service_started
+        restart: true
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    user: "10001:10001"
+    group_add:
+      - "${KILO_TOKEN_GID:?Set the dedicated read-only token group GID}"
+    volumes:
+      - type: bind
+        source: ${KILO_TOKEN_FILE:?Set an absolute, restricted token file}
+        target: /run/kilo/service.token
+        read_only: true
+        bind:
+          create_host_path: false
+    environment:
+      KILO_BIND: 127.0.0.1
+      KILO_PORT: "8099"
+      KILO_SERVICE_TOKEN_FILE: /run/kilo/service.token
+      KILO_CONCURRENCY: "${KILO_CONCURRENCY:-1}"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ulimits:
+      core: 0
+    healthcheck:
+      test:
+        - CMD
+        - /usr/local/bin/python
+        - -B
+        - -c
+        - 'import http.client,json,pathlib; c=http.client.HTTPConnection("127.0.0.1",8099,timeout=3); c.request("GET","/v1/health",headers={"Authorization":"Bearer "+pathlib.Path("/run/kilo/service.token").read_text().strip()}); r=c.getresponse(); d=json.load(r); assert r.status==200 and d.get("ok") is True and d.get("protocol_version")==1 and {"resume_identity","reconcile_subscription","reauthorize_subscription"} <= set(d.get("capabilities",[]))'
+      interval: 30s
+      timeout: 25s
+      start_period: 30s
+      retries: 3

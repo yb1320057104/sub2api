@@ -1359,12 +1359,13 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	}
 
 	httpInvalidEncryptedContentRetryTried := false
-	compactModelFallbackRetried := false
+	// Managed Kilo compatibility retries belong to its pre-execution boundary.
+	compactModelFallbackRetried := isKiloCLIGatewayAccount(account)
 	agentTaskRecoveryTried := false
 	rejectedFieldRetryState := openAIResponsesRejectedFieldRetryStateForRequest(c, body)
 	// HTTP 400 and pre-output SSE rejection share one same-account retry.
 	recoverInvalidEncryptedContentHTTP := func(resp *http.Response, rejection []byte) (bool, error) {
-		if isControlledExperiment(ctx) || httpInvalidEncryptedContentRetryTried || ctx.Err() != nil ||
+		if isKiloCLIGatewayAccount(account) || isControlledExperiment(ctx) || httpInvalidEncryptedContentRetryTried || ctx.Err() != nil ||
 			(c != nil && c.Request != nil && c.Request.Context().Err() != nil) || openAIStreamClientOutputStarted(c, false) {
 			return false, nil
 		}
@@ -1516,6 +1517,11 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 			upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
 			upstreamCode := extractUpstreamErrorCode(respBody)
+			if isKiloCLIGatewayAccount(account) {
+				// A completed POST is not a compatibility probe. Preserve the
+				// provider rejection without rewriting and submitting it again.
+				return s.handleErrorResponse(ctx, resp, c, account, body, resolveOpenAIErrorSchedulingModel(billingModel, kiloGatewayUpstreamModel(account, upstreamModel)))
+			}
 			if !isControlledExperiment(ctx) && !agentTaskRecoveryTried && s.isAgentIdentityAccount(ctx, account) && isAgentIdentityTaskInvalidHTTPResponse(resp.StatusCode, respBody) {
 				agentTaskRecoveryTried = true
 				expectedTaskID := account.GetCredential("task_id")
@@ -1627,10 +1633,10 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			c.Set(openAIStreamEncryptedRejectionContextKey, []byte(nil))
 			_ = takeOpenAIStreamInvalidEncryptedContent(c)
 			streamCtx := ctx
-			if account.Platform == PlatformOpenAI && !isControlledExperiment(ctx) && !httpInvalidEncryptedContentRetryTried {
+			if account.Platform == PlatformOpenAI && !isKiloCLIGatewayAccount(account) && !isControlledExperiment(ctx) && !httpInvalidEncryptedContentRetryTried {
 				streamCtx = context.WithValue(ctx, openAIEncryptedContentRecoveryContextKey{}, openAIEncryptedContentRecoveryPolicy{body: body})
 			}
-			streamResult, err := s.handleStreamingResponseWithReasoning(streamCtx, resp, c, account, startTime, originalModel, upstreamModel, reasoningEffortValue)
+			streamResult, err := s.handleStreamingResponseWithReasoning(streamCtx, resp, c, account, startTime, kiloGatewayClientModel(account, originalModel), kiloGatewayUpstreamModel(account, upstreamModel), reasoningEffortValue)
 			if phaseErr := openAIHTTPPhaseError(resp); phaseErr != nil {
 				return nil, handleOpenAIHTTPPhaseError(c, account, phaseErr)
 			}
@@ -1660,7 +1666,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 					}
 					// Preserve the actual upstream terminal if recovery is revoked.
 					resp.Body = io.NopCloser(strings.NewReader("event: " + encryptedSignal.eventType + "\ndata: " + string(encryptedSignal.payload) + "\n\n"))
-					_, err = s.handleStreamingResponseWithReasoning(ctx, resp, c, account, startTime, originalModel, upstreamModel, reasoningEffortValue)
+					_, err = s.handleStreamingResponseWithReasoning(ctx, resp, c, account, startTime, kiloGatewayClientModel(account, originalModel), kiloGatewayUpstreamModel(account, upstreamModel), reasoningEffortValue)
 					if err == nil {
 						return nil, encryptedSignal
 					}
@@ -1715,7 +1721,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			imageOutputSizes = streamResult.imageOutputSizes
 			searchCount = streamResult.searchCount
 		} else {
-			nonStreamResult, err := s.handleNonStreamingResponse(ctx, resp, c, account, originalModel, upstreamModel)
+			nonStreamResult, err := s.handleNonStreamingResponse(ctx, resp, c, account, kiloGatewayClientModel(account, originalModel), kiloGatewayUpstreamModel(account, upstreamModel))
 			if phaseErr := openAIHTTPPhaseError(resp); phaseErr != nil {
 				return nil, handleOpenAIHTTPPhaseError(c, account, phaseErr)
 			}
@@ -1996,6 +2002,9 @@ func shouldAdaptDeepSeekResponsesClientTools(account *Account, body []byte, comp
 }
 
 func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Context, account *Account, body []byte, token string, isStream bool, promptCacheKey string, isCodexCLI bool) (*http.Request, error) {
+	if err := ValidateKiloInferenceAccount(account); err != nil {
+		return nil, err
+	}
 	defer requesttiming.Observe(ctx, "build_upstream_request")()
 	if account.IsSIWCEnabled() {
 		return s.buildSIWCRequest(ctx, c, body, token)
@@ -2180,6 +2189,12 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	s.pinBoundCodexTicketHarvestIdentity(req, account)
 
 	if err := applyMappedGPT55LiteCompatibility(req, account, body); err != nil {
+		return nil, err
+	}
+	if err := s.applyKiloGatewayIdentity(req, c, account, body, promptCacheKey); err != nil {
+		return nil, err
+	}
+	if err := ValidateKiloInferenceRequest(req, account); err != nil {
 		return nil, err
 	}
 	return req, nil

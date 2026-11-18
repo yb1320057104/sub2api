@@ -1372,7 +1372,7 @@ def process_password_claim(api: WorkerAPI, claim: dict[str, Any]) -> None:
         child_env.pop("OPENAI_REAUTH_WORKER_TOKEN", None)
         # Only this task selects the private side channel. Ambient paths and
         # identity hints must never carry diagnostics into another task.
-        for key in ("SUB2API_PROTOCOL_DIAGNOSTIC_PATH", "SUB2API_PROTOCOL_TASK_ID", "OPENAI_CODEX_EXPECTED_WORKSPACE"):
+        for key in ("SUB2API_PROTOCOL_DIAGNOSTIC_PATH", "SUB2API_PROTOCOL_TASK_ID", "OPENAI_CODEX_EXPECTED_WORKSPACE", "OPENAI_CODEX_WORKSPACE_MODE"):
             child_env.pop(key, None)
         if oauth_profile == "codex":
             child_env["SUB2API_PROTOCOL_DIAGNOSTIC_PATH"] = str(diagnostic_path)
@@ -1382,6 +1382,11 @@ def process_password_claim(api: WorkerAPI, claim: dict[str, Any]) -> None:
                 child_env.pop(key, None)
             if claim.get("expected_workspace"):
                 child_env["OPENAI_CODEX_EXPECTED_WORKSPACE"] = str(claim["expected_workspace"])
+            workspace_mode = claim.get("workspace_mode")
+            if workspace_mode:
+                if workspace_mode not in {"auto", "personal", "business"}:
+                    raise WorkerError("workspace_mode_invalid")
+                child_env["OPENAI_CODEX_WORKSPACE_MODE"] = workspace_mode
         if oauth_profile == "excel":
             # One bounded fixed-exit attempt. Never rotate proxies to retry a rejected login.
             child_env["CHATGPT_PROXY_MAX_ATTEMPTS"] = "1"

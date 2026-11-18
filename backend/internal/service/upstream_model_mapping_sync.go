@@ -34,6 +34,16 @@ func (s *AccountTestService) SyncUpstreamModelCatalogWithOptions(ctx context.Con
 	if options.Automatic && !options.Apply {
 		return nil, newUpstreamModelSyncConfigError("Automatic model sync requires apply=true", nil)
 	}
+	if account.hasKiloSubscriptionScope() {
+		if _, err := account.kiloSubscriptionModelSet(); err != nil {
+			return nil, err
+		}
+		if options.Apply {
+			// Gateway discovery includes provider-paid models. It can enrich
+			// capabilities but never replace the verified subscription grant.
+			return skippedUpstreamModelSync("kilo_subscription_scope", nil), nil
+		}
+	}
 	if !options.Apply {
 		return s.SyncUpstreamModelCatalog(ctx, account)
 	}

@@ -75,13 +75,16 @@ func ProvideSchedulerCache(rdb *redis.Client, cfg *config.Config) service.Schedu
 }
 
 // ProviderSet is the Wire provider set for all repositories
-func ProvideAccountProxyRouter(repo service.AccountRepository, cache service.ProxyConcurrencyCache) *service.AccountProxyRouter {
+func ProvideAccountProxyRouter(repo service.AccountRepository, cache service.ProxyConcurrencyCache, egress service.KiloEgressGuard) *service.AccountProxyRouter {
 	reader, _ := repo.(service.AccountProxyBindingReader)
-	return service.NewAccountProxyRouter(reader, cache)
+	return service.NewAccountProxyRouter(reader, cache, egress)
 }
 
 var ProviderSet = wire.NewSet(
 	NewProxyConcurrencyCache,
+	NewKiloEgressGuard,
+	wire.Bind(new(service.KiloEgressGuard), new(*KiloEgressRepository)),
+	wire.Bind(new(service.KiloEgressManager), new(*KiloEgressRepository)),
 	ProvideAccountProxyRouter,
 	ProvideRegionalMetering,
 	NewRegionalSchedulerAuthority,

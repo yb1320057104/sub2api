@@ -104,7 +104,7 @@ func validLocalProtocolReason(reason string) bool {
 		return true
 	}
 	switch reason {
-	case "protocol_error", "password_rejected", "totp_rejected", "interaction_required", "security_check",
+	case "protocol_error", "password_rejected", "totp_rejected", "interaction_required", "email_verification_required", "security_check",
 		"session_unavailable", "workspace_mismatch", "callback_missing", "callback_invalid", "callback_state_mismatch",
 		"pkce_invalid", "token_exchange_failed", "credentials_incomplete", "transport_error", "runtime_error",
 		"process_failed", "timeout", "diagnostic_invalid", "output_invalid":

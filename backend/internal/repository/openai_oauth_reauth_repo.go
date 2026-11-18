@@ -93,6 +93,9 @@ func (r *openAIOAuthReauthRepository) CreateTask(ctx context.Context, accountID 
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err := lockOpenAIReauthKiloCreation(ctx, tx, accountID, "codex"); err != nil {
+		return nil, err
+	}
 	if err = service.LockCredentialAuthorizationQueue(ctx, tx, accountID); err != nil {
 		return nil, err
 	}
@@ -119,6 +122,51 @@ func (r *openAIOAuthReauthRepository) CreateTask(ctx context.Context, accountID 
 		return nil, err
 	}
 	return record, tx.Commit()
+}
+
+// Keep the numeric lock in sync with service.kiloBatchLock. Repository cannot
+// depend on an unexported service constant, and both owners must serialize on
+// this same short transaction lock before task/source row locks.
+const openAIReauthKiloBatchLock int64 = 70450001
+
+func lockOpenAIReauthKiloCreation(ctx context.Context, tx *sql.Tx, accountID int64, profile string) error {
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, openAIReauthKiloBatchLock); err != nil {
+		return err
+	}
+	var busy bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (
+		SELECT 1 FROM pk_kilo_jobs
+		WHERE source_account_id=$1 AND job_kind='onboard_source'
+			AND status IN ('queued','running','awaiting_authorization')
+			AND (stage <> 'quota_oauth' OR $2 <> 'codex')
+	)`, accountID, profile).Scan(&busy); err != nil {
+		return err
+	}
+	if busy {
+		return infraerrors.Conflict("OPENAI_REAUTH_KILO_BUSY", "Wait for Kilo onboarding before starting another official authorization")
+	}
+	return nil
+}
+
+// GetActiveCodexTask excludes auxiliary authorization and TOTP rotation tasks.
+// It lets Kilo adopt an already running official authorization without claiming
+// it or introducing a second password login.
+func (r *openAIOAuthReauthRepository) GetActiveCodexTask(ctx context.Context, accountID int64) (*service.OpenAIOAuthReauthTaskRecord, error) {
+	record, err := scanOpenAIOAuthReauthTask(r.db.QueryRowContext(ctx, `
+		SELECT id, account_id, status, stage, COALESCE(worker_id, ''),
+			COALESCE(auth_session_id, ''), expected_credentials_hash,
+			COALESCE(error_message, ''), attempt,
+			created_at, updated_at, finished_at, oauth_profile
+		FROM openai_oauth_reauth_tasks
+		WHERE account_id=$1 AND oauth_profile='codex'
+			AND status IN ('queued','running','callback_processing')
+			AND NOT EXISTS (SELECT 1 FROM openai_totp_rotations rotation WHERE rotation.task_id=openai_oauth_reauth_tasks.id)
+		ORDER BY created_at DESC, id DESC LIMIT 1
+	`, accountID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	return record, err
 }
 
 func (r *openAIOAuthReauthRepository) GetLatestTask(ctx context.Context, accountID int64) (*service.OpenAIOAuthReauthTaskRecord, error) {
@@ -177,7 +225,15 @@ func (r *openAIOAuthReauthRepository) ClaimNextTaskForRuntime(ctx context.Contex
 		staleAfter = 30 * time.Minute
 	}
 	staleSeconds := int64(staleAfter.Seconds())
-	row := r.db.QueryRowContext(ctx, `
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, openAIReauthKiloBatchLock); err != nil {
+		return nil, err
+	}
+	row := tx.QueryRowContext(ctx, `
 		WITH expired_callbacks AS (
 			UPDATE openai_oauth_reauth_tasks
 			SET status = $1,
@@ -196,11 +252,25 @@ func (r *openAIOAuthReauthRepository) ClaimNextTaskForRuntime(ctx context.Contex
 					status = $6
 					AND claimed_at < NOW() - ($4 * INTERVAL '1 second')
 				))
+				AND NOT EXISTS (
+					SELECT 1 FROM pk_kilo_jobs kilo
+					WHERE kilo.source_account_id=openai_oauth_reauth_tasks.account_id
+						AND kilo.job_kind='onboard_source'
+						AND kilo.status IN ('queued','running','awaiting_authorization')
+						AND (kilo.stage <> 'quota_oauth'
+							OR openai_oauth_reauth_tasks.oauth_profile <> 'codex'
+							OR EXISTS (SELECT 1 FROM openai_totp_rotations rotation WHERE rotation.task_id=openai_oauth_reauth_tasks.id))
+				)
 				AND ($9 = '' OR EXISTS (
 					SELECT 1 FROM openai_oauth_reauth_configs AS config
 					WHERE config.account_id = openai_oauth_reauth_tasks.account_id AND config.credential_mode = $9
 				))
-				AND CASE WHEN oauth_profile IN ('excel','siwc') THEN 'local_worker' ELSE COALESCE((SELECT CASE WHEN $11 <> '' THEN
+				AND CASE WHEN oauth_profile IN ('excel','siwc')
+					OR (oauth_profile='codex' AND EXISTS (
+						SELECT 1 FROM accounts source
+						WHERE source.id=openai_oauth_reauth_tasks.account_id
+							AND source.extra->'kilo_quota_only'='true'::jsonb
+					)) THEN 'local_worker' ELSE COALESCE((SELECT CASE WHEN $11 <> '' THEN
 					CASE WHEN config.credential_mode = 'password_totp' THEN $11 ELSE 'local_worker' END
 					ELSE engine END FROM openai_oauth_reauth_configs AS config
 					WHERE config.account_id = openai_oauth_reauth_tasks.account_id), 'local_worker') END = ANY($10::text[])
@@ -236,9 +306,15 @@ func (r *openAIOAuthReauthRepository) ClaimNextTaskForRuntime(ctx context.Contex
 	)
 	record, err := scanOpenAIOAuthReauthTask(row)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
+		record, err = nil, nil
 	}
-	return record, err
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return record, nil
 }
 
 func (r *openAIOAuthReauthRepository) SetSession(ctx context.Context, taskID int64, workerID, sessionID string) error {

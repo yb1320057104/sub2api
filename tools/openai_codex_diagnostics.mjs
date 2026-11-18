@@ -1,11 +1,11 @@
 // Private, bounded diagnostic snapshots. Never serialize exception text or URLs.
 import fs from 'node:fs';
 
-const stages = new Set(['starting', 'web_login', 'password_accepted', 'mfa_challenge',
+const stages = new Set(['starting', 'transport_prepare', 'web_login', 'password_accepted', 'mfa_challenge',
   'mfa_accepted', 'web_redirect', 'oauth_authorize', 'session_select',
   'workspace_select', 'callback_validation', 'token_exchange', 'oauth_output', 'completed']);
 const reasons = new Set(['none', 'protocol_error', 'password_rejected', 'totp_rejected',
-  'interaction_required', 'security_check', 'session_unavailable', 'workspace_mismatch',
+  'interaction_required', 'email_verification_required', 'security_check', 'session_unavailable', 'workspace_mismatch',
   'callback_missing', 'callback_invalid', 'callback_state_mismatch', 'pkce_invalid',
   'token_exchange_failed', 'credentials_incomplete', 'transport_error', 'runtime_error']);
 
@@ -93,7 +93,11 @@ function reasonFor(error, stage) {
     const text = typeof error?.message === 'string' ? error.message : '';
     if (text.startsWith('PROXY_RISK_CONTROL: ')) return 'security_check';
     if (/^(?:CODEX_AUTH_LOGIN_REQUIRED|SESSION_SELECTION_INVALID):/.test(text)) return 'session_unavailable';
-    if (['ECONNREFUSED', 'ENOTFOUND', 'ETIMEDOUT'].includes(error?.code) || ['fetch failed', 'timed out'].includes(text)) return 'transport_error';
+    if (['ECONNREFUSED', 'ECONNRESET', 'ENOTFOUND', 'EAI_AGAIN', 'ETIMEDOUT', 'ERR_TLS_CERT_ALTNAME_INVALID', 'CERT_HAS_EXPIRED', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'DEPTH_ZERO_SELF_SIGNED_CERT'].includes(error?.code) || ['fetch failed', 'timed out'].includes(text)) return 'transport_error';
+    // The pinned Python/curl transport wraps its typed failure in an Error.
+    // Classify only anchored transport signatures; never copy exception text.
+    if (/^(?:[^\n]*: )?(?:curl: \(\d+\)|Failed to perform, curl: \(\d+\)|curl_cffi\.(?:requests\.)?exceptions\.|(?:SSL|TLS|Proxy|Connection|ConnectTimeout|ReadTimeout)Error\b)/i.test(text) ||
+        /^(?:[^\n]*: )?(?:SSL certificate (?:problem|verify failed)|TLS (?:connect|handshake) (?:error|failed)|Proxy CONNECT (?:failed|aborted))\b/i.test(text)) return 'transport_error';
     if (['ERR_MODULE_NOT_FOUND', 'MODULE_NOT_FOUND', 'ENOENT'].includes(error?.code)) return 'runtime_error';
     if (stage === 'token_exchange') return 'token_exchange_failed';
   } catch { /* Even a hostile exception getter cannot enter the channel. */ }
@@ -121,6 +125,33 @@ export function createProtocolDiagnostics(file, taskId) {
     },
     fail(error) { write(reasonFor(error, stage)); },
   };
+}
+
+// Explicit source identities always win. New automatic imports prefer a work
+// workspace, then personal; sorting IDs makes multiple organizations stable
+// across upstream list reordering. Eligibility is checked from OAuth token claims.
+export function selectCodexWorkspace(workspaces, {mode = 'auto', expected = ''} = {}) {
+  if (!['auto', 'personal', 'business'].includes(mode) || !Array.isArray(workspaces)) {
+    throw new Error('workspace_mismatch');
+  }
+  const candidates = workspaces.filter(item => typeof item?.id === 'string' &&
+    /^[A-Za-z0-9_-]{1,128}$/.test(item.id));
+  if (new Set(candidates.map(item => item.id)).size !== candidates.length) {
+    throw new Error('workspace_mismatch');
+  }
+  if (expected) {
+    const matched = candidates.find(item => item.id === expected);
+    if (!matched || mode === 'personal' && matched.kind !== 'personal' ||
+        mode === 'business' && matched.kind !== 'organization') throw new Error('workspace_mismatch');
+    return matched.id;
+  }
+  const ordered = kind => candidates.filter(item => item.kind === kind)
+    .sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
+  const selected = mode === 'personal' ? ordered('personal')[0] :
+    mode === 'business' ? ordered('organization')[0] :
+      ordered('organization')[0] || ordered('personal')[0];
+  if (!selected) throw new Error('workspace_mismatch');
+  return selected.id;
 }
 
 export function validateCodexCallback(codex, redirectUri) {

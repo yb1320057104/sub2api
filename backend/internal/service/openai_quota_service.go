@@ -14,6 +14,7 @@ import (
 
 	infraerrors "github.com/Wei-Shaw/sub2api/internal/pkg/errors"
 	"github.com/imroc/req/v3"
+	"github.com/tidwall/gjson"
 )
 
 // ErrSparkShadowResetNotSupported is returned when ResetCredit is called on a
@@ -165,6 +166,7 @@ type OpenAIQuotaService struct {
 	referralClient       OpenAIReferralClient
 	agentIdentityTaskMu  sync.Mutex
 	agentIdentityWS      agentIdentityWSConnectionInvalidator
+	upstreamErrorHandler func(context.Context, *Account, int, http.Header, []byte) bool
 }
 
 // NewOpenAIQuotaService constructs a quota service. token provider is required —
@@ -186,10 +188,42 @@ func NewOpenAIQuotaService(
 	}
 }
 
+// observeUpstreamAuthFailure reports only an actual credential or workspace
+// rejection. The used token stays attached to the attempt so a late response
+// cannot quarantine credentials installed by a concurrent refresh.
+func (s *OpenAIQuotaService) observeUpstreamAuthFailure(ctx context.Context, accountID int64, usedToken, workspace string, status int, headers http.Header, body []byte) {
+	if s == nil || s.upstreamErrorHandler == nil || s.accountRepo == nil ||
+		(status != http.StatusUnauthorized && !(status == http.StatusPaymentRequired && gjson.GetBytes(body, "detail.code").String() == "deactivated_workspace")) {
+		return
+	}
+	account, err := s.accountRepo.GetByID(ctx, accountID)
+	if err != nil || account == nil || !account.IsOpenAIOAuth() || account.GetOpenAIAccessToken() != usedToken || account.GetCredential("chatgpt_account_id") != workspace {
+		return
+	}
+	stateCtx, cancel := openAIAccountStateContext(ctx)
+	defer cancel()
+	s.upstreamErrorHandler(withOpenAIUsedAccessToken(stateCtx, account, usedToken), account, status, headers, body)
+}
+
 // QueryUsage fetches the latest rate-limit/usage snapshot for the given OpenAI
 // OAuth account. Returns infraerrors so the handler layer can map them to
 // stable error codes / HTTP statuses.
 func (s *OpenAIQuotaService) QueryUsage(ctx context.Context, accountID int64) (*OpenAIQuotaUsage, error) {
+	// Only the read path projects a gateway onto its reciprocal OAuth source.
+	// Reset/consume keep their existing explicit OAuth-account contract.
+	if s != nil && s.accountRepo != nil {
+		account, readErr := s.accountRepo.GetByID(ctx, accountID)
+		if readErr != nil {
+			return nil, readErr
+		}
+		if account.IsKiloGatewayAccount() {
+			source, sourceErr := resolveKiloQuotaSource(ctx, s.accountRepo, account)
+			if sourceErr != nil {
+				return nil, sourceErr
+			}
+			accountID = source.ID
+		}
+	}
 	accessToken, chatGPTAccountID, proxyURL, fedRAMP, err := s.prepareUpstreamCall(ctx, accountID)
 	if err != nil {
 		return nil, err
@@ -235,6 +269,7 @@ func (s *OpenAIQuotaService) QueryUsage(ctx context.Context, accountID int64) (*
 				continue
 			}
 			status := resp.StatusCode
+			s.observeUpstreamAuthFailure(callCtx, accountID, accessToken, chatGPTAccountID, status, resp.Header, resp.Bytes())
 			if isOpenAIAutoResetContext(ctx) {
 				slog.Warn("openai_quota_query_failed", "account_id", accountID, "status", status, "source", "auto_reset")
 				return nil, infraerrors.Newf(mapUpstreamStatus(status), "OPENAI_QUOTA_UPSTREAM_ERROR", "upstream returned %d", status)
@@ -374,6 +409,7 @@ func (s *OpenAIQuotaService) queryResetCreditDetails(ctx context.Context, client
 		return nil
 	}
 	if !resp.IsSuccessState() {
+		s.observeUpstreamAuthFailure(ctx, accountID, accessToken, chatGPTAccountID, resp.StatusCode, resp.Header, resp.Bytes())
 		slog.Warn("openai_quota_reset_credit_details_failed", "account_id", accountID, "status", resp.StatusCode)
 		return nil
 	}
@@ -475,6 +511,7 @@ func (s *OpenAIQuotaService) resetCredit(ctx context.Context, accountID int64, c
 				continue
 			}
 			status := resp.StatusCode
+			s.observeUpstreamAuthFailure(callCtx, accountID, accessToken, chatGPTAccountID, status, resp.Header, resp.Bytes())
 			if targeted {
 				slog.Warn("openai_quota_targeted_reset_failed", "account_id", accountID, "status", status)
 				return nil, infraerrors.Newf(mapUpstreamStatus(status), "OPENAI_QUOTA_RESET_UPSTREAM_ERROR", "upstream returned %d", status)

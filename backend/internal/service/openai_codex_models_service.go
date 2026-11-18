@@ -1734,7 +1734,17 @@ func (s *OpenAIGatewayService) FetchCodexModelsManifest(ctx context.Context, acc
 	if account != nil && account.IsExcelBPSEnabled() {
 		return s.fetchExcelBPSCodexManifest(ctx, account, ifNoneMatch)
 	}
-	return s.fetchNativeCodexModelsManifest(ctx, account, clientVersion, ifNoneMatch)
+	response, err := s.fetchNativeCodexModelsManifest(ctx, account, clientVersion, ifNoneMatch)
+	if err != nil || response == nil || response.NotModified || !account.hasKiloSubscriptionScope() {
+		return response, err
+	}
+	body, err := filterKiloSubscriptionModelsBody(account, response.Body, true)
+	if err != nil {
+		return nil, err
+	}
+	result := *response
+	result.Body, result.ETag = body, codexModelsManifestBodyETag(body)
+	return &result, nil
 }
 
 func (s *OpenAIGatewayService) fetchNativeCodexModelsManifest(ctx context.Context, account *Account, clientVersion, ifNoneMatch string) (*OpenAIModelsResponse, error) {

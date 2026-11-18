@@ -744,6 +744,7 @@ func (s *OpenAIOAuthReauthService) createTaskForProfile(ctx context.Context, acc
 type OpenAIOAuthReauthClaim struct {
 	OAuthProfile      string            `json:"oauth_profile"`
 	ExpectedWorkspace string            `json:"expected_workspace,omitempty"`
+	WorkspaceMode     string            `json:"workspace_mode,omitempty"`
 	TaskID            int64             `json:"task_id"`
 	AccountID         int64             `json:"account_id"`
 	LoginEmail        string            `json:"login_email"`
@@ -843,7 +844,9 @@ func (s *OpenAIOAuthReauthService) ClaimTaskWithEngines(ctx context.Context, wor
 		mode = OpenAIOAuthReauthModeEmailOTPURL
 	}
 	engine := effectiveReauthEngine(mode, stored.Engine, runtimeSettings.Engine)
-	if record.OAuthProfile == "excel" || record.OAuthProfile == "siwc" {
+	quotaOnly := reauthTaskProfile(record) == "codex" && account.IsKiloSourceAccount()
+	// Kilo quota authorization shares its pinned login exit, never a random login pool.
+	if quotaOnly || record.OAuthProfile == "excel" || record.OAuthProfile == "siwc" {
 		engine = OpenAIOAuthReauthEngineLocal
 		if mode != OpenAIOAuthReauthModePasswordTOTP {
 			_ = s.repo.MarkFailed(ctx, record.ID, workerID, "Selected OAuth profile requires password/TOTP mode")
@@ -861,6 +864,9 @@ func (s *OpenAIOAuthReauthService) ClaimTaskWithEngines(ctx context.Context, wor
 		return nil, nil
 	}
 	proxySource, proxyErr := normalizeReauthProxySource(stored.ProxySource, stored.ProxyID)
+	if quotaOnly {
+		proxySource, proxyErr = OpenAIOAuthReauthProxySourceAccount, nil
+	}
 	if proxyErr != nil {
 		_ = s.repo.MarkFailed(ctx, record.ID, workerID, "configured re-login proxy source is invalid")
 		return nil, nil
@@ -869,7 +875,20 @@ func (s *OpenAIOAuthReauthService) ClaimTaskWithEngines(ctx context.Context, wor
 	proxyError := "configured re-login proxy is unavailable"
 	var proxyURL string
 	var release func()
-	if engine == OpenAIOAuthReauthEngineLocal {
+	if quotaOnly {
+		store := assignedAuthProxyStore{account: s.accounts.GetAccount, proxy: s.accounts.GetProxy}
+		if writer, ok := s.credentialUpdater.(interface {
+			UpdateExtra(context.Context, int64, map[string]any) error
+		}); ok {
+			store.pin = writer.UpdateExtra
+		}
+		route, routeErr := resolveAssignedAuthProxy(ctx, account, store)
+		if routeErr != nil || route.ID <= 0 || route.URL == "" {
+			_ = s.repo.MarkFailed(ctx, record.ID, workerID, "Kilo source fixed login proxy is unavailable")
+			return nil, nil
+		}
+		proxyURL = route.URL
+	} else if engine == OpenAIOAuthReauthEngineLocal {
 		switch proxySource {
 		case OpenAIOAuthReauthProxySourceAccount:
 			proxyID = account.ProxyID
@@ -904,6 +923,10 @@ func (s *OpenAIOAuthReauthService) ClaimTaskWithEngines(ctx context.Context, wor
 	claim := &OpenAIOAuthReauthClaim{
 		TaskID: record.ID, AccountID: record.AccountID, LoginEmail: stored.LoginEmail,
 		CredentialMode: mode, Engine: engine, ProxyURL: proxyURL, OAuthProfile: reauthTaskProfile(record), ExpectedWorkspace: account.GetCredential("chatgpt_account_id"),
+	}
+	if quotaOnly {
+		workspaceMode, _ := account.Extra[kiloWorkspaceModeExtraKey].(string)
+		claim.WorkspaceMode = kiloEffectiveWorkspaceMode(workspaceMode)
 	}
 	if claim.Engine == OpenAIOAuthReauthEngineSessionStudio {
 		claim.ReloginEndpoint, claim.ReloginHeaders, err = s.sessionStudioConfig(ctx)
@@ -1184,6 +1207,9 @@ func (s *OpenAIOAuthReauthService) applyReauthTokenInfo(ctx context.Context, rec
 	if strings.TrimSpace(tokenInfo.RefreshToken) == "" || strings.TrimSpace(tokenInfo.AccessToken) == "" {
 		return s.failCallback(ctx, taskID, "OpenAI did not return a usable OAuth token", errors.New("missing token"))
 	}
+	if err := validateKiloReauthWorkspace(account, tokenInfo); err != nil {
+		return s.failCallback(ctx, taskID, infraerrors.Message(err), err)
+	}
 	newCredentials := s.oauth.BuildAccountCredentials(tokenInfo)
 	for key, value := range account.Credentials {
 		if _, exists := newCredentials[key]; !exists {
@@ -1303,6 +1329,41 @@ func validateReauthToken(account *Account, tokenInfo *OpenAITokenInfo) error {
 	if !hasStoredIdentity {
 		return infraerrors.BadRequest("OPENAI_REAUTH_IDENTITY_MISSING", "account has no stored OpenAI identity for verification")
 	}
+	return nil
+}
+
+// Kilo allowances need an explicit OAuth workspace and a supported paid plan.
+// A login-session sid and request metadata cannot establish that identity.
+func validateKiloReauthWorkspace(account *Account, info *OpenAITokenInfo) error {
+	if account.Extra["kilo_quota_only"] != true {
+		return nil
+	}
+	id, _ := reauthIdentityClaims(info.IDToken)
+	access, _ := reauthIdentityClaims(info.AccessToken)
+	workspace := firstNonEmptyReauth(id.account, access.account)
+	if workspace == "" || workspace != info.ChatGPTAccountID {
+		return infraerrors.Conflict("OPENAI_REAUTH_WORKSPACE_IDENTITY_MISSING", "官方令牌未确认GPT工作区身份，请重新授权；不能使用登录会话编号代替")
+	}
+	plan := strings.ToLower(strings.TrimSpace(info.PlanType))
+	if claims, err := openai.ParseIDToken(info.AccessToken); err == nil {
+		if user := claims.GetUserInfo(); user != nil {
+			accessPlan := strings.ToLower(strings.TrimSpace(user.PlanType))
+			if plan != "" && accessPlan != "" && plan != accessPlan {
+				return infraerrors.Conflict("OPENAI_REAUTH_WORKSPACE_MODE_MISMATCH", "官方令牌的GPT套餐身份不一致，请重新授权")
+			}
+			plan = firstNonEmptyReauth(plan, accessPlan)
+		}
+	}
+	mode, _ := account.Extra[kiloWorkspaceModeExtraKey].(string)
+	mode = kiloEffectiveWorkspaceMode(mode)
+	personal, business := plan == "plus" || plan == "pro", plan == "business" || plan == "team" || plan == "self_serve_business_prolite"
+	if mode != "auto" && mode != "personal" && mode != "business" {
+		return infraerrors.Conflict("KILO_WORKSPACE_MODE_INVALID", "GPT工作区模式无效，请重新提交接入")
+	}
+	if !personal && !business || mode == "personal" && !personal || mode == "business" && !business {
+		return infraerrors.Conflict("OPENAI_REAUTH_WORKSPACE_MODE_MISMATCH", "官方令牌的套餐与所选GPT工作区模式不符，请选择个人Plus/Pro或Business/Team工作空间后重试")
+	}
+	info.PlanType = plan
 	return nil
 }
 

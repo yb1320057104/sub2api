@@ -470,6 +470,9 @@ func (h *AccountHandler) buildAccountResponseWithRuntime(ctx context.Context, ac
 		slog.Warn("upstream_channel_readback_failed")
 	}
 	h.enrichShadowParents(ctx, []AccountWithConcurrency{item})
+	if err := h.enrichKiloAccountViews(ctx, []AccountWithConcurrency{item}); err != nil {
+		slog.Warn("kilo_account_view_readback_failed")
+	}
 
 	return item
 }
@@ -703,6 +706,7 @@ func (h *AccountHandler) listAccountSchedulerScoreFilterPool(
 // List handles listing all accounts with pagination
 // GET /api/v1/admin/accounts
 func (h *AccountHandler) List(c *gin.Context) {
+	c.Request = c.Request.WithContext(service.WithKiloAccountList(c.Request.Context()))
 	page, pageSize := response.ParsePagination(c)
 	platform := c.Query("platform")
 	accountType := c.Query("type")
@@ -743,7 +747,7 @@ func (h *AccountHandler) List(c *gin.Context) {
 	var err error
 	var concurrencyCounts map[int64]int
 	if strings.EqualFold(strings.TrimSpace(sortBy), "current_concurrency") {
-		accounts, total, concurrencyCounts, err = h.listAccountsByCurrentConcurrency(c.Request.Context(), page, pageSize, platform, accountType, status, search, groupID, privacyMode, sortOrder)
+		accounts, total, concurrencyCounts, err = h.listKiloAccountsByCurrentConcurrency(c.Request.Context(), page, pageSize, platform, accountType, status, search, groupID, privacyMode, sortOrder)
 	} else {
 		accounts, total, err = h.adminService.ListAccounts(c.Request.Context(), page, pageSize, platform, accountType, status, search, groupID, privacyMode, sortBy, sortOrder)
 	}
@@ -928,6 +932,10 @@ func (h *AccountHandler) List(c *gin.Context) {
 		return
 	}
 	h.enrichShadowParents(c.Request.Context(), result)
+	if err := h.enrichKiloAccountViews(c.Request.Context(), result); err != nil {
+		response.InternalError(c, "Kilo account view readback failed")
+		return
+	}
 
 	if lite {
 		compact := make([]AccountListItemWithConcurrency, len(result))
@@ -2526,7 +2534,11 @@ func (h *AccountHandler) BulkUpdate(c *gin.Context) {
 		return
 	}
 
-	result, err := h.adminService.BulkUpdateAccounts(accountManualSchedulingContext(c, req.Schedulable != nil), &service.BulkUpdateAccountsInput{
+	ctx := accountManualSchedulingContext(c, req.Schedulable != nil)
+	if len(req.AccountIDs) == 0 && req.Filters != nil {
+		ctx = service.WithKiloAccountList(ctx)
+	}
+	result, err := h.adminService.BulkUpdateAccounts(ctx, &service.BulkUpdateAccountsInput{
 		ProxyBindings:         req.ProxyBindings,
 		AccountIDs:            req.AccountIDs,
 		Filters:               toServiceBulkUpdateAccountFilters(req.Filters),
@@ -3050,6 +3062,29 @@ func (h *AccountHandler) GetAvailableModels(c *gin.Context) {
 }
 
 func (h *AccountHandler) respondAvailableModels(c *gin.Context, account *service.Account) {
+	if account.RequiresKiloInference() {
+		// The generic OpenAI fallback is a convenience catalog, not a Kilo
+		// subscription grant. An invalid scope or failed discovery stays closed.
+		if err := service.ValidateKiloInferenceAccount(account); err != nil {
+			response.ErrorFrom(c, err)
+			return
+		}
+		if !account.IsActive() || !account.Schedulable {
+			response.Error(c, http.StatusConflict, "Kilo account is unavailable; restore the bound GPT authorization before testing")
+			return
+		}
+		if h.accountTestService == nil {
+			response.Error(c, http.StatusServiceUnavailable, "Kilo subscription model discovery is unavailable")
+			return
+		}
+		models, err := h.accountTestService.FetchOpenAIAccountModels(c.Request.Context(), account)
+		if err != nil {
+			response.ErrorFrom(c, err)
+			return
+		}
+		response.Success(c, models)
+		return
+	}
 	// Handle OpenAI accounts
 	if account.IsOpenAI() {
 		// Prefer the shared, account-keyed upstream catalog. If discovery fails,

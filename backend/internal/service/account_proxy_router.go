@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math/rand/v2"
+	"net/http"
 	"sync"
 	"time"
 
@@ -37,10 +38,25 @@ type AccountProxyPriorityCache interface {
 type AccountProxyRouter struct {
 	reader AccountProxyBindingReader
 	cache  ProxyConcurrencyCache
+	egress KiloEgressGuard
 }
 
-func NewAccountProxyRouter(reader AccountProxyBindingReader, cache ProxyConcurrencyCache) *AccountProxyRouter {
-	return &AccountProxyRouter{reader: reader, cache: cache}
+func NewAccountProxyRouter(reader AccountProxyBindingReader, cache ProxyConcurrencyCache, guards ...KiloEgressGuard) *AccountProxyRouter {
+	router := &AccountProxyRouter{reader: reader, cache: cache}
+	if len(guards) > 0 {
+		router.egress = guards[0]
+	}
+	return router
+}
+
+// GuardKiloInferenceRequest runs even on direct tests and harvest requests,
+// which intentionally do not opt into ordinary proxy-pool scheduling.
+func (r *AccountProxyRouter) GuardKiloInferenceRequest(request *http.Request, accountID int64) error {
+	if r == nil || request == nil {
+		return nil
+	}
+	reader, _ := r.reader.(KiloInferenceAccountReader)
+	return GuardKiloInferenceRequest(request.Context(), reader, request, nil, accountID)
 }
 
 func (r *AccountProxyRouter) GetProxyConcurrencyBatch(ctx context.Context, ids []int64) (map[int64]int, error) {
@@ -107,11 +123,11 @@ func (r *AccountProxyRouter) acquire(ctx, routeParent context.Context, accountID
 		}
 		borrowCtx, cancel := context.WithCancel(ctx)
 		stop := context.AfterFunc(borrowed.route.Context, cancel)
-		return &AccountProxyRoute{Context: borrowCtx, URL: borrowed.route.URL, ProxyID: borrowed.route.ProxyID, LeaseID: borrowed.route.LeaseID, close: func() { stop(); cancel() }}, nil
+		return r.guardRoute(accountID, &AccountProxyRoute{Context: borrowCtx, URL: borrowed.route.URL, ProxyID: borrowed.route.ProxyID, LeaseID: borrowed.route.LeaseID, close: func() { stop(); cancel() }})
 	}
 	state, enabled := ctx.Value(accountProxyContextKey{}).(*accountProxyRequest)
 	if r == nil || !enabled || accountID <= 0 {
-		return &AccountProxyRoute{Context: ctx, URL: fallback}, nil
+		return r.guardRoute(accountID, &AccountProxyRoute{Context: ctx, URL: fallback})
 	}
 	if r.reader == nil || r.cache == nil {
 		return nil, ErrProxyLeaseUnavailable
@@ -164,7 +180,7 @@ func (r *AccountProxyRouter) acquire(ctx, routeParent context.Context, accountID
 		if gate != nil || pinned > 0 || state.selected[accountID] > 0 {
 			return nil, ErrProxyUnavailable
 		}
-		return &AccountProxyRoute{Context: ctx}, nil
+		return r.guardRoute(accountID, &AccountProxyRoute{Context: ctx})
 	}
 	selected := state.selected[accountID]
 	if pinned > 0 {
@@ -174,6 +190,7 @@ func (r *AccountProxyRouter) acquire(ctx, routeParent context.Context, accountID
 		selected = pinned
 	}
 	available := false
+	var egressErr error
 	nonce := uuid.NewString()
 	for _, i := range rand.Perm(len(bindings)) {
 		binding := bindings[i]
@@ -212,13 +229,50 @@ func (r *AccountProxyRouter) acquire(ctx, routeParent context.Context, accountID
 		if !acquired {
 			continue
 		}
+		route, guardErr := r.guardRoute(accountID, r.newRoute(routeParent, binding, leaseID))
+		if guardErr != nil {
+			egressErr = guardErr
+			continue
+		}
 		state.selected[accountID] = binding.ProxyID
-		return r.newRoute(routeParent, binding, leaseID), nil
+		return route, nil
+	}
+	if egressErr != nil {
+		return nil, egressErr
 	}
 	if available {
 		return nil, ErrProxyCapacity
 	}
 	return nil, ErrProxyUnavailable
+}
+
+func (r *AccountProxyRouter) guardRoute(accountID int64, route *AccountProxyRoute) (*AccountProxyRoute, error) {
+	if r == nil || r.egress == nil {
+		return route, nil
+	}
+	permit, err := r.egress.Acquire(route.Context, accountID, route.ProxyID, route.URL)
+	if err != nil {
+		route.Close()
+		if errors.Is(err, ErrKiloEgressCapacity) {
+			return nil, errors.Join(ErrProxyCapacity, err)
+		}
+		return nil, errors.Join(ErrProxyUnavailable, err)
+	}
+	if permit == nil {
+		return route, nil
+	}
+	closeRoute := route.close
+	route.Context = permit.Context
+	route.close = func() {
+		if closeRoute != nil {
+			closeRoute()
+		}
+		permit.Close()
+	}
+	// Live's Redis-only handoff cannot carry the database keeper. Keep managed
+	// Kilo routes request-owned instead of silently dropping their IP lease.
+	route.handoff = func() bool { return false }
+	return route, nil
 }
 
 func (r *AccountProxyRouter) newRoute(ctx context.Context, binding AccountProxyBinding, leaseID string) *AccountProxyRoute {

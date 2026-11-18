@@ -24,6 +24,9 @@ func (r *openAIOAuthReauthRepository) createExcelTask(ctx context.Context, accou
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err := lockOpenAIReauthKiloCreation(ctx, tx, accountID, "excel"); err != nil {
+		return nil, err
+	}
 	if err = service.LockCredentialAuthorizationQueue(ctx, tx, accountID); err != nil {
 		return nil, err
 	}

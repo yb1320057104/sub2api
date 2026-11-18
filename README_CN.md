@@ -2,6 +2,8 @@
 
 项目维护必读：[项目约束](PROJECT_CONSTRAINTS.md) · [二开功能清单](PK_FEATURES.md)。合并上游必须逐项保留；新增二开必须随同一变更登记。
 
+> **Kilo 分支：** 完整账号接入、身份/订阅生命周期、固定登录出口和网关实现见 [Kilo 系统说明](docs/KILO_SYSTEM.md)；独立执行器的固定输入和部署方式见 [部署说明](deploy/kilo-runtime/README.md)。本分支不自动更新已有部署。
+
 <div align="center">
 
 中文已作为本仓库的默认文档，请阅读 [README.md](README.md)。

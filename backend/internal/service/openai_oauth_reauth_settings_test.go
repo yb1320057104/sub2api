@@ -33,6 +33,9 @@ func (r *reauthTestRepo) ClaimNextTaskForRuntime(ctx context.Context, worker str
 		return nil, nil
 	}
 	effective := effectiveReauthEngine(r.config.CredentialMode, r.config.Engine, global)
+	if r.quotaOnly && r.task != nil && reauthTaskProfile(r.task) == "codex" {
+		effective = OpenAIOAuthReauthEngineLocal
+	}
 	for _, engine := range engines {
 		if engine == effective {
 			return r.ClaimNextTask(ctx, worker, stale)

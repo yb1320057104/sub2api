@@ -138,10 +138,10 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	startTime time.Time,
 ) (*OpenAIForwardResult, error) {
 	ctx = withOpenAITransportMode(ctx, "passthrough")
-	requestedModel := reqModel
+	requestedModel := kiloGatewayClientModel(account, reqModel)
 	upstreamPassthroughModel := ""
 	if account.IsKiloBridgeEnabled() {
-		mappedModel := resolveOpenAIAccountUpstreamModelForRequest(account, reqModel, isOpenAIResponsesCompactPath(c))
+		mappedModel := kiloGatewayUpstreamModel(account, resolveOpenAIAccountUpstreamModelForRequest(account, reqModel, isOpenAIResponsesCompactPath(c)))
 		if mappedModel != "" && mappedModel != reqModel {
 			nextBody, err := sjson.SetBytes(body, "model", mappedModel)
 			if err != nil {
@@ -377,7 +377,8 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 	}
 
 	agentTaskRecoveryTried := false
-	compactModelFallbackRetried := false
+	// Kilo owns its bounded pre-execution compatibility handling.
+	compactModelFallbackRetried := isKiloCLIGatewayAccount(account)
 	rejectedFieldRetryState := openAIResponsesRejectedFieldRetryStateForRequest(c, body)
 	var resp *http.Response
 	var usage *OpenAIUsage
@@ -454,6 +455,9 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 				c.Data(resp.StatusCode, "application/json", probeBody)
 				return nil, fmt.Errorf("copilot sidecar rejected request: %d", resp.StatusCode)
 			}
+			if isKiloCLIGatewayAccount(account) {
+				return nil, s.handleErrorResponsePassthrough(ctx, resp, c, account, body, probeBody)
+			}
 			if retryBody, reason, changed, retryErr := normalizeOpenAIResponsesRejectedFieldRetryBody(resp.StatusCode, body, probeBody); retryErr != nil {
 				return nil, fmt.Errorf("normalize passthrough rejected Responses field retry body: %w", retryErr)
 			} else if changed && rejectedFieldRetryState.Allow(retryBody) {
@@ -516,7 +520,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 			if reasoningEffort != nil {
 				effort = *reasoningEffort
 			}
-			result, handleErr := s.handleStreamingResponsePassthroughWithImage(ctx, resp, c, account, startTime, reqModel, upstreamPassthroughModel, imageBillingModel, effort)
+			result, handleErr := s.handleStreamingResponsePassthroughWithImage(ctx, resp, c, account, startTime, kiloGatewayClientModel(account, reqModel), upstreamPassthroughModel, imageBillingModel, effort)
 			if phaseErr := openAIHTTPPhaseError(resp); phaseErr != nil {
 				return nil, handleOpenAIHTTPPhaseError(c, account, phaseErr)
 			}
@@ -565,7 +569,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 			imageCount = result.imageCount
 			imageOutputSizes = result.imageOutputSizes
 		} else {
-			result, handleErr := s.handleNonStreamingResponsePassthrough(ctx, resp, c, account, reqModel, upstreamPassthroughModel)
+			result, handleErr := s.handleNonStreamingResponsePassthrough(ctx, resp, c, account, kiloGatewayClientModel(account, reqModel), upstreamPassthroughModel)
 			if phaseErr := openAIHTTPPhaseError(resp); phaseErr != nil {
 				return nil, handleOpenAIHTTPPhaseError(c, account, phaseErr)
 			}
@@ -680,6 +684,9 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 	body []byte,
 	token string,
 ) (*http.Request, error) {
+	if err := ValidateKiloInferenceAccount(account); err != nil {
+		return nil, err
+	}
 	defer requesttiming.Observe(ctx, "build_upstream_request")()
 	if account.IsSIWCEnabled() {
 		return s.buildSIWCRequest(ctx, c, body, token)
@@ -863,6 +870,12 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 		return req, nil
 	}
 	if err := applyMappedGPT55LiteCompatibility(req, account, body); err != nil {
+		return nil, err
+	}
+	if err := s.applyKiloGatewayIdentity(req, c, account, body, ""); err != nil {
+		return nil, err
+	}
+	if err := ValidateKiloInferenceRequest(req, account); err != nil {
 		return nil, err
 	}
 	return req, nil
@@ -1835,6 +1848,15 @@ func (s *OpenAIGatewayService) handleOpenAIStreamTerminalAccountSideEffects(
 	canonicalModel ...string,
 ) (int, bool) {
 	statusCode := openAIStreamFailureStatus(payload, message)
+	if s != nil && s.rateLimitService != nil && account != nil && account.Extra[KiloManagedExtraKey] == true {
+		ctx := context.Background()
+		if c != nil && c.Request != nil {
+			ctx = c.Request.Context()
+		}
+		if handled, disabled := s.rateLimitService.observeKiloGatewayFailure(ctx, account, statusCode, payload); handled {
+			return statusCode, disabled
+		}
+	}
 	if account != nil && account.IsGrok() {
 		if isGrokContentPolicyRejection(http.StatusForbidden, payload) {
 			return http.StatusForbidden, false
@@ -1874,7 +1896,7 @@ func (s *OpenAIGatewayService) handleOpenAIStreamTerminalAccountSideEffects(
 }
 
 func openAIStreamFailedEventRetryableOnSameAccount(account *Account, payload []byte, message string) bool {
-	if account == nil {
+	if account == nil || account.RequiresKiloInference() {
 		return false
 	}
 	// 容量降载是请求级信号，不是账号级故障：上游只是让本次请求稍后再试。
@@ -2111,7 +2133,7 @@ func (s *OpenAIGatewayService) handleStreamingResponsePassthroughWithImage(
 	var pluginMetadataEvent openAIPluginMetadataEvent
 	var deliveryObservation openAISSEDeliveryObservation
 	cacheConversionEnabled := account.IsCacheConversionEnabled()
-	kiloResponseRewrite := kiloBridgeResponseEffort(c, account) != ""
+	kiloResponseRewrite := kiloBridgeResponseEffort(c, account) != "" || isKiloCLIGatewayAccount(account)
 	observer := upstreamResponseModelObserverFromContext(c)
 	if observer == nil {
 		observer = beginUpstreamResponseModelObservation(c)
@@ -2840,7 +2862,7 @@ func (s *OpenAIGatewayService) handleNonStreamingResponsePassthrough(
 	if err != nil {
 		return nil, fmt.Errorf("restore Kilo passthrough response effort: %w", err)
 	}
-	if account.IsCacheConversionEnabled() || kiloBridgeResponseEffort(c, account) != "" {
+	if account.IsCacheConversionEnabled() || kiloBridgeResponseEffort(c, account) != "" || isKiloCLIGatewayAccount(account) {
 		c.Writer.Header().Del("Content-Length")
 	}
 	if !writeOpenAICompactSSEBridge(c, resp.StatusCode, body) {
@@ -2941,7 +2963,7 @@ func (s *OpenAIGatewayService) handlePassthroughSSEToJSON(resp *http.Response, c
 	if conversionErr != nil {
 		return nil, fmt.Errorf("restore Kilo passthrough SSE response effort: %w", conversionErr)
 	}
-	if account.IsCacheConversionEnabled() || kiloBridgeResponseEffort(c, account) != "" {
+	if account.IsCacheConversionEnabled() || kiloBridgeResponseEffort(c, account) != "" || isKiloCLIGatewayAccount(account) {
 		c.Writer.Header().Del("Content-Length")
 	}
 	if !writeOpenAICompactSSEBridge(c, resp.StatusCode, body) {

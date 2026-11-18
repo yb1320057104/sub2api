@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pyo
+sentinel_assets/
+bin/
+*.tar.gz
+*.source-verification.json
+# Root vendor/ ignores Go vendoring; these two licensed pinned helpers are source.
+!vendor/
+!vendor/**

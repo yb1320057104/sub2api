@@ -109,6 +109,7 @@ const (
 	OpenAIEndpointCapabilityChatCompletions OpenAIEndpointCapability = "chat_completions"
 	OpenAIEndpointCapabilityEmbeddings      OpenAIEndpointCapability = "embeddings"
 	OpenAIEndpointCapabilityAlphaSearch     OpenAIEndpointCapability = "alpha_search"
+	OpenAIEndpointCapabilityKiloAlphaSearch OpenAIEndpointCapability = "kilo_alpha_search"
 	OpenAIEndpointCapabilityLive            OpenAIEndpointCapability = "live"
 	// OpenAIEndpointCapabilityGrokMediaGeneration keeps image/video generation
 	// away from Grok accounts that are explicitly disabled or whose billing
@@ -238,7 +239,11 @@ func accountLoadPreferenceRate(account *Account, loadRate int) int {
 }
 
 func (a *Account) IsSchedulable() bool {
-	if !a.IsActive() || !a.Schedulable || a.PerformancePaused {
+	// Kilo sources retain OAuth only for identity and quota reads.
+	if a.RequiresKiloInference() && (a.IsKiloSourceAccount() || ValidateKiloInferenceAccount(a) != nil) {
+		return false
+	}
+	if !a.IsActive() || !a.Schedulable || a.PerformancePaused || OpenAIAuthRecoveryPending(a) {
 		return false
 	}
 	now := time.Now()
@@ -273,7 +278,7 @@ func (a *Account) IsSchedulable() bool {
 // 手动 Schedulable 开关:spark 影子拥有独立 spark 配额窗口,母账号 global 429(走 RateLimitResetAt)
 // 不应连坐 spark(否则重新耦合影子架构本应解耦的两条 429 道)。nil receiver 返回 false。
 func (a *Account) IsCredentialUsableForShadow() bool {
-	if a == nil || !a.IsActive() {
+	if a == nil || !a.IsActive() || OpenAIAuthRecoveryPending(a) || a.RequiresKiloInference() {
 		return false
 	}
 	now := time.Now()
@@ -1079,6 +1084,9 @@ func (a *Account) IsModelSupported(requestedModel string) bool {
 }
 
 func (a *Account) isModelMappingSupported(requestedModel string) bool {
+	if a.hasKiloSubscriptionScope() {
+		return a.kiloSubscriptionAllowsRequestModel(requestedModel)
+	}
 	if !a.oauthInitialSelectionAllows(requestedModel) || !a.oauthInitialSelectionAllows(a.GetMappedModel(requestedModel)) {
 		return false
 	}
@@ -2074,6 +2082,9 @@ func (a *Account) GetOpenAISessionID() string {
 }
 
 func (a *Account) SupportsOpenAIEndpointCapability(capability OpenAIEndpointCapability) bool {
+	if capability == OpenAIEndpointCapabilityKiloAlphaSearch {
+		return a != nil && a.IsKiloGatewayAccount() && a.SupportsOpenAIEndpointCapability(OpenAIEndpointCapabilityAlphaSearch)
+	}
 	if a.HasManagedOpenAIConnections() && a.AuthConnectionID == "" {
 		return a.managedConnectionSupports(string(capability))
 	}
@@ -2548,7 +2559,7 @@ func (a *Account) IsCopilotSDKEnabled() bool {
 // 1. 按账号类型读取分类型字段
 // 2. 分类型字段缺失时，回退兼容字段
 func (a *Account) IsOpenAIResponsesWebSocketV2Enabled() bool {
-	if a.IsKiloBridgeEnabled() {
+	if a.IsKiloBridgeEnabled() || a.RequiresKiloInference() {
 		return false
 	}
 	if a.HasManagedOpenAIConnections() {
@@ -2628,7 +2639,7 @@ func normalizeOpenAIWSIngressDefaultMode(mode string) string {
 // 3. 兼容 enabled 旧字段（bool）
 // 4. defaultMode（非法时回退 ctx_pool）
 func (a *Account) ResolveOpenAIResponsesWebSocketV2Mode(defaultMode string) string {
-	if a.IsKiloBridgeEnabled() {
+	if a.IsKiloBridgeEnabled() || a.RequiresKiloInference() {
 		return OpenAIWSIngressModeOff
 	}
 	if a.HasManagedOpenAIConnections() {
@@ -2710,7 +2721,7 @@ func (a *Account) ResolveOpenAIResponsesWebSocketV2Mode(defaultMode string) stri
 // IsOpenAIWSForceHTTPEnabled 返回账号级"强制 HTTP"开关。
 // 字段：accounts.extra.openai_ws_force_http。
 func (a *Account) IsOpenAIWSForceHTTPEnabled() bool {
-	if a.IsKiloBridgeEnabled() {
+	if a.IsKiloBridgeEnabled() || a.RequiresKiloInference() {
 		return true
 	}
 	if a.IsCopilotSDKEnabled() || a.isExcelBPSAllModelsEnabled() {

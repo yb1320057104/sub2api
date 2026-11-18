@@ -31,6 +31,9 @@ func (r *openAIOAuthReauthRepository) CreateSIWCTask(ctx context.Context, id int
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err := lockOpenAIReauthKiloCreation(ctx, tx, id, "siwc"); err != nil {
+		return nil, err
+	}
 	if err = service.LockCredentialAuthorizationQueue(ctx, tx, id); err != nil {
 		return nil, err
 	}

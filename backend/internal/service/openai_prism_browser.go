@@ -405,6 +405,9 @@ func (s *OpenAIGatewayService) callPrismBrowserForCaller(ctx context.Context, ac
 		Transport:     transport,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
+	if err := GuardKiloInferenceRequest(ctx, kiloInferenceReader(s.accountRepo), req, account, account.ID); err != nil {
+		return nil, nil, 0, err
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, nil, 0, fmt.Errorf("prism adapter request failed: %w", err)

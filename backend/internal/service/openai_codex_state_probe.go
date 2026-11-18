@@ -303,6 +303,8 @@ func openAICodexStateProbeUnsupportedReason(account *Account, requestedModel str
 	switch {
 	case account == nil:
 		return "账号不存在"
+	case account.RequiresKiloInference():
+		return "Kilo 账号只允许 Kilo Gateway 生成，官方门票探针不可用"
 	case !account.IsOpenAIOAuthLike():
 		return "探针只适用于 OpenAI ChatGPT 订阅（OAuth）账号"
 	case account.IsSyntheticUITest():
@@ -330,6 +332,9 @@ func (s *OpenAIGatewayService) fireOpenAICodexStateShot(ctx context.Context, acc
 	}
 	applyOpenAICodexTicketHarvestIdentity(headers, model)
 	return fireOpenAICodexStateShotRequest(ctx, headers, model, turnState, cookie, func(req *http.Request) (*http.Response, error) {
+		if err := GuardKiloInferenceRequest(ctx, kiloInferenceReader(s.accountRepo), req, account, account.ID); err != nil {
+			return nil, err
+		}
 		return s.httpUpstream.Do(req, proxy, account.ID, account.Concurrency)
 	})
 }

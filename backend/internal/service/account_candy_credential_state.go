@@ -67,6 +67,11 @@ func accountCandyCredentialSnapshot(account, owner *Account) *AccountCandyCreden
 }
 
 func (s *AccountTestService) accountCandyCredentialFailure(ctx context.Context, snapshot *AccountCandyCredentialStateSnapshot, owner *Account, callErr error) error {
+	// Kilo's send boundary already records a versioned identity/binding failure.
+	// The generic credential CAS cannot supersede that lifecycle decision.
+	if owner.RequiresKiloInference() {
+		return callErr
+	}
 	var failure *accountCandyProbeError
 	if !errors.As(callErr, &failure) || failure.httpStatus != http.StatusUnauthorized {
 		return callErr

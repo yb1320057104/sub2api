@@ -488,7 +488,7 @@ func (s *PelicanGroupTestService) runSample(ctx context.Context, plan *PelicanGr
 				sample.ErrorMessage = "pelican_group_test_empty_result: account test returned no result"
 			}
 		}
-		if ctx.Err() != nil || !pelicanGroupTestRetryable(sample) || len(attempts)+1 >= PelicanGroupTestMaxAttempts {
+		if ctx.Err() != nil || route.account.RequiresKiloInference() || !pelicanGroupTestRetryable(sample) || len(attempts)+1 >= PelicanGroupTestMaxAttempts {
 			result = s.newResult(plan, started, s.now(), sample.ErrorMessage)
 			result.Status = sample.Status
 			result.ResponseText = sample.ResponseText

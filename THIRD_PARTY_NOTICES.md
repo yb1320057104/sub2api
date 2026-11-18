@@ -1,3 +1,18 @@
+# kilo2api protocol compatibility
+
+The Kilo Responses compatibility helpers derive from kilo2api v0.5.2,
+commit `3f72c8a8ed2c1c7c80de3bd4ab3a4e6e48f1aecd`, maintained at
+`https://github.com/suming314/kilo2api`. Copyright (c) 2026 kilo2api
+contributors. Its MIT license is retained at `LICENSES/kilo2api-MIT.txt`.
+The integration adapts client tool search, bounded request payloads and explicit
+compaction pruning, structured-output validation, and standalone Exa search to
+Sub2API's existing authentication, scheduling, proxy leases and accounting.
+
+The separate Kilo executor includes pinned toSub2 MIT helpers and cfsolve
+profile inputs, with their notices under `tools/kilo-runtime/`. Its build inputs
+and the externally supplied Sentinel assets are documented in
+`deploy/kilo-runtime/README.md`; the Sentinel SDK is not redistributed here.
+
 # BEpusdt collection engine
 
 The built-in cryptocurrency collection feature links BEpusdt into the Sub2API

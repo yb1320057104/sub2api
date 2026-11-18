@@ -155,6 +155,10 @@ func (s *OpenAIGatewayService) requestCodexHarvestProbe(ctx context.Context, acc
 		out.Err = errors.New("harvest request no longer admitted")
 		return
 	}
+	if err := GuardKiloInferenceRequest(ctx, kiloInferenceReader(s.accountRepo), req, account, account.ID); err != nil {
+		out.Err = err
+		return
+	}
 	out.Sent = true
 	resp, err := s.httpUpstream.Do(req, proxy, account.ID, account.Concurrency)
 	if err != nil {

@@ -365,6 +365,8 @@ const (
 	InflightEstimateVideo
 	// InflightEstimateAudio 语音（tts/stt/realtime）：按 AudioMode/AudioUnits 计。
 	InflightEstimateAudio
+	// Independent Kilo web searches reserve their actual per-query charge.
+	InflightEstimateWebSearch
 )
 
 // InflightEstimateRequest 单请求估算输入。
@@ -643,6 +645,23 @@ func (d inflightEstimateDeps) estimate(ctx context.Context, apiKey *APIKey, req 
 	}
 	if apiKey == nil || apiKey.User == nil {
 		return 0, false
+	}
+	if req.Kind == InflightEstimateWebSearch {
+		if d.billing == nil || req.SearchCalls <= 0 {
+			return 0, false
+		}
+		rate := 1.0
+		if d.cfg != nil && d.cfg.Default.RateMultiplier > 0 {
+			rate = d.cfg.Default.RateMultiplier
+		}
+		if apiKey.GroupID != nil && apiKey.Group != nil {
+			rate = apiKey.Group.RateMultiplier
+			if d.userGroupRate != nil {
+				rate = d.userGroupRate(ctx, apiKey.User.ID, *apiKey.GroupID, rate)
+			}
+		}
+		cost := d.billing.CalculateWebSearchCost(req.SearchCalls, webSearchPricePerCallFromAPIKey(apiKey), rate).ActualCost
+		return cost, cost == 0 || validCost(cost)
 	}
 	if req.Model == "" || (req.Kind == InflightEstimateAudio && req.AudioUnits <= 0) {
 		// 非计量请求（媒体状态查询、custom-voices 等）：无需预留，也不算「无法定价」。

@@ -14,6 +14,17 @@ import (
 
 const accountProxyAssignmentLock int64 = 70440001
 
+// LockAccountMutation shares the ordinary update lock within an existing
+// transaction. Onboarding acquires it before any account row locks.
+func (r *accountRepository) LockAccountMutation(ctx context.Context) error {
+	tx := dbent.TxFromContext(ctx)
+	if tx == nil {
+		return fmt.Errorf("account mutation lock requires an open transaction")
+	}
+	_, err := tx.Client().ExecContext(ctx, "SELECT pg_advisory_xact_lock($1)", accountProxyAssignmentLock)
+	return err
+}
+
 func (r *accountRepository) GetAccountProxyBindings(ctx context.Context, accountID int64) ([]service.AccountProxyBinding, error) {
 	items, err := r.loadAccountProxyBindings(ctx, []int64{accountID})
 	if err != nil {
@@ -156,6 +167,9 @@ func (r *accountRepository) ReplaceAccountProxyBindings(ctx context.Context, ids
 		return nil
 	}
 	client := dbent.TxFromContext(ctx).Client()
+	if err = service.LockKiloOnboardingLease(ctx, client); err != nil {
+		return err
+	}
 	if err = lockProxyBindingAccounts(ctx, client, ids); err != nil {
 		return err
 	}
@@ -189,6 +203,9 @@ func (r *accountRepository) ReplaceAccountProxyBindings(ctx context.Context, ids
 }
 
 func persistProxyAssignments(ctx context.Context, client *dbent.Client, ids []int64, assignments map[int64][]service.AccountProxyBindingInput) error {
+	if err := checkKiloProxyAssignments(ctx, client, ids, assignments); err != nil {
+		return err
+	}
 	// Validate the final plan before writes. This also gives a clear error when a
 	// global limit is lowered below bindings held by accounts outside this edit.
 	desired := map[int64]int{}
@@ -321,10 +338,24 @@ func (r *accountRepository) AssignAccountProxies(ctx context.Context, input serv
 	defer func() { _ = tx.Rollback() }()
 	client := tx.Client()
 	txctx := dbent.NewTxContext(ctx, tx)
+	if err = service.LockKiloOnboardingLease(txctx, client); err != nil {
+		return nil, err
+	}
 	if err = lockProxyBindingAccounts(txctx, client, ids); err != nil {
 		return nil, err
 	}
-	rows, err := client.QueryContext(txctx, `SELECT id FROM proxies WHERE deleted_at IS NULL AND status='active' AND (expires_at IS NULL OR expires_at>NOW()) ORDER BY id FOR UPDATE`)
+	query := `SELECT id FROM proxies WHERE deleted_at IS NULL AND status='active' AND (expires_at IS NULL OR expires_at>NOW())`
+	var queryArgs []any
+	if groupID, filtered := service.ProxyGroupFilterFromContext(ctx); filtered {
+		if groupID <= 0 {
+			query += ` AND NOT EXISTS(SELECT 1 FROM pk_proxy_group_members m WHERE m.proxy_id=proxies.id)`
+		} else {
+			query += ` AND EXISTS(SELECT 1 FROM pk_proxy_group_members m WHERE m.proxy_id=proxies.id AND m.proxy_group_id=$1)`
+			queryArgs = append(queryArgs, groupID)
+		}
+	}
+	query += ` ORDER BY id FOR UPDATE`
+	rows, err := client.QueryContext(txctx, query, queryArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -370,7 +401,11 @@ func (r *accountRepository) AssignAccountProxies(ctx context.Context, input serv
 	if err != nil {
 		return nil, err
 	}
-	assignments, used, err := planAccountProxyAssignments(ids, proxyIDs, counts, existing, input)
+	policy, err := loadKiloProxyAssignmentPolicy(txctx, client, ids, proxyIDs)
+	if err != nil {
+		return nil, err
+	}
+	assignments, used, err := planAccountProxyAssignments(ids, proxyIDs, counts, existing, input, policy)
 	if err != nil {
 		return nil, err
 	}
@@ -387,7 +422,12 @@ func (r *accountRepository) AssignAccountProxies(ctx context.Context, input serv
 // A valid complete existing plan is retained on repeat submission. Otherwise
 // choose the largest remaining capacities first; preserving partial assignments
 // greedily can falsely exhaust a pool that has a valid bipartite allocation.
-func planAccountProxyAssignments(ids, proxyIDs []int64, outside map[int64]int, existing map[int64][]service.AccountProxyBinding, input service.AccountProxyAssignmentInput) (map[int64][]service.AccountProxyBindingInput, map[int64]bool, error) {
+func planAccountProxyAssignments(ids, proxyIDs []int64, outside map[int64]int, existing map[int64][]service.AccountProxyBinding, input service.AccountProxyAssignmentInput, policies ...*kiloProxyAssignmentPolicy) (map[int64][]service.AccountProxyBindingInput, map[int64]bool, error) {
+	var policy *kiloProxyAssignmentPolicy
+	if len(policies) > 0 {
+		policy = policies[0]
+	}
+	selected := map[string]int64{}
 	available := map[int64]bool{}
 	for _, id := range proxyIDs {
 		available[id] = true
@@ -405,7 +445,7 @@ func planAccountProxyAssignments(ids, proxyIDs []int64, outside map[int64]int, e
 			break
 		}
 		for _, b := range existing[id] {
-			if !available[b.ProxyID] {
+			if !available[b.ProxyID] || !policy.allows(id, b.ProxyID, selected) {
 				valid = false
 				break
 			}
@@ -414,6 +454,7 @@ func planAccountProxyAssignments(ids, proxyIDs []int64, outside map[int64]int, e
 				valid = false
 				break
 			}
+			policy.remember(id, b.ProxyID, selected)
 			used[b.ProxyID] = true
 			assignments[id] = append(assignments[id], service.AccountProxyBindingInput{ProxyID: b.ProxyID, MaxAccounts: input.MaxAccountsPerProxy, MaxConcurrency: input.ProxyConcurrency})
 		}
@@ -425,6 +466,7 @@ func planAccountProxyAssignments(ids, proxyIDs []int64, outside map[int64]int, e
 		return assignments, used, nil
 	}
 	assignments = map[int64][]service.AccountProxyBindingInput{}
+	selected = map[string]int64{}
 	used = map[int64]bool{}
 	counts = map[int64]int{}
 	for id, n := range outside {
@@ -435,10 +477,10 @@ func planAccountProxyAssignments(ids, proxyIDs []int64, outside map[int64]int, e
 		for len(chosen) < input.ProxiesPerAccount {
 			var best int64
 			for _, id := range proxyIDs {
-				if chosen[id] || counts[id] >= input.MaxAccountsPerProxy {
+				if chosen[id] || counts[id] >= input.MaxAccountsPerProxy || !policy.allows(accountID, id, selected) {
 					continue
 				}
-				if best == 0 || counts[id] < counts[best] || (counts[id] == counts[best] && id < best) {
+				if best == 0 || policy.prefers(accountID, id, best) || (!policy.prefers(accountID, best, id) && (counts[id] < counts[best] || (counts[id] == counts[best] && id < best))) {
 					best = id
 				}
 			}
@@ -446,6 +488,7 @@ func planAccountProxyAssignments(ids, proxyIDs []int64, outside map[int64]int, e
 				return nil, nil, infraerrors.BadRequest("PROXY_POOL_CAPACITY", fmt.Sprintf("代理容量不足，账号 #%d 还缺 %d 个代理；本次未保存", accountID, input.ProxiesPerAccount-len(chosen)))
 			}
 			chosen[best] = true
+			policy.remember(accountID, best, selected)
 			counts[best]++
 			used[best] = true
 			assignments[accountID] = append(assignments[accountID], service.AccountProxyBindingInput{ProxyID: best, MaxAccounts: input.MaxAccountsPerProxy, MaxConcurrency: input.ProxyConcurrency})

@@ -15,6 +15,35 @@ class CodexDiagnosticTests(unittest.TestCase):
     def diagnostic(self, **changes):
         return {**dict(version=1, task_id=7, stage='token_exchange', reason='token_exchange_failed', elapsed_ms=120), **changes}
 
+    def test_workspace_modes_and_transport_diagnostics(self):
+        script = '''
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import {selectCodexWorkspace, createProtocolDiagnostics} from './tools/openai_codex_diagnostics.mjs';
+const workspaces = [{id:'z-work',kind:'organization'}, {id:'person',kind:'personal'}, {id:'a-work',kind:'organization'}];
+assert.equal(selectCodexWorkspace(workspaces), 'a-work');
+assert.equal(selectCodexWorkspace([...workspaces].reverse()), 'a-work');
+assert.equal(selectCodexWorkspace(workspaces, {mode:'personal'}), 'person');
+assert.equal(selectCodexWorkspace(workspaces, {mode:'business'}), 'a-work');
+assert.equal(selectCodexWorkspace(workspaces, {mode:'auto',expected:'z-work'}), 'z-work');
+assert.throws(() => selectCodexWorkspace(workspaces, {mode:'personal',expected:'a-work'}));
+assert.throws(() => selectCodexWorkspace([{id:'person',kind:'personal'}], {mode:'business'}));
+assert.throws(() => selectCodexWorkspace([...workspaces,workspaces[0]]));
+const file=process.argv[1];
+for (const message of ['curl: (35) TLS connect error', 'Failed to perform, curl: (60) SSL certificate problem', 'SSLError: private-proxy-url', 'ProxyError: private-proxy-url']) {
+  createProtocolDiagnostics(file,7).fail(new Error(message));
+  const safe=fs.readFileSync(file,'utf8');
+  assert.equal(JSON.parse(safe).reason,'transport_error');
+  assert(!safe.includes('private'));
+}
+createProtocolDiagnostics(file,7).fail(new Error('arbitrary private failure'));
+assert.equal(JSON.parse(fs.readFileSync(file,'utf8')).reason,'protocol_error');
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            result = subprocess.run([os.getenv('NODE_EXECUTABLE', 'node'), '--input-type=module', '-e', script,
+                                     str(Path(directory) / 'diagnostic.json')], capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_unknown_layout_is_rejected_without_mutating_runtime(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / 'runtime'
@@ -87,6 +116,12 @@ class CodexDiagnosticTests(unittest.TestCase):
         self.assertNotIn('synthetic', error)
         api.credentials.assert_not_called()
 
+    def test_email_verification_stops_without_submitting_credentials(self):
+        api, error = self.run_worker(diagnostic=self.diagnostic(stage='web_login', reason='email_verification_required'))
+        self.assertIn('stage=web_login reason=email_verification_required', error)
+        self.assertEqual(worker.safe_worker_failure(worker.WorkerError(error)), error)
+        api.credentials.assert_not_called()
+
     def test_missing_side_channel_preserves_old_failure_and_complete_output_contract(self):
         api, error = self.run_worker(diagnostic=False)
         self.assertEqual(error, 'password/TOTP protocol failed (exit 1)')
@@ -143,7 +178,12 @@ class PinnedCodexProtocolTests(unittest.TestCase):
         for mode, expected in [('success', None), ('workspace-success', None), ('missing-callback', 'callback_missing'),
                                ('wrong-state', 'callback_state_mismatch'), ('exchange-failed', 'token_exchange_failed'),
                                ('incomplete', 'credentials_incomplete'), ('session-rejected', 'session_unavailable'),
-                               ('workspace-mismatch', 'workspace_mismatch')]:
+                               ('workspace-mismatch', 'workspace_mismatch'),
+                               ('direct-success', None), ('direct-page-payload', None), ('direct-consent-payload', None),
+                               ('direct-email-required', 'email_verification_required'),
+                               ('direct-wrong-state', 'callback_state_mismatch'),
+                               ('direct-workspace-mismatch', 'workspace_mismatch'),
+                               ('direct-exchange-failed', 'token_exchange_failed')]:
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
                 temporary = Path(directory)
                 script = adapter.prepare_codex_runtime(dependency, temporary)
@@ -153,8 +193,12 @@ class PinnedCodexProtocolTests(unittest.TestCase):
                 env = dict(os.environ, SUB2API_PROTOCOL_TASK_ID='7', SUB2API_PROTOCOL_DIAGNOSTIC_PATH=str(diagnostic),
                            CHATGPT_LOGIN_PASSWORD='synthetic-password', CHATGPT_TOTP_SECRET='JBSWY3DPEHPK3PXP',
                            CODEX_TEST_MODE=mode, CODEX_TEST_ROUTES=str(routes))
-                if mode.startswith('workspace-'):
+                if mode.startswith(('workspace-', 'direct-')):
                     env['OPENAI_CODEX_EXPECTED_WORKSPACE'] = 'expected-workspace'
+                if mode.startswith('direct-'):
+                    env['OPENAI_CODEX_WORKSPACE_MODE'] = 'auto'
+                else:
+                    env.pop('OPENAI_CODEX_WORKSPACE_MODE', None)
                 result = subprocess.run([os.getenv('NODE_EXECUTABLE', 'node'), str(script), '--email',
                                          'test@example.test', '--output-mode', 'sub2api', '--sub2api-out', str(output)],
                                         cwd=temporary, env=env, stdin=subprocess.DEVNULL,
@@ -172,9 +216,14 @@ class PinnedCodexProtocolTests(unittest.TestCase):
                     self.assertEqual(safe['reason'], expected)
                     self.assertFalse(output.exists())
                 trace = routes.read_text()
-                self.assertEqual(trace.count('POST /api/accounts/password/verify'), 1)
-                self.assertEqual(trace.count('POST /api/accounts/mfa/verify'), 1)
-                if mode in ('missing-callback', 'wrong-state', 'session-rejected', 'workspace-mismatch'):
+                password_count = 0 if mode == 'direct-email-required' else 1
+                self.assertEqual(trace.count('POST /api/accounts/password/verify'), password_count)
+                self.assertEqual(trace.count('POST /api/accounts/mfa/verify'), password_count)
+                if mode.startswith('direct-'):
+                    self.assertNotIn('POST /api/auth/signin/openai', trace)
+                    self.assertEqual(trace.count('GET /oauth/authorize'), 1)
+                if mode in ('missing-callback', 'wrong-state', 'session-rejected', 'workspace-mismatch',
+                            'direct-email-required', 'direct-wrong-state', 'direct-workspace-mismatch'):
                     self.assertNotIn('POST /oauth/token', trace)
         self.assertEqual((dependency / 'src/protocol-login.mjs').read_bytes(), original)
 

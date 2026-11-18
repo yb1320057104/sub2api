@@ -374,7 +374,7 @@ func (s *AccountUsageService) getUsageForAccount(ctx context.Context, account *A
 		return s.getPassiveUsageForAccount(ctx, account)
 	}
 
-	if account.Platform == PlatformOpenAI && account.Type == AccountTypeOAuth {
+	if account.Platform == PlatformOpenAI && (account.Type == AccountTypeOAuth || account.IsKiloGatewayAccount()) {
 		// Usage can come from a stored snapshot even when a probe fails. Neither
 		// that nor a working access token proves a rejected refresh token recovered.
 		return s.getOpenAIUsage(ctx, account, forceProbe)
@@ -732,26 +732,36 @@ func (s *AccountUsageService) getOpenAIUsage(ctx context.Context, account *Accou
 		return usage, nil
 	}
 
-	applyExtraToUsage(usage, account.Extra, now)
+	quotaAccount, err := resolveKiloQuotaSource(ctx, s.accountRepo, account)
+	if err != nil {
+		return nil, err
+	}
+	applyExtraToUsage(usage, quotaAccount.Extra, now)
 
-	if (force || shouldRefreshOpenAICodexSnapshot(account, usage, now)) && s.shouldProbeOpenAICodexSnapshot(account.ID, now, force) {
-		if account.IsShadow() || account.IsExcelBPSEnabled() {
+	if (force || shouldRefreshOpenAICodexSnapshot(quotaAccount, usage, now)) && s.shouldProbeOpenAICodexSnapshot(quotaAccount.ID, now, force) {
+		if quotaAccount.IsShadow() || quotaAccount.IsExcelBPSEnabled() || quotaAccount.IsKiloQuotaOnly() || account.IsKiloGatewayAccount() {
 			// BPS queries reuse quota OAuth authentication, never a model probe
 			// or the independent BPS grant. Spark resolves parent credentials
 			// but persists only its own bengalfox windows on the shadow row.
 			if s.openAIQuotaService != nil {
-				if quotaUsage, err := s.openAIQuotaService.QueryUsage(ctx, account.ID); err == nil {
+				quotaUsage, queryErr := s.openAIQuotaService.QueryUsage(ctx, quotaAccount.ID)
+				if queryErr != nil && (quotaAccount.IsKiloQuotaOnly() || account.IsKiloGatewayAccount()) {
+					return usage, queryErr
+				}
+				if queryErr == nil && quotaUsage != nil {
 					if updates := quotaUsage.schedulingUpdates; len(updates) > 0 {
-						mergeAccountExtra(account, updates)
+						mergeAccountExtra(quotaAccount, updates)
 						if account.ParentAccountID != nil {
 							notifyOpenAIAutoReset(*account.ParentAccountID)
 						}
 						if usage.UpdatedAt == nil {
 							usage.UpdatedAt = &now
 						}
-						applyExtraToUsage(usage, account.Extra, now)
+						applyExtraToUsage(usage, quotaAccount.Extra, now)
 					}
 				}
+			} else if quotaAccount.IsKiloQuotaOnly() || account.IsKiloGatewayAccount() {
+				return usage, kiloInferenceDenied("KILO_QUOTA_SOURCE_UNAVAILABLE", "官方 OAuth 只读额度服务不可用；禁止改用生成探针")
 			}
 		} else {
 			if updates, err := s.probeOpenAICodexSnapshot(ctx, account); err == nil && len(updates) > 0 {
@@ -808,7 +818,7 @@ func isOpenAICodexSnapshotStale(account *Account, now time.Time) bool {
 	// Native probes retain their WSv2 eligibility. BPS and Spark use the quota
 	// endpoint independently of transport; their complete windows still expire.
 	// shouldProbeOpenAICodexSnapshot bounds concurrent/stale automatic reads.
-	if !account.IsShadow() && !account.IsExcelBPSEnabled() && !account.IsOpenAIResponsesWebSocketV2Enabled() {
+	if !account.IsShadow() && !account.IsExcelBPSEnabled() && !account.IsKiloQuotaOnly() && !account.IsOpenAIResponsesWebSocketV2Enabled() {
 		return false
 	}
 	if account.Extra == nil {
@@ -846,6 +856,9 @@ func (s *AccountUsageService) shouldProbeOpenAICodexSnapshot(accountID int64, no
 }
 
 func (s *AccountUsageService) probeOpenAICodexSnapshot(ctx context.Context, account *Account) (map[string]any, error) {
+	if account.RequiresKiloInference() {
+		return nil, kiloInferenceDenied("KILO_SOURCE_INFERENCE_BLOCKED", "Kilo 账号额度只能通过官方只读接口查询；禁止官方生成探针")
+	}
 	if account == nil || !account.IsOAuth() {
 		return nil, nil
 	}
@@ -913,6 +926,9 @@ func (s *AccountUsageService) probeOpenAICodexSnapshot(ctx context.Context, acco
 	})
 	if err != nil {
 		return nil, fmt.Errorf("build openai probe client: %w", err)
+	}
+	if err := GuardKiloInferenceRequest(reqCtx, kiloInferenceReader(s.accountRepo), req, account, account.ID); err != nil {
+		return nil, err
 	}
 	resp, err := client.Do(req)
 	if err != nil {

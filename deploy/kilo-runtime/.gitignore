@@ -1,0 +1,5 @@
+.env
+secrets/
+*.token
+*.source-verification.json
+*.tar.gz

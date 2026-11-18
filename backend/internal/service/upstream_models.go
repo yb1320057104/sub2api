@@ -17,6 +17,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/geminicli"
+	"github.com/tidwall/gjson"
 )
 
 const (
@@ -273,6 +274,7 @@ func (s *AccountTestService) SyncUpstreamModelCatalog(ctx context.Context, accou
 		}
 		models = filtered
 	}
+	models = filterKiloSubscriptionCatalog(account, models)
 	catalog := &UpstreamModelCatalog{Models: models, Metadata: make(map[string]UpstreamModelMetadata), DiscoverySource: "upstream"}
 	if !liveListAvailable {
 		// Every provider can use configured IDs when its list endpoint is absent.
@@ -295,13 +297,20 @@ func (s *AccountTestService) SyncUpstreamModelCatalog(ctx context.Context, accou
 		_, directMetadata, parseErr := extractUpstreamModelCatalog(body, account != nil && account.IsGrok())
 		if parseErr == nil {
 			catalog.Metadata = directMetadata
+			if account.hasKiloSubscriptionScope() {
+				for model := range catalog.Metadata {
+					if !account.kiloSubscriptionAllowsWireModel(model) {
+						delete(catalog.Metadata, model)
+					}
+				}
+			}
 		}
 	}
 
 	// Capability enrichment also covers concrete model_mapping targets. Admins may
 	// whitelist models that the live /models list omitted; those still need registry
 	// metadata so Codex catalogs can advertise reasoning and modalities.
-	enrichIDs := dedupeAndSortModelIDs(append(append([]string{}, models...), configuredUpstreamModelsForCapabilitySync(account)...))
+	enrichIDs := filterKiloSubscriptionCatalog(account, dedupeAndSortModelIDs(append(append([]string{}, models...), configuredUpstreamModelsForCapabilitySync(account)...)))
 	// Dedicated image/video generators are not Codex agent catalog entries and often
 	// omit context windows in public registries. Keep them out of completeness checks
 	// so they do not mask successful agent-model capability sync.
@@ -828,6 +837,9 @@ func (s *AccountTestService) fetchUpstreamModelListRequest(ctx context.Context, 
 	if account == nil {
 		return nil, nil, nil, newUpstreamModelSyncConfigError("Account is required", nil)
 	}
+	if _, err := account.kiloSubscriptionModelSet(); err != nil {
+		return nil, nil, nil, err
+	}
 
 	if account.Platform == PlatformAntigravity && account.Type != AccountTypeAPIKey {
 		models, body, err := s.fetchAntigravityOAuthUpstreamModels(ctx, account)
@@ -879,6 +891,14 @@ func (s *AccountTestService) fetchUpstreamModelListRequest(ctx context.Context, 
 		return nil, nil, req, newUpstreamModelSyncUpstreamError("Upstream returned no supported models", nil)
 	}
 
+	if account.hasKiloSubscriptionScope() {
+		models = filterKiloSubscriptionCatalog(account, models)
+		var scopeErr error
+		body, scopeErr = filterKiloSubscriptionModelsBody(account, body, gjson.GetBytes(body, "models").Exists())
+		if scopeErr != nil {
+			return nil, nil, req, scopeErr
+		}
+	}
 	return models, body, req, nil
 }
 

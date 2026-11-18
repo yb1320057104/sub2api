@@ -357,6 +357,9 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 // handleUpstreamErrorAfterStreakReset keeps account policy handling shared with
 // the OpenAI gateway, which resets the streak before its early-return policies.
 func (s *RateLimitService) handleUpstreamErrorAfterStreakReset(ctx context.Context, account *Account, statusCode int, headers http.Header, responseBody []byte, requestedModel ...string) (shouldDisable bool) {
+	if handled, disabled := s.observeKiloGatewayFailure(ctx, account, statusCode, responseBody); handled {
+		return disabled
+	}
 	ctx, disabledOn429 := s.maybeDisableOpenAISchedulingOn429(ctx, account, statusCode, headers)
 	if disabledOn429 {
 		defer func() { shouldDisable = true }()
@@ -395,7 +398,9 @@ func (s *RateLimitService) handleUpstreamErrorAfterStreakReset(ctx context.Conte
 	}
 	// Team 联动熔断必须先于池模式/自定义错误码/临时不可调度的各类早退；
 	// 同请求内与 fastpath 调用点的重复触发由方法内去重吸收。
-	s.maybeHandleOpenAITeamLinkedError(ctx, account, statusCode, responseBody)
+	if !account.IsKiloSourceAccount() {
+		s.maybeHandleOpenAITeamLinkedError(ctx, account, statusCode, responseBody)
+	}
 	customErrorCodesEnabled := account.IsCustomErrorCodesEnabled()
 
 	// 池模式默认不标记本地账号状态；但管理员显式配置的临时不可调度规则优先。
@@ -517,6 +522,36 @@ func (s *RateLimitService) handleUpstreamErrorAfterStreakReset(ctx context.Conte
 		}
 		// OpenAI: token_invalidated / token_revoked 表示 token 被永久作废（非过期），直接标记 error
 		openai401Code := extractUpstreamErrorCode(responseBody)
+		// IP策略拒绝不证明凭据失效；其他401绑定被拒绝token通知现有恢复控制器。
+		if !isOpenAIIPUnauthorizedResponse(statusCode, responseBody) {
+			terminal := openai401Code == "token_invalidated" || openai401Code == "token_revoked" || gjson.GetBytes(responseBody, "detail").String() == "Unauthorized" || strings.TrimSpace(authAccount.GetOpenAIRefreshToken()) == ""
+			if _, supported := s.accountRepo.(OpenAIAuthRecoveryRepository); supported && authAccount.Platform == PlatformOpenAI && authAccount.Type == AccountTypeOAuth && !authAccount.IsOpenAIPersonalAccessToken() && !authAccount.IsOpenAIAgentIdentity() && !authAccount.IsExcelOAuth() {
+				minutes := 10
+				if s.cfg != nil && s.cfg.RateLimit.OAuth401CooldownMinutes > 0 {
+					minutes = s.cfg.RateLimit.OAuth401CooldownMinutes
+				}
+				until := time.Now().Add(time.Duration(minutes) * time.Minute)
+				marked, signalErr := markOpenAIAuthRejected(ctx, s.accountRepo, authAccount, terminal, until)
+				if signalErr != nil {
+					slog.Warn("openai_401_recovery_signal_failed", "account_id", authAccount.ID, "error", signalErr)
+					return true
+				}
+				if !marked {
+					return false
+				}
+				if s.tokenCacheInvalidator != nil {
+					_ = s.tokenCacheInvalidator.InvalidateToken(ctx, authAccount)
+				}
+				if _, durable := s.accountRepo.(OpenAICredentialLifecycleRepository); !durable {
+					if terminal {
+						until = time.Time{}
+					}
+					s.notifyAccountSchedulingBlocked(authAccount, until, "oauth_401")
+				}
+				// 信号和隔离已在相同token CAS中提交，不能再执行无版本比较的状态写。
+				return true
+			}
+		}
 		if authAccount.Platform == PlatformOpenAI && (openai401Code == "token_invalidated" || openai401Code == "token_revoked") {
 			msg := "Token revoked (401): account authentication permanently revoked"
 			if upstreamMsg != "" {
@@ -611,6 +646,25 @@ func (s *RateLimitService) handleUpstreamErrorAfterStreakReset(ctx context.Conte
 			shouldDisable = true
 		}
 	case 402:
+		// A quota-only source uses the same credential CAS as a revoked token.
+		// Never propagate a delayed workspace rejection to a new authorization,
+		// or interpret a Kilo credit-balance error as an OpenAI workspace failure.
+		if account.IsKiloSourceAccount() && account.IsOpenAIOAuth() && gjson.GetBytes(responseBody, "detail.code").String() == "deactivated_workspace" {
+			if _, supported := s.accountRepo.(OpenAIAuthRecoveryRepository); supported {
+				marked, err := markOpenAIAuthRejected(ctx, s.accountRepo, account, true)
+				if err != nil {
+					slog.Warn("kilo_workspace_quarantine_failed", "account_id", account.ID, "error", err)
+					return true
+				}
+				if !marked {
+					return false
+				}
+				if s.tokenCacheInvalidator != nil {
+					_ = s.tokenCacheInvalidator.InvalidateToken(ctx, account)
+				}
+				return true
+			}
+		}
 		// 国产供应商 / OpenCode Zen / Command Code / Mistral：余额（积分/预算）不足是可恢复状态
 		// （充值/月度重置/检测恢复后由周期任务自动解除），不能走 handleAuthError 永久置
 		// status=error。改为可恢复的临时停调。
